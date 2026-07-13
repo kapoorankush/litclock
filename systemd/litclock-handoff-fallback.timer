@@ -1,0 +1,18 @@
+[Unit]
+Description=LitClock handoff last-resort completer cadence (EPIC #383 PR2, #388)
+Documentation=https://github.com/kapoorankush/litclock/issues/388
+
+[Timer]
+# Fire ~10 min after boot — long enough that a healthy control_server has
+# painted the splash and the user has had a chance to tap Done, short enough
+# that a crashed control_server doesn't leave the clock stuck for long.
+# OnActiveSec covers the mid-uptime enable path (update.sh enables units on a
+# running Pi where boot was hours ago, so OnBootSec is already in the past).
+# Single fire — once .handoff-complete exists the service's ConditionPathExists
+# makes it a no-op, and a tz-unknown device intentionally stays on the splash.
+OnBootSec=10min
+OnActiveSec=10min
+Unit=litclock-handoff-fallback.service
+
+[Install]
+WantedBy=timers.target

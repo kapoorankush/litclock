@@ -1,0 +1,16 @@
+IMG_NAME=litclock
+RELEASE=bookworm
+TARGET_HOSTNAME=litclock
+FIRST_USER_NAME=pi
+# pi-gen requires a password. Default creds are intentional: SSH is off
+# (ENABLE_SSH=0), so no network service authenticates against this password —
+# shell access is physical-only (console, or SD-card ssh file). See #387.
+FIRST_USER_PASS="raspberry"
+DISABLE_FIRST_BOOT_USER_RENAME=1
+ENABLE_SSH=0
+WIFI_COUNTRY=US
+LOCALE_DEFAULT=en_US.UTF-8
+KEYBOARD_KEYMAP=us
+KEYBOARD_LAYOUT="English (US)"
+TIMEZONE_DEFAULT=Etc/UTC
+STAGE_LIST="stage0 stage1 stage2 stage3"

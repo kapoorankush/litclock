@@ -1,0 +1,73 @@
+# LitClock Control PWA — scoped sudo for system actions (issue #245 M4 + M5).
+#
+# This file documents the narrow set of privileged commands the Control PWA
+# needs. /etc/sudoers.d/010_pi-nopasswd grants `pi` NOPASSWD: ALL for
+# compatibility with the legacy install path; that file remains in force.
+# Removing 010_pi-nopasswd in a future milestone will leave only this
+# allowlist — every entry below is something the control_server actually
+# invokes via subprocess.
+#
+# Commands MUST exactly match what the caller runs (sudoers matches the
+# binary path + arguments verbatim). On Bookworm `which systemctl` is
+# /usr/bin/systemctl. Both bare and `--no-block` forms are listed because
+# the control_server uses --no-block (so the HTTP response flushes before
+# the box reboots) and other call sites may not.
+#
+# M5 entries:
+#   * `systemctl start --no-block litclock-update.service` — /api/update/apply
+#     (D1: systemd's job queue serializes against the Sunday timer fire).
+#   * `systemctl start --no-block litclock-wifi-reset.service` — /api/wifi/reset
+#     (D11: replaces the daemon-thread approach; Conflicts= directive on the
+#     wifi-reset unit gives systemd-native job-level interlock against
+#     reset-during-update).
+#
+# Issue #280 entry:
+#   * `systemctl start --no-block litclock-prepare-for-gift.service` —
+#     /api/system/prepare-for-gift. The unit's ExecStart is reset-setup.sh
+#     --gift-mode --message-file /run/litclock/gift-message; the message
+#     itself is written to /run/litclock/gift-message by the route handler
+#     before invoking systemctl, so the sudoers entry doesn't need to
+#     accept arbitrary message text on the command line.
+#
+# Issue #510 entry:
+#   * `systemctl start --no-block litclock-reset.service` — /api/system/reset
+#     (Factory reset). The unit's ExecStart is reset-setup.sh --wipe-wifi
+#     --reboot --yes (full wipe + reboot into setup). Fixed argv, no user
+#     input crosses the sudo boundary. Sibling of the wifi-reset/gift grants.
+#
+# EPIC #383 PR2 (#388) entry:
+#   * `touch /etc/litclock/.handoff-complete` — control_server's handoff
+#     completion (POST /api/handoff/done, /set-timezone, the 120s timer, and
+#     an implicit Settings-save complete). /etc/litclock is root-owned, so the
+#     pi-user control_server writes this marker via sudo. Fixed path + binary,
+#     no arguments, so there's nothing user-controllable on the command line.
+#     See src/control_server/handoff.py:mark_handoff_complete.
+#
+# #396 entry:
+#   * `timedatectl set-timezone UTC` — prepare_for_gift resets the system tz to
+#     UTC synchronously (so the gifter's tz doesn't linger in /etc/localtime)
+#     before dispatching the teardown unit. Fixed argv (UTC is the only target),
+#     so nothing user-controllable crosses the sudo boundary. Best-effort: the
+#     route swallows failure (see system.py:_gift_reset_timezone_to_utc), so a
+#     missing entry degrades to the script's Step 3.5 reset, never a hard error.
+#
+# #387 entries (020-completion, makes dropping 010 safe):
+#   * `/usr/bin/timedatectl set-ntp true` — first-boot.sh (User=pi in
+#     litclock-firstboot.service) + install.sh enable NTP during provisioning.
+#     Fixed argv (`set-ntp true` is the only form invoked). Before #387 this
+#     worked ONLY via 010's blanket grant; without it a fresh clock could never
+#     sync time once 010 drops. Surfaced by the #387 security /review.
+#   * `/usr/local/lib/litclock/litclock-set-timezone` — the ARBITRARY-tz path
+#     (geocoding.set_system_timezone: IP-geo + the A18 browser-tz fallback).
+#     We authorize the root-owned wrapper's FIXED PATH, never `timedatectl
+#     set-timezone *` (a glob would let pi set the clock to any string reaching
+#     the resolver). The wrapper re-validates the tz against the kernel zoneinfo
+#     list in root-owned code, so any argument pi passes is safe. Installed
+#     root:root 0755 so pi cannot rewrite it. Before #387 this path worked ONLY
+#     via 010_pi-nopasswd's blanket grant and would have broken when 010 drops.
+#
+# Validate any change with:  visudo -c -f sudoers/020_litclock-control
+# Install via: scripts/install.sh, scripts/update.sh, or the pi-gen image
+# build (pi-gen/stage3/02-configure-system/00-run.sh).
+
+pi ALL=(ALL) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl reboot --no-block, /usr/bin/systemctl poweroff, /usr/bin/systemctl poweroff --no-block, /usr/bin/systemctl restart litclock.service, /usr/bin/systemctl restart litclock.timer, /usr/bin/systemctl start litclock.service, /usr/bin/systemctl start --no-block litclock.service, /usr/bin/systemctl start --no-block litclock-update.service, /usr/bin/systemctl start --no-block litclock-wifi-reset.service, /usr/bin/systemctl start --no-block litclock-prepare-for-gift.service, /usr/bin/systemctl start --no-block litclock-reset.service, /usr/bin/systemctl stop litclock.timer litclock.service, /usr/bin/touch /etc/litclock/.handoff-complete, /usr/bin/timedatectl set-timezone UTC, /usr/bin/timedatectl set-ntp true, /usr/local/lib/litclock/litclock-set-timezone

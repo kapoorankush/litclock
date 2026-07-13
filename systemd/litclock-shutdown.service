@@ -1,0 +1,55 @@
+[Unit]
+Description=LitClock Shutdown Splash Screen
+Documentation=https://github.com/kapoorankush/litclock
+DefaultDependencies=no
+# Conflicts= triggers our STOP (and ExecStop) when systemd isolates to any of
+# the four shutdown targets.
+#
+# Do NOT add litclock.service or litclock.timer here. Conflicts= is bidirectional
+# and these units stay active during normal operation:
+#   * litclock.service is timer-fired every minute. Bidirectional Conflicts would
+#     fire shutdown-splash.sh on every minute tick.
+#   * litclock.timer is enabled and active forever. Bidirectional Conflicts would
+#     mean at boot, whichever starts first stops the other — either the splash
+#     paints during boot, or the timer never fires.
+# Both were tried and reverted; ordering via Before= below is the safe shape.
+Conflicts=shutdown.target reboot.target halt.target poweroff.target
+# Before= controls ordering. In shutdown direction Before= reverses to mean
+# "our stop runs after theirs". The four shutdown targets keep our ExecStop
+# ordered before each shutdown path completes (pre-PR state). Adding
+# litclock.service (#271) makes ExecStop wait until the mid-render clock
+# service — which has its own default Conflicts=shutdown.target, so it IS
+# being stopped in the same shutdown transaction — has fully stopped and
+# released the SPI bus. Without it, systemd is free to stop both units
+# concurrently and the SPI/GPIO race returns.
+#
+# Known narrow edge case (P3 follow-up): if `sudo reboot` lands in the ~1s
+# window where litclock.timer was about to enqueue a fresh litclock.service
+# start, the queued start can land after our ExecStop. Before=litclock.service
+# only orders against already-active instances. A proper fix needs systemd
+# semantics that aren't crisp in the docs (one-way Before=litclock.timer may
+# or may not cancel queued service starts) and would benefit from a unit
+# redesign. See follow-up issue.
+#
+# An earlier draft used Before=final.target as a single-line cover for all
+# four shutdown paths AND as an attempted #268 fix. Codex review pointed out
+# Before=final.target only constrains when our stop must *finish*, not when
+# it *starts* — Conflicts= queues the stop immediately at the beginning of
+# the shutdown transaction either way. #268 needs a proper late-shutdown-hook
+# design, not a one-liner. Tracked separately.
+Before=shutdown.target reboot.target halt.target poweroff.target litclock.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/home/pi/litclock/scripts/shutdown-splash.sh
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+Environment=LITCLOCK_DIR=/home/pi/litclock
+User=pi
+
+[Install]
+WantedBy=multi-user.target

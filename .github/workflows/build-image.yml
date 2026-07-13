@@ -1,0 +1,284 @@
+name: Build Image
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      litclock_ref:
+        description: "Git ref to bake into the image (tag, branch, or SHA)"
+        required: false
+        default: "master"
+
+jobs:
+  build:
+    name: Build Pi OS image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: write       # needed for creating releases
+      id-token: write       # OIDC token for Sigstore signing (SLSA attestation)
+      attestations: write   # post attestation to GitHub's attestation store
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.inputs.litclock_ref || github.ref }}
+          submodules: true
+
+      # Free disk space — pi-gen needs ~10 GB
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache
+          sudo apt-get clean
+          df -h /
+
+      - name: Determine version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DISPATCH_REF: ${{ github.event.inputs.litclock_ref || 'master' }}
+        run: |
+          if [[ "${REF_TYPE}" == "tag" ]]; then
+            VERSION="${REF_NAME}"
+            VERSION="${VERSION#v}"  # strip leading v
+            REF="${REF_NAME}"
+          else
+            VERSION="dev-$(date +%Y%m%d)-${GITHUB_SHA::7}"
+            REF="${DISPATCH_REF}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION}, Ref: ${REF}"
+
+      # pi-gen builds arm64 images via QEMU emulation on x86 runners
+      - name: Set up QEMU
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+
+      - name: Clone pi-gen
+        # Pinned to the 2025-05-06 bookworm-arm64 tag. Tags are immutable in
+        # practice but CAN be force-updated — we verify the commit SHA to detect
+        # any upstream tampering.
+        env:
+          PIGEN_TAG: 2025-05-06-raspios-bookworm-arm64
+          PIGEN_SHA: 49e1078c1b07ff4948d304e0149d3bc698e0006a
+        run: |
+          git clone --depth 1 --branch "$PIGEN_TAG" \
+            https://github.com/RPi-Distro/pi-gen.git /tmp/pi-gen
+          ACTUAL=$(git -C /tmp/pi-gen rev-parse HEAD)
+          if [ "$ACTUAL" != "$PIGEN_SHA" ]; then
+            echo "ERROR: pi-gen HEAD $ACTUAL != expected $PIGEN_SHA" >&2
+            echo "The upstream tag may have been force-updated. Review before bumping." >&2
+            exit 1
+          fi
+
+      - name: Configure pi-gen
+        run: |
+          # Copy base config
+          cp pi-gen/config /tmp/pi-gen/config
+
+          # Append build-time variables
+          echo "LITCLOCK_REF=${{ steps.version.outputs.ref }}" >> /tmp/pi-gen/config
+          echo "LITCLOCK_VERSION=${{ steps.version.outputs.version }}" >> /tmp/pi-gen/config
+          echo "LITCLOCK_SHA=${{ steps.version.outputs.sha }}" >> /tmp/pi-gen/config
+
+          # Replace pi-gen's default stage3 with our custom stage
+          rm -rf /tmp/pi-gen/stage3
+          cp -r pi-gen/stage3 /tmp/pi-gen/stage3
+
+          # Make scripts executable
+          find /tmp/pi-gen/stage3 -name "*.sh" -exec chmod +x {} +
+
+          # Only export image from our stage
+          touch /tmp/pi-gen/stage2/SKIP_IMAGES
+
+          # pi-gen's export-image unconditionally copies .bmap but bmap-tools
+          # is not in its Dockerfile — make the copy conditional
+          sed -i 's|cp "$BMAP_FILE" "$DEPLOY_DIR/"|[ -f "$BMAP_FILE" ] \&\& cp "$BMAP_FILE" "$DEPLOY_DIR/"|' \
+            /tmp/pi-gen/export-image/05-finalise/01-run.sh
+
+      - name: Stage repo for image
+        run: |
+          # Copy checkout into pi-gen so it's baked into the Docker image
+          # (chroot has no network/credentials to git clone).
+          # actions/checkout already uses depth 1, so .git is minimal.
+          cp -a . /tmp/pi-gen/litclock-src
+          # Remove pi-gen build artifacts to avoid nesting
+          rm -rf /tmp/pi-gen/litclock-src/pi-gen
+
+      - name: Download quote images
+        # Quote images live in a GitHub Release (litclock-images-vN), pinned
+        # by .images-version in the repo root. Fetch them here so they get
+        # baked into the OS image alongside the code. The image build has no
+        # separate "first boot network" step, so if we don't stage them now
+        # the device ships with an empty images/ and every quote slot falls
+        # back to time-only until a power user runs update.sh.
+        env:
+          # Populate the token so download_images.sh can fetch while the
+          # repo is private. Becomes a no-op once the repo is public.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          STAGED=/tmp/pi-gen/litclock-src
+          PINNED=$(tr -d '[:space:]' < "$STAGED/.images-version")
+          TAG="litclock-images-${PINNED}"
+
+          # Pre-flight: confirm BOTH the tarball AND its .sha256 sidecar exist
+          # on the release. Missing either means the release was published
+          # incompletely (e.g. scripts/release_images.sh was interrupted);
+          # fail fast before kicking off a 30-60 minute pi-gen run.
+          ASSET_NAMES=$(gh release view "$TAG" --json assets --jq '.assets[].name' || true)
+          for NEEDED in "litclock-images.tar.gz" "litclock-images.tar.gz.sha256"; do
+            if ! echo "$ASSET_NAMES" | grep -qx "$NEEDED"; then
+              echo "::error::Release $TAG is missing required asset: $NEEDED"
+              echo "Publish a complete release with: scripts/release_images.sh $PINNED"
+              exit 1
+            fi
+          done
+
+          # Run the same download script the Pi uses, so we test the real
+          # code path. Point it at the staged repo so it writes images/ in
+          # the right place for pi-gen stage3 to pick up.
+          chmod +x "$STAGED/scripts/download_images.sh"
+          "$STAGED/scripts/download_images.sh" --repo-root "$STAGED"
+
+          # Marker check: the download must have written the installed-version
+          # marker. Missing marker = graceful-exit-0 fired somewhere (network,
+          # 404, SHA mismatch). In CI we want a hard failure.
+          if [ ! -f "$STAGED/images/.installed-version" ]; then
+            echo "::error::download_images.sh ran but images/.installed-version was not created"
+            exit 1
+          fi
+
+          # Count floor: guard against a malformed-but-sha-matching tarball
+          # that only contains a few files. Expected corpus is 9500+ files.
+          COUNT=$(find "$STAGED/images" -type f -name '*.png' | wc -l)
+          MIN_COUNT=8000
+          if [ "$COUNT" -lt "$MIN_COUNT" ]; then
+            echo "::error::Only $COUNT PNGs staged (expected >= $MIN_COUNT) — release tarball is likely corrupt"
+            exit 1
+          fi
+          echo "Staged $COUNT quote images from $TAG into the pi-gen input directory"
+
+      - name: Build image
+        run: |
+          cd /tmp/pi-gen
+          ./build-docker.sh
+
+      # Smoke testing happens IN-CHROOT during pi-gen build at
+      # pi-gen/stage3/05-smoke-test/00-run.sh. If the venv is broken, a
+      # Python dep fails to install, or a systemd unit has invalid syntax,
+      # stage3 fails and no .img is ever produced. Post-export mount-based
+      # smoke testing was tried and removed — it produced false alarms from
+      # GH Actions loop-device quirks. See PR #202 and issue #114 for
+      # context and the community discussions linked there.
+
+      - name: Compress image
+        id: compress
+        run: |
+          DEPLOY=/tmp/pi-gen/deploy
+
+          # pi-gen outputs a zip containing the .img — extract it
+          ZIP=$(ls "${DEPLOY}"/image_*.zip 2>/dev/null | head -1)
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: No image zip found in ${DEPLOY}/"
+            ls -la "${DEPLOY}/" 2>/dev/null || echo "deploy/ directory does not exist"
+            exit 1
+          fi
+          unzip -o "$ZIP" -d /tmp
+          IMG=$(ls /tmp/*.img 2>/dev/null | head -1)
+          if [ -z "$IMG" ]; then
+            echo "ERROR: No .img file found after extracting $ZIP"
+            exit 1
+          fi
+
+          IMG_NAME="litclock-${{ steps.version.outputs.version }}.img"
+
+          # Rename to versioned name
+          mv "${IMG}" "/tmp/${IMG_NAME}"
+
+          # Compress with xz (parallel)
+          xz -9 -T0 "/tmp/${IMG_NAME}"
+
+          # Generate checksums
+          cd /tmp
+          sha256sum "${IMG_NAME}.xz" > "${IMG_NAME}.xz.sha256"
+
+          echo "img=/tmp/${IMG_NAME}.xz" >> "$GITHUB_OUTPUT"
+          echo "sha=/tmp/${IMG_NAME}.xz.sha256" >> "$GITHUB_OUTPUT"
+          echo "img_name=${IMG_NAME}.xz" >> "$GITHUB_OUTPUT"
+
+          echo "Compressed image:"
+          ls -lh "/tmp/${IMG_NAME}.xz"
+
+      # SLSA build provenance: sign the compressed image so downstream users
+      # can verify it was built by this workflow from a specific commit.
+      # Verify with: gh attestation verify litclock-<version>.img.xz --owner kapoorankush
+      # Skipped on private repos — GitHub's attestation API rejects user-owned
+      # private repos. Will start working automatically when the repo goes public.
+      - name: Attest build provenance
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ steps.compress.outputs.img }}
+
+      # On manual dispatch: upload as a dev pre-release
+      # (GitHub Releases assets don't count toward Actions storage quota,
+      # unlike artifacts which accrue GB-hours against the 500 MB free tier)
+      - name: Upload dev build
+        if: github.ref_type != 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.version }}"
+          # Delete existing release with this tag (idempotent re-runs)
+          gh release delete "${TAG}" --yes --cleanup-tag 2>/dev/null || true
+          # Clean up dev releases older than 7 days
+          gh release list --json tagName,createdAt \
+            --jq '.[] | select(.tagName | startswith("dev-")) | select((.createdAt | fromdateiso8601) < (now - 604800)) | .tagName' \
+          | xargs -I{} gh release delete {} --yes --cleanup-tag 2>/dev/null || true
+          gh release create "${TAG}" \
+            --prerelease \
+            --title "Dev build ${{ steps.version.outputs.version }}" \
+            --notes "Dev build from \`${{ steps.version.outputs.ref }}\` ($(date -u +%Y-%m-%dT%H:%M:%SZ)). Auto-generated, not for production use." \
+            --target "${{ github.sha }}" \
+            "${{ steps.compress.outputs.img }}" \
+            "${{ steps.compress.outputs.sha }}"
+
+      # On tag push: create GitHub Release
+      #
+      # --target is REQUIRED: without it, GitHub stores the default branch
+      # name (e.g. "master") in the Release's target_commitish field. The
+      # #209 auto-update resolver reads tag_name and resolves it via
+      # git rev-list, but downstream tooling (and any future resolver that
+      # trusts target_commitish) needs honest metadata. Always stamp the
+      # actual commit SHA so the Release points where everyone thinks it does.
+      - name: Create release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+          IMG: ${{ steps.compress.outputs.img }}
+          SHA: ${{ steps.compress.outputs.sha }}
+        # Idempotent: if a release with this tag already exists (someone
+        # pre-cut it manually with curated notes, or a prior workflow run
+        # got this far and partial-failed), upload the assets to it with
+        # --clobber instead of trying to recreate it. `gh release create`
+        # exits 1 on collision, which used to discard a freshly-built
+        # 1.4GB image alongside a 71-min build. See #242 for the postmortem.
+        run: |
+          if gh release view "${REF_NAME}" --json id >/dev/null 2>&1; then
+            echo "Release ${REF_NAME} already exists — uploading assets with --clobber"
+            gh release upload "${REF_NAME}" "${IMG}" "${SHA}" --clobber
+          else
+            gh release create "${REF_NAME}" \
+              --title "LitClock ${{ steps.version.outputs.version }}" \
+              --target "${{ github.sha }}" \
+              --generate-notes \
+              "${IMG}" \
+              "${SHA}"
+          fi

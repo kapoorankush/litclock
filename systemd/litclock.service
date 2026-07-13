@@ -1,0 +1,31 @@
+[Unit]
+Description=LitClock Display Update
+Documentation=https://github.com/kapoorankush/litclock
+# EPIC #383 PR2 (#388): hold quotes until the post-WiFi handoff completes.
+# control_server writes /etc/litclock/.handoff-complete once the user taps Done
+# (or confirms a timezone, or the 120s timer fires WITH a known tz). Until then
+# the timer keeps firing but this oneshot is a no-op (condition unmet, recorded
+# as skipped — not a failure), so the handoff splash stays on the e-ink. A
+# wrong-time clock is worse than no clock (design-review A2): the marker is only
+# written once the timezone is known.
+#
+# MIGRATION: already-provisioned Pis upgrading via update.sh never ran the
+# handoff flow — update.sh touches this marker for them (Option A) so quotes
+# never stop on upgrade. New fresh-flash installs get it from the handoff flow.
+ConditionPathExists=/etc/litclock/.handoff-complete
+
+[Service]
+Type=oneshot
+ExecStart=/home/pi/litclock/scripts/runtheclock.sh
+WorkingDirectory=/home/pi/litclock
+User=pi
+StandardOutput=journal
+StandardError=journal
+# Cap stop time so a wedged render (e.g. GPIO contention from a previous
+# unclean exit holding the SPI bus) gets SIGKILL'd quickly during reboot.
+# The default DefaultTimeoutStopSec on Bookworm systemd 252 is 90s, which
+# would outlast litclock-shutdown.service's own 30s TimeoutStopSec — that
+# would mean shutdown-splash's ExecStop gets SIGKILLed before it can paint
+# the "Powered Off" splash. 10s leaves plenty of slack for a healthy
+# render (~9s) and keeps a stuck one inside the 30s shutdown budget.
+TimeoutStopSec=10s

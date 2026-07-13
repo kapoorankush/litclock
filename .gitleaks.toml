@@ -1,0 +1,11 @@
+# Allowlist for gitleaks: these test suites contain DELIBERATE fake secrets
+# (dummy ghp_/ghs_/sk_live_ tokens, a dummy OpenSSH key, PSK=hunter2foobar)
+# used as fixtures to prove the diagnostics redaction strips secret shapes.
+# Scoped by path only — a real secret anywhere else still fails the scan.
+[allowlist]
+description = "Deliberate fake secrets in redaction/no-secrets test fixtures"
+paths = [
+  '''tests/test_redaction\.py''',
+  '''tests/test_diagnostics_no_secrets\.py''',
+  '''tests/test_control_server_diagnostics\.py''',
+]

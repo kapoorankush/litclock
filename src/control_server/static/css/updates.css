@@ -1,0 +1,274 @@
+/* Updates tab — single card layout + phase reading-list (#245 M5 D3).
+ *
+ * DESIGN.md spec sections referenced:
+ *   - "Cards"                              — base card + spacing
+ *   - "Pills"                              — sage --success / foxed --accent
+ *   - "Phase reading-list (during update apply)" — vertical list, three
+ *     row states (completed / active / upcoming) with distinct icon +
+ *     typography per state.
+ *
+ * The confirm-sheet styles ship in `confirm-sheet.css`, loaded alongside
+ * this file from updates.html.j2 (M7 OV-2 — shared with /system).
+ *
+ * M7 /design-review (codex + claude consistency pass, 2026-05-01) — this
+ * file was previously a parallel design system: hardcoded spacing/radius/
+ * font-size, `system-ui` in `font:` shorthand (DESIGN.md font blacklist),
+ * wrong fallback hex on every `var(token, #fallback)`. Rewritten to use
+ * --sp-*, --fs-*, --r-*, --t-* tokens directly. Fallbacks removed since
+ * tokens.css always loads first via base.html.j2.
+ */
+
+/* ─── Updates card ─────────────────────────────────────────────────── */
+
+.updates-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-lg);
+  background: var(--surface);
+  border-radius: var(--r-md);
+  padding: var(--sp-xl);
+  margin: var(--sp-xl) auto;
+  max-width: 480px;
+  box-shadow: 0 1px 0 var(--hairline);
+}
+
+.updates-card__header {
+  display: flex;
+  justify-content: flex-start;
+}
+
+/* Pills — match DESIGN.md "Pills" spec. */
+.updates-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-xs);
+  padding: var(--sp-xs) var(--sp-md);
+  border-radius: var(--r-full);
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+
+.updates-pill--ok {
+  background: var(--success);
+  color: var(--bg);
+}
+
+.updates-pill--available {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.updates-pill--unknown {
+  background: var(--hairline);
+  color: var(--ink-muted);
+}
+
+.updates-card__facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: var(--sp-lg);
+  row-gap: var(--sp-xs);
+  margin: 0;
+}
+
+.updates-card__facts dt {
+  color: var(--ink-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+}
+
+.updates-card__facts dd {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+}
+
+.updates-card__version,
+.updates-card__last-checked {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Release notes — Fraunces italic per DESIGN.md "Available update notes". */
+.updates-card__notes {
+  margin: 0;
+  padding: var(--sp-md) 0 0 0;
+  border-top: 1px solid var(--hairline);
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  background: transparent;
+}
+
+/* Apply button — primary action, foxed-amber filled. */
+.updates-card__apply {
+  margin: 0;
+}
+
+.updates-card__apply-btn {
+  appearance: none;
+  width: 100%;
+  padding: var(--sp-md) var(--sp-lg);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--bg);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  min-height: 44px;
+}
+
+.updates-card__apply-btn:hover,
+.updates-card__apply-btn:focus-visible {
+  background: var(--accent-muted);
+  outline-offset: 3px;
+}
+
+.updates-card__apply-btn:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+/* ─── Phase reading-list ───────────────────────────────────────────── */
+
+.phase-reading-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-lg);
+  background: var(--surface);
+  border-radius: var(--r-md);
+  padding: var(--sp-xl);
+  margin: var(--sp-xl) auto;
+  max-width: 380px;
+}
+
+.phase-reading-list[hidden] {
+  display: none;
+}
+
+.phase-reading-list__title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: var(--fs-lede);
+  font-weight: 400;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.phase-reading-list__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-md);
+}
+
+.phase-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  line-height: 1.3;
+}
+
+.phase-row__icon {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+}
+
+/* Three row states per DESIGN.md spec. */
+.phase-row[data-state="completed"] {
+  color: var(--ink-muted);
+}
+
+.phase-row[data-state="completed"] .phase-row__icon {
+  /* check-circle, --ink-muted (#6B5C4A). The hex is duplicated in the
+   * inline SVG because data: URL fragments can't reference CSS custom
+   * properties. Locked to match tokens.css `--ink-muted`. */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='none' stroke='%236B5C4A' stroke-width='1.5'/><path d='M5 8.2l2 2L11 6' fill='none' stroke='%236B5C4A' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+}
+
+.phase-row[data-state="active"] {
+  color: var(--accent);
+  font-style: italic;
+  font-family: var(--font-serif);
+  font-size: var(--fs-body);
+}
+
+.phase-row[data-state="active"] .phase-row__icon {
+  /* spinner, --accent (#B85C20). CSS animation rotates it. */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='none' stroke='%23B85C20' stroke-width='2' stroke-linecap='round' stroke-dasharray='12 24'/></svg>");
+  animation: phase-row-spin 1.2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .phase-row[data-state="active"] .phase-row__icon {
+    animation: none;
+  }
+}
+
+@keyframes phase-row-spin {
+  to { transform: rotate(360deg); }
+}
+
+.phase-row[data-state="upcoming"] {
+  color: var(--ink-muted);
+  opacity: 0.55;
+}
+
+.phase-row[data-state="upcoming"] .phase-row__icon {
+  /* circle-outline, faded ink. */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='none' stroke='rgba(26,20,16,0.32)' stroke-width='1.5'/></svg>");
+}
+
+.phase-row[data-state="failed"] {
+  color: var(--error);
+  font-weight: 500;
+}
+
+.phase-row[data-state="failed"] .phase-row__icon {
+  /* x-circle, --error (#9A2E22). */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='none' stroke='%239A2E22' stroke-width='1.5'/><path d='M6 6l4 4M10 6l-4 4' stroke='%239A2E22' stroke-width='1.5' stroke-linecap='round'/></svg>");
+}
+
+.phase-reading-list__terminal {
+  margin: 0;
+  padding: var(--sp-md) 0 0 0;
+  border-top: 1px solid var(--hairline);
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.phase-reading-list__terminal[hidden] {
+  display: none;
+}
+
+.phase-reading-list__terminal[data-tone="error"] {
+  color: var(--error);
+}
+
+.phase-reading-list__terminal[data-tone="reverted"] {
+  color: var(--ink-muted);
+}

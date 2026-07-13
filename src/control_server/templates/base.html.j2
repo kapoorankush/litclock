@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  {# Status bar tint per DESIGN.md "PWA Shell Requirements". #}
+  <meta name="theme-color" content="#FBF6EC" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#14110D" media="(prefers-color-scheme: dark)">
+  {# iOS standalone PWA opt-in. Without these, iOS treats the page as a
+     regular browser tab and the launch experience falls back to Safari
+     chrome. With them, AtHS launches in standalone mode with the bg-baked
+     icon and no chrome. `apple-mobile-web-app-status-bar-style=default`
+     lets iOS pick a tint that matches our theme-color rather than the
+     legacy black-translucent. #}
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="LitClock">
+  <title>{% block title %}LitClock{% endblock %}</title>
+  {# Inline critical CSS. iOS PWA cold launch was showing ~2s of black
+     screen (hardware-found PR #252) because the external stylesheet
+     blocks first paint. Inlining the bg + color tokens lets the browser
+     paint the antique-paper canvas as soon as the HTML head reaches the
+     parser, eliminating the black flash. The full tokens.css still loads
+     for everything else; this is purely a paint-now hint. Splash images
+     (apple-touch-startup-image) ship with M6 as the proper fix; this is
+     the small intermediate that stops the worst of the FOUC.
+
+     Keep these values in sync with src/control_server/static/css/tokens.css
+     `--bg` and `--ink`. The dark-mode block uses the same color-scheme
+     trick so iOS can pick the right canvas color before user CSS arrives. #}
+  <meta name="color-scheme" content="light dark">
+  <style>
+    html { background: #FBF6EC; color: #1A1410; }
+    @media (prefers-color-scheme: dark) {
+      html { background: #14110D; color: #F0E6D2; }
+    }
+    body { margin: 0; }
+  </style>
+  {# M0 icons. #}
+  <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='icons/icon-192.png') }}">
+  <link rel="icon" type="image/png" sizes="512x512" href="{{ url_for('static', filename='icons/icon-512.png') }}">
+  {# Apple touch icon matrix. iOS 17 falls back to an initial-letter placeholder
+     when no apple-touch-icon matches the device's pixel density — caught by hardware
+     QA on PR #252 ("logo on the homescreen 'app' just shows a capital L"). The
+     bg-baked variants ship the logo on solid --bg so iOS's auto-shaped mask doesn't
+     leave transparent corners. The unsized link is the universal fallback. #}
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='icons/icon-bg-baked-180.png') }}">
+  <link rel="apple-touch-icon" sizes="167x167" href="{{ url_for('static', filename='icons/icon-bg-baked-167.png') }}">
+  <link rel="apple-touch-icon" sizes="152x152" href="{{ url_for('static', filename='icons/icon-bg-baked-152.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/icon-bg-baked-180.png') }}">
+
+  {# M6 — PWA manifest. Served via routes/sw.py with the F3-locked
+     Content-Type: application/manifest+json + Cache-Control: max-age=86400. #}
+  <link rel="manifest" href="/manifest.webmanifest">
+
+  {# M6 D5 — font preloads. Two highest-priority faces (Fraunces + Instrument
+     Sans) preloaded so the literary serif/sans split is on-screen by first
+     paint. font-display: swap in tokens.css means the system fallback shows
+     immediately if the woff2 hasn't arrived yet. Geist Mono is lazy — the
+     Updates tab is the only place it's heavily used and that tab loads its
+     own CSS via {% block extra_head %}. #}
+  <link rel="preload" as="font" type="font/woff2"
+        href="{{ url_for('static', filename='fonts/fraunces-wght-normal.woff2') }}" crossorigin>
+  <link rel="preload" as="font" type="font/woff2"
+        href="{{ url_for('static', filename='fonts/instrument-sans-wght-normal.woff2') }}" crossorigin>
+
+  {# M6 D4/D8/DD3/DD6 — iOS apple-touch-startup-image splash matrix.
+     17 sizes × 2 modes (light/dark via prefers-color-scheme) = 34 link tags.
+     Ordered light/dark in pairs by ascending width so the diff stays clean.
+     Each media query pins device-width × device-pixel-ratio + portrait
+     orientation + color-scheme so iOS Safari picks the right splash before
+     the first paint, eliminating the cream-flash-into-dark-shell papercut. #}
+  {% set splash_matrix = [
+    (640, 1136, 2),
+    (750, 1334, 2),
+    (828, 1792, 2),
+    (1080, 2340, 3),
+    (1125, 2436, 3),
+    (1170, 2532, 3),
+    (1179, 2556, 3),
+    (1206, 2622, 3),
+    (1242, 2208, 3),
+    (1242, 2688, 3),
+    (1260, 2736, 3),
+    (1284, 2778, 3),
+    (1290, 2796, 3),
+    (1320, 2868, 3),
+    (1536, 2048, 2),
+    (1620, 2160, 2),
+    (2048, 2732, 2),
+  ] %}
+  {% for w, h, ratio in splash_matrix %}
+  <link rel="apple-touch-startup-image"
+        media="(device-width: {{ (w / ratio) | int }}px) and (device-height: {{ (h / ratio) | int }}px) and (-webkit-device-pixel-ratio: {{ ratio }}) and (orientation: portrait) and (prefers-color-scheme: light)"
+        href="{{ url_for('static', filename='splash/splash-' ~ w ~ 'x' ~ h ~ '-light.png') }}">
+  <link rel="apple-touch-startup-image"
+        media="(device-width: {{ (w / ratio) | int }}px) and (device-height: {{ (h / ratio) | int }}px) and (-webkit-device-pixel-ratio: {{ ratio }}) and (orientation: portrait) and (prefers-color-scheme: dark)"
+        href="{{ url_for('static', filename='splash/splash-' ~ w ~ 'x' ~ h ~ '-dark.png') }}">
+  {% endfor %}
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/aths-hint.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/banners.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/handoff.css') }}">
+  {# #416 PR3b — diagnostics shortcut ribbon + live-logs drawer are
+     cross-cutting (reachable from every tab), so the CSS ships here in
+     base.html.j2 rather than per-tab. ~6KB; bounded surface. #}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/drawer.css') }}">
+  {# Per-tab CSS/JS slot. M4 system tab loads system.css here so the modal
+     + action-card styles don't ship to the Status / Settings / Updates tabs
+     that don't need them — every byte counts on Pi Zero 2W. #}
+  {% block extra_head %}{% endblock %}
+</head>
+<body{% if handoff.active %} data-handoff-active{% endif %}{% if diag_shortcut_expanded %} data-diag-ribbon-expanded{% endif %}>
+  {# EPIC #383 PR2 (#388) — post-WiFi handoff top-sheet. Renders only during
+     the handoff window; data-handoff-active above drives the Status-hero dim
+     and the AtHS-hint suppression server-side. #}
+  {% include '_handoff-banner.html.j2' %}
+  <main>
+    {% block content %}
+    {# No `<h1>LitClock</h1>` here. DESIGN.md "memorable thing":
+       *"It feels like reading, not configuring."* The literary hero on
+       the Status tab IS the brand statement; a redundant header above it
+       would compete with the quote for attention. Stub tabs (M3-M5) ship
+       milestone-named copy alone — the browser tab title and the home-
+       screen icon both already say LitClock. Hardware-QA decision
+       2026-04-28 (user testing PR #261). #}
+    {% if stub_message %}
+      <p>{{ stub_message }}</p>
+    {% else %}
+      <p>
+        Control PWA — under construction. The Status hero, settings forms, system
+        actions, and update flow land in M2&nbsp;through&nbsp;M5.
+      </p>
+    {% endif %}
+    {% endblock %}
+
+    {# M6 + M7 — Add-to-Home-Screen first-run hint (DD1/DD2/DD4/DD5/F2/F5).
+       CSS-only viewport gate at <600px hides this on iPad+desktop. JS
+       adds .aths-hint--ready 600ms after load when the user is NOT in
+       standalone mode AND has NOT previously dismissed. Tap X to dismiss
+       + persist via localStorage. The X button is visually 24×24 with
+       10px transparent padding for a 44×44 effective tap target (DD5 +
+       WCAG 2.5.5).
+
+       M7 design-review (2026-05-01) — moved INSIDE <main> so it flows
+       below page content instead of overlaying it. The original M6
+       fixed-position bottom-sheet was hiding the WiFi/Weather rows on
+       Status and the Gift Mode toggle on Settings for first-run users.
+       Inline placement honors the same DESIGN.md "First-run hint" spec
+       and remains conventional (a bottom-of-content notification card). #}
+    <aside class="aths-hint aths-hint--ios" role="region" aria-label="Add to Home Screen hint">
+    {# DD2 + codex /review M6 — platform-branched icon and instruction copy.
+       Both variants ship in the HTML; aths-hint.js detects the platform via
+       navigator.userAgent and toggles `aths-hint--ios` / `aths-hint--android`
+       on the card so CSS reveals the right pair. The default class
+       `aths-hint--ios` ships in the HTML so no-JS / unknown-platform users
+       still see the iOS copy (the iOS install action via Safari's share
+       toolbar is the dominant install target).
+
+       iOS-native UIActivityViewController share glyph (square with up-arrow
+       exiting top). Single-component DESIGN.md exception per
+       /plan-design-review 2026-04-30 — the hint icon must visually match
+       the toolbar icon iOS users actually tap, otherwise install conversion
+       drops. #}
+    <span class="aths-hint__icon aths-hint__icon--ios" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">
+        <path d="M12 4v12"></path>
+        <path d="M8 8l4-4 4 4"></path>
+        <path d="M5 12v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"></path>
+      </svg>
+    </span>
+    {# Phosphor `download-simple` for Android per DESIGN.md §First-run hint. #}
+    <span class="aths-hint__icon aths-hint__icon--android" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="7 10 12 15 17 10"></polyline>
+        <line x1="12" y1="15" x2="12" y2="3"></line>
+      </svg>
+    </span>
+    <div class="aths-hint__body">
+      <p class="aths-hint__title">Add to Home Screen</p>
+      <p class="aths-hint__detail">for one-tap access to your clock</p>
+      <p class="aths-hint__instruction aths-hint__instruction--ios">Tap the share icon below, then choose Add to Home Screen</p>
+      <p class="aths-hint__instruction aths-hint__instruction--android">Tap the menu (&#x22EE;), then Install app or Add to Home screen</p>
+    </div>
+    <button type="button" class="aths-hint__dismiss" aria-label="Dismiss hint">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="6" y1="6" x2="18" y2="18"></line>
+        <line x1="18" y1="6" x2="6" y2="18"></line>
+      </svg>
+    </button>
+    </aside>
+  </main>
+
+  {# #416 PR3b — diagnostics shortcut ribbon + live-logs drawer.
+     OV-D-C: dots-three default (owner-persona protection). Drawer is a
+     non-modal sheet (aria-modal=false per D6+D32) so the tabbar stays
+     interactive and tapping a tab closes-and-navigates.
+
+     The drawer markup is rendered server-side but starts inert + hidden
+     (the JS removes the hidden + applies inert/aria toggles on open).
+     This keeps the markup discoverable without JS and avoids a hard
+     dependency on the SSE stream for the very first paint. #}
+
+  {# Ribbon button — bottom-right, above the tabbar. D14. #}
+  <button type="button"
+          class="diag-ribbon"
+          data-diag-ribbon-button
+          aria-label="Open live diagnostics drawer"
+          aria-haspopup="dialog"
+          aria-controls="diag-drawer-region">
+    <span class="diag-ribbon__icon" aria-hidden="true">
+      {# Phosphor `dots-three-vertical`. #}
+      <svg viewBox="0 0 256 256" width="20" height="20" fill="currentColor">
+        <path d="M140,128a12,12,0,1,1-12-12A12,12,0,0,1,140,128ZM128,72a12,12,0,1,0-12-12A12,12,0,0,0,128,72Zm0,112a12,12,0,1,0,12,12A12,12,0,0,0,128,184Z"/>
+      </svg>
+    </span>
+    <span class="diag-ribbon__label">Live diagnostics</span>
+  </button>
+
+  {# Page-dim under the drawer (12% per OV-D-A). Sits between page content
+     and the drawer in z-order. pointer-events: none until the drawer is
+     open so it doesn't intercept clicks while closed. #}
+  <div class="diag-page-dim" data-diag-page-dim aria-hidden="true"></div>
+
+  {# #431b (v0.214.4) — the .diag-lantern decoration was removed. It was
+     decorative-only with `aria-hidden`, had been broken on production Pis
+     for an unknown duration without anyone noticing, and lived on
+     drawer-open state but rendered as a brown smudge in Status/diagnostics
+     when closed. Subtraction-default lever applied: drop, don't patch. #}
+
+  {# Drawer (D6 + D7 + D13). role=dialog aria-modal=false so the tab bar
+     stays interactive per the D32 non-modal contract. JS toggles
+     `hidden` + `inert` + the body's data-diag-drawer-open attribute. #}
+  <section class="diag-drawer"
+           id="diag-drawer-region"
+           data-diag-drawer
+           role="dialog"
+           aria-modal="false"
+           aria-labelledby="diag-drawer-title"
+           aria-hidden="true"
+           inert
+           hidden>
+    {# Drag handle (D6: swipe-down close). Aria-hidden — the close
+       button is the discoverable affordance for screen readers. #}
+    <div class="diag-drawer__handle" data-diag-drawer-handle aria-hidden="true"></div>
+
+    <header class="diag-drawer__header">
+      <h2 id="diag-drawer-title" class="diag-drawer__title">Live diagnostics</h2>
+      {# #431a (v0.214.4) — dropped trailing "→". The arrow pointed directly
+         at the adjacent × close button creating tap-target ambiguity. The
+         underline + --accent color carries the affordance; aria-label
+         keeps the destination clear for screen readers. #}
+      <a class="diag-drawer__open-page"
+         href="/diagnostics"
+         data-diag-drawer-open-page
+         aria-label="Open full diagnostics page">
+        Open full diagnostics
+      </a>
+      <button type="button"
+              class="diag-drawer__close"
+              data-diag-drawer-close
+              aria-label="Close drawer">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true">
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+        </svg>
+      </button>
+    </header>
+
+    {# First-open welcome card (D25). Server-rendered visible; JS hides
+       on subsequent opens via localStorage 'litclock.diag.welcomed.v1'. #}
+    <div class="diag-drawer__welcome" data-diag-drawer-welcome>
+      <p class="diag-drawer__welcome-body">
+        These are real-time messages from your clock. Most are routine.
+        If something looks amiss, the support payload at the bottom of
+        the diagnostics page is the best thing to share.
+      </p>
+      <div class="diag-drawer__welcome-actions">
+        <button type="button"
+                class="diag-drawer__welcome-dismiss"
+                data-diag-drawer-welcome-dismiss>
+          Got it
+        </button>
+      </div>
+    </div>
+
+    {# Level filter (D8: radiogroup). Each button is role=radio so arrow
+       keys move between them per WAI-ARIA radiogroup pattern. #}
+    <div class="diag-drawer__filters">
+      <div class="diag-level-filter"
+           role="radiogroup"
+           aria-label="Filter log entries by level">
+        <button type="button" class="diag-level-filter__option"
+                role="radio" aria-checked="true" data-diag-level="">All</button>
+        <button type="button" class="diag-level-filter__option"
+                role="radio" aria-checked="false" data-diag-level="INFO">Info</button>
+        <button type="button" class="diag-level-filter__option"
+                role="radio" aria-checked="false" data-diag-level="WARNING">Warn</button>
+        <button type="button" class="diag-level-filter__option"
+                role="radio" aria-checked="false" data-diag-level="ERROR">Error</button>
+      </div>
+      {# D15: "Start fresh from now" client-side filter. Reset to "show
+         all" once the user wants the historical context back. #}
+      <button type="button"
+              class="diag-drawer__filter-fresh"
+              data-diag-drawer-fresh
+              aria-label="Start fresh from now (hide existing entries)">
+        Start fresh
+      </button>
+    </div>
+
+    {# D2 + F9 empty states. JS reveals exactly one by toggling [hidden].
+       Default to "no entries yet" — drawer is opened, SSE attaches, the
+       first hello frame either lands and renders entries or backfills. #}
+    <div class="diag-drawer__empty"
+         data-diag-drawer-empty="no-entries"
+         hidden>
+      <p class="diag-drawer__empty-headline">It's quiet.</p>
+      <p>No log entries yet. Real-time messages will appear as the clock runs.</p>
+    </div>
+    <div class="diag-drawer__empty"
+         data-diag-drawer-empty="no-matches"
+         hidden>
+      <p class="diag-drawer__empty-headline">No matching entries.</p>
+      <p>Try a different filter, or tap "All" to clear the level filter.</p>
+    </div>
+    <div class="diag-drawer__empty"
+         data-diag-drawer-empty="journal-denied"
+         hidden>
+      <p class="diag-drawer__empty-headline">Log access is denied.</p>
+      <p>The clock's user can't read its own journal. Try this in a terminal:</p>
+      <pre class="diag-drawer__empty-paste"><code>sudo usermod -aG adm pi
+sudo reboot</code></pre>
+    </div>
+    <div class="diag-drawer__empty"
+         data-diag-drawer-empty="disconnected"
+         hidden>
+      <p class="diag-drawer__empty-headline">Stream lost.</p>
+      <p>Trying to reconnect…</p>
+    </div>
+
+    {# Hidden-batch header (D21): shows "earlier N hidden — Open
+       full diagnostics" when the visible cap collapses older entries. #}
+    <p class="diag-drawer__hidden-batch"
+       data-diag-drawer-hidden-batch
+       hidden></p>
+
+    {# Live region for entries. role=log aria-live=polite
+       aria-relevant=additions aria-atomic=false per D7. #}
+    <ol class="diag-drawer__entries"
+        data-diag-drawer-entries
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions"
+        aria-atomic="false"
+        aria-labelledby="diag-drawer-title"></ol>
+
+    {# Follow-tail pill — appears when scrolled up away from the tail
+       AND a new entry just landed. D21. #}
+    <button type="button"
+            class="diag-drawer__follow-pill"
+            data-diag-drawer-follow-pill
+            hidden>↓ <span data-diag-drawer-follow-count>0</span> new</button>
+  </section>
+
+  {# M7 OV-5 (codex /design-review) — Phosphor icons per DESIGN.md "Icon
+     mapping" lock: book-open / gear / power / download-simple. Icons
+     stack above the text label (existing .tabbar a is flex-column).
+     `aria-hidden` on the SVG so screen readers only announce the visible
+     text label; sighted users get the visual anchor for scanning.
+
+     Issue #256: this is a navigation landmark, not an ARIA tabs widget.
+     Each <a> takes the user to a separate page (PRD §7.5 + PLAN C5 lock
+     no-JS HTML form POST + redirect = page navigation, not in-place panel
+     swap). role="tablist"/role="tab"/aria-selected announce "tab N of 4"
+     while the user is actually navigating between pages — semantically
+     wrong. Drop the tabs framing, keep aria-current="page" which is the
+     correct landmark idiom for "you are here". #}
+  <nav class="tabbar" aria-label="Primary">
+    <a href="/"{% if active_tab == 'status' %} aria-current="page"{% endif %}>
+      <svg class="tabbar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 19V5l9 4 9-4v14l-9 4z"/>
+        <line x1="12" y1="9" x2="12" y2="23"/>
+      </svg>
+      <span class="tabbar__label">Status</span>
+    </a>
+    <a href="/settings"{% if active_tab == 'settings' %} aria-current="page"{% endif %}>
+      <svg class="tabbar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+      <span class="tabbar__label">Settings</span>
+    </a>
+    <a href="/system"{% if active_tab == 'system' %} aria-current="page"{% endif %}>
+      <svg class="tabbar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+        <line x1="12" y1="2" x2="12" y2="12"/>
+      </svg>
+      <span class="tabbar__label">System</span>
+    </a>
+    <a href="/updates"{% if active_tab == 'updates' %} aria-current="page"{% endif %}>
+      <svg class="tabbar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      <span class="tabbar__label">Updates</span>
+    </a>
+  </nav>
+
+  {# Service worker register + AtHS hint controller. Both are deferred via
+     `defer` so they don't block the initial render. sw-register.js gates
+     on isSecureContext (D9) — iOS Safari at our private-IP origin short-
+     circuits without registering, Android registers + caches the shell. #}
+  <script src="{{ url_for('static', filename='js/sw-register.js') }}" defer></script>
+  {# EPIC #383 PR2 (#388) — handoff banner controller. Loaded before aths-hint
+     so the suppression coordination is wired before the hint's first-run
+     logic runs. #}
+  <script src="{{ url_for('static', filename='js/handoff.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/aths-hint.js') }}" defer></script>
+
+  {# #416 PR3b — cross-cutting drawer controller. Loaded on every tab
+     (NOT in {% block extra_body %}) because the ribbon + drawer are
+     reachable globally. Deferred so it doesn't block first paint. #}
+  <script src="{{ url_for('static', filename='js/drawer.js') }}" defer></script>
+
+  {# Per-tab JS slot. Same scoping rationale as extra_head. #}
+  {% block extra_body %}{% endblock %}
+</body>
+</html>

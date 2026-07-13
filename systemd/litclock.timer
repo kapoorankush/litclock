@@ -1,0 +1,11 @@
+[Unit]
+Description=LitClock Minute Timer
+Documentation=https://github.com/kapoorankush/litclock
+After=sysinit.target
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

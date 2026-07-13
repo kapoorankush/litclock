@@ -1,0 +1,443 @@
+{% extends "base.html.j2" %}
+{# Settings tab — 5 sections (Weather / Units / Gift Mode / Location / Advanced)
+   per DESIGN.md IA. Each section is a `<section role="region">` form so the
+   no-JS form fallback works (PRD §7.5 progressive enhancement). All forms
+   share a single CSRF token issued by the GET handler — multi-use, action
+   "settings", TTL 30 min (M3 D4).
+
+   Layout follows DESIGN.md "Form rows": 14px label, hairline separator below,
+   ≥44px touch target. Buttons use the locked button hierarchy (primary
+   filled foxed-amber for Save, secondary text-link for cancel-style actions).
+#}
+{% block title %}Settings — LitClock{% endblock %}
+
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/settings.css') }}">
+{% endblock %}
+
+{% block extra_body %}
+  <script src="{{ url_for('static', filename='js/settings.js') }}" defer></script>
+{% endblock %}
+
+{% block content %}
+{%- set s = settings -%}
+
+{# Success banner — PRG redirect lands here with `?saved=<section>`. The
+   server passes saved_section through; rendering happens server-side so
+   the no-JS path still sees the confirmation. aria-live=polite so screen
+   readers announce it on arrival. #}
+{% if saved_section %}
+  <div class="settings-banner settings-banner--success" role="status" aria-live="polite">
+    Saved.
+    {% if saved_name %}
+      Weather location: <strong>{{ saved_name }}</strong>.
+    {% endif %}
+    New quote on next minute tick.
+  </div>
+{% endif %}
+
+{# Failure banner — re-render with form_error set when a section's POST
+   fails validation. assertive so it's announced ahead of the section
+   re-fill. #}
+{% if form_error %}
+  <div class="settings-banner settings-banner--error" role="alert" aria-live="assertive">
+    {{ form_error }}
+  </div>
+{% endif %}
+
+{# #274 follow-up #2 — Update-in-progress banner. Surfaces when an
+   update.sh run is mid-flight (state=running) and currently in Phase 3
+   (env.sh merge — holds the shared sidecar flock) or Phase 4 (pip
+   install — the long-running phase where users are most likely to see
+   the banner because they're waiting for /api/status anyway). Save
+   button stays enabled; the banner is advisory only — config.atomic_update
+   already serialises against update.sh on the same flock, so a Save
+   during this window blocks for up to 30s and then lands. Without this
+   banner, the spinner just feels broken.
+
+   Rendered hidden by default; settings.js polls /api/status and toggles
+   [hidden] based on update_state + update_phase_index. Always rendered
+   so the JS doesn't have to manage element creation (same #290 pattern
+   as the status-page stale-banner).
+
+   role=status + aria-live=polite — informational, not interrupting. #}
+<div class="settings-banner settings-banner--info"
+     role="status" aria-live="polite"
+     data-settings-update-banner hidden>
+  <span data-settings-update-banner-text>
+    Auto-update in progress — Save may briefly block while env-vars sync.
+  </span>
+</div>
+
+{# Pre-compute a few state flags so Jinja conditionals below stay readable.
+   #337 A1: WEATHER_LOCATION_MODE defaults to 'auto' for pre-S2 envs and
+   for envs where the IP-geo resolver hasn't run yet — see config.py
+   _validate_weather_location_mode for the read-side default semantics.
+   #337 A17: Advanced (`<details>`) starts EXPANDED when raw coords are in
+   use, detected as MODE=specific + lat/lon populated + LOCATION_NAME
+   empty (geocoded saves write a name; raw-coord saves don't). Else
+   collapsed by default.
+   Env-key naming note (#337 A9 / A4): keys keep the WEATHER_* prefix for
+   backward compat with literary_clock.py + weather_providers/, even though
+   the data is conceptually location data that drives weather + timezone +
+   units. Renaming is out of scope for #337 — too many consumers. #}
+{%- set current_mode = (s.get('WEATHER_LOCATION_MODE') or 'auto') -%}
+{%- set has_coords = (s.get('WEATHER_LATITUDE') and s.get('WEATHER_LONGITUDE')) -%}
+{%- set advanced_in_use = current_mode == 'specific' and has_coords and not s.get('WEATHER_LOCATION_NAME') -%}
+
+{# ─── Location (#337 A9/A10 — promoted to first; was buried at #4) ────── #}
+<section class="settings-section" role="region" aria-labelledby="settings-location-h">
+  <h2 id="settings-location-h" class="settings-section__title">Location</h2>
+  <p class="settings-section__hint">Used for weather and timezone.</p>
+
+  <form class="settings-form"
+        method="POST"
+        action="{{ url_for('settings.settings_post') }}"
+        data-section="location"
+       >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="section" value="location">
+
+    {# #337 A12: segmented horizontal pill (Automatic | Specific). The pill is
+       a styled wrapper around two `<input type=radio>` so it degrades to a
+       working radio group with no JS (server-side validation handles
+       MODE=specific + empty Place per A14). JS clicks the actual radio when
+       a pill label is tapped — for clarity the radios are visually hidden but
+       remain in the tab order. #}
+    <fieldset class="settings-row settings-row--pill">
+      <legend class="settings-visually-hidden">Location mode</legend>
+      <div class="settings-segmented" role="radiogroup" aria-label="Location mode" data-mode-pill>
+        <label class="settings-segmented__opt{% if current_mode == 'auto' %} is-selected{% endif %}"
+               data-mode-opt="auto">
+          <input type="radio"
+                 class="settings-segmented__input"
+                 name="WEATHER_LOCATION_MODE"
+                 value="auto"
+                 {% if current_mode == 'auto' %}checked{% endif %}>
+          <span>Automatic</span>
+        </label>
+        <label class="settings-segmented__opt{% if current_mode == 'specific' %} is-selected{% endif %}"
+               data-mode-opt="specific">
+          <input type="radio"
+                 class="settings-segmented__input"
+                 name="WEATHER_LOCATION_MODE"
+                 value="specific"
+                 {% if current_mode == 'specific' %}checked{% endif %}>
+          <span>Specific</span>
+        </label>
+      </div>
+    </fieldset>
+
+    {# Auto-mode read-only display. JS toggles between this and the Specific
+       reveal below based on the active pill. Default render reflects the
+       persisted MODE so no-JS users see the right layout for their saved
+       state. #}
+    <div class="settings-currently-row" data-mode-panel="auto"{% if current_mode != 'auto' %} hidden{% endif %}>
+      <span class="settings-currently-row__label">Currently:</span>
+      <span class="settings-currently-row__value">
+        {%- if s.get('WEATHER_LOCATION_NAME') -%}
+          {{ s.get('WEATHER_LOCATION_NAME') }}
+        {%- elif has_coords -%}
+          {{ s.get('WEATHER_LATITUDE') }}, {{ s.get('WEATHER_LONGITUDE') }}
+        {%- else -%}
+          (not detected yet)
+        {%- endif -%}
+      </span>
+    </div>
+
+    {# Specific reveal: Place input + worldwide checkbox + Advanced details.
+       Uses a `<fieldset disabled>` (not `<div hidden>`) when in Auto mode so
+       the inner form controls are EXCLUDED from native form submission. With
+       a plain `hidden` div, the empty lat/lon inputs still POST as
+       WEATHER_LATITUDE="" / WEATHER_LONGITUDE="" — triggering the
+       _save_and_apply all-or-none guard to 422 the Auto save with an
+       existing Specific city (caught by Codex /review P0 2026-06-02).
+       JS keeps the disabled attribute in sync with the active pill. #}
+    <fieldset class="settings-mode-panel" data-mode-panel="specific"
+              {% if current_mode != 'specific' %}disabled hidden{% endif %}>
+      <div class="settings-row settings-row--input">
+        <label class="settings-row__label" for="location_query">
+          Place
+          <span class="settings-row__sublabel">
+            Currently: <span data-current-location>{% if s.get('WEATHER_LOCATION_NAME') %}{{ s.get('WEATHER_LOCATION_NAME') }}{% elif has_coords %}{{ s.get('WEATHER_LATITUDE') }}, {{ s.get('WEATHER_LONGITUDE') }}{% else %}—{% endif %}</span>
+          </span>
+        </label>
+        <input class="settings-input"
+               type="text"
+               id="location_query"
+               name="location_query"
+               autocomplete="postal-code"
+               inputmode="search"
+               placeholder="Type a city or zip"
+               value=""
+               aria-describedby="location_query_help">
+        <p id="location_query_help" class="settings-row__help">
+          Tap Save to look it up. Tabbing out previews the resolved name.
+        </p>
+        {% if field_errors.get('location_query') %}
+          <p class="settings-row__error" role="alert">{{ field_errors['location_query'] }}</p>
+        {% endif %}
+      </div>
+
+      {# #337 A5 worldwide checkbox. NOT persisted — form-state only.
+         The checkbox is a per-query disambiguator: when checked, the
+         server passes `country_code=None` to Nominatim, letting a US-WiFi
+         user resolve UK postcodes like SW1A 1AA. Composite preview cache
+         key in settings.js (q + "|" + worldwide) re-fires the blur
+         preview when the checkbox flips. #}
+      <div class="settings-row settings-checkbox-row">
+        <label class="settings-checkbox-row__head">
+          <input type="checkbox"
+                 id="location_worldwide"
+                 name="worldwide"
+                 value="on"
+                >
+          <span class="settings-checkbox-row__head-label">Search worldwide (ignore autodetected location)</span>
+        </label>
+        <p class="settings-checkbox-row__help">
+          Use this if your network's country differs from the place you want.
+        </p>
+      </div>
+
+      {# #337 A17: <details> for the power-user raw-coords escape hatch.
+         Open by default when Advanced is in use (raw coords without a
+         geocoded name). Help text under the summary tells the user that
+         these override the Place input when saved. #}
+      <details class="settings-details" data-advanced{% if advanced_in_use %} open{% endif %}>
+        <summary class="settings-details__summary">Advanced — set raw coordinates</summary>
+        <p class="settings-details__help">
+          These coordinates override the place you type above when saved.
+        </p>
+        <div class="settings-row settings-row--input settings-details__row">
+          <label class="settings-row__label" for="weather_latitude">Latitude</label>
+          <input class="settings-input"
+                 type="text"
+                 inputmode="decimal"
+                 id="weather_latitude"
+                 name="WEATHER_LATITUDE"
+                 value="{% if current_mode == 'specific' %}{{ s.get('WEATHER_LATITUDE', '') }}{% endif %}"
+                 aria-describedby="weather_latitude_help"
+                 data-advanced-lat>
+          <p id="weather_latitude_help" class="settings-row__help">−90 to 90.</p>
+          {% if field_errors.get('WEATHER_LATITUDE') %}
+            <p class="settings-row__error" role="alert">{{ field_errors['WEATHER_LATITUDE'] }}</p>
+          {% endif %}
+        </div>
+        <div class="settings-row settings-row--input settings-details__row">
+          <label class="settings-row__label" for="weather_longitude">Longitude</label>
+          <input class="settings-input"
+                 type="text"
+                 inputmode="decimal"
+                 id="weather_longitude"
+                 name="WEATHER_LONGITUDE"
+                 value="{% if current_mode == 'specific' %}{{ s.get('WEATHER_LONGITUDE', '') }}{% endif %}"
+                 aria-describedby="weather_longitude_help"
+                 data-advanced-lon>
+          <p id="weather_longitude_help" class="settings-row__help">−180 to 180.</p>
+          {% if field_errors.get('WEATHER_LONGITUDE') %}
+            <p class="settings-row__error" role="alert">{{ field_errors['WEATHER_LONGITUDE'] }}</p>
+          {% endif %}
+        </div>
+      </details>
+    </fieldset>
+
+    <div class="settings-form__actions">
+      {# #337 A10 + A14: Save disabled when MODE=specific AND Place is empty.
+         JS keeps this in sync as the user types / switches pills; the
+         server backstops with a "Type a place or pick Automatic." field
+         error if a no-JS client submits the empty Specific state. #}
+      <button type="submit"
+              class="settings-button settings-button--primary"
+              data-location-save
+              {% if current_mode == 'specific' and not s.get('WEATHER_LOCATION_NAME') and not has_coords %}disabled aria-disabled="true" title="Type a place or pick Automatic"{% endif %}>
+        Save
+      </button>
+    </div>
+  </form>
+
+  {# #337 A18: browser-timezone fallback row. Renders only when location is
+     unresolvable (no coords). The detected tz from `Intl.DateTimeFormat()`
+     is injected into the button label by JS so the user confirms the value
+     before tapping. Tapping POSTs to /api/handoff/set-timezone (#388
+     existing endpoint). Hidden by default; JS shows after detecting the
+     condition + Intl availability. #}
+  {% if not has_coords %}
+  <p class="settings-tz-fallback" data-tz-fallback hidden>
+    Couldn't detect location.
+    <button type="button" class="settings-button settings-button--tertiary" data-browser-tz-btn>
+      Use my browser's timezone (<span data-browser-tz-label>—</span>)
+    </button>
+    — clock will work, weather stays off.
+  </p>
+  {% endif %}
+</section>
+
+{# ─── Weather (#337 A9 — toggle only; lat/lon moved to Location) ──────── #}
+<section class="settings-section" role="region" aria-labelledby="settings-weather-h">
+  <h2 id="settings-weather-h" class="settings-section__title">Weather</h2>
+
+  <form class="settings-form"
+        method="POST"
+        action="{{ url_for('settings.settings_post') }}"
+        data-section="weather">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="section" value="weather">
+
+    <div class="settings-row settings-row--toggle">
+      <label class="settings-row__label" for="weather_enabled">Show weather on display</label>
+      <input class="settings-toggle"
+             type="checkbox"
+             id="weather_enabled"
+             name="WEATHER_ENABLED"
+             role="switch"
+             aria-checked="{{ 'true' if s.get('WEATHER_ENABLED', 'true') == 'true' else 'false' }}"
+             {% if s.get('WEATHER_ENABLED', 'true') == 'true' %}checked{% endif %}>
+    </div>
+
+    {# No Save button — the toggle auto-saves via the #346 settings.js pattern
+       (serialized saves + 504 lock-timeout handling + revert-on-failure, #457).
+       The no-JS fallback Save still works via this hidden form-actions row that
+       JS removes on load. #}
+    <div class="settings-form__actions" data-no-js-only>
+      <button type="submit" class="settings-button settings-button--primary">Save</button>
+    </div>
+  </form>
+</section>
+
+{# ─── Temperature (#337 A11 — renamed from Units; A13 — auto-save pill) ── #}
+<section class="settings-section" role="region" aria-labelledby="settings-temperature-h">
+  <h2 id="settings-temperature-h" class="settings-section__title">Temperature</h2>
+
+  <form class="settings-form"
+        method="POST"
+        action="{{ url_for('settings.settings_post') }}"
+        data-section="units"
+       >
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="section" value="units">
+
+    {# #337 A13: segmented pill, auto-saves on click via JS. No-JS fallback
+       is the radios + Save below. Per A11 we drop the "/ mph" + "/ km/h"
+       wind labels because literary_clock.py only renders temperature; the
+       wind units never surface in any UI. #}
+    <fieldset class="settings-row settings-row--pill">
+      <legend class="settings-visually-hidden">Temperature units</legend>
+      <div class="settings-segmented" role="radiogroup" aria-label="Temperature units" data-temp-pill>
+        {%- set current_units = s.get('WEATHER_UNITS', 'imperial') -%}
+        <label class="settings-segmented__opt{% if current_units == 'imperial' %} is-selected{% endif %}"
+               data-units-opt="imperial">
+          <input type="radio"
+                 class="settings-segmented__input"
+                 name="WEATHER_UNITS"
+                 value="imperial"
+                 {% if current_units == 'imperial' %}checked{% endif %}>
+          <span>Fahrenheit</span>
+        </label>
+        <label class="settings-segmented__opt{% if current_units == 'metric' %} is-selected{% endif %}"
+               data-units-opt="metric">
+          <input type="radio"
+                 class="settings-segmented__input"
+                 name="WEATHER_UNITS"
+                 value="metric"
+                 {% if current_units == 'metric' %}checked{% endif %}>
+          <span>Celsius</span>
+        </label>
+      </div>
+    </fieldset>
+
+    {% if field_errors.get('WEATHER_UNITS') %}
+      <p class="settings-row__error" role="alert">{{ field_errors['WEATHER_UNITS'] }}</p>
+    {% endif %}
+
+    {# No-JS Save fallback. JS removes this on load so JS users see no button. #}
+    <div class="settings-form__actions" data-no-js-only>
+      <button type="submit" class="settings-button settings-button--primary">Save</button>
+    </div>
+  </form>
+</section>
+
+{# ─── Advanced ─────────────────────────────────────────────────────────── #}
+<section class="settings-section" role="region" aria-labelledby="settings-advanced-h">
+  <h2 id="settings-advanced-h" class="settings-section__title">Advanced</h2>
+
+  <form class="settings-form"
+        method="POST"
+        action="{{ url_for('settings.settings_post') }}"
+        data-section="advanced">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="section" value="advanced">
+
+    {# /review F-CASE-DRIFT (PR3c Codex P2): _validate_bool accepts any
+       case (TRUE/True/true) but the PWA writer normalises to lowercase
+       via _normalize_bool. A user who manually edits env.sh to set
+       `ALLOW_NSFW_QUOTES=TRUE` would land an uppercase value that
+       reads as ENABLED at runtime (config.atomic_update preserves
+       case, literary_clock.py does .lower()) but renders the checkbox
+       UNCHECKED here under an exact-string comparison — a subsequent
+       Advanced save would then silently flip the env back to false.
+       Normalise via `.lower()` so the manual-edit + PWA-save paths
+       agree. #}
+    {%- set allow_nsfw_on = (s.get('ALLOW_NSFW_QUOTES', 'false') or '').strip().lower() == 'true' -%}
+    <div class="settings-row settings-row--toggle">
+      <label class="settings-row__label" for="allow_nsfw_quotes">
+        Allow NSFW quotes
+        <span class="settings-row__sublabel">Profanity, violence, adult themes.</span>
+      </label>
+      <input class="settings-toggle"
+             type="checkbox"
+             id="allow_nsfw_quotes"
+             name="ALLOW_NSFW_QUOTES"
+             role="switch"
+             aria-checked="{{ 'true' if allow_nsfw_on else 'false' }}"
+             {% if allow_nsfw_on %}checked{% endif %}>
+    </div>
+
+    {# #416 PR3c (F31) — opt-in for the diagnostics ribbon's full-label
+       state. OV-D-C protects the owner persona by defaulting to a
+       dots-three icon; the helper persona who actually uses the drawer
+       flips this on so the affordance is discoverable for them. CSS in
+       drawer.css responds to body[data-diag-ribbon-expanded] (set by
+       base.html.j2 based on this env value). #}
+    {# Same case-normalisation as the ALLOW_NSFW_QUOTES row above —
+       see F-CASE-DRIFT comment for the rationale. #}
+    {%- set diag_shortcut_on = (s.get('SHOW_DIAGNOSTICS_SHORTCUT', 'false') or '').strip().lower() == 'true' -%}
+    <div class="settings-row settings-row--toggle">
+      <label class="settings-row__label" for="show_diagnostics_shortcut">
+        Show diagnostics shortcut
+        <span class="settings-row__sublabel">
+          Expand the bottom-right pill to a 'Live diagnostics' label.
+          Off shows a discreet icon — useful if you mainly read the clock.
+        </span>
+      </label>
+      <input class="settings-toggle"
+             type="checkbox"
+             id="show_diagnostics_shortcut"
+             name="SHOW_DIAGNOSTICS_SHORTCUT"
+             role="switch"
+             aria-checked="{{ 'true' if diag_shortcut_on else 'false' }}"
+             {% if diag_shortcut_on %}checked{% endif %}>
+    </div>
+
+    {# No Save button for JS users — these are discrete toggles, so per the
+       DESIGN.md "Save-button rule" (#337 A13) they auto-save on change via the
+       settings.js autoSavePatch pattern (serialized saves + revert-on-failure +
+       504 handling, #457), exactly like the Weather toggle + Temperature pill. The
+       no-JS fallback Save still works via this row, which CSS hides under
+       html.has-js (settings.css [data-no-js-only]). Each toggle saves ONLY its
+       own field as a JSON PATCH, so the sibling toggle is never touched. #}
+    <div class="settings-form__actions" data-no-js-only>
+      <button type="submit" class="settings-button settings-button--primary">Save</button>
+    </div>
+  </form>
+</section>
+
+{# Footer cross-link to System → Reset WiFi (DESIGN.md IA).
+   M7 OV-6 (codex /design-review): the link MUST NOT use .accent-link at
+   body-text size — DESIGN.md "Color contrast" (line 315) names accent-on-
+   inline-body-text as the trap (--accent on --bg is 3.2:1, fails AA Normal).
+   The default <a> rule in tokens.css gives us --ink + underline, which
+   meets WCAG AA at 14-16px body. #}
+<p class="settings-footer">
+  Need to change WiFi? <a href="/system">System → Reset WiFi</a>
+</p>
+{% endblock %}

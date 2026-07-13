@@ -1,0 +1,40 @@
+{# Post-WiFi handoff banner (EPIC #383 PR2, #388). Top-sheet over the Status
+   tab during the handoff window. Two states keyed on handoff.state:
+
+   - success: IP-geo detected a location → "Setup complete" + Done button.
+   - failure: no location/tz → "Almost there." + browser-tz confirm button
+     (the tz label + body copy are filled in by handoff.js from the browser's
+     Intl.DateTimeFormat, since the server doesn't know the phone's tz).
+
+   The banner only renders when handoff.active (context processor). <body>
+   carries data-handoff-active (set in base.html.j2) so aths-hint.js suppresses
+   itself and the Status hero dims — both driven server-side so the basic
+   display works even before handoff.js runs (progressive enhancement). #}
+{% if handoff.active %}
+<section class="handoff handoff--{{ handoff.state }}" id="handoff-banner"
+         data-handoff-state="{{ handoff.state }}"
+         role="region" aria-labelledby="handoff-heading"
+         {% if handoff.state == 'failure' %}aria-live="polite"{% endif %}>
+  <div class="handoff__sheet">
+    {% if handoff.state == 'success' %}
+      <h2 class="handoff__title" id="handoff-heading">Setup complete</h2>
+      {% if handoff.location_name %}
+      <p class="handoff__subhead">Your clock detected: {{ handoff.location_name }}</p>
+      {% endif %}
+      <p class="handoff__body">Quotes start in 2&nbsp;minutes. Tap Done to start sooner, or fine-tune in <a class="handoff__inline-link" href="/settings">Settings</a>.</p>
+      <p class="handoff__note">The QR in the corner of every quote takes you back here anytime.</p>
+      <button type="button" class="handoff__btn" id="handoff-done">Done — Start the Clock</button>
+    {% else %}
+      <h2 class="handoff__title handoff__title--alt" id="handoff-heading">Almost there<span class="handoff__period">.</span></h2>
+      <p class="handoff__body" id="handoff-fail-body">We couldn’t detect your timezone. Confirm it so quotes show at the right time.</p>
+      {# data-tz-label-template: handoff.js substitutes {tz} with the browser's
+         detected timezone. If JS or Intl is unavailable, the fallback label
+         and the Settings link below keep the flow usable. #}
+      <button type="button" class="handoff__btn" id="handoff-set-tz"
+              data-tz-label-template="Use {tz}"
+              data-fallback-label="Set my timezone">Set my timezone</button>
+      <a class="handoff__link" href="/settings#weather">Pick a different timezone</a>
+    {% endif %}
+  </div>
+</section>
+{% endif %}

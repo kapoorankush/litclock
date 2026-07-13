@@ -1,0 +1,23 @@
+[Unit]
+Description=LitClock Boot Splash Screen
+Documentation=https://github.com/kapoorankush/litclock
+After=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/pi/litclock/scripts/boot-splash.sh
+# Trigger the current-quote render via the timer-managed unit so systemd's job
+# queue serializes us against timer fires (no SPI/GPIO contention — issue #269).
+# `+` runs as root despite User=pi (no sudo). `--no-block` avoids the
+# systemctl-from-inside-a-running-service deadlock. Guarded on .setup-complete
+# so the first-boot path (litclock-firstboot.service) is unaffected.
+ExecStartPost=+/bin/sh -c '[ -f /etc/litclock/.setup-complete ] && /usr/bin/systemctl start --no-block litclock.service || true'
+TimeoutStartSec=45
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+Environment=LITCLOCK_DIR=/home/pi/litclock
+User=pi
+
+[Install]
+WantedBy=multi-user.target

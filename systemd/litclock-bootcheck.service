@@ -1,0 +1,27 @@
+[Unit]
+Description=LitClock Last-Known-Good auto-revert (bootcheck)
+Documentation=https://github.com/kapoorankush/litclock/issues/209
+# Consumer half of the LKG mechanism (writer = litclock-lkg.service, #209).
+# Driven by litclock-bootcheck.timer. Detects a persistent post-update
+# brick — the clock never paints a frame after boot — and self-heals by
+# routing recovery back through update.sh's complete installer against the
+# recorded last-known-good SHA. Runs as pi; the only privileged actions are
+# the scoped `systemctl reboot` and `systemctl start --no-block
+# litclock-update.service` grants in sudoers/020_litclock-control.
+#
+# Gated on .handoff-complete: before first-boot setup finishes there is no
+# expectation of a heartbeat, so we must never count those boots as failed.
+ConditionPathExists=/etc/litclock/.handoff-complete
+
+[Service]
+Type=oneshot
+ExecStart=/home/pi/litclock/scripts/litclock-bootcheck.sh
+WorkingDirectory=/home/pi/litclock
+User=pi
+# Best-effort give-up splash: paint a "recovery failed, please reflash"
+# status image when the LKG itself is bad / hardware is dead. Shares the
+# possibly-broken venv+display stack so it may not render — the persistent
+# bootcheck-gave-up marker is the reliable signal.
+Environment=LITCLOCK_BOOTCHECK_SPLASH_CMD=/home/pi/litclock/scripts/litclock-bootcheck-giveup-splash.sh
+StandardOutput=journal
+StandardError=journal

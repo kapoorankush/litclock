@@ -1,0 +1,638 @@
+/* LitClock Control PWA — design tokens.
+ *
+ * Locked from DESIGN.md (v1, post-/plan-design-review). Every type role uses
+ * clamp() so iOS Larger Text and Android system font scaling propagate to the
+ * PWA — the primary persona is older non-tech gift recipients who actually
+ * use those settings (D4).
+ *
+ * M6 lands self-hosted variable woff2 fonts (Fraunces, Instrument Sans, Geist
+ * Mono) below; the system fallback stack remains in the var() values so the
+ * chrome reads correctly during font load (font-display: swap, FOUT not FOIT).
+ */
+
+/* Self-hosted variable woff2 (M6 D5 / F1). Fontsource pinned via
+ * tools/control-pwa/fetch_fonts.py (SHA256 verified). SIL OFL license entries
+ * documented in NOTICE.md. font-display: swap means the system fallback paints
+ * immediately and the bespoke face fades in once it arrives — ≤100ms FOUT on
+ * a slow first paint, far better than FOIT on the literary hero.
+ *
+ * Fraunces ships normal + italic in separate woff2 files because Fontsource's
+ * package layout splits the italic axis out (verified at implementation time
+ * per F4); the @font-face declarations below tell the browser to pick the
+ * right file when font-style: italic is requested. Instrument Sans + Geist
+ * Mono ship normal-only — italic is rare enough in body sans / monospace that
+ * synthetic italic is acceptable when needed. */
+@font-face {
+  font-family: "Fraunces";
+  src: url("/static/fonts/fraunces-wght-normal.woff2") format("woff2-variations"),
+       url("/static/fonts/fraunces-wght-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Fraunces";
+  src: url("/static/fonts/fraunces-wght-italic.woff2") format("woff2-variations"),
+       url("/static/fonts/fraunces-wght-italic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Instrument Sans";
+  src: url("/static/fonts/instrument-sans-wght-normal.woff2") format("woff2-variations"),
+       url("/static/fonts/instrument-sans-wght-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/static/fonts/geist-mono-wght-normal.woff2") format("woff2-variations"),
+       url("/static/fonts/geist-mono-wght-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  /* Type families — see DESIGN.md "Typography" */
+  --font-serif: "Fraunces", "Iowan Old Style", "Apple Garamond", Georgia, serif;
+  --font-sans: "Instrument Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Type scale — clamp(min · target · max) per DESIGN.md "Type scale". The
+   * `target` is the rem-based value that scales with the user's root-font
+   * preference; `min` and `max` cap legibility at the extremes. */
+  /* M6 D6 (#258 fix): ceiling raised 14 → 18px so iOS Dynamic Type can grow
+   * caption-tagged microcopy past the prior clip point. At default 16px root
+   * the clamp middle is 12px (0.75rem), unchanged from before; visible growth
+   * starts at iOS Larger 1+. .tabbar a's tactical local override (M5) is
+   * dropped now that the global ceiling agrees. */
+  --fs-caption: clamp(11px, 0.75rem, 18px);
+  --fs-small:   clamp(13px, 0.875rem, 17px);
+  --fs-body:    clamp(15px, 1rem, 20px);
+  --fs-lede:    clamp(18px, 1.25rem, 25px);
+  --fs-h3:      clamp(22px, 1.5625rem, 31px);
+  --fs-h2:      clamp(26px, 1.9375rem, 38px);
+  --fs-h1:      clamp(32px, 2.4375rem, 48px);
+  --fs-display: clamp(40px, 3.0625rem, 60px);
+
+  /* Color — light mode (default) */
+  --bg: #FBF6EC;
+  --surface: #F4ECDC;
+  --surface-raised: #EDE2CE;
+  --ink: #1A1410;
+  --ink-muted: #6B5C4A;
+  --hairline: rgba(26, 20, 16, 0.08);
+  --accent: #B85C20;
+  --accent-muted: #8C4318;
+  --success: #4F6E3A;
+  --warning: #C68A1F;
+  --error: #9A2E22;
+
+  /* Spacing — 4px base */
+  --sp-2xs: 2px;
+  --sp-xs: 4px;
+  --sp-sm: 8px;
+  --sp-md: 12px;
+  --sp-lg: 16px;
+  --sp-xl: 24px;
+  --sp-2xl: 32px;
+  --sp-3xl: 48px;
+  --sp-4xl: 64px;
+  --sp-5xl: 96px;
+
+  /* Radius — hierarchical, restrained on small surfaces */
+  --r-sm: 4px;
+  --r-md: 10px;
+  --r-lg: 16px;
+  --r-xl: 24px;
+  --r-full: 9999px;
+
+  /* Motion — durations + easings */
+  --t-micro: 100ms;
+  --t-short: 200ms;
+  --t-medium: 320ms;
+  --t-long: 600ms;
+  --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* RTL flip for directional glyphs (#416 PR3c D33). Convention
+     placeholder: arrow icons that point at the reading-direction end
+     (drawer-link '→', follow-tail '↓N new' pill, any caret-right SVG
+     that gets added later) should compose
+     `transform: scaleX(var(--rtl-flip))` so the [dir="rtl"] override
+     below flips them automatically. Default 1 (LTR).
+
+     Today no caller composes the transform yet — the directional
+     glyphs ship as Unicode text inside templates, not as SVGs, so
+     wiring per-glyph would mean span-wrapping each. That work is
+     deferred until LitClock ships an RTL locale (no current corpus
+     support). The variable + override land now so the convention is
+     discoverable when the time comes. /review Claude adversarial. */
+  --rtl-flip: 1;
+}
+
+/* RTL prep: flip the inline axis for directional glyphs. The convention
+   is opt-in (callers add `transform: scaleX(var(--rtl-flip))` where it
+   matters); the override lands once we ship an RTL locale. */
+[dir="rtl"] {
+  --rtl-flip: -1;
+}
+
+/* Dark mode — designed deliberately, not an inversion. Saturation reduced
+ * 10–20% across the palette. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14110D;
+    --surface: #1F1A14;
+    --surface-raised: #2A2319;
+    --ink: #F0E6D2;
+    --ink-muted: #9A8B73;
+    --hairline: rgba(240, 230, 210, 0.10);
+    --accent: #D88150;
+    --accent-muted: #B85C20;
+    --success: #8FAB6B;
+    --warning: #DEB35A;
+    --error: #C26E5E;
+  }
+}
+
+/* Reduced motion — replace transitions with snap-cuts (DESIGN.md a11y) */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* Base shell — minimum styling so the PWA is usable while M2+ fill in
+ * components. Hero card / form rows / phase reading-list / etc. land in
+ * later milestones with their own scoped stylesheets. */
+
+* { box-sizing: border-box; }
+
+html {
+  /* iOS Dynamic Type opt-in. Hardware-found 2026-04-27 (PR #252 testing):
+   * iOS Safari in standalone PWA mode hardcodes root font-size to 16px
+   * regardless of the user's Larger Text preference, UNLESS the root
+   * element opts in via Apple's `-apple-system-body` font shorthand. With
+   * this declaration in place, iOS sets html's font-size to the user-
+   * scaled value at launch; `1rem` in body's clamp() then resolves
+   * correctly. Other browsers (Chrome on Android, Firefox) ignore the
+   * `-apple-system-body` token and fall back to their native rem behavior
+   * which already honors browser font-size preferences.
+   *
+   * `font: -apple-system-body` is a shorthand — it sets font-family,
+   * font-size, font-weight, line-height. We override the family on body
+   * so the literary Instrument Sans stack still wins over the system font.
+   *
+   * Belt-and-suspenders: text-size-adjust governs auto-text-inflation on
+   * orientation change. 100% lets iOS scale the layout as designed. */
+  font: -apple-system-body;
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  /* font-family override — html got -apple-system-body as part of the
+   * Dynamic Type opt-in, which also sets font-family to the iOS system
+   * font. Body restores the project's literary Instrument Sans stack. */
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+body {
+  /* Apply the fluid type scale on body — 1rem now correctly resolves
+   * against the user-preference html size, so clamp(15px, 1rem, 20px)
+   * scales with iOS Larger Text and Android font scale. */
+  font-size: var(--fs-body);
+  /* Reserve space for the bottom-anchored tab bar. M7 OV-5 added 22px
+   * Phosphor icons stacked above the labels, so the tab content height
+   * grows with the icon. At AX5 (--fs-caption clamp ceiling = 18px,
+   * line-height 1.5 → 27px) the tabbar internal height is roughly
+   * 8 (top pad) + 4+4+22+2+27 (a content) + 8 (bottom pad) ≈ 75px,
+   * exceeding the original 72px reservation by a few pixels. Bump to
+   * 84px so AX5 users don't see the bottom of page content slip under
+   * the fixed nav. safe-area-inset-bottom is added on top for iPhone
+   * home-indicator devices. */
+  padding-bottom: calc(84px + env(safe-area-inset-bottom, 0));
+}
+
+main {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: var(--sp-lg);
+}
+
+@media (min-width: 768px)  { main { max-width: 640px; } }
+@media (min-width: 1024px) { main { max-width: 720px; } }
+
+h1, h2, h3 {
+  font-family: var(--font-serif);
+  margin: 0 0 var(--sp-md);
+  font-weight: 400;
+}
+h1 { font-size: var(--fs-h1); }
+h2 { font-size: var(--fs-h2); }
+h3 { font-size: var(--fs-h3); }
+
+p { margin: 0 0 var(--sp-md); }
+
+/* Body-link defaults: --ink with underline, never accent.
+ * DESIGN.md "Color contrast" line 315 names accent-on-inline-body-text the
+ * trap: --accent on --bg is 3.2:1 which fails AA Normal. Accent is reserved
+ * for buttons (where text becomes --bg, contrast pair flips), Fraunces text
+ * at ≥18pt, or icon fills paired with adjacent --ink labels. The .accent-link
+ * class is the explicit opt-in for places that meet those guardrails — e.g.,
+ * the tab bar's active-tab indicator and primary CTAs in M2+. */
+a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+a:hover { color: var(--ink-muted); }
+a.accent-link { color: var(--accent); text-decoration: none; }
+a.accent-link:hover { color: var(--accent-muted); }
+
+/* Focus indicator — :focus-visible only per DESIGN.md a11y. */
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Bottom-anchored tab bar — 4 tabs per DESIGN.md "Layout". */
+.tabbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-around;
+  background: var(--bg);
+  border-top: 1px solid var(--hairline);
+  padding: var(--sp-sm) 0;
+  padding-bottom: calc(var(--sp-sm) + env(safe-area-inset-bottom, 0));
+  z-index: 10;
+}
+
+.tabbar a {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: var(--sp-xs) var(--sp-md);
+  color: var(--ink-muted);
+  /* Use the global --fs-caption token. M6 D6 (#258) raised the global
+   * ceiling 14 → 18px, so this row's tactical local override is no longer
+   * needed — the token + the tabbar share the same clamp now. */
+  font-size: var(--fs-caption);
+  text-decoration: none;
+  /* Tap-state color change. DESIGN.md motion table maps button/toggle press
+   * to --t-micro (100ms); --t-short (200ms) is reserved for toasts and
+   * inline save indicators. */
+  transition: color var(--t-micro) ease-out;
+}
+
+.tabbar a[aria-current="page"] {
+  color: var(--accent);
+}
+
+/* M7 OV-5 — Phosphor icon glyph above the label. Sized small enough that
+ * icon + label still fits within the 44px tab min-height; uses currentColor
+ * so the active tab's --accent flows through automatically. */
+.tabbar__icon {
+  width: 22px;
+  height: 22px;
+  margin-bottom: 2px;
+  flex-shrink: 0;
+}
+
+.tabbar__label {
+  /* Inherit font-size from parent .tabbar a. */
+  display: block;
+}
+
+/* ============================================================
+ * M2 — Status tab (hero card + 5 rows + stale-quote banner)
+ * Per DESIGN.md "Component composition specs" + locked decision D2.
+ * No new tokens — every value derives from the existing palette /
+ * scale / radius / motion vocabulary above.
+ * ============================================================ */
+
+/* Visually-hidden utility — used for the screen-reader-only h2 "Now"
+ * heading that anchors the hero region's `aria-labelledby`. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Stale-quote banner (DESIGN.md "Stale-quote banner", D2). Shown above the
+ * hero when the e-ink clock service hasn't published a fresh quote in
+ * ≥90 seconds. Ochre warning border-top + surface-raised bg, role="status"
+ * + aria-live="polite" so screen readers announce the staleness when it
+ * appears mid-session. */
+/* #290 /review fix — [hidden] specificity hazard. Author `.foo { display: flex }`
+ * ties on (0,1,0) with UA `[hidden] { display: none }` but wins on cascade
+ * origin (author beats user-agent). So `<div class="stale-banner" hidden>` was
+ * rendering visibly despite the attribute. Make `[hidden]` win unconditionally
+ * via !important so any future class with `display: flex/grid/inline-…` plays
+ * nicely with the [hidden]-toggle pattern status.js relies on. */
+[hidden] {
+  display: none !important;
+}
+
+.stale-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  margin-bottom: var(--sp-lg);
+  padding: var(--sp-md) var(--sp-lg);
+  background: var(--surface-raised);
+  border-top: 1px solid var(--warning);
+  border-radius: var(--r-md);
+  color: var(--ink-muted);
+  font-size: var(--fs-small);
+}
+
+.stale-banner-icon {
+  /* Phosphor `clock-countdown` inline SVG (DESIGN.md line 205). Sized
+   * and tinted via CSS so the icon scales with Dynamic Type and matches
+   * --warning ochre alongside the border-top. */
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  color: var(--warning);
+}
+
+.stale-banner-text {
+  line-height: 1.4;
+}
+
+/* Hero card (DESIGN.md "Hero card"). --surface bg, r-xl 24px,
+ * paper-grain SVG @ ~4% opacity light-mode-only via background-image.
+ * The grain SVG already encodes its own alpha (0..0.04 via colorMatrix
+ * in src/control_server/static/paper-grain.svg) so no opacity wrapper
+ * is needed here. */
+.hero {
+  position: relative;
+  margin-bottom: var(--sp-xl);
+  padding: var(--sp-xl);
+  background: var(--surface);
+  border-radius: var(--r-xl);
+  overflow: hidden;
+}
+
+@media (prefers-color-scheme: light) {
+  .hero {
+    background-image: url("/static/paper-grain.svg");
+    background-repeat: repeat;
+    background-size: 200px 200px;
+  }
+}
+
+@media (min-width: 768px) {
+  .hero { padding: var(--sp-2xl); }
+}
+
+.hero-quote {
+  margin: 0 0 var(--sp-lg);
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: clamp(22px, 1.5625rem, 31px);
+  line-height: 1.4;
+  color: var(--ink);
+  /* No line-clamp: corpus has 8-12 line quotes that the locked DESIGN.md
+   * 6-line cap was clipping mid-sentence on real phones (hardware-QA
+   * 2026-04-28). The hero card grows to fit the quote; status rows below
+   * flow naturally in the column. Layout-predictable height was the spec
+   * goal but truncating literature breaks the brand promise more than a
+   * variable-height hero does. Issue filed to update DESIGN.md spec. */
+  /* Variable Fraunces optical-size axis tuned for display sizes. */
+  font-variation-settings: "opsz" 144;
+}
+
+.hero-attribution {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: clamp(13px, 0.875rem, 17px);
+  line-height: 1.5;
+  color: var(--ink-muted);
+}
+
+.hero-attribution em {
+  font-style: italic;
+}
+
+.hero-time {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.hero-empty {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: var(--fs-lede);
+  color: var(--ink-muted);
+  text-align: center;
+}
+
+/* #309 — graceful disconnect state. Treatment per DESIGN.md "Empty /
+ * loading / error states" (lines 253-258): --error accent line at top
+ * of card, 14px ink-muted body, retry as primary action. Headline keeps
+ * the serif voice so it reads as a quiet aside, not an alarm. */
+.hero-unreachable {
+  margin: 0;
+  padding-top: var(--sp-md);
+  border-top: 2px solid var(--error);
+  text-align: left;
+}
+
+.hero-unreachable-headline {
+  margin: 0 0 var(--sp-md);
+  font-family: var(--font-serif);
+  font-size: var(--fs-lede);
+  color: var(--ink);
+}
+
+.hero-unreachable-headline em {
+  font-style: italic;
+}
+
+.hero-unreachable-help {
+  margin: 0 0 var(--sp-sm);
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+.hero-unreachable-tips {
+  margin: 0 0 var(--sp-lg);
+  padding-left: var(--sp-xl);
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+  line-height: 1.5;
+}
+
+.hero-unreachable-tips li {
+  margin-bottom: var(--sp-xs);
+}
+
+.hero-unreachable-tips li:last-child {
+  margin-bottom: 0;
+}
+
+.hero-unreachable-retry {
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  min-height: 44px;
+  padding: var(--sp-sm) var(--sp-xl);
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+  transition: background var(--t-micro) ease-out;
+}
+
+.hero-unreachable-retry:hover,
+.hero-unreachable-retry:active {
+  background: var(--accent-muted);
+}
+
+/* #309 (3) — mDNS bookmark prompt card. Sits below the status rows,
+ * styled as a calm aside, not a CTA banner. Two-button row mirrors
+ * the AtHS-hint dismiss pattern but uses the standard button hierarchy
+ * (Primary filled + Tertiary text-link) rather than the inline-share
+ * exception that AtHS owns. */
+.mdns-bookmark {
+  margin: 0 0 var(--sp-xl);
+  padding: var(--sp-lg);
+  background: var(--surface);
+  border-radius: var(--r-md);
+}
+
+.mdns-bookmark-headline {
+  margin: 0 0 var(--sp-xs);
+  font-family: var(--font-serif);
+  font-size: var(--fs-lede);
+  color: var(--ink);
+}
+
+.mdns-bookmark-body {
+  margin: 0 0 var(--sp-md);
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+.mdns-bookmark-actions {
+  display: flex;
+  gap: var(--sp-sm);
+  align-items: center;
+}
+
+.mdns-bookmark-switch {
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  min-height: 44px;
+  padding: var(--sp-sm) var(--sp-xl);
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+  transition: background var(--t-micro) ease-out;
+}
+
+.mdns-bookmark-switch:hover,
+.mdns-bookmark-switch:active {
+  background: var(--accent-muted);
+}
+
+/* DESIGN.md "Buttons" line 222 locks Tertiary/Link as:
+ * transparent bg + --accent text only, no border. The earlier
+ * implementation used --ink-muted, which created an ad-hoc fourth
+ * button variant outside the locked hierarchy. /review caught it. */
+.mdns-bookmark-dismiss {
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  min-height: 44px;
+  padding: var(--sp-sm) var(--sp-md);
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.mdns-bookmark-dismiss:hover {
+  color: var(--accent-muted);
+}
+
+/* Status row list (DESIGN.md "Status row list"). 5 rows, 44px min-height,
+ * hairline-bottom separator. Label-left (--ink-muted) value-right
+ * (--ink). Geist Mono + tabular-nums on SSID/Version/Uptime via the
+ * `.mono` class — those are the values where alignment matters. */
+.status-rows {
+  margin: 0 0 var(--sp-xl);
+  padding: 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-md);
+  min-height: 44px;
+  padding: var(--sp-md) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.status-row dt {
+  flex-shrink: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+.status-row dd {
+  margin: 0;
+  min-width: 0;
+  flex: 1;
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  color: var(--ink);
+  text-align: right;
+  /* SSIDs (and version strings) get truncated when long; ellipsis on
+   * overflow keeps the row at 44px. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-row dd.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}

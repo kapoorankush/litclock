@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>LitClock — a little book about your clock</title>
+<!--
+  LitClock printable manual (#404). Four pages, designed to fold from ONE sheet
+  into a booklet (print double-sided + "Booklet" layout). Source of truth is
+  this HTML; render to PDF with docs/manual/build.sh.
+
+  Aesthetic per DESIGN.md: Editorial / Literary — "it feels like reading, not
+  configuring." Fraunces (serif) + Instrument Sans (body) + Geist Mono (data),
+  warm-paper palette. Reads cleanly in black-and-white on a home printer (no
+  required colour, no bleed). Persona = non-technical gift recipients, so the
+  copy never says IP / Pi / address / DHCP / network (DESIGN.md persona rule).
+-->
+<style>
+  /* Fonts: the same self-hosted woff2 the PWA ships (src/control_server/static/fonts). */
+  @font-face { font-family:"Fraunces"; src:url("../../src/control_server/static/fonts/fraunces-wght-normal.woff2") format("woff2"); font-style:normal; font-weight:100 900; }
+  @font-face { font-family:"Fraunces"; src:url("../../src/control_server/static/fonts/fraunces-wght-italic.woff2") format("woff2"); font-style:italic; font-weight:100 900; }
+  @font-face { font-family:"Instrument Sans"; src:url("../../src/control_server/static/fonts/instrument-sans-wght-normal.woff2") format("woff2"); font-style:normal; font-weight:400 700; }
+  @font-face { font-family:"Geist Mono"; src:url("../../src/control_server/static/fonts/geist-mono-wght-normal.woff2") format("woff2"); font-style:normal; font-weight:100 900; }
+
+  :root {
+    --bg:#FBF6EC; --ink:#1A1410; --ink-muted:#6B5C4A; --accent:#B85C20;
+    --hairline:rgba(26,20,16,0.14); /* heavier than the PWA's 0.08 on purpose: a home printer washes 0.08 rules out */
+    --serif:"Fraunces","Iowan Old Style",Georgia,serif;
+    --sans:"Instrument Sans",-apple-system,system-ui,sans-serif;
+    --mono:"Geist Mono",ui-monospace,Menlo,monospace;
+  }
+
+  /* PAGE_SIZE — build.sh swaps this single line for the Letter variant. */
+  @page { size: A5; margin: 0; }
+
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; }
+  body {
+    background:var(--bg); color:var(--ink); font-family:var(--sans);
+    -webkit-print-color-adjust:exact; print-color-adjust:exact;
+    font-size:10.2pt; line-height:1.5;
+  }
+
+  .page {
+    position:relative;
+    min-height:196mm;          /* fills most of the shortest target page; never overflows */
+    padding:15mm 13mm 12mm;
+    display:flex; flex-direction:column;
+    page-break-after:always; break-after:page;
+  }
+  .page:last-child { page-break-after:auto; break-after:auto; }
+
+  /* Running foot — quiet, mono, page number. */
+  .foot {
+    margin-top:auto; padding-top:8mm;
+    display:flex; justify-content:space-between; align-items:baseline;
+    font-family:var(--mono); font-size:7pt; letter-spacing:0.04em;
+    color:var(--ink-muted); border-top:1px solid var(--hairline);
+  }
+  .foot .mark { font-family:var(--sans); letter-spacing:0.14em; text-transform:uppercase; }
+
+  .kicker {
+    /* Graphite, not accent: DESIGN.md reserves --accent text for >=18pt
+       Fraunces / >=14pt bold sans (accent on --bg is ~3.2:1, fails AA and
+       washes to pale grey in B&W). A 7.5pt label must be --ink-muted. */
+    font-family:var(--sans); font-weight:600; font-size:7.5pt;
+    letter-spacing:0.22em; text-transform:uppercase; color:var(--ink-muted);
+    margin:0 0 6mm;
+  }
+  h1 {
+    font-family:var(--serif); font-weight:400; font-variation-settings:"opsz" 144;
+    font-size:40pt; line-height:0.98; letter-spacing:-0.01em; margin:0;
+  }
+  h2 {
+    font-family:var(--serif); font-weight:400; font-variation-settings:"opsz" 40;
+    font-size:21pt; line-height:1.1; margin:0 0 4mm; letter-spacing:-0.01em;
+  }
+  .lede {
+    font-family:var(--serif); font-style:italic; font-weight:400;
+    font-size:13.5pt; line-height:1.34; color:var(--ink); margin:0 0 7mm;
+  }
+  p { margin:0 0 3.2mm; }
+  .muted { color:var(--ink-muted); }
+
+  /* Numbered steps — Fraunces numerals, hairline-separated rows. */
+  ol.steps { list-style:none; counter-reset:s; margin:0; padding:0; }
+  ol.steps li {
+    counter-increment:s; position:relative;
+    padding:3.6mm 0 3.6mm 12mm; border-top:1px solid var(--hairline);
+  }
+  ol.steps li:first-child { border-top:0; }
+  ol.steps li::before {
+    /* 18pt clears the DESIGN.md accent-text floor (>=18pt Fraunces); the
+       numeral is decorative anyway — the bold step label carries the meaning
+       in B&W. */
+    content:counter(s); position:absolute; left:0; top:2.6mm;
+    font-family:var(--serif); font-size:18pt; color:var(--accent); line-height:1;
+  }
+  ol.steps b { font-weight:600; }
+
+  /* Bullet list — soft em-dash markers in the literary register. */
+  ul.things { list-style:none; margin:1mm 0 0; padding:0; }
+  ul.things li { position:relative; padding:1.6mm 0 1.6mm 6mm; }
+  ul.things li::before { content:"—"; position:absolute; left:0; color:var(--accent); }
+
+  /* FAQ — question in italic serif, answer in muted sans. */
+  .faq { margin:1mm 0 0; }
+  .faq div { padding:3.4mm 0; border-top:1px solid var(--hairline); }
+  .faq div:first-child { border-top:0; }
+  .faq .q { font-family:var(--serif); font-style:italic; font-size:11.5pt; margin:0 0 1mm; }
+  .faq .a { color:var(--ink-muted); font-size:9.6pt; margin:0; }
+
+  .closer {
+    font-family:var(--serif); font-style:italic; font-size:12.5pt;
+    line-height:1.32; color:var(--ink); margin:7mm 0 0;
+  }
+
+  /* Line-art (ink strokes, ~1.4px). Echoes the e-ink clock, not a photo. */
+  svg .stroke { fill:none; stroke:var(--ink); stroke-width:1.4; }
+  svg .stroke-muted { fill:none; stroke:var(--ink-muted); stroke-width:1.2; }
+  svg .accent { fill:none; stroke:var(--accent); stroke-width:1.6; }
+  svg .ink { fill:var(--ink); }
+  svg .muted-fill { fill:var(--ink-muted); }
+  svg .accent-fill { fill:var(--accent); }
+  svg text.t { font-family:var(--serif); font-style:italic; fill:var(--ink-muted); }
+  svg text.tm { font-family:var(--mono); fill:var(--ink); }
+
+  /* ---- Cover ---- */
+  .cover { justify-content:center; text-align:left; }
+  .cover .art { margin:0 0 11mm; }
+  .cover h1 { margin:0 0 4mm; }
+  .cover .one-liner {
+    font-family:var(--serif); font-style:italic; font-size:14pt; line-height:1.3;
+    color:var(--ink); max-width:92mm; margin:0;
+  }
+  .cover .booklabel {
+    margin-top:11mm; font-family:var(--sans); font-size:8pt; letter-spacing:0.14em;
+    text-transform:uppercase; color:var(--ink-muted);
+  }
+
+  .reassure {
+    margin-top:6mm; font-size:8.6pt; color:var(--ink-muted); font-style:italic;
+    font-family:var(--serif);
+  }
+  .center-art { text-align:center; margin:6mm 0 2mm; }
+</style>
+</head>
+<body>
+
+<!-- ============ PAGE 1 — COVER ============ -->
+<section class="page cover">
+  <div class="art" aria-hidden="true">
+    <!-- The clock: an e-ink panel with a line of literature, the time, and the
+         small corner square (the QR) the booklet later explains. -->
+    <svg width="150" height="96" viewBox="0 0 150 96">
+      <rect class="stroke" x="1" y="1" width="148" height="94" rx="8"/>
+      <!-- corner square (the real device's top-right QR mark) -->
+      <rect class="accent" x="130" y="8" width="12" height="12" rx="1.5"/>
+      <rect class="accent-fill" x="133" y="11" width="2.2" height="2.2"/>
+      <rect class="accent-fill" x="137.5" y="11" width="2.2" height="2.2"/>
+      <rect class="accent-fill" x="133" y="15.5" width="2.2" height="2.2"/>
+      <text class="t" x="16" y="50" font-size="11">“…a quote from a book, for</text>
+      <text class="t" x="16" y="66" font-size="11">every minute of the day.”</text>
+    </svg>
+  </div>
+  <h1>LitClock</h1>
+  <p class="one-liner">A clock that tells the time with a&nbsp;quote from a book — a new one every&nbsp;minute.</p>
+  <p class="booklabel">A little book about your clock</p>
+  <div class="foot"><span class="mark">LitClock</span><span>1</span></div>
+</section>
+
+<!-- ============ PAGE 2 — GETTING STARTED ============ -->
+<section class="page">
+  <p class="kicker">First things</p>
+  <h2>Getting started</h2>
+  <p class="lede">Your clock asks one thing of you: your home’s Wi&#8209;Fi. After that, it runs on its&nbsp;own.</p>
+
+  <ol class="steps">
+    <li><b>Plug in the power.</b> Give it a minute to wake up.</li>
+    <li><b>Scan the QR&nbsp;code on the screen</b> with your phone’s camera, then wait about 30&nbsp;seconds. Your phone joins the clock and a setup page opens on its&nbsp;own.</li>
+    <li><b>Choose your home Wi&#8209;Fi</b> on that page, type its password, and tap&nbsp;Save.</li>
+    <li><b>That’s it.</b> The clock works out your location and the right time on its own, then begins showing&nbsp;quotes.</li>
+  </ol>
+
+  <p class="muted" style="margin-top:4mm; font-size:9.4pt;"><b style="color:var(--ink); font-weight:600;">Where to keep it:</b> LitClock is made to be read up close, the way you’d read a book — not glanced at from across the&nbsp;room. Set it somewhere you’d pause to read: a shelf, a desk, a&nbsp;bedside.</p>
+
+  <p class="reassure">If the setup page doesn’t open on its own, connect your phone to the clock’s own Wi&#8209;Fi (its name and password are on the screen), and it will&nbsp;appear. More fixes are on the last&nbsp;page.</p>
+
+  <div class="foot"><span class="mark">Getting started</span><span>2</span></div>
+</section>
+
+<!-- ============ PAGE 3 — YOUR PHONE IS THE REMOTE ============ -->
+<section class="page">
+  <p class="kicker">Everyday use</p>
+  <h2>Your phone is the&nbsp;remote</h2>
+
+  <div class="center-art" aria-hidden="true">
+    <svg width="170" height="74" viewBox="0 0 170 74">
+      <!-- clock with its corner square -->
+      <rect class="stroke" x="1" y="10" width="86" height="54" rx="6"/>
+      <rect class="accent" x="70" y="16" width="11" height="11" rx="1.5"/>
+      <rect class="accent-fill" x="72.5" y="18.5" width="2" height="2"/>
+      <rect class="accent-fill" x="76.5" y="18.5" width="2" height="2"/>
+      <rect class="accent-fill" x="72.5" y="22.5" width="2" height="2"/>
+      <line class="stroke-muted" x1="12" y1="40" x2="58" y2="40"/>
+      <line class="stroke-muted" x1="12" y1="48" x2="48" y2="48"/>
+      <!-- arrow to phone -->
+      <path class="accent" d="M93 37 H120"/>
+      <path class="accent" d="M114 32 L120 37 L114 42"/>
+      <!-- phone -->
+      <rect class="stroke" x="128" y="6" width="38" height="62" rx="6"/>
+      <rect class="stroke-muted" x="135" y="14" width="24" height="24" rx="2"/>
+      <text class="tm" x="135" y="54" font-size="6.5">settings</text>
+    </svg>
+  </div>
+
+  <p>See the small square QR&nbsp;code in the top-right corner of the clock’s screen? Point your phone’s camera at it — a link pops up to tap, and a page opens where you&nbsp;can:</p>
+  <ul class="things">
+    <li>set your location — the time and weather follow&nbsp;it</li>
+    <li>switch between Fahrenheit and&nbsp;Celsius</li>
+    <li>show or hide the weather on the&nbsp;screen</li>
+    <li>show or hide quotes with mature&nbsp;content</li>
+    <li>restart the clock, or switch it&nbsp;off</li>
+  </ul>
+  <p class="muted" style="margin-top:4mm; font-size:9.4pt;"><b style="color:var(--ink); font-weight:600;">A tip:</b> bookmark this page or add it to your phone’s Home Screen, so it’s one tap&nbsp;away. Either way, you can always open it again by scanning the same QR&nbsp;code on the&nbsp;clock.</p>
+
+  <div class="foot"><span class="mark">Everyday use</span><span>3</span></div>
+</section>
+
+<!-- ============ PAGE 4 — IF SOMETHING'S NOT RIGHT ============ -->
+<section class="page">
+  <p class="kicker">Just in case</p>
+  <h2>If something’s not&nbsp;right</h2>
+
+  <div class="faq">
+    <div>
+      <p class="q">The time looks wrong.</p>
+      <p class="a">Scan the QR code in the top-right corner with your phone and set your location. The clock takes its time from&nbsp;there.</p>
+    </div>
+    <div>
+      <p class="q">There’s no weather.</p>
+      <p class="a">Scan the top-right QR code, switch the weather on, and check that your location is&nbsp;set.</p>
+    </div>
+    <div>
+      <p class="q">It won’t connect to the Wi&#8209;Fi.</p>
+      <p class="a">Unplug the power, plug it back in, and try the setup steps again. Double-check the&nbsp;password.</p>
+    </div>
+    <div>
+      <p class="q">I’m moving it to a new home.</p>
+      <p class="a">Best to reset it before you go: scan the QR&nbsp;code, then choose System → Reset&nbsp;Wi&#8209;Fi. Set it up like new at the new place. If you’ve already moved, just plug in the power and wait about 20&nbsp;minutes — it returns to setup mode on its&nbsp;own.</p>
+    </div>
+  </div>
+
+  <p class="closer">Everything else is on the settings page — the QR code in the top-right&nbsp;corner.<br>Enjoy your&nbsp;minutes.</p>
+
+  <div class="foot"><span class="mark">If something’s not right</span><span>4</span></div>
+</section>
+
+</body>
+</html>

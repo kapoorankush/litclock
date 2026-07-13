@@ -1,0 +1,225 @@
+/* Confirm-sheet modal — shared component used by /system + /updates.
+ *
+ * Native <dialog> + showModal(). Bottom-anchored on phone (≤640px),
+ * centered card on tablet+. Slides up over --t-medium with --ease-ios
+ * (DESIGN.md tokens). prefers-reduced-motion disables the slide.
+ *
+ * Originally lived in system.css; M7 OV-2 (codex /design-review) caught
+ * the duplicated reimplementation in updates.css with divergent visuals
+ * (no slide-up animation, wrong backdrop opacity, missing focus-visible).
+ * Extracted here so both tabs link the canonical version. ~70 LOC, one
+ * extra HTTP fetch on Pi Zero 2W (cached after first load).
+ */
+
+dialog.confirm-sheet {
+  /* Reset native dialog defaults. */
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  /* Phone-first: stick to bottom edge full-width, full-screen above safe-
+   * area-inset for home-indicator devices. */
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  top: auto;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+}
+
+dialog.confirm-sheet::backdrop {
+  /* Final resting state — dim the rest of the page so the modal reads as
+   * primary focus. The fade-in keyframe is scoped to `.is-opening` below
+   * so the backdrop and sheet animate in lockstep through the same iOS
+   * top-layer workaround. */
+  background: rgba(0, 0, 0, 0.45);
+}
+
+/* Pre-opening state: dialog has been opened (display flipped, top-layer
+ * promoted) but the `.is-opening` class hasn't been added yet — that
+ * happens after a double-rAF (#305 codex follow-up). Hide the backdrop
+ * so the user doesn't see a 1-2 frame dimmed-page flash before the
+ * sheet slides up. */
+dialog.confirm-sheet[open]:not(.is-opening)::backdrop {
+  background: rgba(0, 0, 0, 0);
+}
+
+dialog.confirm-sheet.is-opening::backdrop {
+  animation: sheet-backdrop-fade var(--t-medium) var(--ease-ios);
+}
+
+/* Slide-up only on phone — on tablet+ the dialog is centered, not bottom-
+ * anchored, so a slide-up looks off (centered card swooping in from below).
+ * The fade-in below covers the tablet+ case.
+ *
+ * #305: trigger via `.is-opening` class (added by JS on a double-rAF after
+ * showModal()) instead of the `[open]` attribute. iOS Safari pre-17.5
+ * doesn't reliably fire keyframes when the dialog enters the top layer
+ * + flips display:none → block in the same paint as `[open]` flips on.
+ * @starting-style would solve it on Safari 17.5+ but adds version-detection
+ * complexity. The double-rAF + class-toggle pattern works everywhere. */
+@media (max-width: 640px) {
+  /* Pre-opening pin: showModal() flips display + promotes to top layer in
+   * one paint, but `.is-opening` lands two rAFs later — so without this
+   * rule, iOS Safari shows the dialog at its final resting position
+   * (translateY(0)) for ~33ms before snapping to translateY(100%) and
+   * sliding back. Pre-positioning at the keyframe `from` state keeps the
+   * sheet off-screen during the gap so the slide reads as one motion. */
+  dialog.confirm-sheet[open]:not(.is-opening) {
+    transform: translateY(100%);
+  }
+  dialog.confirm-sheet.is-opening {
+    animation: sheet-slide-up var(--t-medium) var(--ease-ios);
+  }
+}
+
+@media (min-width: 641px) {
+  /* Same flash mitigation for the tablet+ fade variant. */
+  dialog.confirm-sheet[open]:not(.is-opening) {
+    opacity: 0;
+  }
+  dialog.confirm-sheet.is-opening {
+    animation: sheet-fade-in var(--t-medium) var(--ease-ios);
+  }
+}
+
+@keyframes sheet-slide-up {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+@keyframes sheet-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes sheet-backdrop-fade {
+  from { background: rgba(0, 0, 0, 0); }
+  to   { background: rgba(0, 0, 0, 0.45); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Snap-cut for users who opt out. Override BOTH the pre-opening
+   * pre-positioning AND the keyframe so the dialog appears at its final
+   * resting position with no motion at all. Without these explicit
+   * resets, reduced-motion users would see a 1-2 frame "rise from below"
+   * before the dialog lands — which defeats the whole point of opting
+   * out. The M1 reduced-motion verification (PR #252 comment said it
+   * ran on hardware) was before the confirm-sheet shipped — M5 is when
+   * it landed; #305 codex follow-up locks the snap-cut for real here. */
+  dialog.confirm-sheet[open]:not(.is-opening),
+  dialog.confirm-sheet.is-opening {
+    animation: none;
+    transform: none;
+    opacity: 1;
+  }
+  dialog.confirm-sheet[open]:not(.is-opening)::backdrop,
+  dialog.confirm-sheet.is-opening::backdrop {
+    animation: none;
+    background: rgba(0, 0, 0, 0.45);
+  }
+}
+
+.confirm-sheet__inner {
+  background: var(--surface-raised);
+  /* Top corners only on phone — the bottom edge meets the screen. */
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  padding: var(--sp-xl) var(--sp-lg);
+  /* Respect home-indicator safe area on iPhone X+. */
+  padding-bottom: calc(var(--sp-xl) + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-lg);
+}
+
+.confirm-sheet__title {
+  font-family: var(--font-sans);
+  font-size: var(--fs-lede);
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0;
+}
+
+.confirm-sheet__body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  color: var(--ink-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.confirm-sheet__body strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.confirm-sheet__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-md);
+  /* Two-button bar per DESIGN.md "Two buttons: destructive text-link on
+   * left, primary filled on right" — but "Destructive" never gets a
+   * filled bg, so both stay text-link styled with the destructive on
+   * the right. */
+}
+
+.confirm-sheet__cancel {
+  /* Tertiary link style per DESIGN.md "Tertiary / Link". */
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  cursor: pointer;
+  padding: var(--sp-sm) var(--sp-md);
+  min-height: 44px;
+}
+
+.confirm-sheet__confirm {
+  /* Default: accent text-link. The M4 spec assumed every confirm-sheet
+   * wrapped a destructive action, but Restart (recoverable) and Apply
+   * Update (non-destructive upgrade) also use this component. M7 OV-4
+   * fixed the trigger-side colors but left the confirm-side red — #300
+   * surfaces the inconsistency. Pair with `data-destructive="true"`
+   * below to opt into red on Power off + Reset WiFi. */
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  cursor: pointer;
+  padding: var(--sp-sm) var(--sp-md);
+  min-height: 44px;
+}
+
+dialog.confirm-sheet[data-destructive="true"] .confirm-sheet__confirm {
+  /* Destructive text-link per DESIGN.md "Destructive". Power off + Reset
+   * WiFi are unrecoverable from the PWA (#300). */
+  color: var(--error);
+}
+
+.confirm-sheet__cancel:focus-visible,
+.confirm-sheet__confirm:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-md);
+}
+
+/* Tablet+ — center the sheet as a card rather than bottom-anchored sheet. */
+@media (min-width: 641px) {
+  dialog.confirm-sheet {
+    position: fixed;
+    inset: 0;
+    margin: auto;
+    width: min(420px, 90vw);
+    height: max-content;
+  }
+  .confirm-sheet__inner {
+    border-radius: var(--r-lg);
+    padding-bottom: var(--sp-xl);
+  }
+}
