@@ -1,4 +1,4 @@
 # Dev-only dependencies for image-gen/ tooling.
 # Not deployed to the Pi — install locally before running audit scripts:
 #   pip install -r image-gen/requirements-dev.txt
-anthropic>=0.115.0
+anthropic>=0.116.0
