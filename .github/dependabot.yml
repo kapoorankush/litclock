@@ -1,0 +1,23 @@
+version: 2
+
+updates:
+  # GitHub Actions — surface security updates and action bumps.
+  # Reviewed manually; rebuilds only happen on demand, not on a schedule.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+
+  # Python runtime dependencies baked into the Pi image.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"

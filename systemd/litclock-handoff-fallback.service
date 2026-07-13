@@ -1,0 +1,22 @@
+[Unit]
+Description=LitClock handoff last-resort completer (EPIC #383 PR2, #388)
+Documentation=https://github.com/kapoorankush/litclock/issues/388
+# Last-resort safety net: if control_server crashed during the post-WiFi
+# handoff window and never wrote .handoff-complete, this rescues the clock
+# from a stuck splash ~10 min after boot (litclock-control.service's
+# Restart=on-failure already covers transient crashes; this guards a
+# persistent one). The script only completes the handoff when the timezone
+# is known (WEATHER_LATITUDE set) — never auto-starting a wrong-time clock
+# (design-review A2).
+#
+# Condition gates: only run when setup finished AND handoff hasn't. systemd
+# records an unmet condition as "skipped," not a failure.
+ConditionPathExists=/etc/litclock/.setup-complete
+ConditionPathExists=!/etc/litclock/.handoff-complete
+
+[Service]
+Type=oneshot
+ExecStart=/home/pi/litclock/scripts/litclock-handoff-fallback.sh
+WorkingDirectory=/home/pi/litclock
+StandardOutput=journal
+StandardError=journal

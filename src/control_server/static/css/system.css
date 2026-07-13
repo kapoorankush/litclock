@@ -1,0 +1,282 @@
+/* System tab styling (#245 M4).
+ *
+ * Loaded only when active_tab == "system" (see base.html.j2 extra_head
+ * block). The action-card classes mirror DESIGN.md "Cards (status hero,
+ * update banner, action cards)". The destructive button styling follows
+ * DESIGN.md "Destructive": transparent bg, --error text, no border —
+ * destructive actions deserve hesitation, not confidence.
+ *
+ * The .modal-* selectors are scaffolded here for Story 2.2 (sheet-style
+ * confirm modal); Story 2.1 ships only the action cards + form fallback.
+ */
+
+/* #317 item 7 — banner appears on /system after the settings_post gift
+ * PRG-redirect lands here. Shared color/typography is in banners.css
+ * (loaded via base.html.j2); this rule only adds the System-tab-specific
+ * margin: top + sides because the banner sits INSIDE the .system-actions
+ * margin-inset container, so it needs its own side gutter to align with
+ * the action cards below it. */
+.settings-banner {
+  margin: var(--sp-lg) var(--sp-lg) 0;
+}
+
+.system-actions {
+  /* Single-column phone-first layout per DESIGN.md "single-column
+   * phone-first" lock. Vertical rhythm uses the locked --sp-lg gutter. */
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-lg);
+  margin: var(--sp-xl) var(--sp-lg);
+}
+
+.action-card {
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  padding: var(--sp-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-sm);
+}
+
+.action-card__header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+}
+
+.action-card__icon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  color: var(--ink);
+}
+
+.action-card__title {
+  /* M7 hardware-QA: action-card titles are page-section headings, same
+   * semantic level as Settings section titles. Match Settings' --fs-h3 +
+   * Fraunces serif so <h2> reads as the same heading level across tabs.
+   * DESIGN.md "h3 = Section headings within page" applies here, not the
+   * --fs-lede modal-title token. */
+  font-family: var(--font-serif);
+  font-size: var(--fs-h3);
+  font-weight: 400;
+  color: var(--ink);
+  margin: 0;
+}
+
+.action-card__consequence {
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  color: var(--ink-muted);
+  margin: 0 0 var(--sp-sm) 0;
+  /* One-line consequence preview per DESIGN.md "Cards" line 251 — full
+   * copy lives in the confirm modal copy library. */
+}
+
+.action-card__form {
+  /* Form is just a layout container — submit button does the heavy lifting. */
+  margin: 0;
+}
+
+.action-card__submit {
+  /* Tertiary text-link style: transparent bg, --accent text, no border.
+   * Default for non-destructive actions like Restart (M7 OV-4 — codex
+   * /design-review caught Restart inheriting --error red, making a 30s
+   * recoverable action look as severe as Power off / Reset WiFi). */
+  background: transparent;
+  color: var(--accent);
+  border: none;
+  padding: var(--sp-sm) var(--sp-md);
+  margin-left: calc(var(--sp-md) * -1); /* visual flush-left within card */
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: var(--r-md);
+  /* Generous tap target per DESIGN.md a11y — buttons ≥44px (touch) tall. */
+  min-height: 44px;
+}
+
+/* DESIGN.md "Destructive" button: transparent bg, --error text. Applied
+ * only to the cards that are genuinely destructive (Power off requires
+ * unplug + re-plug; Reset WiFi forgets saved networks; #317 item 7
+ * Prepare-for-Gifting wipes WiFi + powers off). Restart is NOT
+ * destructive — 30s blank then resume — so it stays the default accent.
+ *
+ * Save draft on the gift card is also non-destructive (it just writes
+ * env.sh) — `.action-card__submit--secondary` overrides the color back
+ * to --accent so the destructive selector only catches the final
+ * Prepare button. */
+.action-card[data-action="poweroff"] .action-card__submit,
+.action-card[data-action="wifi_reset"] .action-card__submit,
+.action-card[data-action="prepare_for_gift"] .action-card__submit {
+  color: var(--error);
+}
+.action-card__submit--secondary {
+  color: var(--accent) !important;
+}
+
+.action-card__submit:hover,
+.action-card__submit:focus-visible {
+  /* Subtle hairline tint on hover — preserves the no-fill rule but gives
+   * feedback. Focus-visible matches keyboard navigation. */
+  background: var(--hairline);
+}
+
+.action-card__submit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ─── Prepare-for-Gifting card (#317 item 7) ─────────────────────────────
+ *
+ * The gift card is a two-form action-card: a Save-draft form (textarea +
+ * Save button) above a Prepare-destructive form (hidden message field +
+ * Prepare button). The visual divider between the two reinforces that
+ * Save is reversible while Prepare is one-way.
+ *
+ * The textarea + counter follow DESIGN.md "Form rows" — 14px label,
+ * hairline-tinted input surface, ≥44px tap target. The counter announces
+ * to assistive tech via aria-live=polite on the element. */
+
+.action-card__label {
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  font-weight: 500;
+  color: var(--ink);
+  margin: var(--sp-sm) 0 var(--sp-xs);
+}
+
+.action-card__textarea {
+  width: 100%;
+  min-height: 88px;
+  padding: var(--sp-sm) var(--sp-md);
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: 1.4;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.action-card__textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.action-card__help {
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  color: var(--ink-muted);
+  margin: var(--sp-xs) 0 0;
+  line-height: 1.4;
+}
+
+.action-card__counter {
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  color: var(--ink-muted);
+  margin: var(--sp-xs) 0 0;
+  font-variant-numeric: tabular-nums;
+}
+.action-card__counter.is-near-limit {
+  color: var(--warning);
+}
+.action-card__counter.is-at-limit {
+  color: var(--error);
+  font-weight: 500;
+}
+
+.action-card__field-error {
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  color: var(--error);
+  margin: var(--sp-xs) 0 0;
+}
+
+.action-card__form-actions {
+  margin-top: var(--sp-sm);
+}
+
+/* Visual separation between the Save-draft form and the destructive
+ * Prepare form, so the user can't mistake "Prepare for Gifting" for
+ * the section's primary action. Hairline above mirrors the
+ * Settings-tab `.settings-form--destructive` pattern from #316. */
+.action-card__form--destructive {
+  margin-top: var(--sp-lg);
+  padding-top: var(--sp-lg);
+  border-top: 1px solid var(--hairline);
+}
+
+/* ─── Reconnect state (Story 3.1) ────────────────────────────────────────
+ *
+ * Replaces the action cards after a successful reboot/poweroff POST. The
+ * "Restarting…" card polls /api/health in JS (system.js); the poweroff
+ * card is terminal — no polling, no animation, just the locked DESIGN.md
+ * "unplug and re-plug" copy.
+ *
+ * Hero-ish styling per DESIGN.md "Hero: clock service starting" pattern:
+ * Fraunces italic for the lede ("Restarting…"), Instrument Sans for the
+ * body. Center-stacked on phone, identical layout on tablet+.
+ */
+
+.reconnect-state {
+  margin: var(--sp-3xl) var(--sp-lg);
+  padding: var(--sp-xl);
+  background: var(--surface);
+  border-radius: var(--r-xl);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-md);
+}
+
+.reconnect-state__title {
+  font-family: var(--font-serif);
+  font-size: var(--fs-h3);
+  font-weight: 400;
+  color: var(--ink);
+  margin: 0;
+  line-height: 1.3;
+}
+
+.reconnect-state__title em {
+  font-style: italic;
+  color: var(--accent);
+}
+
+.reconnect-state__body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  color: var(--ink-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.reconnect-state__retry {
+  align-self: center;
+  margin-top: var(--sp-sm);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-md);
+  color: var(--accent);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  font-weight: 500;
+  padding: var(--sp-sm) var(--sp-lg);
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.reconnect-state__retry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.reconnect-state--error .reconnect-state__title {
+  /* Error state stays in default ink — italic accent is for "in progress". */
+  color: var(--ink);
+}

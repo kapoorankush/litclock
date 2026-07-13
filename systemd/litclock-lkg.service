@@ -1,0 +1,21 @@
+[Unit]
+Description=LitClock Last-Known-Good writer (heartbeat-gated)
+Documentation=https://github.com/kapoorankush/litclock/issues/241
+# Driven by litclock-lkg.timer. NOT a dependency of litclock.service —
+# the original Requisite=litclock.service + WantedBy=litclock.service
+# combination caused the writer to fail-start at boot (parallel-start
+# meant litclock was still "activating" when this unit checked it),
+# which left lkg-sha permanently empty. The timer-driven design polls
+# instead of riding litclock's lifecycle.
+#
+# The script is a fast oneshot: check three gates (post-update grace,
+# fresh heartbeat, HEAD-vs-recorded), write atomically when all pass.
+# No sleep, no is-active check, no race with update.sh.
+
+[Service]
+Type=oneshot
+ExecStart=/home/pi/litclock/scripts/litclock-lkg-record.sh
+WorkingDirectory=/home/pi/litclock
+User=pi
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,49 @@
+# Direct (human-edited) Python pins for LitClock.
+#
+# This is the source of truth for direct dependencies. The companion
+# requirements.txt is the GENERATED lockfile with every transitive
+# explicitly pinned — DO NOT hand-edit requirements.txt.
+#
+# Workflow (closes #323 eager-strategy gap):
+#
+#   1. Edit pins below.
+#   2. Regenerate the lock:    pip-compile --upgrade requirements.in
+#      (or: python3 -m piptools compile --upgrade requirements.in)
+#   3. Review the diff.
+#   4. Test on a Pi.
+#   5. Commit BOTH requirements.in and requirements.txt together.
+#   6. Tag a release — the fleet's weekly auto-update will pull the
+#      lock byte-for-byte at the next sync.
+#
+# See CONTRIBUTING.md → "Updating Python dependencies" for the full
+# release-cut workflow.
+#
+# apt-provisioned packages (gpiozero / lgpio / pigpio / spidev /
+# colorzero) are listed here so the lock is self-documenting AND the
+# resolver has the full constraint graph. The install paths
+# (scripts/install.sh, scripts/update.sh, pi-gen) filter these names
+# out of the generated lock before pip-install via requirements-apt.txt —
+# they come from apt at runtime via --system-site-packages (#214).
+
+astral==3.2
+colorzero==2.0
+flask==3.1.3
+gpiozero==2.0.1
+lgpio==0.2.2.0
+pigpio==1.78
+pillow==12.2.0
+pytz==2026.2
+qrcode==8.2
+requests==2.34.2
+spidev==3.8
+timezonefinder==8.2.4
+waitress==3.0.2
+
+# CVE-floor constraint — not directly imported.
+# urllib3 is a transitive of `requests`, but we pin it here so the
+# resolver can never roll us BELOW the floor that closed
+# CVE-2026-44431 / CVE-2026-44432 (PR #322, commit a5c0b355). Bump
+# this pin when a newer urllib3 ships further security fixes; running
+# `pip-compile --upgrade` will pick up newer compatible releases
+# automatically once this floor is raised.
+urllib3>=2.7.0

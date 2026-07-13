@@ -1,0 +1,15 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "image-gen"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+exclude = ["lib/", "venv/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# HTML templates use .format() with CSS braces — can't convert to f-strings
+"src/setup_server.py" = ["UP032"]

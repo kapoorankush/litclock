@@ -1,0 +1,28 @@
+[Unit]
+Description=LitClock LKG auto-revert cadence (bootcheck)
+Documentation=https://github.com/kapoorankush/litclock/issues/209
+# Drives litclock-bootcheck.service. The service is a fast oneshot that
+# decides "did the clock paint since this boot?" and, on a persistent
+# failure, self-heals via the LKG SHA.
+#
+# OnBootSec=12min — one decisive check per boot, deliberately LONGER than
+# the LKG writer's 10-min boot grace. A false positive here is destructive
+# (it reboots / reverts), so bootcheck must be MORE conservative than the
+# writer, never less, and must clear worst-case first-paint (splash +
+# firstboot + first render). Image downloads can't extend this window:
+# they run only inside update.sh's whole-body update.lock (bootcheck
+# defers on the lock) plus a 15-min post-update grace.
+# OnActiveSec=12min — same delay from timer-start, so a mid-uptime install
+# via update.sh arms the check without waiting for the next reboot (mirrors
+# the fix litclock-lkg.timer needed).
+# OnUnitActiveSec=5min — re-poll every 5 min. Cheap: exits in ~ms once the
+# clock is healthy (heartbeat present) or while deferring.
+
+[Timer]
+OnBootSec=12min
+OnActiveSec=12min
+OnUnitActiveSec=5min
+Unit=litclock-bootcheck.service
+
+[Install]
+WantedBy=timers.target

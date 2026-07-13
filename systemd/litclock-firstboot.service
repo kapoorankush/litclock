@@ -1,0 +1,17 @@
+[Unit]
+Description=LitClock First-Boot Setup
+Documentation=https://github.com/kapoorankush/litclock
+After=sysinit.target NetworkManager.service litclock-splash.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+User=pi
+ExecStart=/home/pi/litclock/scripts/first-boot.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+Environment=LITCLOCK_DIR=/home/pi/litclock
+
+[Install]
+WantedBy=multi-user.target

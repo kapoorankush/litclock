@@ -1,0 +1,25 @@
+[Unit]
+Description=LitClock — Factory reset (wipe config + WiFi, reboot into setup)
+Documentation=https://github.com/kapoorankush/litclock/issues/510
+# Bidirectional interlock with the weekly/PWA updater: if an update fires mid-
+# reset, systemd SIGTERMs the reset script and leaves the device half-wiped with
+# no reboot. The route also pre-checks update_is_busy() for a friendly 409, but
+# Conflicts= is the deterministic backstop (mirrors litclock-wifi-reset.service).
+Conflicts=litclock-update.service
+After=litclock-update.service
+
+[Service]
+Type=oneshot
+User=root
+# Runs the ROOT-OWNED copy (installed alongside the gift unit's copy, #387 C1) —
+# not /home/pi/... — so a pi-writable path can't be swapped under the reboot.
+# --wipe-wifi --reboot --yes: full wipe of config + WiFi, then reboot into the
+# first-boot captive portal. NOT --gift-mode (that adds the welcome splash +
+# power-off, which are gift-only). See issue #510.
+# --strict-env-wipe (#510 review): if the config wipe fails, abort BEFORE the
+# WiFi wipe + reboot so a factory reset never silently reboots into a stale-
+# config setup — leaves WiFi up so the PWA can report the failure + retry.
+ExecStart=/usr/local/lib/litclock/reset-setup.sh --wipe-wifi --strict-env-wipe --reboot --yes
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal

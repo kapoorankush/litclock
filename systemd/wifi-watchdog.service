@@ -1,0 +1,7 @@
+[Unit]
+Description=WiFi Watchdog - Reboot if WiFi is unreachable
+Documentation=https://github.com/kapoorankush/litclock
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/wifi-watchdog.sh

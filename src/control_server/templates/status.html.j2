@@ -1,0 +1,185 @@
+{% extends "base.html.j2" %}
+
+{# Status tab — the "memorable thing" front-door moment per DESIGN.md.
+   Server-side rendered from /api/status payload (`s`) so first paint
+   carries the quote even before any JS runs (PRD §7.5 progressive
+   enhancement).
+
+   #290: status.js polls /api/status every 30s + on visibilitychange,
+   patching textContent / [hidden] on data-status-* hooks below so the
+   hero reflects what the e-ink is currently showing. Without JS, the
+   page is frozen on the first-paint values until manual reload. #}
+
+{% block title %}LitClock — {{ s.time or "Now" }}{% endblock %}
+
+{% block content %}
+{# Visually-hidden region heading so screen readers identify the section.
+   DESIGN.md a11y: hero is `role="region" aria-labelledby="..."` (lines 287-292). #}
+<h2 id="status-heading" class="visually-hidden">Now</h2>
+
+{# Stale-quote banner per locked decision D2. Surface-raised bg, ochre
+   --warning border-top. role="status" + aria-live="assertive" — DESIGN.md
+   line 296 mandates assertive (not polite) for the stale-quote banner
+   first appearance, so the SR interrupts mid-utterance to announce that
+   the clock service is paused (polite would defer/skip the announcement).
+   Inline Phosphor `clock-countdown` SVG (locked icon-per-action mapping
+   line 205); emoji as UI affordance is a DESIGN.md anti-pattern (line 472).
+
+   #290: always render the banner element with [hidden] toggled — status.js
+   needs the node to exist so it can show/hide it without DOM creation. #}
+<div class="stale-banner" role="status" aria-live="assertive"
+     data-status-stale-banner {% if not s.stale %}hidden{% endif %}>
+  <svg class="stale-banner-icon" aria-hidden="true" viewBox="0 0 256 256" width="16" height="16" fill="currentColor">
+    <path d="M128,40a96,96,0,1,0,96,96A96.11,96.11,0,0,0,128,40Zm0,176a80,80,0,1,1,80-80A80.09,80.09,0,0,1,128,216Zm45.66-93.66a8,8,0,0,1,0,11.32l-40,40a8,8,0,0,1-11.32-11.32L156.69,128l-34.35-34.34a8,8,0,0,1,11.32-11.32ZM104,32a8,8,0,0,1,8-8h32a8,8,0,0,1,0,16H112A8,8,0,0,1,104,32Z"/>
+  </svg>
+  <span class="stale-banner-text" data-status-stale-text>
+    {% if s.picked_at_age_s is not none %}
+      Clock service may be paused — last quote {{ (s.picked_at_age_s / 60) | round(0, "floor") | int }} min ago
+    {% else %}
+      Clock service may be paused — no quote published yet
+    {% endif %}
+  </span>
+</div>
+
+{# #274 follow-up #5 — Phase 3 skip banner. Renders when the last
+   weekly update.sh run hit a flock timeout on the env.sh merge (rc=75)
+   AND the marker is fresh (mtime < 1 day). Self-clears via the reader-
+   side staleness clamp; the next clean Phase 3 run also removes the
+   marker file. Same banner shape + classes as the stale-banner so the
+   DESIGN.md treatment is consistent. #}
+<div class="stale-banner" role="status" aria-live="polite"
+     data-status-phase3-skip-banner {% if not s.phase3_skipped_at_unix %}hidden{% endif %}>
+  <svg class="stale-banner-icon" aria-hidden="true" viewBox="0 0 256 256" width="16" height="16" fill="currentColor">
+    <path d="M128,24A104,104,0,1,0,232,128,104.12,104.12,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm16-40a8,8,0,0,1-8,8,16,16,0,0,1-16-16V128a8,8,0,0,1,0-16,16,16,0,0,1,16,16v40A8,8,0,0,1,144,176ZM112,84a12,12,0,1,1,12,12A12,12,0,0,1,112,84Z"/>
+  </svg>
+  <span class="stale-banner-text" data-status-phase3-skip-text>
+    Last update skipped the env-vars merge — will retry next Sunday.
+  </span>
+</div>
+
+{# Hero card per DESIGN.md "Hero card" composition. The paper-grain.svg
+   tile is applied via CSS (light mode only) to keep the markup minimal
+   and the texture cosmetic. The quote element is `<blockquote>` so
+   screen readers announce it as a quote, not a paragraph.
+
+   #290: both branches always rendered with [hidden] toggling, so the JS
+   poll can switch between "have quote" and "empty" without creating DOM. #}
+<section class="hero" role="region" aria-labelledby="status-heading">
+  <div data-status-hero-full {% if not s.quote %}hidden{% endif %}>
+    <blockquote class="hero-quote" data-status-quote>{{ s.quote }}</blockquote>
+    <p class="hero-attribution">
+      {# Format locked in DESIGN.md "Component composition specs":
+         "— {Author}, *{Title}*  ·  {HH:MM}". Em-dash, italic title,
+         Geist Mono time. The static text in the prefix span — the dash,
+         author, and ", " before the title — is rebuilt by status.js as a
+         single string so we don't have to mirror Jinja's whitespace rules
+         in JS.
+
+         #290 /review fix: the '·&nbsp;' separator stays in the template
+         OUTSIDE the [data-status-attr-time] node that JS patches. The
+         original markup put '·&nbsp;{time}' inside one node — JS's
+         setText() would overwrite textContent to just the time, wiping
+         the locked separator after the first poll. Now JS only updates
+         the inner bare-time node; the '·&nbsp;' stays in the wrapper. #}
+      <span data-status-attr-prefix>— {{ s.author }}{% if s.title %}, {% endif %}</span><span
+            data-status-attr-title-wrap {% if not s.title %}hidden{% endif %}><em data-status-attr-title>{{ s.title or "" }}</em></span><span
+            data-status-attr-time-wrap {% if not s.time %}hidden{% endif %}> <span class="hero-time">·&nbsp;<span data-status-attr-time>{{ s.time or "" }}</span></span></span>
+    </p>
+  </div>
+  <p class="hero-empty" data-status-hero-empty {% if s.quote %}hidden{% endif %}>
+    <em>Starting up…</em>&nbsp; Your first quote should appear within a minute.
+  </p>
+  {# #309 — graceful disconnect state. Hidden on SSR; status.js reveals
+     this when /api/status polling fails (network error, timeout, non-OK)
+     and re-hides it on the next successful poll. role="alert" makes
+     screen readers announce when it transitions from [hidden] to visible,
+     satisfying DESIGN.md line 296 (aria-live="assertive" for errors).
+     Headline copy locked by DESIGN.md line 493; help copy approved by
+     user 2026-05-28 — non-technical vocabulary (no "IP," "Pi," "address")
+     per the gift-recipient persona. #}
+  <div class="hero-unreachable" data-status-hero-unreachable role="alert" hidden>
+    <p class="hero-unreachable-headline">
+      <em>Couldn't reach LitClock.</em>
+    </p>
+    <p class="hero-unreachable-help">A few things that often help:</p>
+    <ul class="hero-unreachable-tips">
+      <li>Make sure your clock is plugged in and the screen is lit</li>
+      <li>Try scanning the QR code on the clock again</li>
+      <li>Check that your phone is on the same WiFi as the clock</li>
+    </ul>
+    <button type="button" class="hero-unreachable-retry" data-status-retry>
+      Tap to retry
+    </button>
+  </div>
+</section>
+
+{# 5-row status list per DESIGN.md "Status row list".
+   Each row uses an explicit label-value pair so screen readers can pair
+   them via `aria-labelledby`. Geist Mono with tabular numerics on the
+   value side for SSID / version / uptime per the spec. #}
+<dl class="status-rows" aria-label="System status">
+  <div class="status-row">
+    <dt>WiFi</dt>
+    {# DESIGN.md "Status row list" line 379 locks SSID truncation at
+       18 chars. Jinja's `truncate(length, killwords=True, end='…')`
+       hard-cuts at the locked column count regardless of viewport
+       width — CSS ellipsis alone truncates at flex-allowed pixel
+       width, not 18 chars. Adversarial /review on M2 caught this. #}
+    <dd class="mono" data-status-wifi>{{ s.wifi_ssid|truncate(18, true, "…") if s.wifi_ssid else "—" }}</dd>
+  </div>
+  <div class="status-row">
+    <dt>Weather</dt>
+    <dd data-status-weather>{{ s.weather_city or "—" }}</dd>
+  </div>
+  <div class="status-row">
+    <dt>Version</dt>
+    <dd class="mono" data-status-version>{{ s.version or "—" }}</dd>
+  </div>
+  <div class="status-row">
+    <dt>Uptime</dt>
+    <dd class="mono" data-status-uptime>{{ s.uptime_human }}</dd>
+  </div>
+  <div class="status-row">
+    <dt>Last update</dt>
+    {# #330: render to_version + relative time. The version span is hidden
+       (via [hidden]) when last_update_version is null so we still degrade
+       to "just relative time" on lkg-sha-absent / fresh-install Pis.
+       status.js toggles [hidden] + textContent on poll without rebuilding
+       the DOM, keeping the mono SHA styling intact. The comma+space
+       separator lives in its own [data-…-sep] span for the same reason. #}
+    <dd data-status-last-update>
+      <span class="mono" data-status-last-update-version{% if not s.last_update_version %} hidden{% endif %}>{{ s.last_update_version or "" }}</span>
+      <span data-status-last-update-sep{% if not s.last_update_version %} hidden{% endif %}>,&nbsp;</span>
+      <span data-status-last-update-relative>{{ s.last_update_at_relative }}</span>
+    </dd>
+  </div>
+</dl>
+
+{# #309 (3) — opportunistic mDNS bookmark prompt. status.js probes
+   litclock.local on first load; if the phone can resolve it on this
+   network, this card unhides as a one-time opt-in to navigate to the
+   address-stable URL. Add-to-Home-Screen there gives the user a
+   bookmark that survives DHCP churn. Silent if probe fails; dismissal
+   persists in localStorage. Positioned BELOW the status rows so it
+   never competes with the hero — /review caught the original placement
+   between hero and rows as a hierarchy violation. #}
+<aside class="mdns-bookmark" data-mdns-bookmark role="region"
+       aria-label="More reliable connection available" hidden>
+  <p class="mdns-bookmark-headline">A more reliable link is available.</p>
+  <p class="mdns-bookmark-body">
+    Helps your clock keep working even when WiFi changes.
+  </p>
+  <div class="mdns-bookmark-actions">
+    <button type="button" class="mdns-bookmark-switch" data-mdns-switch>
+      Switch
+    </button>
+    <button type="button" class="mdns-bookmark-dismiss" data-mdns-dismiss>
+      Not now
+    </button>
+  </div>
+</aside>
+{% endblock %}
+
+{% block extra_body %}
+<script src="{{ url_for('static', filename='js/status.js') }}" defer></script>
+{% endblock %}

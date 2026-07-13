@@ -1,0 +1,58 @@
+#!/bin/bash
+#
+# LitClock — root-owned system-timezone setter (privilege wrapper for #387).
+#
+# geocoding.set_system_timezone (control_server / location resolver, run as pi)
+# needs to apply an IP-geo- or browser-detected timezone, i.e. `timedatectl
+# set-timezone <arbitrary-tz>`. sudoers/020 CANNOT authorize that directly
+# without a `set-timezone *` glob, which would let the pi user set the tz to
+# any attacker-chosen string that reaches the resolver. Instead 020 authorizes
+# THIS fixed-path wrapper, which re-validates the argument against the kernel's
+# own zoneinfo list before touching the clock. The security boundary is here,
+# in root-owned code, not in the pi-side caller (which sudoers cannot trust).
+#
+# Installed root:root 0755 to /usr/local/lib/litclock/ by install.sh / update.sh
+# / pi-gen so the pi user cannot rewrite it (the whole point — see #387 C1).
+#
+# Usage:  litclock-set-timezone <IANA-timezone>   e.g. America/Chicago
+# Exit:   0 on success; non-zero + stderr message otherwise.
+
+set -u
+
+TZ_ARG="${1:-}"
+
+if [ -z "$TZ_ARG" ]; then
+    echo "litclock-set-timezone: no timezone given" >&2
+    exit 2
+fi
+
+# Cheap structural pre-filter before shelling out: an IANA tz name is a small
+# alphabet (letters, digits, '/', '_', '+', '-'). Reject anything else up front
+# so a hostile argument can never reach the validation subprocess or the clock.
+case "$TZ_ARG" in
+    *[!A-Za-z0-9/_+-]*)
+        echo "litclock-set-timezone: illegal characters in timezone '$TZ_ARG'" >&2
+        exit 2
+        ;;
+esac
+
+# Resolve timedatectl via PATH. This wrapper ONLY ever runs under `sudo`
+# (sudoers/020), whose env_reset + secure_path force a trusted, root-owned PATH
+# (/usr/bin etc.), so `timedatectl` cannot be hijacked by the pi caller — while
+# staying stubbable via PATH in tests (which don't go through sudo). Deliberately
+# NOT an env-var binary override (e.g. LITCLOCK_TIMEDATECTL): a future `env_keep`
+# leaking such a var across sudo would be a root-code-execution hole.
+TIMEDATECTL=$(command -v timedatectl 2>/dev/null) || TIMEDATECTL=""
+if [ -z "$TIMEDATECTL" ]; then
+    echo "litclock-set-timezone: timedatectl not found on PATH" >&2
+    exit 4
+fi
+
+# Authoritative validation: the tz MUST be one timedatectl itself recognises.
+# grep -Fxq = fixed-string, whole-line, quiet — no regex metachar surprises.
+if ! "$TIMEDATECTL" list-timezones 2>/dev/null | grep -Fxq -- "$TZ_ARG"; then
+    echo "litclock-set-timezone: unknown timezone '$TZ_ARG'" >&2
+    exit 3
+fi
+
+exec "$TIMEDATECTL" set-timezone "$TZ_ARG"

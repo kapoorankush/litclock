@@ -1,0 +1,132 @@
+name: Corpus integrity
+
+# #299 enforcement layer.
+#
+# Goal: prevent CSV edits from landing without a matching image release. The
+# bug we're guarding against is "edit the CSV, forget to re-run corpus_edit
+# ship, merge anyway, ship desynced PNGs to every Pi" — the exact path that
+# produced the 940 at-risk buckets observed on test Pi 192.168.2.132 in May
+# 2026. Local pre-commit hooks were considered and rejected (codex-flagged
+# bypassable via web edits, squash merges, --no-verify, missing-install).
+# Required CI is the only enforceable gate.
+#
+# Trigger: PRs touching image-gen/litclock_annotated.csv only. Other PRs
+# skip this workflow entirely (paths filter).
+#
+# Checks (in order; first failure aborts):
+#   1. .images-version was bumped vs base (otherwise no new release was cut).
+#   2. The expected litclock-images-vN release exists on GitHub.
+#   3. The release publishes manifest.json as a top-level asset.
+#   4. manifest.corpus_hash == sha1(PR's image-gen/litclock_annotated.csv).
+#
+# Auth: GITHUB_TOKEN (ambient, no secrets needed for own-repo release reads).
+
+on:
+  pull_request:
+    paths:
+      - 'image-gen/litclock_annotated.csv'
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify CSV matches images release manifest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # Explicit repository pin makes fork-PR runs work: with `pull_request`
+          # (not pull_request_target) the runner clones the base by default,
+          # but the fork's head SHA only exists on the fork. Pin both.
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Resolve PR and base .images-version
+        id: versions
+        run: |
+          set -euo pipefail
+          if [ ! -f .images-version ]; then
+            echo "::error file=.images-version::.images-version missing on PR head" >&2
+            exit 1
+          fi
+          PR_VERSION=$(tr -d '[:space:]' < .images-version)
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          BASE_VERSION=$(git show "$BASE_SHA:.images-version" 2>/dev/null | tr -d '[:space:]' || true)
+          echo "PR_VERSION=$PR_VERSION" >> "$GITHUB_OUTPUT"
+          echo "BASE_VERSION=$BASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Base   .images-version: ${BASE_VERSION:-<missing>}"
+          echo "PR     .images-version: ${PR_VERSION}"
+          if [ -z "$PR_VERSION" ]; then
+            echo "::error::PR .images-version is empty" >&2
+            exit 1
+          fi
+          # Mirror release_images.sh's format check so a malformed pin fails
+          # with a clear message instead of a confusing "release not found".
+          if ! [[ "$PR_VERSION" =~ ^v[0-9]+$ ]]; then
+            echo "::error::PR .images-version $PR_VERSION is not in vN format (must match ^v[0-9]+$)." >&2
+            exit 1
+          fi
+          if [ "$PR_VERSION" = "$BASE_VERSION" ]; then
+            echo "::error::CSV changed but .images-version was not bumped (still $PR_VERSION)." >&2
+            echo "::error::Re-ship via: python3 image-gen/corpus_edit.py ship \"<message>\"" >&2
+            exit 1
+          fi
+
+      - name: Locate release and download manifest.json
+        id: fetch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_VERSION: ${{ steps.versions.outputs.PR_VERSION }}
+        run: |
+          set -euo pipefail
+          RELEASE_TAG="litclock-images-${PR_VERSION}"
+          echo "Looking up release: $RELEASE_TAG (repo: $GH_REPO)"
+
+          # --repo forces base-repo lookups even when running in a fork checkout.
+          if ! gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json tagName >/dev/null 2>&1; then
+            echo "::error::Release $RELEASE_TAG not found in $GH_REPO." >&2
+            echo "::error::CSV change must be paired with a matching litclock-images-${PR_VERSION} release." >&2
+            echo "::error::Cut the release via scripts/release_images.sh ${PR_VERSION} (or rerun corpus_edit.py ship)." >&2
+            exit 1
+          fi
+
+          if ! gh release download "$RELEASE_TAG" --repo "$GH_REPO" --pattern manifest.json --dir "$RUNNER_TEMP"; then
+            echo "::error::Release $RELEASE_TAG has no manifest.json asset." >&2
+            echo "::error::Re-cut the release with the post-#299 release_images.sh." >&2
+            exit 1
+          fi
+          echo "MANIFEST_PATH=$RUNNER_TEMP/manifest.json" >> "$GITHUB_OUTPUT"
+
+      - name: Compare manifest.corpus_hash to PR CSV
+        env:
+          MANIFEST_PATH: ${{ steps.fetch.outputs.MANIFEST_PATH }}
+        run: |
+          set -euo pipefail
+          MANIFEST_HASH=$(python3 -c '
+          import json, sys, os
+          with open(os.environ["MANIFEST_PATH"]) as f:
+              m = json.load(f)
+          h = m.get("corpus_hash")
+          if not h:
+              sys.stderr.write("manifest.json has no corpus_hash field\n")
+              sys.exit(1)
+          print(h)
+          ')
+          ACTUAL_HASH=$(python3 -c '
+          import hashlib, sys
+          with open("image-gen/litclock_annotated.csv", "rb") as f:
+              print(hashlib.sha1(f.read()).hexdigest())
+          ')
+          echo "Manifest corpus_hash:  $MANIFEST_HASH"
+          echo "PR CSV  corpus_hash:   $ACTUAL_HASH"
+          if [ "$MANIFEST_HASH" != "$ACTUAL_HASH" ]; then
+            echo "::error::Corpus hash mismatch — release was built from a different CSV than this PR." >&2
+            echo "::error::Re-ship via: python3 image-gen/corpus_edit.py ship \"<message>\"" >&2
+            exit 1
+          fi
+          echo "OK — release manifest matches PR CSV."

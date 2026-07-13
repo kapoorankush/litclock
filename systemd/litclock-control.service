@@ -1,0 +1,84 @@
+[Unit]
+Description=LitClock Control PWA
+Documentation=https://github.com/kapoorankush/litclock/issues/245
+After=sysinit.target NetworkManager.service litclock-firstboot.service
+Wants=NetworkManager.service
+# #343: never give up permanently. If the port-80 bind fails because the
+# ip_unprivileged_port_start sysctl hasn't applied (e.g. an OTA where the live
+# `sysctl -w` errored), the default StartLimit (5 starts / 10s) would wedge the
+# unit in `failed` — a bricked management surface with no SSH recovery on a
+# flashed image. Disabling the limit keeps it retrying; the sysctl FILE is
+# installed, so the next reboot's systemd-sysctl applies the knob and the bind
+# then succeeds (self-heal across reboot). RestartSec=5 bounds the retry rate.
+StartLimitIntervalSec=0
+# Setup must complete before the control surface comes up. firstboot's
+# setup_server owns the device during provisioning (HTTPS on 8443 for the iOS
+# captive trust dance); control_server takes over once
+# /etc/litclock/.setup-complete exists (locked PLAN A2). They're mutually
+# exclusive in time by design — not by port: #343 moved control_server to
+# plain HTTP on port 80 (so a recipient never types a port), while setup_server
+# stays on 8443. The port-80 bind works because After=sysinit.target orders this
+# unit after systemd-sysctl.service applies
+# /etc/sysctl.d/30-litclock-unprivileged-ports.conf (ip_unprivileged_port_start=80).
+ConditionPathExists=/etc/litclock/.setup-complete
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/litclock
+ExecStart=/home/pi/litclock/venv/bin/python3 /home/pi/litclock/src/control_server/app.py
+Restart=on-failure
+RestartSec=5
+# SIGTERM closes the listening socket and the accept-loop exits; cap the
+# graceful-stop window so update.sh's `systemctl restart` doesn't hang on
+# a stuck process.
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+# #416 (eng-review E1=B): LITCLOCK_CONTROL_THREADS bumped from default 4
+# to 8 so the live-logs SSE stream + a small handful of concurrent /api/*
+# polls can coexist without thread starvation. Each waitress thread
+# allocates a ~1 MB stack only when active; idle threads are cheap. The
+# SSE endpoint also enforces a per-process cap of 6 concurrent streams
+# (OV-2=A), so the worst case here is 6 SSE + 2 free threads for /api/*
+# polls — well inside the Pi Zero 2W's ~30 MB control_server RSS budget.
+# All Environment= values share one directive: configparser (used by the
+# unit-shape tests) rejects duplicate keys, and merging is the safer
+# stylistic norm for short value lists anyway.
+Environment="LITCLOCK_DIR=/home/pi/litclock" "LITCLOCK_ENV_FILE=/home/pi/litclock/env.sh" "LITCLOCK_CONTROL_THREADS=8"
+
+# NO systemd sandboxing directives. M4's system actions invoke `sudo
+# /usr/bin/systemctl reboot|poweroff` via the narrow allowlist in
+# /etc/sudoers.d/020_litclock-control. sudo is setuid root; setuid
+# elevation requires the kernel "no new privileges" bit to be off.
+#
+# Per `man systemd.exec`, when a service runs as a non-root User= (pi
+# here), essentially every sandboxing directive — PrivateTmp,
+# ProtectSystem, ProtectHome, RestrictAddressFamilies, LockPersonality,
+# MemoryDenyWriteExecute, SystemCallFilter, RestrictSUIDSGID,
+# RestrictNamespaces, ProtectKernel* — implicitly enables
+# NoNewPrivileges. Caught three times on Pi hardware QA pre-merge:
+# stripping NoNewPrivileges=yes was not enough; stripping
+# LockPersonality=yes was not enough; the kernel /proc/$pid/status
+# NoNewPrivs bit stayed at 1 as long as ANY sandboxing directive
+# survived alongside User=pi.
+#
+# We cannot have systemd sandboxing AND sudo elevation under User=pi.
+# Pick one. M4 picks elevation — the destructive-action gate is the
+# point of the milestone. NoNewPrivileges=no is set explicitly so the
+# intent is loud (defaults to no anyway, but a future "add some
+# hardening back" edit needs to confront this comment first).
+#
+# Defense-in-depth note: 010_pi-nopasswd already grants pi NOPASSWD:ALL
+# system-wide, so service-level hardening was protecting very little to
+# begin with. Any RCE that yields a pi-uid shell can already sudo to
+# root via 010. The 020 sudoers drop remains the audit surface.
+#
+# Long-term fix (tracked as a follow-up): migrate to polkit + D-Bus calls
+# against org.freedesktop.systemd1.Manager.Reboot()/PowerOff() and drop
+# the sudo dependency entirely. That lets the sandboxing directives
+# come back — polkit gates without setuid, so NNP can stay on.
+NoNewPrivileges=no
+
+[Install]
+WantedBy=multi-user.target

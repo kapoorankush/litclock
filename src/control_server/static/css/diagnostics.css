@@ -1,0 +1,706 @@
+/* Diagnostics page (#416 PR3a).
+ *
+ * Design tokens come from tokens.css (--bg / --surface / --sp-* / --r-* /
+ * --fs-* / --ease-ios / etc). This stylesheet is loaded ONLY on the
+ * /diagnostics route via base.html.j2's {% block extra_head %} slot — keeps
+ * the byte cost off the Status / Settings / System / Updates tabs the
+ * owner persona actually visits.
+ *
+ * D22 — Font assignments locked:
+ *   .status-banner__title / .diag-section__title → Fraunces variable italic
+ *   body / buttons / labels → Instrument Sans (--font-sans)
+ *   .mono dd cells, mono spans → Geist Mono (--font-mono)
+ *   pre.diag-service__tail → JetBrains Mono fallback via --font-mono
+ *
+ * D23 — New mono-size tokens. Locked here (vs tokens.css) because they're
+ * diagnostics-page-specific:
+ *   --fs-mono-log: log entries (tighter for density)
+ *   --fs-mono-row: dd cells (matches body line-height)
+ *
+ * D24 — Foxed amber on --surface-raised needs --accent-muted (#8C4318)
+ * for 6:1 contrast. Applied to all anchor-on-card surfaces.
+ *
+ * D11 — Reduce-motion: caret rotates instantly, skeleton shimmer off.
+ */
+
+/* CSS variables local to the diagnostics page. Anchored on .diag-sections
+   so they're always present even when the banner is hidden.
+   TODO(#416-followup): hoist to tokens.css when Status/Updates adopts the
+   same mono-cell density (issue #419). */
+.diag-sections {
+  --fs-mono-log: clamp(12px, 0.8125rem, 17px);
+  --fs-mono-row: clamp(12px, 0.8125rem, 18px);
+}
+
+/* ---------- Status banner (D1 + D29) -------------------------------------- */
+
+.status-banner {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--sp-md);
+  margin: var(--sp-lg) var(--sp-lg) var(--sp-xl);
+  padding: var(--sp-lg);
+  background: var(--surface-raised);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--hairline);
+}
+
+.status-banner__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-full);
+}
+
+.status-banner__icon--ok {
+  background: rgba(79, 110, 58, 0.12); /* --success @ 12% */
+  color: var(--success);
+}
+
+.status-banner__icon--warning {
+  background: rgba(198, 138, 31, 0.15); /* --warning @ 15% */
+  color: var(--warning);
+}
+
+/* #432 D6 — settling tier: neutral graphite icon for the "Just settling
+   in." banner. Distinct from --warning ochre and --error oxblood so the
+   gift-recipient persona doesn't read alarm into a fresh-flash state. */
+.status-banner__icon--settling {
+  background: rgba(107, 92, 74, 0.12); /* --ink-muted @ 12% */
+  color: var(--ink-muted);
+}
+
+/* #432 D6 — settling banner: NO border-top accent (neither --warning
+   ochre nor --error oxblood would alarm the persona). The banner
+   container's base border + surface-raised carries the visual frame. */
+.status-banner--settling .status-banner__title {
+  /* Stay on --ink (default) — the settling state is calmer than warning. */
+  color: var(--ink);
+}
+
+/* #432 D6 — banner body line is rendered only for the settling tier.
+   Sits between title and meta; section-aware copy comes from the D6
+   lookup table (template + JS share the same map). */
+.status-banner__body {
+  margin: var(--sp-2xs) 0 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+/* D29 / /review fix F-D29-COLOR: services + recent-log-entries anomaly
+   escalates to the oxblood --error variant. CSS class is set by the
+   template (via _severity Jinja set) AND by diagnostics.js's
+   patchBanner(). The two stay in lockstep because bannerSeverity() in
+   the JS mirrors the Jinja conditional. */
+.status-banner--error .status-banner__icon--warning {
+  background: rgba(154, 46, 34, 0.12); /* --error @ 12% */
+  color: var(--error);
+}
+
+.status-banner--error .status-banner__title {
+  color: var(--error);
+}
+
+.status-banner__copy {
+  min-width: 0;
+}
+
+.status-banner__title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 500;
+  font-size: var(--fs-lede);
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.status-banner__meta {
+  margin: var(--sp-2xs) 0 0;
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+  font-size: var(--fs-caption);
+  color: var(--ink-muted);
+}
+
+.status-banner__meta[data-diag-meta-refreshing] {
+  font-style: italic;
+}
+
+/* /review fix F-FAILURE-MASKED: a persistent indicator for consecutive
+   refresh failures. Set by diagnostics.js when state.consecutiveFailures
+   > 0; the meta-ticker swaps the text to "Last refresh failed —
+   retrying". */
+.status-banner__meta[data-diag-meta-failed] {
+  color: var(--error);
+  font-style: italic;
+}
+
+.status-banner__sep {
+  /* Geist Mono · dot with surrounding nbsp from the template. */
+}
+
+/* Reveal pill — D1 + F12 ON state.
+   On state borrows the segmented-pill OFF look from settings.css for
+   visual consistency with the existing toggle pattern; the F12 ON state
+   inverts to --ink fill / --bg label.
+
+   /review fix F-PILL-ABSOLUTE: pre-/review the pill was min-height: 36px
+   with a position:absolute ::after pseudo-element claiming to extend the
+   tap target to 44pt. The parent had no position: relative so the
+   pseudo-element anchored to some far-up ancestor (broken) AND a
+   pseudo-element does not extend the click hit-area of a <button>.
+   Real tap target was ~36px, below WCAG 2.5.5. Now: explicit 44px
+   min-height matches the locked DESIGN.md tap target. */
+.reveal-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-xs);
+  padding: var(--sp-sm) var(--sp-md);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-full);
+  color: var(--ink-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  cursor: pointer;
+  min-height: 44px;
+}
+
+.reveal-pill[aria-pressed="true"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--bg);
+}
+
+.reveal-pill__icon {
+  display: inline-block;
+}
+
+.reveal-pill__label {
+  font-weight: 500;
+}
+
+/* ---------- Sections (D3 + D4) ------------------------------------------- */
+
+.diag-sections {
+  margin: 0 var(--sp-lg) var(--sp-2xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-md);
+}
+
+.diag-section {
+  background: var(--surface);
+  border-radius: var(--r-md);
+  border: 1px solid var(--hairline);
+}
+
+/* D4 — 2px left-border on anomaly sections only. /review fix: pre-/review
+   the 2px stripe rendered on every section in --hairline; the locked
+   spec wants the visual cue ONLY when the section is anomalous.
+   D33 RTL prep: border-inline-start swaps automatically under
+   [dir="rtl"] so the visual cue stays on the reading-start side. */
+.diag-section--anomalous {
+  border-inline-start: 2px solid var(--warning);
+}
+
+.diag-section__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: var(--sp-md) var(--sp-lg);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  /* Native disclosure marker hidden — we render our own caret. */
+}
+
+.diag-section__summary::-webkit-details-marker {
+  display: none;
+}
+
+.diag-section__title {
+  flex: 1;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 500;
+  font-size: var(--fs-body);
+  color: var(--ink);
+}
+
+.diag-section__caret {
+  display: inline-flex;
+  color: var(--ink-muted);
+  transition: transform var(--t-micro) var(--ease-ios);
+}
+
+.diag-section[open] .diag-section__caret {
+  transform: rotate(180deg);
+}
+
+/* Anomaly pill — D4 + D10 (#432).
+   Four states: ok (success) / muted (uncollected) / warning / error.
+   6pt dot + label. The 1px transparent border prevents layout shift when
+   the muted state swaps in a visible 1px hairline border on transition. */
+.diag-section__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-xs);
+  padding: var(--sp-2xs) var(--sp-sm);
+  border-radius: var(--r-full);
+  border: 1px solid transparent;
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+}
+
+.diag-section__pill-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: currentColor;
+}
+
+.diag-section__pill--ok {
+  color: var(--success);
+  background: rgba(79, 110, 58, 0.10);
+}
+
+/* #432 — "Not yet collected" tier. Token-driven, NOT warm-ochre — see the
+   plan's Reference mockup caveat: dot is graphite #6B5C4A (--ink-muted),
+   distinct from the warning ochre #C68A1F. The pill label uses --ink for
+   AAA contrast independent of the dot color. */
+.diag-section__pill--muted {
+  color: var(--ink);
+  background: var(--surface-raised);
+  border-color: var(--hairline);
+}
+
+.diag-section__pill--muted .diag-section__pill-dot {
+  /* dot is graphite #6B5C4A — distinct from warning ochre #C68A1F */
+  background: var(--ink-muted);
+}
+
+.diag-section__pill--warning {
+  color: var(--warning);
+  background: rgba(198, 138, 31, 0.14);
+}
+
+.diag-section__pill--error {
+  color: var(--error);
+  background: rgba(154, 46, 34, 0.10);
+}
+
+/* #432 D7 — italic placeholder for an uncollected section's row area.
+   Section-aware copy lives in the template (D6 lookup map). NO timing
+   claim ("within a minute" was the C2-flagged lie). */
+.diag-rows-placeholder {
+  margin: 0;
+  padding: var(--sp-md) var(--sp-lg) var(--sp-lg);
+  color: var(--ink-muted);
+  font-family: var(--font-sans);
+  font-style: italic;
+  font-size: var(--fs-small);
+}
+
+/* #432 D11 — after 2 consecutive poll failures, dim ALL section pills to
+   60% opacity so the user can see at-a-glance "this surface is stale."
+   The page-level disconnect copy ("Couldn't reach LitClock") is the
+   primary signal; this is the per-pill reinforcement. */
+.diag-sections[data-poll-stale="true"] .diag-section__pill {
+  opacity: 0.6;
+}
+
+/* Rows. D20 — long-SSID wrap behavior. */
+.diag-rows {
+  margin: 0;
+  padding: var(--sp-md) var(--sp-lg) var(--sp-lg);
+  display: grid;
+  grid-template-columns: minmax(0, max-content) 1fr;
+  column-gap: var(--sp-lg);
+  row-gap: var(--sp-sm);
+}
+
+.diag-row {
+  display: contents;
+}
+
+.diag-row dt {
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+.diag-row dd {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  color: var(--ink);
+  /* D20: word-break + overflow-wrap so long SSIDs / paths don't blow out
+     the layout. min-width: 0 on the grid column already; the dd just
+     needs to wrap rather than ellipsize when expanded. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.diag-row dd.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+  font-size: var(--fs-mono-row);
+  /* Max-width keeps mono cells from monopolising the row when the value
+     is one giant unbroken token (e.g. a 40-char redacted token). */
+  max-width: 60%;
+}
+
+/* Collapsed-state ellipsis: when the <details> is closed, the dd would
+   be hidden anyway — but ensure no overflow leaks via the row dot-grid. */
+.diag-section:not([open]) .diag-row dd {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Services section ---------------------------------------------- */
+
+.diag-services {
+  margin: 0;
+  padding: var(--sp-md) var(--sp-lg) var(--sp-lg);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-md);
+}
+
+.diag-service__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-sm);
+}
+
+.diag-service__name {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-row);
+  color: var(--ink);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.diag-service__state {
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  padding: var(--sp-2xs) var(--sp-sm);
+  border-radius: var(--r-sm);
+  background: var(--surface-raised);
+  color: var(--ink-muted);
+}
+
+/* #463 — `settled-ok` is a oneshot resting at its by-design `inactive` state.
+   It is healthy, not idle-broken, so it shares `active`'s botanical-green
+   --success tone: a non-tech recipient reads "fine" at a glance instead of
+   misreading the calm idle row as a fault. Chip TEXT stays the literal
+   `inactive`; only the tone moves (grey base -> green). The `transient-ok`
+   tone below stays neutral graphite for the mid-paint window (#449). */
+.diag-service__state--active,
+.diag-service__state--settled-ok {
+  background: rgba(79, 110, 58, 0.10);
+  color: var(--success);
+}
+
+.diag-service__state--failed,
+.diag-service__state--deactivating,
+.diag-service__state--activating {
+  background: rgba(198, 138, 31, 0.14);
+  color: var(--warning);
+}
+
+/* #449 — a oneshot (litclock.service) caught mid-paint in activating/
+   deactivating is the normal per-minute lifecycle, not a fault: the section
+   pill correctly reads OK (#443), so the row chip must read neutral too, not
+   warning-ochre. The server emits the `transient-ok` modifier only for that
+   case (non-oneshot activating/deactivating + any failed keep the ochre
+   rule above). Neutral graphite == the base chip tone. */
+.diag-service__state--transient-ok {
+  background: var(--surface-raised);
+  color: var(--ink-muted);
+}
+
+.diag-service__tail {
+  margin: var(--sp-sm) 0 0;
+  padding: var(--sp-sm) var(--sp-md);
+  background: var(--bg);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--hairline);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-log);
+  color: var(--ink-muted);
+  overflow-x: auto;
+}
+
+.diag-service__tail code {
+  white-space: pre;
+}
+
+.diag-service__no-journal {
+  margin: var(--sp-sm) 0 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  color: var(--accent-muted);
+}
+
+.diag-service__no-journal code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-log);
+  padding: 0 var(--sp-2xs);
+  background: var(--surface-raised);
+  border-radius: var(--r-sm);
+}
+
+/* ---------- Recent log entries (snapshot) -------------------------------- */
+
+.diag-log-snapshot {
+  margin: 0;
+  padding: var(--sp-md) var(--sp-lg) var(--sp-sm);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2xs);
+}
+
+.diag-log-entry {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: var(--sp-sm);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-log);
+  color: var(--ink);
+  /* Tabindex=0 in template — provide focus styles. */
+}
+
+.diag-log-entry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  background: var(--surface-raised);
+}
+
+.diag-log-entry__time {
+  color: var(--ink-muted);
+}
+
+.diag-log-entry__level {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: var(--fs-caption);
+}
+
+.diag-log-entry--info .diag-log-entry__level    { color: var(--ink-muted); }
+.diag-log-entry--warning .diag-log-entry__level,
+.diag-log-entry--warn .diag-log-entry__level    { color: var(--warning); }
+.diag-log-entry--error .diag-log-entry__level,
+.diag-log-entry--critical .diag-log-entry__level { color: var(--error); }
+
+.diag-log-entry__msg {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* D10 — per-row Copy on focus. Hidden until the row is focused or
+   hovered so it doesn't clutter the static density. */
+.diag-log-entry__copy {
+  background: transparent;
+  border: none;
+  color: var(--ink-muted);
+  padding: var(--sp-2xs);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--t-micro) var(--ease-ios);
+  border-radius: var(--r-sm);
+  min-width: 28px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.diag-log-entry:hover .diag-log-entry__copy,
+.diag-log-entry:focus-within .diag-log-entry__copy,
+.diag-log-entry__copy:focus-visible {
+  opacity: 1;
+}
+
+.diag-log-entry__copy:hover,
+.diag-log-entry__copy:focus-visible {
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+
+.diag-log-empty {
+  padding: var(--sp-md) var(--sp-sm);
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  font-style: italic;
+  color: var(--ink-muted);
+  list-style: none;
+}
+
+.diag-log-snapshot__footer {
+  margin: var(--sp-md) var(--sp-lg) var(--sp-lg);
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  color: var(--ink-muted);
+}
+
+.diag-log-snapshot__drawer-link {
+  /* D24 — anchor on surface-raised uses --accent-muted for 6:1 contrast. */
+  color: var(--accent-muted);
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.diag-log-snapshot__pending {
+  display: block;
+  margin-top: var(--sp-xs);
+  font-style: italic;
+}
+
+/* ---------- Copy support payload card (D18) ----------------------------- */
+
+.diag-copy {
+  margin: var(--sp-2xl) var(--sp-lg) var(--sp-3xl);
+  padding: var(--sp-lg);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+}
+
+.diag-copy__title {
+  margin: 0 0 var(--sp-sm);
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 500;
+  font-size: var(--fs-lede);
+  color: var(--ink);
+}
+
+.diag-copy__description {
+  margin: 0 0 var(--sp-md);
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+[data-diag-copy-reveal-state] {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.diag-copy__block {
+  margin: 0 0 var(--sp-md);
+  padding: var(--sp-md);
+  background: var(--bg);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-log);
+  color: var(--ink);
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diag-copy__block code {
+  font-family: inherit;
+}
+
+.diag-copy__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.diag-copy__button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-xs);
+  padding: var(--sp-sm) var(--sp-lg);
+  background: var(--ink);
+  color: var(--bg);
+  border: 1px solid var(--ink);
+  border-radius: var(--r-md);
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 44px;
+}
+
+.diag-copy__button:hover,
+.diag-copy__button:focus-visible {
+  background: var(--accent-muted);
+  border-color: var(--accent-muted);
+}
+
+.diag-copy__button[data-diag-copy-success="true"] {
+  background: var(--success);
+  border-color: var(--success);
+}
+
+/* (`.visually-hidden` lives in tokens.css — base.html.j2 always loads
+    that stylesheet, so no local re-declaration. /review fix.) */
+
+/* ---------- Dark mode adjustments --------------------------------------- */
+
+@media (prefers-color-scheme: dark) {
+  /* Most tokens flip via tokens.css; specifically tune the pill alphas
+     so they read on the deeper canvas. */
+  .status-banner__icon--ok                 { background: rgba(167, 198, 130, 0.16); }
+  .status-banner__icon--warning            { background: rgba(212, 165, 79, 0.18); }
+  .status-banner--error .status-banner__icon--warning { background: rgba(212, 92, 76, 0.18); }
+  .diag-section__pill--ok                  { background: rgba(167, 198, 130, 0.16); }
+  .diag-section__pill--warning             { background: rgba(212, 165, 79, 0.20); }
+  .diag-section__pill--error               { background: rgba(212, 92, 76, 0.18); }
+  /* #432 — settling icon on dark canvas. Matches the rest of the
+     dark-mode block: rgba derived from the dark-mode --ink-muted (#9A8B73)
+     at the same alpha as --ok (16%). Without this the rgba in the light-
+     mode block stays warm-tan against the deeper canvas while the icon
+     foreground (var(--ink-muted) token) flips — visual mismatch. */
+  .status-banner__icon--settling           { background: rgba(154, 139, 115, 0.16); }
+  /* #463 — settled-ok shares active's healthy green, so it needs the same
+     dark-tuned background here too (the light-mode rule groups them; without
+     this line the light green tint sits muddy on the dark canvas). */
+  .diag-service__state--active,
+  .diag-service__state--settled-ok         { background: rgba(167, 198, 130, 0.16); }
+  .diag-service__state--failed,
+  .diag-service__state--deactivating,
+  .diag-service__state--activating         { background: rgba(212, 165, 79, 0.20); }
+}
+
+/* Drawer link is rendered disabled in PR3a (drawer ships in PR3b). */
+.diag-log-snapshot__drawer-link[disabled] {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--ink-muted);
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+
+/* ---------- Reduce motion (D11) ----------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .diag-section__caret              { transition: none; }
+  .reveal-pill                      { transition: none; }
+  .diag-log-entry__copy             { transition: none; }
+}

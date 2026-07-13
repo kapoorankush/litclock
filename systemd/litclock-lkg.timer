@@ -1,0 +1,27 @@
+[Unit]
+Description=LitClock Last-Known-Good writer cadence
+Documentation=https://github.com/kapoorankush/litclock/issues/241
+# Drives litclock-lkg.service as a poll loop. The service itself is now a
+# fast oneshot (~50ms) that checks three gates (post-update grace, fresh
+# heartbeat, HEAD-vs-recorded) and writes lkg-sha when all pass.
+#
+# OnBootSec=10min — first poll fires 10 minutes after boot, giving the
+# tmpfs heartbeat a few render cycles to materialize. Matches the original
+# heartbeat-window intent without using sleep().
+# OnActiveSec=10min — same 10-min delay measured from when the timer
+# itself was started. This is the crucial path for mid-uptime installs:
+# update.sh enables this timer on a running Pi where boot was hours ago,
+# so OnBootSec is in the past and never fires. Without OnActiveSec the
+# LKG writer would sit dormant until the next reboot.
+# OnUnitActiveSec=5min — subsequent polls every 5 minutes. Cheap when the
+# gates fail (no work), trivial when they pass (one git rev-parse + atomic
+# write). No RandomizedDelaySec — alignment doesn't matter for a local poll.
+
+[Timer]
+OnBootSec=10min
+OnActiveSec=10min
+OnUnitActiveSec=5min
+Unit=litclock-lkg.service
+
+[Install]
+WantedBy=timers.target

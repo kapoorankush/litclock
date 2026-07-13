@@ -1,0 +1,114 @@
+#!/bin/sh
+# NetworkManager dispatcher: re-render the LitClock e-ink when wlan0's
+# IP changes, so the corner QR stops advertising a stale address after
+# DHCP churn (router reboot, WiFi reconnect, lease expiry). Fixes the
+# UX side of #309.
+#
+# Gated on /etc/litclock/.handoff-complete so it does NOT fire during
+# first-boot hotspot teardown — during setup, litclock.service isn't
+# running yet and there's nothing to repaint.
+#
+# Install: scripts/install.sh, scripts/update.sh (Phase 5c), and
+# pi-gen/stage3/03-install-services/00-run.sh copy this file to
+# /etc/NetworkManager/dispatcher.d/99-litclock-ip-change with mode
+# 0755 root:root. Do not edit the installed copy — edit the source in
+# the repo and re-run update.sh.
+#
+# Runtime dependency (#387 C1): this dispatcher runs as ROOT and invokes the
+# ROOT-OWNED /usr/local/lib/litclock/litclock-mark-collected.sh, installed by
+# the same three sites. Never wire it back to a pi-writable path.
+
+set -eu
+
+INTERFACE="${1:-}"
+ACTION="${2:-}"
+
+# Only react to events on the WiFi interface. The Pi Zero 2W stock
+# image only ever brings up wlan0; this filter also keeps us safe if
+# the user later adds USB ethernet or a USB-WiFi dongle that grabs a
+# different name and shouldn't trigger our re-render.
+[ "$INTERFACE" = "wlan0" ] || exit 0
+
+# Skip until the first-boot handoff is done. Without this gate, every
+# hotspot teardown during initial setup would queue a litclock.service
+# start before the service is ready to render real quotes.
+[ -f /etc/litclock/.handoff-complete ] || exit 0
+
+case "$ACTION" in
+    up|dhcp4-change|dhcp6-change) ;;
+    *) exit 0 ;;
+esac
+
+# Record "network data has been collected on this Pi" in the persistent
+# marker (#445) BEFORE the same-IP short-circuit below — reaching here means
+# wlan0 is up with networking, which is exactly what the /diagnostics Network
+# section reports, so even an unchanged-IP lease renewal should refresh the
+# marker. This is what makes the grey "Not yet collected" tier stop flashing
+# for ~5-10s after every reboot (the marker survives reboot; the old
+# /run/litclock check did not). Best-effort: the helper always exits 0.
+#
+# #387 C1: this dispatcher runs as ROOT, so it invokes the ROOT-OWNED copy at
+# /usr/local/lib/litclock — NOT /home/pi/litclock/scripts (pi-writable, which
+# would be a pi→root escalation on the next DHCP event once 010_pi-nopasswd is
+# dropped). Deliberately NO fallback to the repo copy: running the pi-writable
+# script as root is the exact escalation this closes. A missing installed copy
+# just skips the marker refresh, which the /diagnostics read side tolerates via
+# its legacy tmpfs check.
+if [ -x /usr/local/lib/litclock/litclock-mark-collected.sh ]; then
+    /usr/local/lib/litclock/litclock-mark-collected.sh network 2>/dev/null || true
+fi
+
+# Same-IP short-circuit (#309 /review adversarial finding A4): NM fires
+# `dhcp4-change` on every DHCP lease renewal — including renewals that
+# keep the same IP. Without this guard, a 12-hour lease would gratuitously
+# re-render the e-ink at every renewal, and a flapping AP that emits
+# periodic dhcp4-change events could queue unbounded litclock.service
+# starts (each render holds the SPI bus, blocking the legitimate
+# minute-tick render and burning panel cycles). Marker lives on tmpfs;
+# tmpfiles.d/litclock.conf creates /run/litclock at every boot, so the
+# `mkdir -p` below is defensive only.
+MARKER=/run/litclock/last-rendered-ip
+# #387 C2: this dispatcher runs as ROOT and /run/litclock is 0755 pi pi, so a
+# pi-planted symlink at $MARKER would make the read/write below touch an
+# arbitrary file as root. Refuse to follow a symlink — drop it and treat as
+# "no previous IP" (a fresh regular file is written below). The residual TOCTOU
+# (replant between this drop and the write) needs a pi shell, which post-010 is
+# confined to the scoped sudoers commands.
+if [ -L "$MARKER" ]; then
+    rm -f "$MARKER" 2>/dev/null || true
+fi
+CURRENT_IP=$(ip -4 -o addr show wlan0 2>/dev/null | awk 'NR==1{split($4,a,"/"); print a[1]}' || true)
+LAST_IP=""
+if [ -n "${CURRENT_IP:-}" ] && [ -f "$MARKER" ] && [ ! -L "$MARKER" ]; then
+    LAST_IP=$(cat "$MARKER" 2>/dev/null || true)
+    if [ "$CURRENT_IP" = "$LAST_IP" ]; then
+        # Same IP as the last render — nothing to repaint. Stay quiet
+        # so the journal doesn't fill up under long-stable connections.
+        exit 0
+    fi
+fi
+
+# Record the new IP BEFORE firing the render so a rapid follow-up event
+# (e.g., `up` immediately followed by `dhcp4-change`) doesn't double-fire.
+if [ -n "${CURRENT_IP:-}" ]; then
+    mkdir -p /run/litclock 2>/dev/null || true
+    # Re-drop a symlink immediately before the redirect (best-effort vs a
+    # persistent-symlink attack; see the C2 note above).
+    if [ -L "$MARKER" ]; then
+        rm -f "$MARKER" 2>/dev/null || true
+    fi
+    printf '%s\n' "$CURRENT_IP" > "$MARKER" 2>/dev/null || true
+fi
+
+# Log one line per real IP change so an operator debugging a stale-QR
+# report has journalctl evidence the dispatcher fired. Volume is tiny
+# (most days: zero entries thanks to the same-IP short-circuit above).
+logger -t litclock-dispatcher \
+    "wlan0 IP changed to ${CURRENT_IP:-unknown} (was: ${LAST_IP:-none}); re-rendering"
+
+# --no-block: NM dispatcher scripts MUST return promptly (NM logs slow
+# scripts as warnings, may kill long-runners). Best-effort: if systemctl
+# is unavailable for any reason, swallow the error so we never bubble
+# a non-zero exit up to NM. The next minute-boundary tick of
+# litclock.timer will render with the current IP regardless.
+systemctl start --no-block litclock.service 2>/dev/null || true

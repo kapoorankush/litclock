@@ -1,0 +1,540 @@
+/* Diagnostics shortcut ribbon + live-logs drawer (#416 PR3b).
+ *
+ * The ribbon and drawer live in base.html.j2 because they're cross-cutting
+ * — every tab can open the drawer to peek at the live log stream. CSS here
+ * is loaded globally via base.html.j2 (NOT per-tab) since the drawer is
+ * always reachable.
+ *
+ * Design decisions: see /plan-design-review for D1–D33.
+ *
+ * D14 — Ribbon fixed position above the tab bar; body padding-bottom
+ *       reserves space; hides on visualViewport shrink (keyboard up) so
+ *       it doesn't collide with the iOS keyboard accessory.
+ *
+ * D13 — Drawer animation: translateY(100% → 0) over 280ms cubic-bezier
+ *       (0.32, 0.72, 0, 1) (iOS sheet curve). Page-dim 0 → 0.12 same
+ *       window. Close 220ms ease-in.
+ *
+ * D11 — Reduce-motion: drawer slide → instant, caret rotation → snap,
+ *       skeleton shimmer → none, auto-scroll → disabled.
+ *
+ * D32 — Non-modal contract: tab bar stays interactive, tapping a tab
+ *       closes the drawer AND navigates. Page is scrollable underneath.
+ *       Achieved via aria-modal=false on the drawer + inert applied to
+ *       <main> (not <body>) so the tabbar isn't blocked.
+ *
+ * D17 — REMOVED v0.214.4 (#431b). The lantern SVG decoration was
+ *       decorative-only + aria-hidden + had been broken on production
+ *       Pis for an unknown duration without anyone noticing —
+ *       subtraction default applied.
+ */
+
+/* ---------- Ribbon (D14 + D5 default state) ----------------------------- */
+
+/* OV-D-C: dots-three is the DEFAULT (owner-persona protection). Full-label
+   opt-in lands in PR3c via the Settings → Advanced "Show diagnostics
+   shortcut" toggle (F31). */
+.diag-ribbon {
+  position: fixed;
+  /* Above the .tabbar (which is also fixed at the bottom); 8pt gap. The
+     tabbar height is locked to ~56pt via its existing CSS — confirmed by
+     reading tokens.css. */
+  bottom: calc(56px + var(--sp-sm) + env(safe-area-inset-bottom, 0));
+  /* /review D33 RTL prep: logical-property end so the ribbon flips to
+     the inline-start side in RTL locales without further code. */
+  inset-inline-end: var(--sp-md);
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-full);
+  background: var(--ink);
+  color: var(--bg);
+  border: 0;
+  cursor: pointer;
+  /* /review F-PURE-BLACK + F-RIBBON-Z: warm shadow via --ink; ribbon
+     z-index lifted above the page-dim so the dots-three affordance
+     stays tappable even when the drawer is animating in (drawer is z=80,
+     ribbon now z=11 above tabbar z=10 + page-dim z=9). */
+  box-shadow: 0 4px 12px rgba(26, 20, 16, 0.18);
+  z-index: 11;
+  /* The dots-three icon stays calm; the affordance is intentionally
+     understated so the owner-persona Status tab isn't visually noisy. */
+}
+
+.diag-ribbon:hover,
+.diag-ribbon:focus-visible {
+  background: var(--accent-muted);
+}
+
+/* When the user opts into the full-label ribbon (PR3c F31) the body
+   carries data-diag-ribbon-expanded; CSS reveals the label sibling. The
+   data-attribute hook ships in PR3a base.html.j2 even before PR3c so the
+   wiring is testable; the toggle just adds/removes the attribute. */
+.diag-ribbon__label {
+  display: none;
+  /* D33 RTL prep: margin-inline-start swaps automatically under
+     [dir="rtl"] so the label sits on the correct side of the icon. */
+  margin-inline-start: var(--sp-xs);
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  font-weight: 500;
+}
+
+body[data-diag-ribbon-expanded] .diag-ribbon {
+  width: auto;
+  padding: 0 var(--sp-lg);
+}
+
+body[data-diag-ribbon-expanded] .diag-ribbon__label {
+  display: inline-block;
+}
+
+/* Ribbon hides while the on-screen keyboard is up so it doesn't collide
+   with the iOS keyboard accessory bar. JS sets data-diag-ribbon-hidden
+   on the body via visualViewport.height shrink detection. */
+body[data-diag-ribbon-hidden] .diag-ribbon {
+  display: none;
+}
+
+/* .diag-drawer reads --diag-drawer-max-h for its max-height. Pre-v0.214.4
+   .diag-lantern also coupled to this var; with the lantern dropped
+   (#431b) the var stays as the drawer's single consumer. */
+:root {
+  --diag-drawer-max-h: min(56dvh, 480pt);
+}
+
+/* ---------- Page dim (D13 + OV-D-A 12%) -------------------------------- */
+
+.diag-page-dim {
+  position: fixed;
+  /* /review F-PAGE-DIM-Z: pre-/review this was inset: 0 with z-index 70,
+     which sat ABOVE the tabbar (z=10) and intercepted tabbar taps —
+     silently breaking the D32 "tap a tab closes-and-navigates" contract.
+     jsdom unit tests passed because synthetic click() bypasses
+     hit-testing. The fix has two parts:
+       1. Stop the dim above the tabbar so tabbar taps reach the <a>.
+       2. Drop z-index below the tabbar's so future overlapping cases
+          also hit-test the tabbar first.
+     Together these honor D32 + match real-browser hit-testing.
+     The page-dim still covers everything above the tabbar (including
+     the ribbon, which is intentional — ribbon is rendered with a
+     higher z-index above the dim if the spec ever needs it). */
+  top: 0;
+  /* D33 RTL prep: inset-inline collapses the symmetric left/right pair. */
+  inset-inline: 0;
+  bottom: calc(56px + env(safe-area-inset-bottom, 0));
+  background: rgba(26, 20, 16, 0);
+  pointer-events: none;
+  z-index: 9;
+  transition: background-color 280ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* /review F-PURE-BLACK: pre-/review dims + shadows used rgba(0, 0, 0, *)
+   which reads cool/iOS-settings-y. Switched to --ink-derived warm overlay
+   (#1A1410 with alpha). */
+body[data-diag-drawer-open] .diag-page-dim {
+  background: rgba(26, 20, 16, 0.12); /* --ink @ 12% (OV-D-A) */
+  pointer-events: auto;
+}
+
+/* ---------- Drawer shell (D6 + D13) ------------------------------------ */
+
+.diag-drawer {
+  position: fixed;
+  /* D33 RTL prep: inset-inline collapses the symmetric left/right pair. */
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 80;
+  /* D6: max-height 56dvh — keeps the page visible above the drawer per
+     the non-modal contract. */
+  max-height: var(--diag-drawer-max-h);
+  background: var(--surface-raised);
+  border-top: 2px solid var(--hairline);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  /* /review F-PURE-BLACK: warm shadow via --ink. */
+  box-shadow: 0 -8px 24px rgba(26, 20, 16, 0.22);
+  transform: translateY(100%);
+  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1);
+  display: flex;
+  flex-direction: column;
+  /* Hidden from a11y tree + tab order when closed (JS toggles aria-hidden
+     + the inert property on this element). */
+}
+
+body[data-diag-drawer-open] .diag-drawer {
+  transform: translateY(0);
+}
+
+/* Close animation: shorter + simpler ease-in. JS toggles a transient
+   class during teardown so the curve flips. */
+.diag-drawer[data-diag-closing] {
+  transition: transform 220ms ease-in;
+}
+
+/* D17 .diag-lantern rules REMOVED v0.214.4 (#431b) — decoration was
+   broken on production Pis for unknown duration with no one noticing;
+   subtraction default applied. Both the markup (in base.html.j2) and the
+   reduce-motion override below were removed in the same change. */
+
+/* ---------- Drag handle (D6: swipe-down close) ------------------------- */
+
+.diag-drawer__handle {
+  display: flex;
+  justify-content: center;
+  padding: var(--sp-sm) 0;
+  cursor: grab;
+  /* iOS-style 36×4 capsule handle. */
+}
+
+.diag-drawer__handle::before {
+  content: "";
+  display: block;
+  width: 36px;
+  height: 4px;
+  border-radius: var(--r-full);
+  background: var(--ink-muted);
+  opacity: 0.4;
+}
+
+/* ---------- Drawer header ---------------------------------------------- */
+
+.diag-drawer__header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+  padding: 0 var(--sp-lg) var(--sp-sm);
+}
+
+.diag-drawer__title {
+  flex: 1;
+  margin: 0;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 500;
+  font-size: var(--fs-lede);
+  color: var(--ink);
+}
+
+.diag-drawer__open-page {
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  /* /review F-ACCENT-MUTED: --accent at rest, --accent-muted on hover. */
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: underline;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: var(--sp-sm) var(--sp-md);
+  /* /review F-TAP-TARGETS: 44pt WCAG/DESIGN.md minimum (was 36px). */
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.diag-drawer__open-page:hover,
+.diag-drawer__open-page:focus-visible {
+  color: var(--accent-muted);
+}
+
+.diag-drawer__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-full);
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.diag-drawer__close:hover,
+.diag-drawer__close:focus-visible {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* ---------- Level filter (D8: radiogroup) ------------------------------ */
+
+.diag-drawer__filters {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+  padding: var(--sp-xs) var(--sp-lg) var(--sp-sm);
+}
+
+.diag-level-filter {
+  display: inline-flex;
+  background: var(--surface);
+  border-radius: var(--r-full);
+  padding: 2px;
+  border: 1px solid var(--hairline);
+}
+
+.diag-level-filter__option {
+  padding: var(--sp-sm) var(--sp-md);
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  color: var(--ink-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-full);
+  cursor: pointer;
+  /* /review F-TAP-TARGETS: 44pt DESIGN.md min (was 32px). */
+  min-height: 44px;
+}
+
+/* /review F-ACCENT-FILL: DESIGN.md segmented-pill spec locks
+   "Selected: --accent fill, --bg text". Pre-/review used --ink. */
+.diag-level-filter__option[aria-checked="true"] {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.diag-drawer__filter-fresh {
+  background: transparent;
+  border: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  /* /review F-ACCENT-MUTED: --accent at rest. */
+  color: var(--accent);
+  cursor: pointer;
+  /* /review F-TAP-TARGETS: 44pt min. */
+  min-height: 44px;
+  padding: var(--sp-sm) var(--sp-md);
+}
+
+.diag-drawer__filter-fresh:hover,
+.diag-drawer__filter-fresh:focus-visible {
+  color: var(--accent-muted);
+}
+
+.diag-drawer__filter-fresh[disabled] {
+  color: var(--ink-muted);
+  cursor: default;
+}
+
+/* ---------- Entries (D7: live region) ---------------------------------- */
+
+.diag-drawer__entries {
+  flex: 1;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 var(--sp-lg) var(--sp-md);
+  list-style: none;
+  /* D21: content-visibility auto for virtualization-lite. The browser
+     skips rendering off-screen entries; we ALSO cap visible count at
+     200 via JS to avoid the cumulative-paint pathology. */
+  contain: content;
+}
+
+.diag-drawer__entry {
+  /* D21 content-visibility: auto — each entry can be skipped when
+     off-screen. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 32px;
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  gap: var(--sp-sm);
+  padding: var(--sp-xs) var(--sp-sm);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-log, clamp(12px, 0.8125rem, 17px));
+  color: var(--ink);
+  border-radius: var(--r-sm);
+  align-items: center;
+}
+
+.diag-drawer__entry:focus-within {
+  background: var(--surface);
+}
+
+.diag-drawer__entry-time {
+  color: var(--ink-muted);
+}
+
+.diag-drawer__entry-level {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: var(--fs-caption);
+}
+
+.diag-drawer__entry--info .diag-drawer__entry-level     { color: var(--ink-muted); }
+.diag-drawer__entry--warning .diag-drawer__entry-level,
+.diag-drawer__entry--warn .diag-drawer__entry-level     { color: var(--warning); }
+.diag-drawer__entry--error .diag-drawer__entry-level,
+.diag-drawer__entry--critical .diag-drawer__entry-level { color: var(--error); }
+
+.diag-drawer__entry-msg {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.diag-drawer__entry-copy {
+  background: transparent;
+  border: 0;
+  color: var(--ink-muted);
+  padding: var(--sp-sm);
+  cursor: pointer;
+  opacity: 0;
+  border-radius: var(--r-sm);
+  /* /review F-TAP-TARGETS: 44pt min (was 32px). */
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.diag-drawer__entry-copy[data-diag-drawer-copy-success="true"] {
+  color: var(--success);
+}
+
+.diag-drawer__entry:hover .diag-drawer__entry-copy,
+.diag-drawer__entry:focus-within .diag-drawer__entry-copy {
+  opacity: 1;
+}
+
+/* ---------- Hidden-batch header (D21) ---------------------------------- */
+
+.diag-drawer__hidden-batch {
+  padding: var(--sp-sm) var(--sp-md);
+  background: var(--surface);
+  border-radius: var(--r-sm);
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  color: var(--ink-muted);
+  text-align: center;
+  margin-bottom: var(--sp-sm);
+}
+
+/* ---------- Follow-tail pill (D21) ------------------------------------- */
+
+.diag-drawer__follow-pill {
+  position: absolute;
+  /* D33 RTL prep. */
+  inset-inline-end: var(--sp-lg);
+  bottom: 96px; /* above the footer */
+  background: var(--ink);
+  color: var(--bg);
+  border: 0;
+  border-radius: var(--r-full);
+  padding: var(--sp-xs) var(--sp-md);
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  cursor: pointer;
+  /* /review F-PURE-BLACK: warm shadow via --ink. */
+  box-shadow: 0 4px 12px rgba(26, 20, 16, 0.18);
+}
+
+.diag-drawer__follow-pill[hidden] {
+  display: none;
+}
+
+/* ---------- Empty + error states (D2 + F9) ----------------------------- */
+
+.diag-drawer__empty {
+  padding: var(--sp-2xl) var(--sp-lg);
+  text-align: center;
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+.diag-drawer__empty-headline {
+  margin: 0 0 var(--sp-sm);
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: var(--fs-lede);
+  color: var(--ink);
+}
+
+.diag-drawer__empty-paste {
+  margin-top: var(--sp-md);
+  padding: var(--sp-sm) var(--sp-md);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-log, clamp(12px, 0.8125rem, 17px));
+  background: var(--bg);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  text-align: start; /* D33 RTL prep: was text-align: left. */
+  overflow-x: auto;
+}
+
+/* ---------- Welcome card (D25) ----------------------------------------- */
+
+.diag-drawer__welcome {
+  margin: var(--sp-md) var(--sp-lg);
+  padding: var(--sp-md);
+  background: var(--bg);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+}
+
+.diag-drawer__welcome[hidden] {
+  display: none;
+}
+
+.diag-drawer__welcome-body {
+  margin: 0 0 var(--sp-sm);
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: var(--fs-body);
+  color: var(--ink);
+}
+
+.diag-drawer__welcome-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.diag-drawer__welcome-dismiss {
+  background: transparent;
+  border: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  /* /review F-ACCENT-MUTED: --accent at rest. */
+  color: var(--accent);
+  cursor: pointer;
+  padding: var(--sp-sm) var(--sp-md);
+  /* /review F-TAP-TARGETS: 44pt min (was 36px). */
+  min-height: 44px;
+}
+
+.diag-drawer__welcome-dismiss:hover,
+.diag-drawer__welcome-dismiss:focus-visible {
+  color: var(--accent-muted);
+}
+
+/* ---------- Reduce motion (D11) ---------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .diag-drawer                         { transition: none; }
+  .diag-drawer[data-diag-closing]      { transition: none; }
+  .diag-page-dim                       { transition: none; }
+  /* .diag-lantern removed v0.214.4 (#431b) — see top-of-file rationale. */
+}
+
+/* ---------- Dark mode -------------------------------------------------- */
+
+@media (prefers-color-scheme: dark) {
+  /* /review F-PURE-BLACK: dark-mode shadows use neutral-black at higher
+     alpha (rgba 0,0,0,0.42 was already DESIGN.md-compliant for shadow on
+     dark canvas — the warm overlay token reads weak there); keep
+     neutral-black for shadows in dark mode, but the dim still uses an
+     --ink-derived overlay so it matches the warm-paper aesthetic. */
+  .diag-ribbon {
+    background: var(--ink);
+  }
+  body[data-diag-drawer-open] .diag-page-dim {
+    background: rgba(20, 17, 13, 0.30); /* --bg (dark) inverse */
+  }
+}
