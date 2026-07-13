@@ -36,7 +36,7 @@ pytz==2026.2
 qrcode==8.2
 requests==2.34.2
 spidev==3.8
-timezonefinder==8.2.4
+timezonefinder==8.2.5
 waitress==3.0.2
 
 # CVE-floor constraint — not directly imported.
