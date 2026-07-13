@@ -45,7 +45,7 @@ numpy==2.4.5
     # via timezonefinder
 pigpio==1.78
     # via -r requirements.in
-pillow==12.2.0
+pillow==12.3.0
     # via -r requirements.in
 pycparser==3.0
     # via cffi
