@@ -956,24 +956,38 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         # probed (is it one we recognize?), which UA/iOS version, and what we
         # returned. Pair this with dnsmasq's log-queries (already enabled) to
         # see the full DNS→HTTP probe path a phone takes on join.
-        if PROVISIONING_MODE:
-            ua = self.headers.get("User-Agent", "")
-            print(f"CAPTIVE-PROBE: host={host!r} path={path!r} ua={ua[:80]!r}", flush=True)
+        # The RESPONSE side (branch + status + bytes) is logged too: the
+        # litclock-dev#526 repro established that receipt-only logging cannot
+        # distinguish "sheet never opened" from "sheet opened and died" —
+        # and the 80-char UA truncation cut off exactly before the Safari/
+        # token that separates a manual browser open from the CNA WebView.
+        def _probe_log(branch, status, nbytes):
+            if PROVISIONING_MODE:
+                ua = self.headers.get("User-Agent", "")
+                print(
+                    f"CAPTIVE-PROBE: host={host!r} path={path!r} -> {branch} "
+                    f"status={status} bytes={nbytes} ua={ua[:200]!r}",
+                    flush=True,
+                )
 
         # iOS probes — return a tiny JS-free bridge page. A non-"Success" 200
         # opens the CNA sheet; keeping the response small (~1 KB, no JS) is
         # what makes iOS actually pop the sheet instead of burying it in
         # Control Center. The bridge links into the real setup form.
         if path in ("/hotspot-detect.html", "/library/test/success.html"):
-            self.send_html(_build_cna_bridge_html())
+            body = _build_cna_bridge_html()
+            self.send_html(body)
+            _probe_log("cna-bridge", 200, len(body.encode()))
             return True
         # Android probes — 302 redirect triggers "Sign in to network"
         if path in ("/generate_204", "/gen_204"):
             self._redirect_to_setup()
+            _probe_log("redirect-setup", 302, 0)
             return True
         # Windows/Firefox probes — 302 redirect
         if path in ("/connecttest.txt", "/ncsi.txt", "/canonical.html", "/success.txt"):
             self._redirect_to_setup()
+            _probe_log("redirect-setup", 302, 0)
             return True
         # Host-based fallback for probes that hit an unexpected path (e.g.
         # some iOS versions probe captive.apple.com/ with path "/"). Only
@@ -983,10 +997,14 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         host_clean = host.split(":")[0].lower()
         if host_clean in CAPTIVE_PORTAL_HOSTS:
             if host_clean in APPLE_CAPTIVE_PORTAL_HOSTS:
-                self.send_html(_build_cna_bridge_html())
+                body = _build_cna_bridge_html()
+                self.send_html(body)
+                _probe_log("cna-bridge-hostmatch", 200, len(body.encode()))
             else:
                 self._redirect_to_setup()
+                _probe_log("redirect-setup-hostmatch", 302, 0)
             return True
+        _probe_log("no-match-fallthrough", 0, 0)
         return False
 
     def do_GET(self):

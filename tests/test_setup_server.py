@@ -1259,6 +1259,22 @@ class TestCaptivePortalProbeRouting:
         assert "/hotspot-detect.html" in out
         assert "CaptiveNetworkSupport" in out
 
+    def test_probe_log_includes_response_branch_status_bytes(self, capsys, monkeypatch):
+        """litclock-dev#526: receipt-only logging couldn't distinguish "sheet
+        never opened" from "sheet opened and died". The log line must carry
+        the response side (branch, status, byte count) and enough UA (200
+        chars) to tell the CNA WebView from a manual Safari open."""
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        handler = _make_handler()
+        handler.send_html = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        handler.headers = {"User-Agent": "x" * 190}
+        handler._handle_captive_portal_probe("/hotspot-detect.html", "captive.apple.com")
+        out = capsys.readouterr().out
+        assert "-> cna-bridge" in out
+        assert "status=200" in out
+        assert "bytes=" in out and "bytes=0" not in out
+        assert "x" * 150 in out  # UA no longer truncated at 80 chars
+
     def test_probe_diagnostic_silent_outside_provisioning(self, capsys, monkeypatch):
         """The diagnostic is provisioning-only — normal-mode HTTPS setup must
         not spam stdout (and must not touch self.headers when not logging)."""
