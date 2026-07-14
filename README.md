@@ -68,13 +68,14 @@ The installer and updater are for existing OS installs only; for a fresh SD card
 Print-ready STLs are in [`3d-models/`](3d-models/) — three PLA parts, lightly modified from [Arthur Gassner's Time Teller](https://timeteller.arthurgassner.com) case design (CC BY). Then:
 
 1. Connect the e-Paper HAT to the Pi's 40-pin header, and the display to the HAT via the ribbon cable
-2. Assemble the case around it — threaded inserts, the USB-C adapter on the back, screws
+2. Insert the flashed SD card into the Pi — do this **before** closing the case
+3. Assemble the case — threaded inserts, the USB-C adapter on the back, screws
 
 Arthur's guide covers the case assembly beautifully, and our **[Hardware Assembly](docs/hardware-assembly.md)** page has the LitClock-specific details (ribbon-cable orientation, e-ink handling notes). No case? The bare HAT sandwich works fine on a shelf while you decide.
 
 ### 4. Power on — two-minute setup
 
-1. Insert the SD card and power on. Within a minute the display shows a **"LitClock-Setup"** hotspot with its password and a QR code.
+1. Power on. Within a minute the display shows a **"LitClock-Setup"** hotspot with its password and a QR code.
 2. Join the hotspot from your phone — the setup page opens automatically (or browse to the address shown on the display).
 3. Pick your home WiFi and enter its password. **That's the whole form** — location, timezone, and temperature units auto-detect once the clock is online.
 4. The display shows "Ready to read." with a QR code to the clock's control app. Scan it, tap **"Done — Start the Clock"** (or just wait — it starts on its own), and add the app to your home screen.
@@ -106,13 +107,13 @@ Anything the auto-detection got wrong — city, units, mature-content filter —
 
 Every LitClock serves a small web app on your home network at **`http://litclock.local`** (or the clock's IP — the QR in the corner of every quote points there). Open it in any browser, or add it to your phone's home screen. No account, no cloud — the app is served by the clock itself and works only on your LAN.
 
-| Tab | What it does |
+| Screen | What it does |
 |-----|--------------|
 | **Status** | Current quote, weather, WiFi, and version at a glance |
 | **Settings** | Location (automatic by IP, or type any place worldwide), weather on/off, Fahrenheit/Celsius, mature-content filter |
 | **Updates** | Current version, release notes, and a button to apply an update now |
 | **System** | Restart, power off, reset WiFi, factory reset, and "Prepare for Gifting" |
-| **Diagnostics** | Read-only health panel: last render, network, services, recent logs, and a downloadable support-log bundle |
+| **Diagnostics** (separate page) | Read-only health panel at `/diagnostics` — last render, network, services, recent logs, and a downloadable support-log bundle. Linked from the app's live-status ribbon |
 
 <p align="center">
   <img src="docs/images/pwa-status.png" alt="Status tab — current quote, weather, version" width="260">
@@ -193,7 +194,7 @@ What does NOT update automatically — **by design**:
 - OS packages (`apt upgrade`) and Raspberry Pi firmware. On the flashed image, OS auto-updates are explicitly disabled: a surprise apt upgrade could break the display stack with nobody at the keyboard. OS-level updates happen when you flash a newer image (or run them yourself over SSH).
 
 Two safety nets protect every update:
-- A **pre-wiring smoke test**: after rebuilding the venv, the updater renders an in-memory quote image. If the render fails, the update reverts to the previous SHA before touching the running clock. If that happens, a subtle "!" glyph appears in the top-right corner of the clock face until the next successful update.
+- A **pre-wiring smoke test**: after rebuilding the venv, the updater renders an in-memory quote image. If the render fails, the update reverts to the previous SHA before touching the running clock. If that happens, a subtle "!" glyph appears in the top-left corner of the clock face until the next successful update.
 - A **boot check with automatic rollback**: if the clock ever boots and can't paint a quote, it retries, and after repeated failures automatically reinstalls the last release that is known to have painted. A bad update can't brick a clock that has no keyboard and no SSH.
 
 <details>
@@ -224,7 +225,7 @@ The clock keeps working on whatever SHA it's pinned to; manual updates via the a
 
 Most resets don't need a shell — use the control app's **System** tab:
 
-- **Reset WiFi** — forget saved networks and return to the setup hotspot (settings and quote history are kept)
+- **Reset WiFi** — forget saved networks and return to the setup hotspot (your settings — location, weather, gift mode — are kept)
 - **Factory reset** — wipe all settings and start over from the first-boot experience
 - **Prepare for Gifting** — wipe WiFi, write a welcome message for the recipient, and power off ready to box up
 
@@ -243,13 +244,13 @@ Flags:
 
 ### Troubleshooting
 
-**Start here (no shell needed):** open the control app → **Diagnostics** tab. It shows version, last render time, WiFi + weather status, error flags, and recent logs. Screenshot it, or use "Download full logs" to export a redacted support bundle safe to attach to an issue.
+**Start here (no shell needed):** open `http://litclock.local/diagnostics` (or tap "Open full diagnostics" in the control app). It shows version, last render time, WiFi + weather status, error flags, and recent logs. Screenshot it, or use "Download full logs" to export a redacted support bundle safe to attach to an issue.
 
 - **Wrong city, units, or timezone**: fix it in the app → Settings. If setup couldn't detect your location at all (some networks block IP geolocation), the app offers a one-tap "use my browser's timezone" fallback so the clock runs correctly with weather off.
 - **Display not updating**: Check SPI is enabled with `ls /dev/spi*`
 - **Check service status**: `systemctl status litclock.timer`
 - **View service logs**: `journalctl -u litclock.service --since today`
-- **Force weather update**: `rm /home/pi/litclock/weather-cache*.json`
+- **Force weather update**: `rm /run/litclock/weather-cache-*.json` (the cache lives in tmpfs and rebuilds on the next minute tick)
 - **WiFi disconnects (Pi Zero)**: see [WiFi stability](#wifi-stability-pi-zero-w--zero-2-w), or check `dmesg | grep brcmfmac` for errors
 - **WiFi fails during setup**: The setup page shows an error banner and lets you fix the password and resubmit. If it keeps failing, restart the Pi closer to your router.
 - **Start setup over**: app → System → Factory reset, or `sudo ./scripts/reset-setup.sh && sudo reboot` from a shell
@@ -271,7 +272,7 @@ To produce several clocks, see **[SD Card Cloning](docs/sd-card-cloning.md)** fo
 
 ### Philosophy
 
-LitClock is not an SSH-optional developer tool. If you are a non-technical user, you should never need to do anything after first boot: everything configures itself, updates itself, and recovers itself. If you are a technically comfortable user, you can enable SSH (it ships off — see [Recovering a LitClock](docs/recovery.md)) and disable or customize any of this. That's why updates are silent and automatic, why the failure story is automatic rollback rather than error messages, and why day-to-day control happens from a phone rather than a terminal.
+LitClock is an appliance, not an SSH-first developer tool. If you are a non-technical user, you should never need to do anything after first boot: everything configures itself, updates itself, and recovers itself. If you are a technically comfortable user, you can enable SSH (it ships off — see [Recovering a LitClock](docs/recovery.md)) and disable or customize any of this. That's why updates are silent and automatic, why the failure story is automatic rollback rather than error messages, and why day-to-day control happens from a phone rather than a terminal.
 
 ### How it works
 
