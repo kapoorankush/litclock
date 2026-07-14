@@ -15,7 +15,7 @@
 
 <p align="center">A Raspberry Pi Zero 2 W with a Waveshare 7.5" e-Paper display (800x480) that shows the time using 4,800+ curated literary quotes, one for every minute of the day, along with the date and weather.</p>
 
-![example](example.png)
+![LitClock on a shelf, showing a passage from Confess, Fletch at twenty-six minutes past ten](docs/media/litclock-photo.jpg)
 
 ### One-minute tour
 
@@ -289,6 +289,10 @@ On boot, the clock goes through this sequence:
 2. **First-boot setup** (first time only) — the Pi creates the "LitClock-Setup" hotspot and shows joining instructions on the e-ink. After you submit your WiFi, it connects, auto-detects location/timezone/units by IP geolocation, and shows the "Ready to read." handoff screen with a QR code to the control app.
 3. **Clock timer** — updates the display at the top of every minute with a new literary quote
 4. **Control app** — served continuously on your LAN at `http://litclock.local`
+
+Each frame is composed like this — quote with the time reference bolded, date, weather, and the control-app QR:
+
+![Rendered clock frame](example.png)
 
 The Pi has no hardware clock, so NTP time sync is enabled automatically during installation and first boot to ensure accurate time after every power cycle.
 
