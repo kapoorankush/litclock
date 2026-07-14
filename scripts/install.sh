@@ -360,6 +360,13 @@ setup_systemd() {
     sudo cp "$INSTALL_DIR/systemd/litclock-handoff-fallback.timer" /etc/systemd/system/
     # #245 M1 — Control PWA always-on management surface
     sudo cp "$INSTALL_DIR/systemd/litclock-control.service" /etc/systemd/system/
+    # #337 — on-boot IP-geo reresolve (enabled below; was enabled-but-never-
+    # copied, which aborted DIY installs under set -e — the unit must exist
+    # before systemctl enable runs)
+    sudo cp "$INSTALL_DIR/systemd/litclock-reresolve-location.service" /etc/systemd/system/
+    # #317 — Prepare-for-Gifting (started on demand by the control app; no
+    # [Install] section, so copy only — never enabled)
+    sudo cp "$INSTALL_DIR/systemd/litclock-prepare-for-gift.service" /etc/systemd/system/
 
     # #245 M4 — Control PWA scoped sudo for system actions. Validate the
     # source file BEFORE installing — a malformed sudoers entry locks out
