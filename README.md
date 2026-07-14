@@ -17,7 +17,7 @@
 
 ![LitClock on a shelf, showing a passage from Confess, Fletch at twenty-six minutes past ten](docs/media/litclock-photo.jpg)
 
-LitClock is built for people who want a literary clock on their wall and never want to think about it again: setup is a two-minute, phone-only affair, and after that the clock configures, updates, and heals itself. **The defaults are the product.**
+LitClock is built for people who want a literary clock on their shelf and never want to think about it again: setup is a two-minute, phone-only affair, and after that the clock configures, updates, and heals itself. **The defaults are the product.**
 
 **[Build one](#build-one)** · **[Living with it](#living-with-it)** · **[Give one away](#give-one-away)** · **[Under the hood](#under-the-hood)** · **[Credits](#credits)**
 
