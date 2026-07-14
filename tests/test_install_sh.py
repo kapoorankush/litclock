@@ -82,16 +82,44 @@ def test_installs_and_enables_handoff_fallback_units():
 
 
 def test_installs_and_enables_reresolve_location_service():
-    """#337 /review testing-gap: install.sh must enable the new oneshot.
-    Without this enable, the on-boot reresolve service exists on disk but
-    never fires — and the entire #337 'Pi moved, location auto-updates'
-    promise silently breaks for fresh-flash installs. A future install.sh
-    refactor that drops the enable line is a silent feature loss; pin it."""
+    """#337 /review testing-gap: install.sh must COPY and enable the oneshot.
+    The original assertion only checked the unit NAME appeared somewhere —
+    the enable line alone satisfied it, so the missing cp shipped: under
+    set -e, `systemctl enable` of a never-copied unit aborted every DIY
+    install. Assert the copy explicitly (name-presence is not installation)."""
     src = INSTALL_SH.read_text()
-    assert "litclock-reresolve-location.service" in src, (
-        "#337: install.sh must reference litclock-reresolve-location.service"
+    assert 'cp "$INSTALL_DIR/systemd/litclock-reresolve-location.service"' in src, (
+        "install.sh must COPY litclock-reresolve-location.service before enabling it — "
+        "enable-without-copy aborts the whole DIY install under set -e"
     )
     assert "systemctl enable litclock-reresolve-location.service" in src, (
         "#337 /review: install.sh must enable the new oneshot. "
         "Without this, the unit exists but never fires on fresh-flash boots."
+    )
+
+
+def test_installs_prepare_for_gift_service():
+    """#317: the control app's Prepare-for-Gifting starts this unit on demand.
+    No [Install] section, so copy only — never enabled."""
+    src = INSTALL_SH.read_text()
+    assert 'cp "$INSTALL_DIR/systemd/litclock-prepare-for-gift.service"' in src, (
+        "install.sh must copy litclock-prepare-for-gift.service or the PWA's "
+        "Prepare-for-Gifting action fails on DIY installs"
+    )
+
+
+def test_every_repo_unit_is_referenced_by_install_sh():
+    """Drift guard for the whole enabled-but-never-copied class: every unit
+    shipped in systemd/ must at least be REFERENCED by install.sh (copied
+    directly, or handled in a conditional block like wifi-watchdog). A new
+    unit added to systemd/ without install.sh wiring fails here instead of
+    aborting a stranger's DIY install at runtime."""
+    src = INSTALL_SH.read_text()
+    systemd_dir = INSTALL_SH.parent.parent / "systemd"
+    units = sorted(p.name for p in systemd_dir.iterdir() if p.is_file() and p.suffix in (".service", ".timer"))
+    assert units, "systemd/ unit inventory came back empty — test wiring broke"
+    missing = [u for u in units if f"systemd/{u}" not in src]
+    assert not missing, (
+        f"units in systemd/ never referenced by install.sh: {missing} — "
+        "DIY installs won't get them (and enabling one aborts under set -e)"
     )
