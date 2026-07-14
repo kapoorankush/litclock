@@ -1,0 +1,28 @@
+[Unit]
+Description=LitClock — Reset WiFi and re-enter firstboot AP-mode
+Documentation=https://github.com/kapoorankush/litclock/issues/245
+# D11 — systemd-native interlock against reset-during-update. If the update
+# service is currently running (or queued), systemd refuses to start this
+# unit. The /api/wifi/reset route also pre-checks via systemctl is-active +
+# list-jobs (D5/F7), but Conflicts= is the deterministic backstop.
+Conflicts=litclock-update.service
+# After= is informational here (Conflicts already serializes). Keeps the
+# dependency graph readable.
+After=litclock-update.service
+
+[Service]
+Type=oneshot
+# Run as root: the helper has to stop a service we own (litclock-control),
+# delete NM connections (which requires root or the netdev privileged group),
+# and remove /etc/litclock/.setup-complete (root-owned). The single sudoers
+# allowance from /api/wifi/reset to `systemctl start --no-block
+# litclock-wifi-reset.service` is the only privilege surface; this unit is
+# what owns the elevated work.
+User=root
+ExecStart=/usr/local/bin/litclock-wifi-reset.sh
+# Cap the run — on a Pi Zero 2W the whole sequence (stop service + nmcli
+# delete loop + rm + restart firstboot) finishes in ~5s. 60s gives generous
+# headroom without leaving a stuck unit pinning systemd's job queue.
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal

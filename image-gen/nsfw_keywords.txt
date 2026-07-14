@@ -1,0 +1,75 @@
+# NSFW Keywords for Quote Detection
+# Lines starting with # are comments
+# Lines starting with ## are category headers
+# Keywords are case-insensitive during matching
+#
+# NOTE: This is a conservative list to minimize false positives.
+# Common words like "hell", "damn", "ass" are excluded as they
+# appear frequently in non-NSFW literary contexts.
+
+## PROFANITY
+# Strong profanity only - excludes mild terms (hell, damn, crap)
+fuck
+fucking
+fucked
+fucker
+motherfuck
+shit
+shitting
+bullshit
+asshole
+bitch
+cunt
+whore
+slut
+
+## SEXUAL_EXPLICIT
+# Explicit sexual content - excludes contextual terms (naked, breasts)
+orgasm
+erection
+penis
+vagina
+nipple
+intercourse
+copulate
+fornicate
+sodomy
+masturbat
+ejaculat
+genitals
+pubic
+erotic
+pornograph
+
+## VIOLENCE_GRAPHIC
+# Graphic violence only - excludes common metaphors (torture, massacre)
+decapitat
+dismember
+disembowel
+mutilat
+eviscerat
+bloodbath
+entrails
+gory
+behead
+
+## SLURS
+# Offensive slurs - all should be flagged for review
+nigger
+nigga
+faggot
+retard
+retarded
+spic
+chink
+kike
+
+## DRUG_REFERENCES
+# Explicit drug use terms only
+cocaine
+heroin
+methamphetamine
+crack pipe
+shooting up
+junkie
+crackhead

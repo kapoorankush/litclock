@@ -1,0 +1,39 @@
+/* Status / error banners.
+ *
+ * #317 item 7 / #319 follow-up — these rules used to live duplicated in
+ * settings.css AND system.css (settings_post on a #319 gift POST redirects
+ * to /system, and /system needed a matching banner block — leading to
+ * verbatim copy-paste). Extracted here so a future color/border tweak
+ * lands once instead of twice.
+ *
+ * Layout (margin) is intentionally OMITTED — each tab's surrounding
+ * container has different gutters (the System tab's banner sits inside
+ * a margin-inset .system-actions wrapper; the Settings tab's banner
+ * sits flush at the top of content). Tab-specific stylesheets re-declare
+ * the margin rule for their layout.
+ */
+
+.settings-banner {
+  padding: var(--sp-md) var(--sp-lg);
+  border-radius: var(--r-md);
+  font-size: var(--fs-small);
+}
+.settings-banner--success {
+  background: var(--surface-raised);
+  border-top: 1px solid var(--success);
+  color: var(--ink);
+}
+.settings-banner--error {
+  background: var(--surface-raised);
+  border-top: 1px solid var(--error);
+  color: var(--ink);
+}
+/* #274 follow-up #2 — Update-in-progress banner on Settings. Same paper
+ * texture as the others; --accent border to read as informational
+ * rather than success/error. DESIGN.md treats accent as the "active
+ * process" cue — matches the Updates-tab reading-list highlight. */
+.settings-banner--info {
+  background: var(--surface-raised);
+  border-top: 1px solid var(--accent);
+  color: var(--ink);
+}

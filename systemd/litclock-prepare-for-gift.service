@@ -1,0 +1,37 @@
+[Unit]
+Description=LitClock — Prepare device for gifting (wipe WiFi, paint welcome, power off)
+Documentation=https://github.com/kapoorankush/litclock/issues/280
+# Same interlock as wifi-reset: don't run mid-update.
+Conflicts=litclock-update.service
+After=litclock-update.service
+
+[Service]
+Type=oneshot
+# Run as root: reset-setup.sh enforces EUID == 0 and needs to:
+#   * touch /etc/litclock/.welcome-mode + write /etc/litclock/.welcome-message
+#   * stop services (control_server, litclock.timer, etc.)
+#   * delete NetworkManager wifi connections
+#   * overwrite env.sh
+#   * invoke systemctl poweroff at the end
+# The single sudoers allowance for /api/system/prepare-for-gift is
+# `systemctl start --no-block litclock-prepare-for-gift.service`; this unit
+# is what owns the elevated work.
+User=root
+# #387: ExecStart is the ROOT-OWNED copy at /usr/local/lib/litclock, NOT the
+# pi-writable /home/pi/litclock/scripts copy. `pi` can `systemctl start` this
+# unit via sudoers/020, so if the ExecStart pointed at a pi-writable script,
+# pi could edit it and get arbitrary root code — the exact pi->root vector
+# closed here. The installed copy sources its lib/state.sh from the same
+# root-owned dir (installed alongside).
+# /run/litclock/gift-message is the message file written by the
+# /api/system/prepare-for-gift endpoint immediately before invoking this
+# unit. It's a regular file under the pi-owned tmpfs at /run/litclock; the
+# script's `! -L` + `head -c 280` defenses (#280) cover the read.
+ExecStart=/usr/local/lib/litclock/reset-setup.sh --gift-mode --message-file /run/litclock/gift-message
+# reset-setup.sh's full sequence on a Pi Zero 2W (stop services + nmcli
+# delete + env.sh wipe + poweroff invocation) finishes in ~10s. 60s gives
+# generous headroom. NB: the unit completes when poweroff is *requested* —
+# systemd takes the box down after that.
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal

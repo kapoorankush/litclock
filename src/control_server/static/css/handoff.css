@@ -1,0 +1,129 @@
+/* Post-WiFi handoff banner (EPIC #383 PR2, #388).
+ *
+ * Design-review A4 (locked): top-anchored sheet over the Status tab, bottom
+ * corners rounded (r-xl), --surface ground. The Status hero dims to 70% while
+ * the banner is up so the eye lands on the banner. All color/spacing/motion
+ * come from tokens.css, so dark mode + reduced-motion are inherited.
+ *
+ * The banner sits in normal flow at the top of <body> (first child) so page
+ * content flows naturally below it — no fixed-position overlap math. */
+
+.handoff {
+  /* Bottom-corner-rounded top sheet, full-bleed across the top edge. */
+  background: var(--surface);
+  border-radius: 0 0 var(--r-xl) var(--r-xl);
+  border-bottom: 1px solid var(--hairline);
+  box-shadow: 0 6px 24px rgba(26, 20, 16, 0.10);
+  /* Fade/slide-out on completion. */
+  transition:
+    opacity var(--t-medium) var(--ease-ios),
+    transform var(--t-medium) var(--ease-ios);
+}
+
+.handoff__sheet {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: var(--sp-xl) var(--sp-lg) var(--sp-lg);
+}
+
+.handoff__title {
+  font-family: var(--font-serif);
+  font-size: 1.7rem;
+  line-height: 1.15;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0;
+}
+
+/* Failure-state heading: italic with a foxed-amber period (design A4). */
+.handoff__title--alt {
+  font-style: italic;
+}
+.handoff__period {
+  color: var(--accent);
+}
+
+.handoff__subhead {
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  color: var(--ink-muted);
+  margin: var(--sp-xs) 0 0;
+}
+
+.handoff__body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  color: var(--ink);
+  margin: var(--sp-md) 0 0;
+  line-height: 1.45;
+}
+
+.handoff__inline-link,
+.handoff__link {
+  color: var(--accent-muted);
+}
+
+/* Italic Fraunces note about the persistent corner QR (design A4). */
+.handoff__note {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: var(--fs-caption);
+  color: var(--ink-muted);
+  margin: var(--sp-sm) 0 0;
+}
+
+.handoff__btn {
+  display: block;
+  width: 100%;
+  min-height: 44px; /* WCAG 2.5.5 touch target */
+  margin: var(--sp-lg) 0 0;
+  padding: 0 var(--sp-lg);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--bg);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  cursor: pointer;
+}
+.handoff__btn:hover {
+  background: var(--accent-muted);
+}
+.handoff__btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.handoff__btn--busy {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.handoff__link {
+  display: inline-block;
+  margin: var(--sp-md) 0 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+}
+
+/* Completion teardown: slide up + fade. JS removes the node on transitionend
+ * (with a timeout fallback). */
+.handoff--leaving {
+  opacity: 0;
+  transform: translateY(-100%);
+}
+
+/* Status hero dims while the handoff banner is up so attention lands on the
+ * banner (design A4: 70% Status dim during handoff). */
+body[data-handoff-active] .hero {
+  opacity: 0.7;
+  transition: opacity var(--t-medium) var(--ease-ios);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .handoff,
+  .handoff--leaving,
+  body[data-handoff-active] .hero {
+    transition: none;
+  }
+}

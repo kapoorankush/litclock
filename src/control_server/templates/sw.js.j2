@@ -1,0 +1,169 @@
+/* LitClock Control PWA — service worker (M6 D1/D2/D3).
+ *
+ * Templated by routes/sw.py — CACHE_NAME bumps automatically each release
+ * via {{ version }} stamp from src/control_server/version.py. New SWs
+ * install a fresh cache + activate clears the old one, no manual bump.
+ *
+ * Strategy:
+ *   - Navigate (HTML)        → network-first w/ 1.5s timeout, cache fallback.
+ *   - Static asset           → cache-first; cache miss → fetch + store.
+ *   - /api/*                 → ALWAYS pass-through (preserves #254 no-store).
+ *   - Non-GET (POST/...)     → ALWAYS pass-through (D2 codex finding).
+ *
+ * Lifecycle (D3):
+ *   - install   → pre-cache static frame + 4 tab HTMLs; skipWaiting().
+ *   - activate  → clients.claim() so M2's A8 reload-on-version-mismatch can
+ *                  swap fresh code without forcing a manual quit-and-reopen.
+ *
+ * Platform-asymmetric (D9): this code only runs on browsers that registered
+ * /sw.js. iOS Safari short-circuits in sw-register.js via the isSecureContext
+ * gate — so the SW path is Android-only at our plain-HTTP origin. iOS users
+ * still get the splash matrix + AtHS hint.
+ */
+
+const CACHE_NAME = 'litclock-{{ version }}';
+
+/* Pre-cache list. Static assets that ship with the shell — the 4 tab CSS,
+ * tab JS, sw-register.js, AtHS hint pair, the icon set, paper grain SVG,
+ * and the manifest. Plus the 4 navigated routes so a cold launch with the
+ * Pi rebooting still paints the chrome from cache.
+ *
+ * Splash images are NOT pre-cached: iOS doesn't run the SW (D9) so they're
+ * dead weight on Android, and they're large (~3-5MB total). Browser HTTP
+ * cache + the long max-age on the static handler is enough.
+ *
+ * Fonts are NOT pre-cached either: font-display: swap means the system
+ * fallback paints first, so a missing-from-cache font isn't a blocking
+ * regression. The cache-first runtime path will store them on first use.
+ */
+const PRECACHE_URLS = [
+  '/',
+  '/settings',
+  '/system',
+  '/updates',
+  '/static/css/tokens.css',
+  '/static/css/settings.css',
+  '/static/css/system.css',
+  '/static/css/updates.css',
+  '/static/css/aths-hint.css',
+  '/static/css/banners.css',
+  '/static/css/confirm-sheet.css',
+  '/static/js/settings.js',
+  '/static/js/status.js',
+  '/static/js/system.js',
+  '/static/js/updates.js',
+  '/static/js/sw-register.js',
+  '/static/js/aths-hint.js',
+  '/static/icons/icon-192.png',
+  '/static/icons/icon-512.png',
+  '/static/icons/icon-maskable-512.png',
+  '/static/icons/icon-bg-baked-512.png',
+  '/static/icons/icon-bg-baked-180.png',
+  '/static/icons/icon-bg-baked-167.png',
+  '/static/icons/icon-bg-baked-152.png',
+  '/static/paper-grain.svg',
+  '/manifest.webmanifest',
+];
+
+const NAV_TIMEOUT_MS = 1500;
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      // Per-URL `cache.add` with `cache: 'reload'` so install fetches bypass the
+      // browser HTTP cache (which would otherwise pollute the SW cache with
+      // pre-update bytes after an in-place upgrade — codex /review finding,
+      // M6). `Promise.allSettled` makes the install resilient to a transient
+      // 5xx on any single URL during update.sh's litclock-control bounce: the
+      // surviving URLs get cached, the SW activates, and the missing URLs
+      // populate via the runtime cache-first path on first use.
+      .then((cache) => Promise.allSettled(
+        PRECACHE_URLS.map((url) => cache.add(new Request(url, { cache: 'reload' })))
+      ))
+      // skipWaiting + clients.claim (D3) — required for A8 reload-on-version-
+      // mismatch to actually deliver fresh code without manual force-quit.
+      .then(() => self.skipWaiting())
+  );
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys()
+      .then((keys) => Promise.all(
+        keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))
+      ))
+      .then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  const url = new URL(req.url);
+
+  // /api/* always pass-through. Preserves #254's Cache-Control: no-store on
+  // API responses so the PWA's reconnect probe never serves stale envelopes
+  // from a mid-update window.
+  if (url.pathname.startsWith('/api/')) return;
+
+  // /diagnostics pass-through. #416 PR3a /review F-SW-CACHE: a revealed
+  // /diagnostics?reveal=location response renders the unredacted SSID +
+  // city + coordinates into the HTML body. Without this guard the SW
+  // would cache that HTML and serve it later (offline or first-paint
+  // shortcut) — extending the lifetime of the unredacted view past the
+  // sessionStorage-scoped Reveal window. Always go to network; the route
+  // also sets Cache-Control: no-store as belt-and-suspenders.
+  if (url.pathname === '/diagnostics') return;
+
+  // Non-GET pass-through. POST/PUT/DELETE/PATCH are destructive actions —
+  // caching them would replay the request from cache, which is the worst
+  // possible bug class. Never cache.
+  if (req.method !== 'GET') return;
+
+  // Cross-origin pass-through. We only cache same-origin. Any 3rd-party
+  // resource (none today, but defensive) goes straight to network.
+  if (url.origin !== self.location.origin) return;
+
+  if (req.mode === 'navigate') {
+    event.respondWith(navigateNetworkFirst(req));
+    return;
+  }
+
+  event.respondWith(staticCacheFirst(req));
+});
+
+async function navigateNetworkFirst(req) {
+  const cache = await caches.open(CACHE_NAME);
+  try {
+    const networkPromise = fetch(req);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('nav-timeout')), NAV_TIMEOUT_MS)
+    );
+    const fresh = await Promise.race([networkPromise, timeoutPromise]);
+    if (fresh && fresh.ok && !fresh.redirected) {
+      // cache.put rejects on redirected responses (Cache spec), and any other
+      // edge case shouldn't poison the navigation. Swallow.
+      cache.put(req, fresh.clone()).catch(() => {});
+    }
+    return fresh;
+  } catch (_e) {
+    const cached = await cache.match(req);
+    if (cached) return cached;
+    // Last-ditch: serve the cached root if the requested route isn't
+    // cached either (during-reboot landing on a page the SW hasn't
+    // cached yet). Better than the browser's default offline error.
+    const root = await cache.match('/');
+    if (root) return root;
+    throw _e;
+  }
+}
+
+async function staticCacheFirst(req) {
+  const cache = await caches.open(CACHE_NAME);
+  const cached = await cache.match(req);
+  if (cached) return cached;
+  const fresh = await fetch(req);
+  if (fresh && fresh.ok && !fresh.redirected) {
+    cache.put(req, fresh.clone()).catch(() => {});
+  }
+  return fresh;
+}

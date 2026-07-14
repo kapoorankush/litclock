@@ -1,0 +1,27 @@
+# Python packages that are provided by apt on the Pi, not by pip.
+#
+# These names are filtered out of `requirements.txt` before any on-device
+# or in-chroot pip install. The venv uses `--system-site-packages` so
+# these are reachable without being pip-installed.
+#
+# Filtered by:
+#   - pi-gen/stage3/01-setup-app/00-run.sh       (image build)
+#   - scripts/install.sh                         (DIY install)
+#   - scripts/update.sh                          (in-place update)
+#
+# Rule: when requirements.txt adds a new package that is also apt-provided
+# via pi-gen/stage3/00-install-deps/00-packages, add its pip name here so
+# pip doesn't try to recompile it from sdist (which needs gcc and fails on
+# the image — see issue #214).
+#
+# Format: one pip package name per line. Comments (`#`) and blank lines
+# are ignored. Matching is anchored to the start of each requirements.txt
+# line with `==` after the name.
+gpiozero
+lgpio
+spidev
+pigpio
+# colorzero comes from apt transitively — python3-gpiozero Depends: on
+# python3-colorzero. It's pinned in requirements.txt for reproducibility,
+# but pip-installing it into the venv would shadow the apt version.
+colorzero

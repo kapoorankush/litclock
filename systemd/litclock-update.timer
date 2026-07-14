@@ -1,0 +1,20 @@
+[Unit]
+Description=LitClock Weekly Auto-Update Timer
+Documentation=https://github.com/kapoorankush/litclock/issues/209
+
+[Timer]
+# Weekly at 03:00 local time. Local time honors /etc/timezone so an
+# off-hour anchor stays off-hour for whoever owns the clock, not UTC.
+OnCalendar=Sun 03:00
+# Persistent: if the Pi is off at 03:00 Sunday, fire on next boot instead
+# of waiting a week. Combined with the jitter below, missed wake-ups
+# stay bounded.
+Persistent=true
+# 7-day randomization spreads load across the fleet so a bad release
+# can only reach devices at a rate proportional to time since cut.
+# Maintainer has up to 7 days to mark a bad release `prerelease: true`
+# before most devices have pulled it.
+RandomizedDelaySec=7d
+
+[Install]
+WantedBy=timers.target

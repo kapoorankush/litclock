@@ -1,0 +1,172 @@
+/* Add-to-Home-Screen first-run hint (M6 DD1/DD4/DD5).
+ *
+ * Bottom-sheet card per DESIGN.md "First-run hint", variant B from the
+ * 2026-04-30 /plan-design-review (mockup
+ * ~/.gstack/projects/kapoorankush-litclock/designs/m6-aths-hint-20260430/variant-B.png).
+ *
+ * Vocabulary reused from M4's confirm-sheet: --surface bg, --r-md radius,
+ * Fraunces/Instrument typography stack. New here: hairline-top hairline rule,
+ * subtle drop-shadow lift, iOS-native share-glyph fill (DD2 single-component
+ * DESIGN.md exception — see DESIGN.md §First-run hint amendment).
+ *
+ * DD4: hidden by default; CSS-only viewport gate at <600px max-width turns
+ * it on. iPad portrait (1024px) and desktop browsers silently skip — phone
+ * users who need the install nudge are the only audience.
+ *
+ * DD5: dismiss X button is visually 24×24 with 10px transparent padding for
+ * a 44×44 effective tap area, meeting WCAG 2.5.5 + Apple HIG.
+ */
+
+.aths-hint {
+  /* Hidden by default — viewport gate below opens it for phones. JS also
+   * adds the .is-dismissed class which keeps it hidden after localStorage
+   * dismissal.
+   *
+   * M7 design-review (2026-05-01) — moved out of `position: fixed` and
+   * into the document flow at the end of <main>. Fixed-positioning was
+   * overlaying the WiFi/Weather/Version/Uptime rows on Status mobile
+   * (and Gift Mode toggle on Settings). Inline flow lets content render
+   * fully and the hint card sits at the bottom of main's content column,
+   * naturally above the tab bar via main's existing layout. */
+  display: none;
+  position: relative;
+  background: var(--surface);
+  border-radius: 10px;  /* DD1 explicit 10px corner radius */
+  padding: 16px 20px;   /* DD1 16px top + 20px sides */
+  margin: var(--sp-lg) 0 var(--sp-md);
+  /* Hairline rule at top of card (DD1). Pinned to a light translucent ink
+   * so it reads on both light and dark surfaces without an extra rule. */
+  border-top: 1px solid var(--hairline);
+  /* Subtle drop-shadow lift (DD1). Two-layer shadow for soft falloff. */
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 8px 24px rgba(0, 0, 0, 0.10);
+}
+
+/* DD4 — viewport gate. Phones in portrait stay below 600px and see the
+ * card; desktop browsers and tablets in landscape silently skip. The .aths-
+ * hint--ready class is set by aths-hint.js once it has confirmed the user
+ * is NOT already in standalone mode and has NOT previously dismissed; it
+ * owns when to actually open. The display: block here is conditional on
+ * .aths-hint--ready so the visible card is always a function of (viewport
+ * × runtime decision). */
+@media (max-width: 599px) {
+  .aths-hint.aths-hint--ready {
+    display: flex;
+  }
+}
+
+/* Slide-up enter animation (DESIGN.md "First-run hint" spec — 600ms after
+ * load, slides up from bottom). prefers-reduced-motion replaces with snap-
+ * cut via the global :root rule in tokens.css; no extra logic needed. */
+.aths-hint.aths-hint--ready {
+  animation: aths-slide-up var(--t-long, 600ms) var(--ease-ios, ease-out);
+}
+
+@keyframes aths-slide-up {
+  from { transform: translateY(120%); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+/* Layout — icon-left, copy stack right, X dismiss top-right (DD1). */
+.aths-hint__icon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  margin-right: 12px;
+  margin-top: 2px;
+  /* DD2: iOS-native UIActivityViewController share glyph in --accent
+   * foxed amber (uses the design-token --accent so dark mode swaps
+   * automatically). The Android variant uses Phosphor `download-simple`
+   * in the same color slot. SVGs inlined in base.html.j2. */
+  color: var(--accent);
+}
+
+/* DD2 + codex /review M6 — platform-branched icon + instruction. Both
+ * variants render in the HTML; JS adds .aths-hint--ios or .aths-hint--android
+ * to the card so the right pair shows. Default-hide the Android variants
+ * so a no-JS user sees the iOS copy (which DEFAULT class on the <aside>
+ * also locks in via base.html.j2). */
+.aths-hint__icon--android,
+.aths-hint__instruction--android {
+  display: none;
+}
+.aths-hint--android .aths-hint__icon--ios,
+.aths-hint--android .aths-hint__instruction--ios {
+  display: none;
+}
+.aths-hint--android .aths-hint__icon--android {
+  display: block;
+}
+.aths-hint--android .aths-hint__instruction--android {
+  display: block;
+}
+
+.aths-hint__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.aths-hint__title {
+  margin: 0 0 4px;
+  /* Fraunces 18px (DD1). DESIGN.md serif. opsz tuned for hairline display. */
+  font-family: var(--font-serif);
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--ink);
+}
+
+.aths-hint__detail {
+  margin: 0 0 6px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--ink-muted);
+}
+
+.aths-hint__instruction {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-style: italic;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-muted);
+}
+
+/* DD5 dismiss X — 24×24 visible glyph + 10px padding = 44×44 tap target. */
+.aths-hint__dismiss {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  /* Transparent padding ring expands hit area to 44×44 (visual 24×24 +
+   * 10px transparent on each side). */
+  width: 44px;
+  height: 44px;
+  padding: 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--ink-muted);
+  border-radius: var(--r-sm);
+  /* M7 design-review F-001 — <button> user-agent default is Arial in
+   * Chrome/Chromium. The dismiss button has no visible text today (just
+   * an SVG glyph) but inheriting the project sans family keeps a future
+   * label addition consistent and avoids the design-system audit flag. */
+  font-family: inherit;
+}
+
+.aths-hint__dismiss:hover {
+  color: var(--ink);
+}
+
+.aths-hint__dismiss:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.aths-hint__dismiss svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}

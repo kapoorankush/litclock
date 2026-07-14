@@ -1,0 +1,10 @@
+[Unit]
+Description=WiFi Watchdog Timer (every 5 minutes)
+Documentation=https://github.com/kapoorankush/litclock
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

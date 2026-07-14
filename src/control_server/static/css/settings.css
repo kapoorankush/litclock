@@ -1,0 +1,443 @@
+/* M3 Settings tab styles.
+ *
+ * Per DESIGN.md "Form rows" + "Buttons" + "Toggles" specs. Layout spacing
+ * (margins, paddings, gaps between rows) derives from `tokens.css` — uses
+ * `var(--sp-*)`. Component-internal values (checkbox visual size, segmented
+ * pill option padding, etc.) are kept as literals when no token maps cleanly,
+ * with comments explaining the choice. Adding single-consumer tokens like
+ * `--checkbox-size` or `--pill-padding` was considered + rejected during the
+ * #414 maintainability /review as more cruft than the reuse-potential warrants.
+ *
+ * Sections are full-width cards on `--bg` (not `--surface`) so the
+ * tab feels like an editorial page rather than a stack of bubbles —
+ * cards collide into AI-slop signal at this density.
+ */
+
+/* Shared banner color/typography is in banners.css (loaded via base.html.j2);
+ * this rule only adds the Settings-tab-specific margin (banner sits flush
+ * at top of content, no side gutter needed because the layout container
+ * provides its own). */
+.settings-banner {
+  margin: 0 0 var(--sp-lg);
+}
+
+.settings-section {
+  margin-bottom: var(--sp-2xl);
+}
+
+.settings-section__title {
+  font-family: var(--font-serif);
+  font-size: var(--fs-h3);
+  font-weight: 400;
+  color: var(--ink);
+  margin: 0 0 var(--sp-sm);
+}
+
+.settings-section__hint {
+  margin: 0 0 var(--sp-md);
+  color: var(--ink-muted);
+  font-size: var(--fs-small);
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-md);
+  background: var(--surface);
+  border-radius: var(--r-md);
+  padding: var(--sp-md) var(--sp-lg);
+}
+
+.settings-row {
+  /* Form row per DESIGN.md "Form rows" line 225-230. Hairline-bottom on
+   * every row except the last to give the section a list-like rhythm. */
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-xs);
+  padding: var(--sp-md) 0;
+  border-bottom: 1px solid var(--hairline);
+  min-height: 44px;
+}
+.settings-row:last-of-type {
+  border-bottom: none;
+}
+
+.settings-row--toggle {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-md);
+}
+
+.settings-row__label {
+  color: var(--ink-muted);
+  font-size: var(--fs-small);
+  font-weight: 500;
+}
+.settings-row--toggle .settings-row__label {
+  /* When the row is a toggle, label spans flexibly to push the switch
+   * to the right edge. */
+  flex: 1 1 auto;
+  font-size: var(--fs-body);
+  color: var(--ink);
+  font-weight: 400;
+}
+
+.settings-row__sublabel {
+  display: block;
+  color: var(--ink-muted);
+  font-size: var(--fs-small);
+  margin-top: var(--sp-2xs);
+}
+
+.settings-row__help {
+  color: var(--ink-muted);
+  font-size: var(--fs-caption);
+  margin: 0;
+}
+
+.settings-row__error {
+  color: var(--error);
+  font-size: var(--fs-small);
+  margin: 0;
+}
+
+.settings-input {
+  /* DESIGN.md spec: r-sm (4px) for inputs, hairline border, --ink text on
+   * --bg fill. Min-height 44px for touch. font-size: var(--fs-body) so
+   * iOS doesn't auto-zoom on focus. */
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  padding: var(--sp-sm) var(--sp-md);
+  min-height: 44px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.settings-input:focus-visible {
+  border-color: var(--accent);
+}
+
+.settings-input--textarea {
+  font-family: var(--font-sans);
+  resize: vertical;
+  min-height: 88px;
+}
+
+/* Toggle — 44×26px pill per DESIGN.md "Toggles" (line 232-236).
+ * Implemented as a hidden checkbox with a CSS-only pill body. */
+.settings-toggle {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 44px;
+  height: 26px;
+  border-radius: var(--r-full);
+  background: var(--hairline);
+  border: 1px solid var(--hairline);
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--t-short) ease-out;
+}
+.settings-toggle::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-full);
+  background: var(--bg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  transition: transform var(--t-short) ease-out;
+}
+.settings-toggle:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.settings-toggle:checked::after {
+  transform: translateX(18px);
+}
+
+.settings-form__actions {
+  /* Save button right-aligned per DESIGN.md "Buttons" hierarchy. */
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--sp-sm);
+}
+
+.settings-button {
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  min-height: 44px;
+  padding: var(--sp-sm) var(--sp-xl);
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--t-micro) ease-out, color var(--t-micro) ease-out;
+}
+.settings-button--primary {
+  background: var(--accent);
+  color: var(--bg);
+}
+.settings-button--primary:hover { background: var(--accent-muted); }
+.settings-button--primary:active { background: var(--accent-muted); }
+
+/* #325/#337 A10 — dead CSS removed: `.settings-button--secondary`,
+ * `.settings-form--clear`, `.settings-form__actions--clear`,
+ * `.settings-row__help--clear` styled the Clear-weather-location affordance
+ * that A10 deleted (Automatic radio IS the reset). If a future feature
+ * needs Secondary button styling, port from DESIGN.md "Buttons" line 218-223.
+ *
+ * #317 item 7 — destructive button + form modifier rules removed when the
+ * Prepare-for-Gifting card moved to /system. The destructive language now
+ * lives in system.css next to the matching action-card. */
+
+.settings-footer {
+  margin: var(--sp-2xl) 0 var(--sp-xl);
+  text-align: center;
+  color: var(--ink-muted);
+  font-size: var(--fs-small);
+}
+
+/* ───────────────────────────────────────────────────────────────────────
+ * #337 design-review additions (A9 – A18). Concept B segmented pill +
+ * Location section restructure + Temperature auto-save pill + Advanced
+ * raw-coords <details> + browser-tz fallback. All values from tokens.css.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+/* Visually hidden — for fieldset legends used to label radio groups for
+ * screen readers without consuming visual space. Standard a11y pattern;
+ * matches what bootstrap calls .sr-only. */
+.settings-visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Segmented pill (#337 A12 + A13). Two-button binary picker styled with
+ * --accent fill on the selected side and --ink-muted text on the unselected.
+ * Wraps two `<input type=radio>` so it degrades to a real radio group
+ * with no JS — see settings.js for the JS layer that keeps `.is-selected`
+ * in sync as the user clicks. */
+.settings-row--pill {
+  /* The pill is the row's own visual element — no extra label column. */
+  border: none;
+  padding: var(--sp-md) 0;
+}
+.settings-row--pill:last-of-type {
+  border-bottom: none;
+}
+.settings-segmented {
+  display: flex;
+  gap: 0;
+  background: var(--bg);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  /* 4px inset = var(--sp-xs). Pill container's own padding around the
+   * inner options, NOT the option's clickable area. */
+  padding: var(--sp-xs);
+  margin: 0;
+}
+.settings-segmented__opt {
+  flex: 1;
+  text-align: center;
+  /* 10px 12px = component-internal inset that doesn't map cleanly to the
+   * --sp-* scale (var(--sp-sm) var(--sp-md) = 8px 12px would clip the
+   * touch target below the DESIGN.md 44pt minimum). Kept as a literal
+   * because the value is hand-tuned for the pill's specific anatomy
+   * (option label + 4px outer padding adds up to ~44px tap target).
+   * #414 maintainability /review: tokenizing this would require a
+   * component-specific token like --pill-padding, which is more cruft
+   * than the value's reuse-potential warrants. */
+  padding: 10px 12px;
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+  cursor: pointer;
+  border-radius: calc(var(--r-md) - var(--sp-xs));
+  transition:
+    background var(--t-micro) ease-out,
+    color var(--t-micro) ease-out;
+  /* Min touch target — DESIGN.md "Touch target spacing" calls 44pt. The
+   * 10+10 padding plus the natural line-height of fs-small gets us to ~40px
+   * inner; the 4px outer pill padding pushes the visible target to ~44px.
+   * 36px literal is component-internal (pill option intrinsic height before
+   * the outer pill inset adds the final 8px). */
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.settings-segmented__opt.is-selected {
+  background: var(--accent);
+  color: var(--bg);
+}
+/* Hide the actual radio inputs visually but keep them in the tab order
+ * and keyboard-focusable. Real radios provide form-submit semantics + a11y
+ * announcements ("Automatic, selected, 1 of 2"); the segmented pill is
+ * pure visual styling on top. */
+.settings-segmented__input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+/* Keyboard focus ring on the parent label when the inner radio has focus.
+ * Mirrors DESIGN.md "Focus indicators": 2px solid --accent at 2px offset. */
+.settings-segmented__opt:has(.settings-segmented__input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Currently-row (Auto-mode display) — read-only "Currently: City, State". */
+.settings-currently-row {
+  padding: var(--sp-md) 0;
+  border-bottom: 1px solid var(--hairline);
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-sm);
+  flex-wrap: wrap;
+}
+.settings-currently-row:last-of-type {
+  border-bottom: none;
+}
+.settings-currently-row__label {
+  color: var(--ink-muted);
+  font-size: var(--fs-small);
+}
+.settings-currently-row__value {
+  color: var(--ink);
+  font-size: var(--fs-body);
+}
+
+/* Checkbox row (worldwide checkbox under the Place input). */
+.settings-checkbox-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-xs);
+}
+.settings-checkbox-row__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  cursor: pointer;
+  /* 36px = checkbox-row intrinsic height. Pair with the segmented pill's
+   * matching 36px for visual rhythm — both component-internal literals,
+   * not derivable from --sp-* tokens. */
+  min-height: 36px;
+}
+.settings-checkbox-row__head input[type="checkbox"] {
+  /* 18px = native checkbox visual size. Standard for the platform; not
+   * tokenized because checkboxes don't appear elsewhere in the system
+   * at a different size (would just create a single-consumer token). */
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  margin: 0;
+  flex-shrink: 0;
+}
+.settings-checkbox-row__head-label {
+  font-size: var(--fs-small);
+  color: var(--ink);
+}
+.settings-checkbox-row__help {
+  color: var(--ink-muted);
+  font-size: var(--fs-caption);
+  /* 26px = align help text under the checkbox label (18px checkbox + 8px
+   * gap = 26px). Composed from the checkbox + gap-token values, not a
+   * separate magic constant. */
+  padding-left: calc(18px + var(--sp-sm));
+  margin: 0;
+}
+
+/* <details>Advanced — the raw-coords escape hatch under Specific mode
+ * (#337 A17). Open-by-default when raw coords are in use; collapsed
+ * otherwise. The Jinja `{% if advanced_in_use %}open{% endif %}` rule on
+ * the template determines initial state from env.sh. */
+.settings-details {
+  padding: var(--sp-md) 0;
+  border-top: 1px solid var(--hairline);
+}
+.settings-details__summary {
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 0;
+  list-style-position: outside;
+}
+.settings-details__summary::marker {
+  color: var(--accent);
+}
+.settings-details[open] .settings-details__summary {
+  margin-bottom: var(--sp-md);
+}
+.settings-details__help {
+  margin: 0 0 var(--sp-md);
+  color: var(--ink-muted);
+  font-size: var(--fs-caption);
+}
+.settings-details__row {
+  /* Override the .settings-row default padding/border so the inner rows
+   * sit cleanly inside the open <details> without doubling separators. */
+  padding-top: var(--sp-sm);
+  padding-bottom: var(--sp-sm);
+  border-bottom: none;
+}
+
+/* Disabled Save button (A10 + A14: Specific + empty Place state). */
+.settings-button--primary[disabled],
+.settings-button--primary[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Tertiary button (text-link style) — for the browser-tz fallback button
+ * inside the Location section. Matches DESIGN.md "Buttons" tertiary spec:
+ * transparent + --accent text, no border, inline with surrounding text. */
+.settings-button--tertiary {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: var(--fs-small);
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.settings-button--tertiary:hover {
+  color: var(--accent-muted);
+}
+.settings-button--tertiary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Browser-tz fallback row (#337 A18). Renders only when no coords are
+ * resolved AND the Intl.DateTimeFormat API is available (JS hides
+ * otherwise). Inline text + button so it reads as a sentence. */
+.settings-tz-fallback {
+  margin: var(--sp-md) 0 0;
+  padding: var(--sp-md);
+  background: var(--surface);
+  border-radius: var(--r-md);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+  line-height: 1.5;
+}
+
+/* JS-only / no-JS-only visibility helpers. settings.js adds `.has-js` to
+ * <html> on load; CSS uses :not(.has-js) to keep no-JS Save buttons
+ * visible. */
+html.has-js [data-no-js-only] {
+  display: none;
+}

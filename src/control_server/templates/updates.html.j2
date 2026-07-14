@@ -1,0 +1,174 @@
+{% extends "base.html.j2" %}
+{# Updates tab — single-card layout (#245 M5).
+
+   Server-renders the up-to-date / available pill from the cached check.
+   The Apply button POSTs to /api/update/apply with a hidden confirm
+   token so the no-JS path still works.
+
+   With JS, updates.js intercepts the form submit, opens a sheet-style
+   confirm modal (mirroring system.html.j2's pattern), then on confirm
+   POSTs the action and replaces the card with the phase reading-list,
+   polling /api/update/status every 2s until the run reaches a terminal
+   state.
+
+   Phase names (D3 lock):
+     1. Checking for updates       — Phase 1 + resolver
+     2. Pulling new code           — Phase 2 + 2b
+     3. Syncing quote images       — Phase 2c
+     4. Updating Python packages   — Phase 3 + 4
+     5. Verifying clock starts     — Phase 4.5 (smoke)
+     6. Installing services        — Phase 5 + 5b + 6
+     7. Restarting                 — Phase 7
+#}
+{% block title %}Updates — LitClock{% endblock %}
+
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/updates.css') }}">
+  {# M7 OV-2 — shared confirm-sheet partial; /system also loads it. #}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/confirm-sheet.css') }}">
+{% endblock %}
+
+{% block extra_body %}
+  <script src="{{ url_for('static', filename='js/updates.js') }}" defer></script>
+{% endblock %}
+
+{% block content %}
+{# Initial pill state from the (best-effort) cached check. JS refreshes
+   via GET /api/update/check shortly after load to catch a 6h-cache miss
+   without bothering the user with a synchronous fetch on render. #}
+{% set available = cached_check and cached_check.available %}
+{# #381 — split the unknown state into "checking" (no cache yet — JS is about
+   to fire /api/update/check) and "check_failed" (cache exists but the GH
+   call returned a null result, e.g. private repo without auth). Both stay
+   under data-state="unknown" so the existing JS/CSS keeps working, but the
+   pill label differentiates so users on private-repo Pis without a PAT
+   don't see a misleading "checking…" forever. #}
+{% set checking = cached_check is none %}
+{% set check_failed = (cached_check is not none) and (cached_check.available is none) %}
+{% set unknown = checking or check_failed %}
+{% set latest_tag = cached_check.latest_tag if cached_check else None %}
+{% set release_notes = cached_check.release_notes if cached_check else None %}
+
+<section id="updates-card"
+         class="updates-card"
+         data-current-version="{{ current_version }}"
+         data-state="{% if available %}available{% elif unknown %}unknown{% else %}up_to_date{% endif %}">
+
+  <header class="updates-card__header">
+    {% if available %}
+      <span class="updates-pill updates-pill--available" role="status">update available</span>
+    {% elif checking %}
+      <span class="updates-pill updates-pill--unknown" role="status">checking…</span>
+    {% elif check_failed %}
+      {# #381 — terminal-unknown state: the GH /tags call returned null
+         (commonly: private repo + missing PAT). Was "checking…" before,
+         which left users staring at a spinner that wasn't spinning. #}
+      <span class="updates-pill updates-pill--unknown" role="status">couldn't check</span>
+    {% else %}
+      <span class="updates-pill updates-pill--ok" role="status">up to date</span>
+    {% endif %}
+  </header>
+
+  <dl class="updates-card__facts">
+    <dt>Current version</dt>
+    <dd class="updates-card__version">{{ current_version }}</dd>
+
+    {% if available and latest_tag %}
+      <dt>Available</dt>
+      <dd class="updates-card__version">{{ latest_tag }}</dd>
+    {% endif %}
+
+    {% if cached_check and cached_check.fetched_at_unix %}
+      <dt>Last checked</dt>
+      <dd class="updates-card__last-checked"
+          data-fetched-at="{{ cached_check.fetched_at_unix }}">
+        {# Server-rendered relative time (M7 F-004). The data-fetched-at
+           attribute stays so a future client-side ticker can keep "2
+           minutes ago" fresh without a page reload — but the human-
+           readable text is on by default. Falls back to "—" when the
+           helper couldn't format. #}
+        {{ cached_check.fetched_at_relative or "—" }}
+      </dd>
+    {% endif %}
+  </dl>
+
+  {% if available and release_notes %}
+    {# Fraunces 16px italic per DESIGN.md. <pre> preserves the parser
+       output without re-rendering markdown — the server-side extractor
+       already trimmed to a 10-line bullet list. JS may swap to a
+       cleaner render later but this stays safe + accessible by default. #}
+    <pre class="updates-card__notes">{{ release_notes }}</pre>
+  {% endif %}
+
+  {% if available %}
+    <form class="updates-card__apply"
+          method="POST"
+          action="{{ url_for('updates.apply_update') }}"
+          data-confirm-action="update_apply">
+      <input type="hidden" name="token" value="{{ token }}">
+      <button type="submit" class="updates-card__apply-btn">Apply update…</button>
+    </form>
+  {% endif %}
+</section>
+
+{# Sheet-style confirm modal (Story mirroring system.html.j2). Stays in
+   the DOM unrendered until updates.js calls showModal(). Copy verbatim
+   from DESIGN.md "Confirm modals — copy library". #}
+<dialog class="confirm-sheet"
+        role="alertdialog"
+        aria-labelledby="confirm-update-title"
+        aria-describedby="confirm-update-body"
+        data-action="update_apply"
+        data-destructive="false">
+  <div class="confirm-sheet__inner">
+    <h2 id="confirm-update-title" class="confirm-sheet__title">Apply update?</h2>
+    <p id="confirm-update-body" class="confirm-sheet__body">
+      LitClock will pause for about 5 minutes while it updates. Your quote will return when it’s done.
+    </p>
+    <div class="confirm-sheet__actions">
+      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>Cancel</button>
+      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>Apply</button>
+    </div>
+  </div>
+</dialog>
+
+{# Phase reading-list — hidden by default, populated by updates.js when
+   /api/update/status reports state=running. The 7 rows match D3's lock;
+   updates.js sets data-state on each row to {completed, active, upcoming}
+   based on the polled phase_index, and updates.css renders the icon +
+   typography per DESIGN.md "Phase reading-list (during update apply)". #}
+<section class="phase-reading-list" id="phase-reading-list" hidden aria-live="polite">
+  <h2 class="phase-reading-list__title">Updating LitClock</h2>
+  <ol class="phase-reading-list__rows" role="list">
+    <li class="phase-row" data-phase-index="1" data-state="upcoming">
+      <span class="phase-row__icon" aria-hidden="true"></span>
+      <span class="phase-row__name">Checking for updates</span>
+    </li>
+    <li class="phase-row" data-phase-index="2" data-state="upcoming">
+      <span class="phase-row__icon" aria-hidden="true"></span>
+      <span class="phase-row__name">Pulling new code</span>
+    </li>
+    <li class="phase-row" data-phase-index="3" data-state="upcoming">
+      <span class="phase-row__icon" aria-hidden="true"></span>
+      <span class="phase-row__name">Syncing quote images</span>
+    </li>
+    <li class="phase-row" data-phase-index="4" data-state="upcoming">
+      <span class="phase-row__icon" aria-hidden="true"></span>
+      <span class="phase-row__name">Updating Python packages</span>
+    </li>
+    <li class="phase-row" data-phase-index="5" data-state="upcoming">
+      <span class="phase-row__icon" aria-hidden="true"></span>
+      <span class="phase-row__name">Verifying clock starts</span>
+    </li>
+    <li class="phase-row" data-phase-index="6" data-state="upcoming">
+      <span class="phase-row__icon" aria-hidden="true"></span>
+      <span class="phase-row__name">Installing services</span>
+    </li>
+    <li class="phase-row" data-phase-index="7" data-state="upcoming">
+      <span class="phase-row__icon" aria-hidden="true"></span>
+      <span class="phase-row__name">Restarting</span>
+    </li>
+  </ol>
+  <p class="phase-reading-list__terminal" id="phase-terminal-message" hidden></p>
+</section>
+{% endblock %}

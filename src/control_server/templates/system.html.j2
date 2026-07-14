@@ -1,0 +1,359 @@
+{% extends "base.html.j2" %}
+{# System tab — Restart + Power off action cards (#245 M4 Story 2.1).
+
+   Each card renders a <form> with a server-issued single-use confirm
+   token in a hidden input. Form posts to /api/system/{action}; the route
+   accepts both JSON and form-encoded bodies. JS in Story 2.2 intercepts
+   the submit to show the sheet-style confirm modal first; without JS the
+   form POSTs directly (degraded UX — JSON response visible to the user —
+   but the destructive action still gates on the confirm-token TTL).
+
+   Icons are simple stroke-based shapes that follow the locked DESIGN.md
+   icon mapping (Restart=arrow-clockwise, Power off=power). Final Phosphor
+   swap is gated on issue #255 (good first issue, M2 follow-up).
+#}
+{% block title %}System — LitClock{% endblock %}
+
+{% block extra_head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/system.css') }}">
+  {# M7 OV-2 — confirm-sheet styles extracted to a shared partial so /system
+     and /updates render the same modal. #}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/confirm-sheet.css') }}">
+{% endblock %}
+
+{% block extra_body %}
+  <script src="{{ url_for('static', filename='js/system.js') }}" defer></script>
+{% endblock %}
+
+{% block content %}
+{# #317 item 7 — success / failure banners for the gift card writer (which
+   PRG-redirects back to /system?saved=gift). Mirrors the settings.html.j2
+   pattern so users see the same confirmation on either tab. #}
+{% if saved_section %}
+  <div class="settings-banner settings-banner--success" role="status" aria-live="polite">
+    Saved.
+  </div>
+{% endif %}
+{% if form_error %}
+  <div class="settings-banner settings-banner--error" role="alert">
+    {{ form_error }}
+  </div>
+{% endif %}
+
+<section class="system-actions" aria-label="System actions">
+
+  <article class="action-card" data-action="reboot">
+    <header class="action-card__header">
+      {# arrow-clockwise — circular refresh arrow #}
+      <svg class="action-card__icon" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true">
+        <polyline points="21 4 21 10 15 10"></polyline>
+        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+      </svg>
+      <h2 class="action-card__title">Restart</h2>
+    </header>
+    <p class="action-card__consequence">
+      Display blanks for about 30 seconds, then your quote returns.
+    </p>
+    <form class="action-card__form"
+          method="POST"
+          action="{{ url_for('system.reboot') }}"
+          data-confirm-action="reboot">
+      <input type="hidden" name="token" value="{{ tokens.reboot }}">
+      <button type="submit" class="action-card__submit">Restart…</button>
+    </form>
+  </article>
+
+  <article class="action-card" data-action="poweroff">
+    <header class="action-card__header">
+      {# power — vertical bar inside circular arc #}
+      <svg class="action-card__icon" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 2v10"></path>
+        <path d="M5.34 7A8 8 0 1 0 18.66 7"></path>
+      </svg>
+      <h2 class="action-card__title">Power off</h2>
+    </header>
+    <p class="action-card__consequence">
+      Requires unplug + re-plug to start back up.
+    </p>
+    <form class="action-card__form"
+          method="POST"
+          action="{{ url_for('system.poweroff') }}"
+          data-confirm-action="poweroff">
+      <input type="hidden" name="token" value="{{ tokens.poweroff }}">
+      <button type="submit" class="action-card__submit">Power off…</button>
+    </form>
+  </article>
+
+  {# #245 M5 D1/D11 — Reset WiFi card.
+
+     Highest-blast destructive action: deletes ALL saved wifi profiles,
+     drops the user back into firstboot AP-mode. Modal copy MUST clearly
+     distinguish "WiFi only, settings preserved" from "factory reset" or
+     a user mid-gift-transfer panics. env.sh location/weather/gift mode
+     are preserved across the reset (D1 lock).
+  #}
+  <article class="action-card action-card--destructive" data-action="wifi_reset">
+    <header class="action-card__header">
+      {# wifi-slash — wifi arcs with a diagonal slash #}
+      <svg class="action-card__icon" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true">
+        <path d="M5 12.55a11 11 0 0 1 14.08 0"></path>
+        <path d="M1.42 9a16 16 0 0 1 21.16 0"></path>
+        <path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path>
+        <line x1="12" y1="20" x2="12.01" y2="20"></line>
+        <line x1="2" y1="2" x2="22" y2="22"></line>
+      </svg>
+      <h2 class="action-card__title">Reset WiFi</h2>
+    </header>
+    <p class="action-card__consequence">
+      Forgets your saved WiFi networks so you can connect to a different one.
+      Your other settings (location, weather, gift mode) stay saved.
+    </p>
+    <form class="action-card__form"
+          method="POST"
+          action="{{ url_for('wifi.reset') }}"
+          data-confirm-action="wifi_reset">
+      <input type="hidden" name="token" value="{{ tokens.wifi_reset }}">
+      <button type="submit" class="action-card__submit">Reset WiFi…</button>
+    </form>
+  </article>
+
+  {# #510 — Factory reset card. Full-wipe sibling of Reset WiFi: erases ALL
+     settings AND WiFi and reboots into first-boot setup. Modal copy MUST make
+     the "everything, not just WiFi" distinction so a mover reaching for
+     Reset WiFi doesn't nuke their preferences by mistake. #}
+  <article class="action-card action-card--destructive" data-action="factory_reset">
+    <header class="action-card__header">
+      {# rotate-ccw — a circular reset arrow #}
+      <svg class="action-card__icon" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true">
+        <polyline points="1 4 1 10 7 10"></polyline>
+        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+      </svg>
+      <h2 class="action-card__title">Factory reset</h2>
+    </header>
+    <p class="action-card__consequence">
+      Erases <strong>everything</strong> — all settings and WiFi — and reboots
+      into first-time setup. Use this to start completely fresh.
+    </p>
+    <form class="action-card__form"
+          method="POST"
+          action="{{ url_for('system.reset') }}"
+          data-confirm-action="factory_reset">
+      <input type="hidden" name="token" value="{{ tokens.factory_reset }}">
+      <button type="submit" class="action-card__submit">Factory reset…</button>
+    </form>
+  </article>
+
+  {# #317 item 7 — Prepare for Gifting moved here from /settings.
+
+     Two-form card. The first form persists GIFT_MODE_MESSAGE to env.sh via
+     the existing /settings (section=gift) PRG path so the gifter can
+     compose over multiple visits. The second form is destructive — POSTs
+     the current message to /api/system/prepare-for-gift, which wipes WiFi,
+     paints the welcome splash, and powers off (one-way action,
+     confirm-sheet gated).
+
+     No-JS path: the destructive form's hidden `message` field carries the
+     server-rendered persisted draft, so a Prepare submission without JS
+     uses the last-saved text. With JS, system.js syncs the live textarea
+     value into the hidden field so unsaved edits are honored.
+
+     GIFT_MODE_MAX_LEN = 80 (#319). The renderer word-wraps to two lines at
+     the title font; a live counter in the card warns near the limit. #}
+  <article class="action-card action-card--destructive action-card--gift" data-action="prepare_for_gift">
+    <header class="action-card__header">
+      {# gift — a wrapped gift box with a bow #}
+      <svg class="action-card__icon" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true">
+        <polyline points="20 12 20 22 4 22 4 12"></polyline>
+        <rect x="2" y="7" width="20" height="5"></rect>
+        <line x1="12" y1="22" x2="12" y2="7"></line>
+        <path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"></path>
+        <path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"></path>
+      </svg>
+      <h2 class="action-card__title">Prepare for Gifting</h2>
+    </header>
+    <p class="action-card__consequence">
+      Type a welcome message for the recipient, then prepare the clock for
+      shipping. We'll paint your message on the screen, wipe your WiFi, and
+      power off. Plug it back in to test, or pack and ship it.
+    </p>
+
+    <form class="action-card__form action-card__form--draft"
+          method="POST"
+          action="{{ url_for('settings.settings_post') }}"
+          data-section="gift">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="section" value="gift">
+
+      <label class="action-card__label" for="gift_mode_message">Welcome message (optional)</label>
+      <textarea class="action-card__textarea"
+                id="gift_mode_message"
+                name="GIFT_MODE_MESSAGE"
+                rows="3"
+                maxlength="80"
+                placeholder="Happy Birthday Mom! Love, Alexis"
+                aria-describedby="gift-mode-help gift-mode-counter"
+                data-gift-message-source>{{ gift_mode_message }}</textarea>
+      <p id="gift-mode-help" class="action-card__help">
+        Up to 80 bytes across 1–2 lines (about 80 plain letters; emoji and
+        accented characters count for more). Leave blank to use the default
+        welcome. Backticks and <code>$</code> aren't allowed.
+      </p>
+      {# Counter is visual-only. aria-live was chatty on every keystroke
+         (SR re-announced "5 / 80, 6 / 80, ..." on each input event);
+         dropping it lets users rely on the UA's native maxlength
+         announcement when they hit the cap. The counter still helps
+         sighted users plan their message length (adversarial /review). #}
+      <p id="gift-mode-counter" class="action-card__counter"
+         data-gift-counter
+         data-counter-max="80">{{ gift_mode_message|length }} / 80</p>
+
+      {% if field_errors and field_errors.get('GIFT_MODE_MESSAGE') %}
+        <p class="action-card__field-error" role="alert">{{ field_errors['GIFT_MODE_MESSAGE'] }}</p>
+      {% endif %}
+
+      <div class="action-card__form-actions">
+        <button type="submit" class="action-card__submit action-card__submit--secondary">Save draft</button>
+      </div>
+    </form>
+
+    <form class="action-card__form action-card__form--destructive"
+          method="POST"
+          action="{{ url_for('system.prepare_for_gift') }}"
+          data-confirm-action="prepare_for_gift">
+      <input type="hidden" name="token" value="{{ tokens.prepare_for_gift }}">
+      {# Adversarial /review finding: a hidden <input value="..."> round-trips
+         newlines unreliably (HTML attribute values flatten linefeeds to
+         spaces in some serializers). Use a hidden <textarea> so multi-line
+         drafts survive end-to-end on the no-JS Prepare path. system.js
+         keeps the textarea→hidden-textarea mirror updated for the JS path
+         so unsaved edits ship too. #}
+      <textarea name="message" hidden data-gift-message-sync>{{ gift_mode_message }}</textarea>
+      <button type="submit" class="action-card__submit">Prepare for Gifting…</button>
+    </form>
+  </article>
+
+</section>
+
+{# Sheet-style confirm modals (Story 2.2). One <dialog> per action so each
+   gets its own labelledby/describedby pair without JS having to swap copy.
+   Both stay in the DOM unrendered until system.js calls showModal(); the
+   no-JS path bypasses these entirely (form posts straight to /api/system/*).
+   Copy taken verbatim from DESIGN.md §"Confirm modals — copy library". #}
+<dialog class="confirm-sheet"
+        role="alertdialog"
+        aria-labelledby="confirm-reboot-title"
+        aria-describedby="confirm-reboot-body"
+        data-action="reboot"
+        data-destructive="false">
+  <div class="confirm-sheet__inner">
+    <h2 id="confirm-reboot-title" class="confirm-sheet__title">Restart LitClock?</h2>
+    <p id="confirm-reboot-body" class="confirm-sheet__body">
+      The display will go blank for about 30 seconds, then your quote will return.
+    </p>
+    <div class="confirm-sheet__actions">
+      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>Cancel</button>
+      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>Restart</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog class="confirm-sheet"
+        role="alertdialog"
+        aria-labelledby="confirm-poweroff-title"
+        aria-describedby="confirm-poweroff-body"
+        data-action="poweroff"
+        data-destructive="true">
+  <div class="confirm-sheet__inner">
+    <h2 id="confirm-poweroff-title" class="confirm-sheet__title">Power off LitClock?</h2>
+    <p id="confirm-poweroff-body" class="confirm-sheet__body">
+      Once it's off, you'll need to <strong>unplug and re-plug</strong> the power cable to start it again. There's no remote on switch.
+    </p>
+    <div class="confirm-sheet__actions">
+      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>Cancel</button>
+      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>Power off</button>
+    </div>
+  </div>
+</dialog>
+
+{# #245 M5 D1/D11/D12 — Reset WiFi confirm modal.
+
+   Copy MUST distinguish "WiFi only" from "factory reset" or a gift-
+   transfer user panics. D12 lock: ALL saved wifi profiles get wiped (not
+   just the active one) so a secondary saved network can't auto-reconnect
+   and prevent firstboot from entering AP-mode.
+#}
+<dialog class="confirm-sheet"
+        role="alertdialog"
+        aria-labelledby="confirm-wifi-reset-title"
+        aria-describedby="confirm-wifi-reset-body"
+        data-action="wifi_reset"
+        data-destructive="true">
+  <div class="confirm-sheet__inner">
+    <h2 id="confirm-wifi-reset-title" class="confirm-sheet__title">Reset WiFi?</h2>
+    <p id="confirm-wifi-reset-body" class="confirm-sheet__body">
+      <strong>Only your WiFi</strong> will be cleared. Your location, weather, and gift settings stay saved.
+      You’ll connect your phone to the <strong>LitClock-Setup</strong> hotspot to enter new WiFi.
+    </p>
+    <div class="confirm-sheet__actions">
+      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>Cancel</button>
+      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>Reset WiFi</button>
+    </div>
+  </div>
+</dialog>
+
+{# #510 — Factory reset confirm modal. Consequence copy per DESIGN.md
+   "Confirm dialogs" (one-line consequence, destructive text-link + filled
+   confirm). MUST say "everything", not just WiFi, so it reads as distinct
+   from the Reset WiFi sheet directly above. #}
+<dialog class="confirm-sheet"
+        role="alertdialog"
+        aria-labelledby="confirm-factory-reset-title"
+        aria-describedby="confirm-factory-reset-body"
+        data-action="factory_reset"
+        data-destructive="true">
+  <div class="confirm-sheet__inner">
+    <h2 id="confirm-factory-reset-title" class="confirm-sheet__title">Factory reset?</h2>
+    <p id="confirm-factory-reset-body" class="confirm-sheet__body">
+      <strong>Everything</strong> will be erased — all settings and WiFi — and the clock
+      reboots into setup. This can’t be undone. You’ll set it up again from your phone via
+      the <strong>LitClock-Setup</strong> hotspot.
+    </p>
+    <div class="confirm-sheet__actions">
+      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>Cancel</button>
+      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>Factory reset</button>
+    </div>
+  </div>
+</dialog>
+
+{# #317 item 7 — Prepare for Gifting confirm modal. Copy verbatim from
+   DESIGN.md "Confirm modals — copy library" (moved here from settings.html.j2). #}
+<dialog class="confirm-sheet"
+        role="alertdialog"
+        aria-labelledby="confirm-prepare-for-gift-title"
+        aria-describedby="confirm-prepare-for-gift-body"
+        data-action="prepare_for_gift"
+        data-destructive="true">
+  <div class="confirm-sheet__inner">
+    <h2 id="confirm-prepare-for-gift-title" class="confirm-sheet__title">Prepare for Gifting?</h2>
+    <p id="confirm-prepare-for-gift-body" class="confirm-sheet__body">
+      Your WiFi will be wiped and the clock will power off. The screen will
+      show your welcome message until the recipient completes setup.
+      Plug it back in to test, or pack and ship it.
+    </p>
+    <div class="confirm-sheet__actions">
+      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>Cancel</button>
+      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>Prepare for Gifting</button>
+    </div>
+  </div>
+</dialog>
+{% endblock %}

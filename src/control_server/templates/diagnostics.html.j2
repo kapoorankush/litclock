@@ -1,0 +1,461 @@
+{% extends "base.html.j2" %}
+
+{# Diagnostics page (#416 PR3 — Lane E).
+
+   Server-side rendered from the same collect_diagnostics() payload the
+   /api/diagnostics endpoint serves; the first paint carries the full
+   anomaly state + the helper-paste block even before any JS runs.
+
+   D3 — all-closed-unless-anomaly default state: each <details> is
+   open IFF its section ID is in `anomalies`. The server's authoritative
+   answer (computed once in routes/diagnostics.py::_compute_anomalies)
+   drives BOTH the first paint AND the post-poll re-render, so the page
+   never disagrees with itself across refreshes.
+
+   D16 — Reveal pill is session-scoped (sessionStorage). diagnostics.js
+   reads sessionStorage on boot, conditionally re-fetches /api/diagnostics
+   with ?reveal=location, and patches the DOM. No localStorage; tab close
+   re-locks the surface.
+
+   D31 — "Recent log entries" section is a static snapshot of the last 50
+   buffer entries at request time. The live stream (drawer / SSE) lands
+   in PR3b. #}
+
+{% block title %}LitClock — Diagnostics{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/diagnostics.css') }}">
+{% endblock %}
+
+{% block content %}
+{# /review fix F-HEADING: the banner title at line 71 is the page H1.
+   The pre-/review code emitted a visually-hidden <h2> here too, which
+   put H2 before H1 in the outline. Dropped — the banner anchors the
+   page. #}
+
+{# D29 — Status banner as visual anchor. The page-final mockup leads with
+   a large green checkmark + Fraunces "All running" title + Geist Mono
+   meta ("Refreshed Ns ago · Auto every 30s"). When ANY section has an
+   anomaly the banner swaps to oxblood warning-triangle + "Clock isn't
+   running" (or a softer variant if only network/services is anomalous).
+
+   /review F-LANDMARK: pre-/review used <aside> (the "complementary"
+   landmark) — but the banner IS the page's lead content, not a
+   complementary one. Now <section aria-labelledby="status-banner-title">
+   so it categorises as a primary region without the 30s re-announce
+   noise that role="status" would cause. #}
+{# Severity calc — D6 (#432): adds the third 'settling' state when ALL
+   non-OK sections are uncollected-only (no real anomalies). Order
+   matters — anomaly tiers win over settling because a real failure must
+   never read as "just settling in." #}
+{% set _uncollected = uncollected | default([]) %}
+{% set _severity = 'error' if ('services' in anomalies or 'recent-log-entries' in anomalies)
+                   else ('warning' if anomalies
+                         else ('settling' if _uncollected else 'ok')) %}
+{# D6 — section-aware body lookup for the 'settling' headline. Server and
+   diagnostics.js share this lookup table so SSR first paint and the 30s
+   poll always agree. Generic fallback (single key) catches future
+   sections without breaking the page. #}
+{% set _settling_body =
+     'Your clock is finishing its first network and location checks.'
+     if ('network' in _uncollected and 'time-location' in _uncollected)
+     else ('Your clock is finishing its first network check.'
+           if 'network' in _uncollected
+           else ('Your clock is finishing its first location check.'
+                 if 'time-location' in _uncollected
+                 else '')) %}
+<section class="status-banner status-banner--{{ _severity }}"
+         data-diag-banner
+         aria-labelledby="status-banner-title">
+  <span class="status-banner__icon status-banner__icon--ok" aria-hidden="true"
+        {% if _severity != 'ok' %}hidden{% endif %}>
+    {# Phosphor `check-circle` — matches DESIGN.md icon-per-action mapping.
+       24pt size at the large end of the type scale. #}
+    <svg viewBox="0 0 256 256" width="32" height="32" fill="currentColor">
+      <path d="M173.66,98.34a8,8,0,0,1,0,11.32l-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35A8,8,0,0,1,173.66,98.34ZM232,128A104,104,0,1,1,128,24,104.11,104.11,0,0,1,232,128Zm-16,0a88,88,0,1,0-88,88A88.1,88.1,0,0,0,216,128Z"/>
+    </svg>
+  </span>
+  <span class="status-banner__icon status-banner__icon--warning" aria-hidden="true"
+        {% if _severity == 'ok' or _severity == 'settling' %}hidden{% endif %}>
+    {# Phosphor `warning` (filled triangle). Color resolves to --warning
+       (ochre) for the "needs attention" severity OR --error (oxblood)
+       for the "clock isn't running" severity via the --error modifier
+       on the parent. Per D29 + /review design specialist. #}
+    <svg viewBox="0 0 256 256" width="32" height="32" fill="currentColor">
+      <path d="M236.8,188.09,149.35,36.22a24.76,24.76,0,0,0-42.7,0L19.2,188.09a23.51,23.51,0,0,0,0,23.72A24.35,24.35,0,0,0,40.55,224h174.9a24.35,24.35,0,0,0,21.33-12.19A23.51,23.51,0,0,0,236.8,188.09ZM120,104a8,8,0,0,1,16,0v40a8,8,0,0,1-16,0Zm8,88a12,12,0,1,1,12-12A12,12,0,0,1,128,192Z"/>
+    </svg>
+  </span>
+  {# D6 — Phosphor `hourglass-medium` for the settling tier. Graphite
+     `--ink-muted` color, neutral (no border-top accent on the banner). #}
+  <span class="status-banner__icon status-banner__icon--settling" aria-hidden="true"
+        {% if _severity != 'settling' %}hidden{% endif %}>
+    <svg viewBox="0 0 256 256" width="32" height="32" fill="currentColor">
+      <path d="M200,75.4V40h8a8,8,0,0,0,0-16H48a8,8,0,0,0,0,16h8V75.4a52.07,52.07,0,0,0,21.4,42.06L100.34,128,77.4,138.54A52.07,52.07,0,0,0,56,180.6V216H48a8,8,0,0,0,0,16H208a8,8,0,0,0,0-16h-8V180.6a52.07,52.07,0,0,0-21.4-42.06L155.66,128l22.94-10.54A52.07,52.07,0,0,0,200,75.4ZM72,40H184V75.4a35.81,35.81,0,0,1-2.16,12.32L128,68.5,74.16,87.72A35.81,35.81,0,0,1,72,75.4ZM184,180.6V216H72V180.6a36.05,36.05,0,0,1,14.81-29.12L128,131.71l41.19,19.77A36.05,36.05,0,0,1,184,180.6Z"/>
+    </svg>
+  </span>
+  <div class="status-banner__copy">
+    {# Adversarial-review F8 — the title+body live region is permanent
+       (role="status" aria-live="polite") so SR users hear severity
+       changes whenever they happen, including the settling→ok recovery
+       at the end of fresh-flash boot. The 30s-updating meta line sits
+       OUTSIDE the live region to avoid re-announcing "Refreshed Ns ago"
+       on every tick. Pre-fix, role+aria-live were toggled only on the
+       settling tier and removed on severity change — which destroyed the
+       live region at exactly the same tick that the title text changed,
+       so the AT could drop the queued announcement. #}
+    <div class="status-banner__live"
+         data-diag-banner-live
+         role="status"
+         aria-live="polite">
+      <h1 id="status-banner-title" class="status-banner__title" data-diag-banner-title>
+        {% if _severity == 'error' %}
+          Clock isn't running
+        {% elif _severity == 'warning' %}
+          Something needs attention
+        {% elif _severity == 'settling' %}
+          Just settling in.
+        {% else %}
+          All running
+        {% endif %}
+      </h1>
+      {% if _severity == 'settling' and _settling_body %}
+      <p class="status-banner__body" data-diag-banner-body>{{ _settling_body }}</p>
+      {% endif %}
+    </div>
+    <p class="status-banner__meta" data-diag-banner-meta>
+      <span data-diag-banner-refreshed>Refreshed just now</span><span class="status-banner__sep" aria-hidden="true">&nbsp;·&nbsp;</span><span>Auto every 30s</span>
+    </p>
+  </div>
+  {# Reveal pill (D1 + D12 ON state spec + F12). Session-scoped state.
+     ARIA: aria-pressed mirrors the reveal state so SRs announce
+     "Reveal SSID & city, button, pressed/not pressed". Phosphor
+     `eye` / `eye-slash` icons. #}
+  <button type="button"
+          class="reveal-pill"
+          data-diag-reveal
+          aria-pressed="false"
+          aria-label="Reveal SSID, city, and exact coordinates">
+    <svg class="reveal-pill__icon reveal-pill__icon--off" viewBox="0 0 256 256" width="16" height="16" fill="currentColor" aria-hidden="true">
+      <path d="M53.92,34.62A8,8,0,1,0,42.08,45.38L61.31,66.55C25,88.84,9.38,123.2,8.69,124.76a8,8,0,0,0,0,6.5c.35.79,8.82,19.57,27.65,38.4C61.43,194.74,93.12,208,128,208a127.11,127.11,0,0,0,52.07-10.83l22,24.21a8,8,0,1,0,11.84-10.76Zm89.18,131.43a32,32,0,0,1-41-41ZM128,192c-30.78,0-57.67-11.19-79.93-33.25A133.16,133.16,0,0,1,25,128c4.69-8.79,19.66-33.39,47.35-49.38l18,19.75a48,48,0,0,0,63.66,69.85l14.73,16.2A112,112,0,0,1,128,192Zm6-95.43a8,8,0,0,1,3-15.72,48.16,48.16,0,0,1,38.77,42.64,8,8,0,0,1-7.22,8.71l-.75,0a8,8,0,0,1-7.95-7.27A32.09,32.09,0,0,0,134,96.57Zm113.28,34.69c-.42.94-10.55,23.37-33.36,43.8a8,8,0,1,1-10.67-11.92A132.77,132.77,0,0,0,231.05,128a133.15,133.15,0,0,0-23.12-30.77C185.67,75.19,158.78,64,128,64a118.37,118.37,0,0,0-19.36,1.57A8,8,0,1,1,106,49.79,134,134,0,0,1,128,48c34.88,0,66.57,13.26,91.66,38.35,18.83,18.83,27.3,37.62,27.65,38.41A8,8,0,0,1,247.31,131.26Z"/>
+    </svg>
+    <svg class="reveal-pill__icon reveal-pill__icon--on" viewBox="0 0 256 256" width="16" height="16" fill="currentColor" aria-hidden="true" hidden>
+      <path d="M247.31,124.76c-.35-.79-8.82-19.58-27.65-38.41C194.57,61.26,162.88,48,128,48S61.43,61.26,36.34,86.35C17.51,105.18,9,124,8.69,124.76a8,8,0,0,0,0,6.5c.35.79,8.82,19.57,27.65,38.4C61.43,194.74,93.12,208,128,208s66.57-13.26,91.66-38.34c18.83-18.83,27.3-37.61,27.65-38.4A8,8,0,0,0,247.31,124.76ZM128,192c-30.78,0-57.67-11.19-79.93-33.25A133.47,133.47,0,0,1,25,128,133.33,133.33,0,0,1,48.07,97.25C70.33,75.19,97.22,64,128,64s57.67,11.19,79.93,33.25A133.46,133.46,0,0,1,231.05,128C223.84,141.46,192.43,192,128,192Zm0-112a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Z"/>
+    </svg>
+    <span class="reveal-pill__label" data-diag-reveal-label>Reveal</span>
+  </button>
+</section>
+
+{# Sections list — D3 / D4. The server's `anomalies` set drives default
+   <details open>. Each section's anomaly pill (success/warning/error)
+   matches the per-section anomaly conditions locked in
+   /plan-design-review §"Anomaly conditions per section".
+
+   Macro to keep the section markup uniform. #}
+{# Tri-state section macro (#432).
+   - anomaly: red/ochre pill, anomaly_label, em-dash rows visible.
+   - uncollected: muted graphite pill, "Not yet collected" label, em-dash
+     rows REPLACED by a single italic section-aware placeholder line.
+   - ok: green pill, em-dash rows visible.
+
+   The server's _compute_section_states applies uncollected-wins
+   precedence in ONE place, so by the time the macro reads
+   `anomalies` and `uncollected`, the two lists are MUTUALLY EXCLUSIVE
+   for any given section ID. The `not is_anomalous` guard on
+   is_uncollected below is a no-op safety net — kept so the macro stays
+   correct even if a future change ever passes overlapping lists. #}
+{% macro diag_section(id, title, anomaly_label='', uncollected_placeholder=None, rows=[]) %}
+  {% set is_anomalous = id in anomalies %}
+  {% set is_uncollected = (not is_anomalous) and (id in (uncollected | default([]))) %}
+  {% set _pill_state = 'warning' if is_anomalous else ('muted' if is_uncollected else 'ok') %}
+  <details class="diag-section{% if is_anomalous %} diag-section--anomalous{% endif %}"
+           data-diag-section="{{ id }}"
+           {% if is_anomalous %}open{% endif %}>
+    <summary class="diag-section__summary">
+      <span class="diag-section__title">{{ title }}</span>
+      {# Adversarial-review Fix D — render the section's anomaly_label as
+         a data attribute on the pill. JS reads it on a poll-driven
+         transition into the anomaly tier so the label flips from "OK" or
+         "Not yet collected" to the correct section-specific copy
+         ("Connection issue", "Location stale", etc.). Pre-fix the JS
+         only wrote ok/uncollected labels and left anomaly text stuck
+         from SSR, so a fresh-flash uncollected → anomaly transition
+         showed a warning-ochre pill that still read "Not yet collected." #}
+      <span class="diag-section__pill diag-section__pill--{{ _pill_state }}"
+            data-diag-section-pill
+            data-diag-anomaly-label="{{ anomaly_label or 'Needs attention' }}"
+            {% if is_uncollected %}aria-label="Not yet collected — data has not been recorded on this clock yet"{% endif %}>
+        <span class="diag-section__pill-dot" aria-hidden="true"></span>
+        <span class="diag-section__pill-label">
+          {% if is_anomalous %}{{ anomaly_label or 'Needs attention' }}
+          {% elif is_uncollected %}Not yet collected
+          {% else %}OK{% endif %}
+        </span>
+      </span>
+      <span class="diag-section__caret" aria-hidden="true">
+        {# Phosphor `caret-down` — rotates 180° when open via CSS. #}
+        <svg viewBox="0 0 256 256" width="16" height="16" fill="currentColor">
+          <path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z"/>
+        </svg>
+      </span>
+    </summary>
+    {# #432 D1/D2 — both the dl AND the placeholder are ALWAYS rendered
+       when the section has an uncollected_placeholder. One is `hidden`
+       at SSR time, JS toggles `hidden` on a poll-driven transition. This
+       keeps the section's row schema in ONE place (the rows= macro arg)
+       without duplicating it in JS, while still letting the JS swap
+       between "Not yet collected" copy and the actual dl on transition. #}
+    {% if uncollected_placeholder %}
+    <p class="diag-rows-placeholder"
+       data-diag-rows-placeholder
+       {% if not is_uncollected %}hidden{% endif %}>
+      <em>{{ uncollected_placeholder }}</em>
+    </p>
+    {% endif %}
+    <dl class="diag-rows"
+        data-diag-rows
+        {% if is_uncollected %}hidden{% endif %}>
+      {% for label, field in rows %}
+        {% set value = values.get(field) %}
+        {# Boolean rows render as Yes/No; None renders as the em-dash;
+           strings (including the REDACTED_VALUE sentinel) render verbatim. #}
+        <div class="diag-row" data-diag-row="{{ field }}">
+          <dt>{{ label }}</dt>
+          <dd class="mono" data-diag-value="{{ field }}">
+            {% if value is none or value == "" %}—
+            {% elif value is sameas true %}Yes
+            {% elif value is sameas false %}No
+            {% else %}{{ value }}{% endif %}
+          </dd>
+        </div>
+      {% endfor %}
+    </dl>
+  </details>
+{% endmacro %}
+
+<div class="diag-sections" data-diag-sections>
+
+  {{ diag_section(
+       'build-version',
+       'Build & version',
+       rows=[
+         ('App version', 'app_version'),
+         ('git HEAD', 'git_head'),
+         ('Images version', 'images_version'),
+         ('Last update', 'last_update_at'),
+         ('Last update version', 'last_update_version'),
+       ]
+  ) }}
+
+  {{ diag_section(
+       'system',
+       'System',
+       anomaly_label='Resource alert',
+       rows=[
+         ('Kernel', 'kernel'),
+         ('OS', 'os_release'),
+         ('Uptime', 'uptime_human'),
+         ('CPU temp °C', 'cpu_temp_c'),
+         ('Free memory MB', 'memory_free_mb'),
+         ('Free disk %', 'disk_free_pct'),
+       ]
+  ) }}
+
+  {{ diag_section(
+       'network',
+       'Network',
+       anomaly_label='Connection issue',
+       uncollected_placeholder='Network details fill in once your clock sees a network event.',
+       rows=[
+         ('Interface', 'iface'),
+         ('SSID', 'ssid'),
+         ('LAN IP', 'lan_ip'),
+         ('Gateway', 'gateway'),
+         ('Signal dBm', 'signal_dbm'),
+         ('Last DHCP', 'last_dhcp_at'),
+       ]
+  ) }}
+
+  {{ diag_section(
+       'time-location',
+       'Time & location',
+       anomaly_label='Location stale',
+       uncollected_placeholder='Location details fill in once your clock resolves its location.',
+       rows=[
+         ('Timezone', 'timezone'),
+         ('City', 'weather_location_name'),
+         ('Lat', 'weather_lat'),
+         ('Lon', 'weather_lon'),
+         ('Mode', 'weather_location_mode'),
+         ('IP country', 'weather_ip_country'),
+         ('Units', 'weather_units'),
+         ('Weather on?', 'weather_enabled'),
+         ('Last IP-geo', 'last_ip_geo_at'),
+       ]
+  ) }}
+
+  {# Services section is bespoke: each unit row shows state; a non-healthy row
+     ALSO hydrates a journal tail client-side (#436 — a cold journalctl is
+     ~5-7s on a Pi Zero 2W and used to block first paint). Anomaly drives open. #}
+  {% set is_services_anomalous = 'services' in anomalies %}
+  <details class="diag-section{% if is_services_anomalous %} diag-section--anomalous{% endif %}"
+           data-diag-section="services"
+           {% if is_services_anomalous %}open{% endif %}>
+    <summary class="diag-section__summary">
+      <span class="diag-section__title">Services</span>
+      <span class="diag-section__pill diag-section__pill--{{ 'warning' if is_services_anomalous else 'ok' }}"
+            data-diag-section-pill>
+        <span class="diag-section__pill-dot" aria-hidden="true"></span>
+        <span class="diag-section__pill-label">{% if is_services_anomalous %}Service alert{% else %}OK{% endif %}</span>
+      </span>
+      <span class="diag-section__caret" aria-hidden="true">
+        <svg viewBox="0 0 256 256" width="16" height="16" fill="currentColor"><path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z"/></svg>
+      </span>
+    </summary>
+    <ul class="diag-services" data-diag-services>
+      {% for unit, info in (values.service_states or {}).items() %}
+      {# data-diag-healthy is the server's _is_obviously_healthy verdict — the
+         client gates per-unit tail hydration on it so JS never re-derives
+         health (which would drift on oneshot-inactive / transient rows). #}
+      <li class="diag-service" data-diag-unit="{{ unit }}" data-diag-healthy="{{ 1 if info.healthy else 0 }}">
+        <div class="diag-service__head">
+          <span class="diag-service__name mono">{{ unit }}</span>
+          <span class="diag-service__state diag-service__state--{{ info.state_modifier or info.state or 'unknown' }} mono">{{ info.state or 'unknown' }}</span>
+        </div>
+        {% if not info.healthy %}
+        {# Placeholder — JS hydrates the real tail from /api/diagnostics/journal.
+           Doubles as the no-JS state (the <noscript> below explains it). #}
+        <pre class="diag-service__tail" data-diag-tail data-diag-tail-status="loading"><code data-diag-tail-body>loading logs…</code></pre>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    <noscript>
+      <p class="diag-services__nojs mono">Enable JavaScript to view service logs.</p>
+    </noscript>
+  </details>
+
+  {{ diag_section(
+       'last-quote',
+       'Last quote',
+       anomaly_label='Stale or empty',
+       rows=[
+         ('Quote', 'quote'),
+         ('Author', 'author'),
+         ('Title', 'title'),
+         ('Time', 'time'),
+       ]
+  ) }}
+
+  {{ diag_section(
+       'setup-markers',
+       'Setup markers',
+       anomaly_label='Setup incomplete',
+       rows=[
+         ('.setup-complete', 'setup_complete'),
+         ('.handoff-complete', 'handoff_complete'),
+         ('Gift mode', 'gift_mode_active'),
+         ('Allow NSFW', 'allow_nsfw_quotes'),
+       ]
+  ) }}
+
+  {# D31: recent log entries section is a static snapshot — the live stream
+     is the drawer (PR3b). The "Open live drawer →" link is rendered but
+     no-op until PR3b ships drawer.js. #}
+  {% set is_logs_anomalous = 'recent-log-entries' in anomalies %}
+  <details class="diag-section{% if is_logs_anomalous %} diag-section--anomalous{% endif %}"
+           data-diag-section="recent-log-entries"
+           {% if is_logs_anomalous %}open{% endif %}>
+    <summary class="diag-section__summary">
+      <span class="diag-section__title">Recent log entries</span>
+      <span class="diag-section__pill diag-section__pill--{{ 'warning' if is_logs_anomalous else 'ok' }}"
+            data-diag-section-pill>
+        <span class="diag-section__pill-dot" aria-hidden="true"></span>
+        <span class="diag-section__pill-label">{% if is_logs_anomalous %}Error in recent logs{% else %}OK{% endif %}</span>
+      </span>
+      <span class="diag-section__caret" aria-hidden="true">
+        <svg viewBox="0 0 256 256" width="16" height="16" fill="currentColor"><path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z"/></svg>
+      </span>
+    </summary>
+    <ol class="diag-log-snapshot" data-diag-log-snapshot>
+      {% for entry in (values.recent_log_entries or []) %}
+      <li class="diag-log-entry diag-log-entry--{{ (entry.level or 'INFO')|lower }}" tabindex="0">
+        <span class="diag-log-entry__time mono">{{ entry.timestamp|format_log_ts if entry.timestamp else '' }}</span>
+        <span class="diag-log-entry__level mono">{{ entry.level or 'INFO' }}</span>
+        <span class="diag-log-entry__msg">{{ entry.message or '' }}</span>
+        <button type="button" class="diag-log-entry__copy" data-diag-log-copy
+                aria-label="Copy log entry">
+          <svg viewBox="0 0 256 256" width="14" height="14" fill="currentColor" aria-hidden="true">
+            <path d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z"/>
+          </svg>
+        </button>
+      </li>
+      {% endfor %}
+      {% if not (values.recent_log_entries or []) %}
+      <li class="diag-log-empty">No log entries yet — the buffer fills as the clock runs.</li>
+      {% endif %}
+    </ol>
+    <p class="diag-log-snapshot__footer">
+      Snapshot only.
+      {# /review fix: pre-/review this was an <a href="#"> which scrolled
+         to top on click. Now a disabled button until PR3b wires the
+         drawer + a matching round-trip link.
+         #431a (v0.214.4) — dropped the trailing arrow glyph. The arrow
+         pointed at the adjacent × close button on the drawer header,
+         creating tap-target ambiguity; the underline + --accent color
+         carries enough affordance on its own. #}
+      <button type="button" class="diag-log-snapshot__drawer-link"
+              data-diag-open-drawer
+              disabled
+              aria-disabled="true"
+              aria-label="Open live diagnostics drawer"
+              title="Live drawer arrives in #416 PR3b">
+        Open live drawer
+      </button>
+      <small class="diag-log-snapshot__pending">(Live drawer arrives in #416 PR3b.)</small>
+    </p>
+  </details>
+
+</div>
+
+{# D18 — Copy support payload card. Bottom of page (OV-D-B: owner-persona
+   instinct says Copy is post-conversation, not landing). Pre-rendered
+   server-side; diagnostics.js refreshes the <pre> content on Reveal
+   toggle so what you paste matches what you see. #}
+<section class="diag-copy" aria-labelledby="diag-copy-title">
+  <h2 id="diag-copy-title" class="diag-copy__title">Copy support payload</h2>
+  <p class="diag-copy__description">
+    Tap Copy, then paste the block below into your GitHub issue or email
+    to a helper. SSID, city, and coordinates are <span data-diag-copy-reveal-state>redacted</span> by default — toggle Reveal above if your helper needs them.
+  </p>
+  <pre class="diag-copy__block" data-diag-copy-block><code>{{ copy_payload }}</code></pre>
+  <div class="diag-copy__actions">
+    <button type="button" class="diag-copy__button" data-diag-copy-button>
+      <svg viewBox="0 0 256 256" width="16" height="16" fill="currentColor" aria-hidden="true">
+        <path d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z"/>
+      </svg>
+      Copy
+    </button>
+    {# #416 follow-up — deeper on-demand logs export. The Copy block above
+       carries the 3-line-per-unit page preview; this downloads a fuller
+       ~50-line-per-unit journal tail bundled with the same system state, for
+       when a helper needs more than the preview. Plain <a download> so it
+       works with no JS (the endpoint serves a text/plain attachment). #}
+    <a class="diag-copy__button diag-copy__button--secondary"
+       href="/api/diagnostics/support-logs" download>
+      <svg viewBox="0 0 256 256" width="16" height="16" fill="currentColor" aria-hidden="true">
+        <path d="M224,152v56a16,16,0,0,1-16,16H48a16,16,0,0,1-16-16V152a8,8,0,0,1,16,0v56H208V152a8,8,0,0,1,16,0Zm-101.66,5.66a8,8,0,0,0,11.32,0l40-40a8,8,0,0,0-11.32-11.32L136,132.69V40a8,8,0,0,0-16,0v92.69L93.66,106.34a8,8,0,0,0-11.32,11.32Z"/>
+      </svg>
+      Download full logs
+    </a>
+  </div>
+</section>
+
+{# Offscreen polite live region for state-transition announcements
+   (D19 + D7). Used by diagnostics.js to announce "Refreshed", "Copied",
+   "Reveal on/off" without spamming on every 30s poll. #}
+<div class="visually-hidden" role="status" aria-live="polite" data-diag-announcer></div>
+{% endblock %}
+
+{% block extra_body %}
+<script src="{{ url_for('static', filename='js/diagnostics.js') }}" defer></script>
+{% endblock %}

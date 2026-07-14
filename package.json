@@ -1,0 +1,17 @@
+{
+  "name": "litclock-control-server-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "JS unit-test harness for control_server static/js/*. Dev/CI only — never installed on the Pi (see #338).",
+  "scripts": {
+    "test:js": "vitest run",
+    "test:js:watch": "vitest"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

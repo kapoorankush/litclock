@@ -1,0 +1,4 @@
+# Rendered manual booklets (#404) are generated artifacts (build.sh). Chromium
+# print-to-pdf embeds a creation timestamp, so bytes change every rebuild —
+# mark binary so git doesn't attempt (noisy, useless) textual diffs.
+docs/manual/*.pdf -diff -text

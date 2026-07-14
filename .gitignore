@@ -1,0 +1,80 @@
+__pycache__
+*.__pycache__
+*.pyc
+venv/
+screen-output*
+env.sh
+env.sh.bak
+*.log
+.vscode
+*.pickle
+credentials*
+*.json
+# #338: package.json + lockfile MUST be tracked despite the *.json catch-all
+# above. Keep these `!` unignores adjacent to the rule that would otherwise
+# swallow them so the relationship stays obvious to future readers.
+!package.json
+!package-lock.json
+*.bin
+
+# #338: vitest + jsdom dev dependencies. Dev/CI only — never on the Pi.
+node_modules/
+.vitest-cache/
+
+# Secrets / API keys — never commit
+.env
+.env.*
+*.env
+*.pem
+*.key
+*_api_key*
+anthropic_key*
+test.svg
+.certs/
+.pip-packages-hash
+
+# Claude Code - track project config and hooks, but not local/personal settings
+!.claude/settings.json
+!.claude/hooks/
+.claude/settings.local.json
+
+# image-gen backup/intermediate files
+image-gen/*.backup*
+image-gen/*.pre*
+image-gen/coverage_report.txt
+image-gen/literaryclock_*.csv
+image-gen/nsfw_flagged_for_review.csv
+image-gen/parser_failures.txt
+image-gen/downloads/
+
+# #192 audit run artifacts — keep the tooling + gold set, drop per-run outputs
+image-gen/audit_fails.csv
+image-gen/audit_all.csv
+image-gen/audit_fails.meta.json
+image-gen/audit_fails.progress.jsonl
+image-gen/audit_fails.batch_id
+image-gen/gold_results.csv
+image-gen/gold_results.progress.jsonl
+image-gen/pilot*.csv
+image-gen/pilot*.progress.jsonl
+
+# pi-gen build artifacts
+pi-gen/work/
+
+# Internal agent-planning scaffolding, browse logs, deploy reports — never commit
+.gstack/
+
+# Quote images live in GitHub Releases (issue #82). The .installed-version marker
+# inside images/ tracks which release is extracted on disk — keep that tracked.
+/images/
+!images/.installed-version
+
+# Scratch dirs and locks used by scripts/download_images.sh (transient).
+.litclock-images-staging.*
+.litclock-images.lock
+.claude/scheduled_tasks.lock
+
+# Internal planning docs — maintainer-local, excluded from the public repo (#82 PII decision 2026-07-12)
+DESIGN.md
+PRD-LitClock-Control-PWA.md
+PLAN-LitClock-Control-PWA.md
