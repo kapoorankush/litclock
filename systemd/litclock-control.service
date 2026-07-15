@@ -26,6 +26,17 @@ ConditionPathExists=/etc/litclock/.setup-complete
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/litclock
+# Self-heal the port-80 bind precondition on every start (#343 follow-up,
+# litclock-dev#527). control_server binds port 80 as the non-root `pi` user,
+# which only works when net.ipv4.ip_unprivileged_port_start<=80. If the
+# persistent /etc/sysctl.d drop-in ever fails to apply — a silently-swallowed
+# install failure in an OTA (the field incident), a boot-order race, a manual
+# sysctl reset — the floor reverts to 1024 and this service crash-loops on
+# EACCES with no recovery path for a keyboard-less owner. The `+` runs this one
+# line as root (the unit is NoNewPrivileges=no); `-` tolerates its absence in
+# sandboxed test contexts. Idempotent and ~1ms, so paying it every start is
+# free insurance against the whole class.
+ExecStartPre=+-/usr/sbin/sysctl -q net.ipv4.ip_unprivileged_port_start=80
 ExecStart=/home/pi/litclock/venv/bin/python3 /home/pi/litclock/src/control_server/app.py
 Restart=on-failure
 RestartSec=5
