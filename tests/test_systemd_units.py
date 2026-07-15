@@ -539,21 +539,30 @@ class TestControlServiceUnitShape:
 
     def test_self_heals_port80_floor_before_start(self):
         """litclock-dev#527: the service binds port 80 as non-root `pi`, which
-        needs net.ipv4.ip_unprivileged_port_start<=80. If the persistent
-        sysctl drop-in ever fails to apply (silent OTA install failure, boot
-        race), the floor reverts to 1024 and the service crash-loops on EACCES
-        with no recovery path for a keyboard-less owner. An ExecStartPre must
-        re-assert the floor as root (`+`) on every start so this class is
-        unbrickable. Read raw text: configparser collapses duplicate keys."""
+        needs net.ipv4.ip_unprivileged_port_start<=80. If the persistent sysctl
+        drop-in fails to apply (silent OTA install failure, boot race), the
+        floor reverts to 1024 and the service crash-loops on EACCES with no
+        recovery path for a keyboard-less owner. An ExecStartPre re-asserts the
+        floor as a defense-in-depth backstop on the boot-time drop-in.
+
+        Pin BOTH prefixes (post-/review, Claude+Codex): `+` (run as root) AND
+        `-` (ignore failure). Dropping `-` is the subtle regression — it turns
+        a sysctl failure into a hard start-failure, a NEW crash-loop vector the
+        `-` exists to prevent — and a prefix-agnostic assertion would wave it
+        through. Read raw text: configparser collapses duplicate keys."""
         path = os.path.join(SYSTEMD_DIR, "litclock-control.service")
         with open(path) as f:
             body = f.read()
-        assert "ExecStartPre=+" in body and "ip_unprivileged_port_start=80" in body, (
-            "litclock-control.service must self-heal the port-80 floor via an "
-            "ExecStartPre=+...sysctl before ExecStart (litclock-dev#527)"
+        assert "ExecStartPre=+-/usr/sbin/sysctl" in body and "ip_unprivileged_port_start=80" in body, (
+            "litclock-control.service must self-heal the port-80 floor via "
+            "`ExecStartPre=+-/usr/sbin/sysctl ...=80` — both the `+` (root) and "
+            "`-` (ignore-failure) prefixes are load-bearing (litclock-dev#527)"
         )
-        # The precondition must precede ExecStart in file order.
-        assert body.index("ExecStartPre=+") < body.index("ExecStart="), "ExecStartPre must appear before ExecStart"
+        # NB: file ORDER of ExecStartPre vs ExecStart is deliberately NOT
+        # asserted — systemd runs every ExecStartPre before ExecStart by
+        # directive semantics regardless of line position, so a line-order
+        # check would guard a non-invariant and give false confidence
+        # (/review finding, Claude pass).
 
     def test_starts_after_firstboot(self):
         unit = parse_unit("litclock-control.service")

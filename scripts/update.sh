@@ -1240,14 +1240,17 @@ if [[ -f "$INSTALL_DIR/sysctl.d/30-litclock-unprivileged-ports.conf" ]]; then
     # litclock-dev#527 field incident: the FILE install was silently swallowed
     # (2>/dev/null || true) while `sysctl -w` set the live value to 80 — so the
     # old warning (live-value only) stayed quiet, the update "succeeded", and the
-    # NEXT reboot reverted to 1024 and crash-looped control_server. Check the
-    # persisted file explicitly, independent of the live value, so a failed
-    # install can never pass silently again. (litclock-control.service also
-    # self-heals the live value via ExecStartPre now — this warning is the
+    # NEXT reboot reverted to 1024 and crash-looped control_server. Verify the
+    # persisted file matches the source CONTENT, not just its existence: a
+    # stale drop-in left by a prior version whose fresh overwrite then failed
+    # (RO fs, disk full) would pass a mere `-f` check while being wrong
+    # (/review, both passes). `cmp -s` is true only when the installed file is
+    # byte-identical to what we shipped. (litclock-control.service also
+    # self-heals the live value via ExecStartPre — this warning is the
     # human-visible half.)
-    if [[ ! -f "$_SYSCTL_CONF" ]]; then
-        echo "  WARNING (#343/#527): the persistent port-80 sysctl drop-in did not"
-        echo "  install ($_SYSCTL_CONF is missing). The live floor may be 80 now but"
+    if ! cmp -s "$INSTALL_DIR/sysctl.d/30-litclock-unprivileged-ports.conf" "$_SYSCTL_CONF"; then
+        echo "  WARNING (#343/#527): the persistent port-80 sysctl drop-in is"
+        echo "  missing or stale at $_SYSCTL_CONF. The live floor may be 80 now but"
         echo "  will revert on reboot. Re-run: sudo install -m 0644 -o root -g root \\"
         echo "    $INSTALL_DIR/sysctl.d/30-litclock-unprivileged-ports.conf $_SYSCTL_CONF"
     fi
