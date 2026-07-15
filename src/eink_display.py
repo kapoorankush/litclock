@@ -146,6 +146,18 @@ MAX_TITLE_LINES = 2
 TITLE_LINE_SPACING = 4
 ELLIPSIS = "…"
 
+# Auto-fit ladder for the welcome/status title (gift-message #280 truncation
+# fix). A personalized gift message must SHRINK to fit, never lose its tail to
+# an ellipsis — silently cutting "…a good time to read!" off someone's present
+# is the one place truncation is unacceptable. Each tier is (font_size,
+# max_lines); tried largest-first, the first tier whose natural wrap fits the
+# line budget wins. The top tier is the historical 48pt/2-line look, so short
+# greetings render byte-identically to before. Only the final tier permits an
+# ellipsis, for a message longer than ~4 lines at 28pt (well past the 280-char
+# input cap in practice). Envelope check: 4 lines @ 28pt ≈ 150px, which clears
+# the setup-steps block below even at the gift layout's title_y=60.
+TITLE_FIT_TIERS = ((48, 2), (44, 3), (38, 3), (32, 4), (28, 4))
+
 
 def _wrap_title(text: str, font: ImageFont.FreeTypeFont, max_width: int, max_lines: int) -> list[str]:
     """Word-wrap ``text`` into at most ``max_lines`` lines whose pixel width
@@ -219,6 +231,45 @@ def _wrap_title(text: str, font: ImageFont.FreeTypeFont, max_width: int, max_lin
     return kept
 
 
+def _fit_title(text: str, font_path: str, max_width: int) -> tuple[list[str], "ImageFont.ImageFont"]:
+    """Choose the largest TITLE_FIT_TIERS font at which ``text`` word-wraps
+    within that tier's line budget WITHOUT ellipsis truncation, and return
+    ``(lines, font)``.
+
+    Iterates tiers largest-first: at a smaller font more words fit per line,
+    so the natural (untruncated) line count only shrinks as we descend — the
+    first tier whose natural wrap fits is the biggest font that shows the whole
+    message. If even the smallest tier overflows (a message far past the input
+    cap), that tier is used WITH ellipsis as a last resort. Short titles hit
+    the first tier and render exactly as the pre-fix 48pt/2-line code did.
+
+    Falls back to Pillow's default font if ``font_path`` can't be loaded (keeps
+    the hardware path from crashing on a missing font, matching the caller's
+    prior try/except contract).
+    """
+    if not text:
+        try:
+            return [], ImageFont.truetype(font_path, TITLE_FIT_TIERS[0][0])
+        except Exception:
+            return [], ImageFont.load_default()
+
+    last: tuple[list[str], ImageFont.FreeTypeFont, int] | None = None
+    for size, max_lines in TITLE_FIT_TIERS:
+        try:
+            font = ImageFont.truetype(font_path, size)
+        except Exception:
+            font = ImageFont.load_default()
+        # Natural wrap: max_lines=len(text)+1 can never truncate, so this is the
+        # untruncated line count at this font size.
+        natural = _wrap_title(text, font, max_width, len(text) + 1)
+        if len(natural) <= max_lines:
+            return natural, font
+        last = (natural, font, max_lines)
+    # Overflowed every tier — truncate at the smallest (last) tier.
+    natural, font, max_lines = last
+    return _wrap_title(text, font, max_width, max_lines), font
+
+
 def create_status_image(title: str, message: str = None, submessage: str = None) -> Image.Image:
     """
     Create a status/message display image.
@@ -235,24 +286,25 @@ def create_status_image(title: str, message: str = None, submessage: str = None)
     image = Image.new("1", DISPLAY_SIZE, 255)
     draw = ImageDraw.Draw(image)
 
-    # Load fonts
+    # Load the secondary fonts (fixed sizes). The TITLE font is chosen
+    # per-message by _fit_title below, not fixed here.
     try:
-        title_font = ImageFont.truetype(FONT_PATH_BOLD, 48)
         message_font = ImageFont.truetype(FONT_PATH, 28)
         small_font = ImageFont.truetype(FONT_PATH, 20)
     except Exception:
-        title_font = ImageFont.load_default()
         message_font = ImageFont.load_default()
         small_font = ImageFont.load_default()
 
-    # #319: word-wrap the title to MAX_TITLE_LINES at TITLE_SIDE_MARGIN
-    # gutter. Old code centered a single-line `draw.text(title)`; a 36-char
-    # personalized welcome ("This is a test message! Love, Alexis") measures
-    # ~900px wide at font 48 and rendered with a negative title_x, clipping
-    # characters off BOTH edges of the 800px canvas. Wrap + center-align
-    # keeps the text on-canvas regardless of length.
+    # #319 + #280 gift-message fix: word-wrap the title at the TITLE_SIDE_MARGIN
+    # gutter, AUTO-FITTING the font so a long personalized welcome shrinks to
+    # fit instead of losing its tail to an ellipsis. Old code centered a
+    # single-line draw.text (clipped both edges); the #319 wrap fixed the
+    # clipping but capped at 48pt/2 lines and ellipsis-truncated anything
+    # longer ("May it always be a good ti…" on a real gift). _fit_title returns
+    # both the wrapped lines and the font size it settled on; short greetings
+    # still land at 48pt/2 lines, unchanged.
     title_max_width = DISPLAY_SIZE[0] - 2 * TITLE_SIDE_MARGIN
-    title_lines = _wrap_title(title, title_font, title_max_width, MAX_TITLE_LINES)
+    title_lines, title_font = _fit_title(title, FONT_PATH_BOLD, title_max_width)
     if title_lines:
         title_block = "\n".join(title_lines)
         title_bbox = draw.multiline_textbbox(
