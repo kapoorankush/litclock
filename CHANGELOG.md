@@ -2,6 +2,19 @@
 
 All notable changes to LitClock are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/) — dates are ISO 8601.
 
+## [v0.220.0] - 2026-07-15
+
+### Fixed
+- **The Control PWA can no longer crash-loop itself into a brick over the port-80 floor** (#15, #16). control_server binds port 80 as the non-root `pi` user, which needs `net.ipv4.ip_unprivileged_port_start<=80`. A field incident showed the persistent `/etc/sysctl.d` drop-in can silently fail to apply during an OTA (the install error was swallowed, and the update's only warning checked the live sysctl value, not the persisted file) — so the update reported success, the next reboot reverted the floor to 1024, and the service crash-looped on `EACCES` with no recovery path for a keyboard-less owner. Now `litclock-control.service` self-heals the floor with an `ExecStartPre` that re-asserts it as root on every start (idempotent, ~1ms), and `update.sh` verifies the drop-in by content and warns loudly (with the exact re-install command) if it is missing or stale. Reviewed by two independent adversarial passes.
+- **Personalized gift welcome messages no longer get their tail cut off** (#17). The "Prepare for Gifting" welcome splash rendered the message at a fixed 48pt capped at two lines and ellipsis-truncated anything longer — "May it always be a good ti…" on a real gift. The splash now auto-fits: it shrinks the font down a `(size, lines)` ladder (48→44→38→32→28pt) and picks the largest size that shows the whole message with no ellipsis, only truncating a message far past the 280-character input cap. Short greetings still render at 48pt exactly as before.
+- **DIY installs no longer abort on a never-copied systemd unit** (#14). `scripts/install.sh` enabled `litclock-reresolve-location.service` (and expected `litclock-prepare-for-gift.service`) without ever copying them to `/etc/systemd/system`; under `set -e` the `systemctl enable` aborted the whole install. Both units are now copied, with a drift guard requiring every unit in `systemd/` to be wired into the installer. Flashed images were unaffected.
+
+### Added
+- **Captive-portal probe logging now records the response side** (#11). Each `CAPTIVE-PROBE` line logs which branch answered (CNA bridge / redirect), the HTTP status, byte count, and the full user-agent, so a "the setup page didn't auto-open" report can be diagnosed from the journal instead of guessing. Diagnostic groundwork for the iOS captive-sheet investigation.
+
+### Changed
+- **README rewritten around the builder's journey** (#12, #13): a real product photo as the hero, a numbered Build → Living-with-it → Give-one-away → Under-the-hood structure, phone screenshots of the control app, and the first-boot walkthrough — so someone deciding to build one can follow the order they'd actually do it in.
+
 ## [v0.219.0] - 2026-07-13
 
 ### Security
