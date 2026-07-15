@@ -21,10 +21,21 @@ from eink_display import (
     DISPLAY_SIZE,
     FONT_PATH_BOLD,
     MAX_TITLE_LINES,
+    TITLE_FIT_TIERS,
     TITLE_SIDE_MARGIN,
+    _fit_title,
     _wrap_title,
     create_status_image,
 )
+
+TITLE_MAX_WIDTH = DISPLAY_SIZE[0] - 2 * TITLE_SIDE_MARGIN
+
+
+def _widths(lines, font):
+    from PIL import Image
+
+    d = ImageDraw.Draw(Image.new("1", (1, 1)))
+    return [d.textbbox((0, 0), ln, font=font)[2] - d.textbbox((0, 0), ln, font=font)[0] for ln in lines]
 
 
 def _title_font() -> ImageFont.FreeTypeFont:
@@ -358,3 +369,72 @@ class TestHandoffSplashSsidCaveat:
 
         assert image.size == DISPLAY_SIZE
         assert image.mode == "1"
+
+
+class TestFitTitleAutoShrink:
+    """#280 gift-message fix: `_fit_title` shrinks the font (and grows the line
+    budget) so a personalized welcome renders in FULL instead of losing its
+    tail to an ellipsis. Truncating "…a good time to read!" off someone's gift
+    was the field bug (hardware photo, 2026-07-15)."""
+
+    def test_short_greeting_unchanged_at_48pt_2_lines(self):
+        """Regression: a short greeting must land on the top tier (48pt, ≤2
+        lines) exactly as the pre-fix code did — no silent restyle of the
+        common case."""
+        lines, font = _fit_title("Happy Birthday Mom! Love, Alexis", FONT_PATH_BOLD, TITLE_MAX_WIDTH)
+        assert font.size == TITLE_FIT_TIERS[0][0] == 48
+        assert 1 <= len(lines) <= MAX_TITLE_LINES
+        assert "…" not in "".join(lines)
+
+    def test_the_field_bug_message_renders_in_full(self):
+        """The exact failing shape from the hardware photo (three-name
+        salutation + the pun) must render with NO ellipsis at a shrunk font."""
+        msg = "Alex, Blair & Cameron: May it always be a good time to read!"
+        lines, font = _fit_title(msg, FONT_PATH_BOLD, TITLE_MAX_WIDTH)
+        joined = " ".join(lines)
+        assert "…" not in joined, "gift message must not be truncated"
+        assert font.size < 48, "a message this long must shrink below the top tier"
+        # Every word of the original survives (order-preserving).
+        assert joined.split() == msg.split()
+        # Every line fits the canvas gutter.
+        assert all(w <= TITLE_MAX_WIDTH for w in _widths(lines, font))
+
+    def test_descending_tiers_never_increase_line_count(self):
+        """Core invariant that makes 'largest font that fits' correct: at a
+        smaller font, more words fit per line, so the natural (untruncated)
+        line count is monotonically non-increasing as tiers shrink."""
+        msg = "A moderately long personalized welcome message for the recipient"
+        prev = None
+        for size, _ in TITLE_FIT_TIERS:
+            font = ImageFont.truetype(FONT_PATH_BOLD, size)
+            natural = _wrap_title(msg, font, TITLE_MAX_WIDTH, len(msg) + 1)
+            if prev is not None:
+                assert len(natural) <= prev, f"line count rose from {prev} at smaller font {size}"
+            prev = len(natural)
+
+    def test_pathological_overflow_truncates_within_canvas(self):
+        """A message far past any real gift greeting (and the 280-char input
+        cap) degrades to the smallest tier WITH ellipsis — but every line must
+        still fit the canvas, never run off the edge."""
+        absurd = "supercalifragilistic " * 40
+        lines, font = _fit_title(absurd, FONT_PATH_BOLD, TITLE_MAX_WIDTH)
+        assert font.size == TITLE_FIT_TIERS[-1][0]
+        assert len(lines) <= TITLE_FIT_TIERS[-1][1]
+        assert "…" in "".join(lines)
+        assert all(w <= TITLE_MAX_WIDTH for w in _widths(lines, font))
+
+    def test_empty_title_is_safe(self):
+        lines, font = _fit_title("", FONT_PATH_BOLD, TITLE_MAX_WIDTH)
+        assert lines == []
+        assert font.size == 48
+
+    def test_status_image_renders_long_gift_without_crash(self):
+        """End-to-end: the full gift splash (long title + multi-line steps +
+        Orwell footer) renders to a valid 1-bit canvas."""
+        img = create_status_image(
+            "Alex, Blair & Cameron: May it always be a good time to read!",
+            message="1. Plug in power\n2. Connect to LitClock-Setup WiFi when prompted\n3. Be patient",
+            submessage='"It was a bright cold day in April." —Orwell',
+        )
+        assert img.size == DISPLAY_SIZE
+        assert img.mode == "1"
