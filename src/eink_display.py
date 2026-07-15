@@ -231,7 +231,7 @@ def _wrap_title(text: str, font: ImageFont.FreeTypeFont, max_width: int, max_lin
     return kept
 
 
-def _fit_title(text: str, font_path: str, max_width: int) -> tuple[list[str], "ImageFont.FreeTypeFont"]:
+def _fit_title(text: str, font_path: str, max_width: int) -> tuple[list[str], "ImageFont.ImageFont"]:
     """Choose the largest TITLE_FIT_TIERS font at which ``text`` word-wraps
     within that tier's line budget WITHOUT ellipsis truncation, and return
     ``(lines, font)``.
