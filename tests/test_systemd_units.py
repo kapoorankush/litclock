@@ -537,6 +537,24 @@ class TestControlServiceUnitShape:
         unit = parse_unit("litclock-control.service")
         assert unit.get("Service", "User") == "pi"
 
+    def test_self_heals_port80_floor_before_start(self):
+        """litclock-dev#527: the service binds port 80 as non-root `pi`, which
+        needs net.ipv4.ip_unprivileged_port_start<=80. If the persistent
+        sysctl drop-in ever fails to apply (silent OTA install failure, boot
+        race), the floor reverts to 1024 and the service crash-loops on EACCES
+        with no recovery path for a keyboard-less owner. An ExecStartPre must
+        re-assert the floor as root (`+`) on every start so this class is
+        unbrickable. Read raw text: configparser collapses duplicate keys."""
+        path = os.path.join(SYSTEMD_DIR, "litclock-control.service")
+        with open(path) as f:
+            body = f.read()
+        assert "ExecStartPre=+" in body and "ip_unprivileged_port_start=80" in body, (
+            "litclock-control.service must self-heal the port-80 floor via an "
+            "ExecStartPre=+...sysctl before ExecStart (litclock-dev#527)"
+        )
+        # The precondition must precede ExecStart in file order.
+        assert body.index("ExecStartPre=+") < body.index("ExecStart="), "ExecStartPre must appear before ExecStart"
+
     def test_starts_after_firstboot(self):
         unit = parse_unit("litclock-control.service")
         after = unit.get("Unit", "After", fallback="")

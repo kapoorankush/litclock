@@ -1226,21 +1226,36 @@ sudo systemctl start litclock.timer
 # loudly if it didn't take, rather than silently move control_server onto an
 # unbindable port (the unit's StartLimitIntervalSec=0 + the persisted file mean
 # the next reboot self-heals, but the operator should know).
+_SYSCTL_CONF=/etc/sysctl.d/30-litclock-unprivileged-ports.conf
 if [[ -f "$INSTALL_DIR/sysctl.d/30-litclock-unprivileged-ports.conf" ]]; then
     sudo install -m 0644 -o root -g root \
         "$INSTALL_DIR/sysctl.d/30-litclock-unprivileged-ports.conf" \
-        /etc/sysctl.d/30-litclock-unprivileged-ports.conf 2>/dev/null || true
+        "$_SYSCTL_CONF" 2>/dev/null || true
     sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80 > /dev/null 2>&1 || true
     # Read the live value from /proc, NOT `sysctl -n`: sysctl lives in /usr/sbin
     # which is not on the pi user's non-login PATH, so `sysctl -n` here returns
     # "command not found" and a false "could not lower floor" warning (caught in
     # #343 hardware QA). The /proc file is always readable with no PATH/sudo.
     _port_floor=$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start 2>/dev/null || echo "")
+    # litclock-dev#527 field incident: the FILE install was silently swallowed
+    # (2>/dev/null || true) while `sysctl -w` set the live value to 80 — so the
+    # old warning (live-value only) stayed quiet, the update "succeeded", and the
+    # NEXT reboot reverted to 1024 and crash-looped control_server. Check the
+    # persisted file explicitly, independent of the live value, so a failed
+    # install can never pass silently again. (litclock-control.service also
+    # self-heals the live value via ExecStartPre now — this warning is the
+    # human-visible half.)
+    if [[ ! -f "$_SYSCTL_CONF" ]]; then
+        echo "  WARNING (#343/#527): the persistent port-80 sysctl drop-in did not"
+        echo "  install ($_SYSCTL_CONF is missing). The live floor may be 80 now but"
+        echo "  will revert on reboot. Re-run: sudo install -m 0644 -o root -g root \\"
+        echo "    $INSTALL_DIR/sysctl.d/30-litclock-unprivileged-ports.conf $_SYSCTL_CONF"
+    fi
     if [[ "$_port_floor" != "80" ]]; then
         echo "  WARNING (#343): could not lower the unprivileged-port floor to 80"
         echo "  (net.ipv4.ip_unprivileged_port_start=${_port_floor:-unknown}). The Control"
         echo "  PWA may be unreachable on port 80 until the next reboot applies the"
-        echo "  installed /etc/sysctl.d/30-litclock-unprivileged-ports.conf."
+        echo "  installed $_SYSCTL_CONF."
     fi
 fi
 
