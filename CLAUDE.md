@@ -37,7 +37,7 @@ The first-boot flow (`scripts/first-boot.sh`) provisions WiFi via a web UI; ever
 
 - **WiFi-only hotspot form**: Verify the setup page shows ONLY the WiFi network picker + password field + Submit button. No Location, Timezone, Temperature, or Mature-content sections — those are PWA-only post-handoff.
 - **Hotspot creation**: Power on with no known WiFi networks. Verify the Pi creates a hotspot and displays credentials + QR code on the e-ink screen.
-- **Captive portal**: Connect a phone to the hotspot. The setup page should auto-open (or be reachable at the displayed IP).
+- **Captive portal**: Connect a phone to the hotspot. The setup page should auto-open (or be reachable at the displayed IP). On iOS, the journal should show the #526 coax sequence: `CAPTIVE-PROBE … -> cna-302 status=302` for the `CaptiveNetworkSupport wispr` UA, then (if the sheet rises) a Safari-family UA fetching `/cna` (bridge, 200). A `cna-bridge` 200 answered to a wispr UA means the UA split regressed.
 - **WiFi provisioning**: Select a network from the setup page, enter credentials. Verify the Pi connects and transitions to clock mode.
 - **WiFi provisioning failure + retry**: Enter a wrong WiFi password. The page should auto-refresh and show an error banner ("Couldn't join your WiFi…"). Fix the password and resubmit. The Pi should connect on retry. Banner must NOT use the deprecated "home WiFi" phrasing.
 - **IP-geo auto-populate (US residential)**: On a US residential WiFi, after submit verify env.sh contains `WEATHER_LATITUDE`, `WEATHER_LONGITUDE`, `WEATHER_LOCATION_NAME` (City, State), `WEATHER_UNITS=imperial`, and `timedatectl` reports the correct timezone — all from one ip-api.com call.

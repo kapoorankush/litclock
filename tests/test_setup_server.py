@@ -950,6 +950,19 @@ class TestCnaBridge:
         assert "Safari" not in html
         assert "browser" in html.lower()
 
+    def test_bridge_embeds_wispr_xml_comment(self):
+        """litclock-dev#526: the bridge carries the WISPr 1.0 XML island in
+        an HTML comment (MessageType 100 / ResponseCode 0 / LoginURL) so
+        Apple's wispr smart client gets the structured portal handoff no
+        matter which captive response it ends up reading."""
+        html = setup_server._build_cna_bridge_html()
+        assert "WISPAccessGatewayParam" in html
+        assert "<MessageType>100</MessageType>" in html
+        assert "<ResponseCode>0</ResponseCode>" in html
+        assert f"<LoginURL>http://{setup_server.HOTSPOT_GATEWAY_IP}/cna</LoginURL>" in html
+        # And it stays a comment — invisible to real browsers.
+        assert html.count("<!--") == 1 and html.count("-->") == 1
+
     def test_setup_hostname_uses_fake_tld(self):
         """Hostname must have a TLD so Safari treats it as a URL, not a search query."""
         assert "." in setup_server.SETUP_HOSTNAME
@@ -1171,6 +1184,7 @@ def _make_handler():
     from unittest.mock import MagicMock
 
     handler = setup_server.SetupHandler.__new__(setup_server.SetupHandler)
+    handler.headers = {}
     handler.send_response = MagicMock()
     handler.send_header = MagicMock()
     handler.end_headers = MagicMock()
@@ -1242,6 +1256,62 @@ class TestCaptivePortalProbeRouting:
         assert handler._handle_captive_portal_probe("/connecttest.txt", "www.msftconnecttest.com") is True
         handler.send_html.assert_not_called()
         handler.send_response.assert_called_once_with(302)
+
+    def test_wispr_detection_probe_gets_302_off_apple_host(self):
+        """litclock-dev#526: iOS 26.5.x stopped promoting a 200-HTML answer
+        served under an Apple hostname to the CNA sheet. The detection probe
+        (CaptiveNetworkSupport UA) must get a 302 to /cna on the raw gateway
+        IP — the commercial-hotspot pattern that kept auto-popping — with the
+        WISPr XML block as the body for smart clients."""
+        handler = _make_handler()
+        handler.headers = {"User-Agent": "CaptiveNetworkSupport-514.120.2 wispr"}
+        handler.send_html = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        assert handler._handle_captive_portal_probe("/hotspot-detect.html", "captive.apple.com") is True
+        handler.send_html.assert_not_called()
+        handler.send_response.assert_called_once_with(302)
+        assert (
+            "Location",
+            f"http://{setup_server.HOTSPOT_GATEWAY_IP}/cna",
+        ) in [c.args for c in handler.send_header.call_args_list]
+        body = handler.wfile.write.call_args[0][0].decode()
+        assert "WISPAccessGatewayParam" in body
+        assert "<MessageType>100</MessageType>" in body
+        assert "<ResponseCode>0</ResponseCode>" in body
+
+    def test_wispr_detection_probe_302_on_apple_host_fallback(self):
+        """The host-based fallback (Apple host, unexpected path) must apply
+        the same detection-probe split as the path branch."""
+        handler = _make_handler()
+        handler.headers = {"User-Agent": "CaptiveNetworkSupport-514.120.2 wispr"}
+        handler.send_html = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        assert handler._handle_captive_portal_probe("/", "captive.apple.com") is True
+        handler.send_html.assert_not_called()
+        handler.send_response.assert_called_once_with(302)
+
+    def test_safari_ua_on_probe_path_still_gets_bridge(self):
+        """The CNA sheet's WebView (Safari-family UA) re-fetches the probe
+        path when rendering; it must keep getting the 200 bridge, not a
+        redirect loop through /cna."""
+        handler = _make_handler()
+        handler.headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1"
+        }
+        handler.send_html = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        assert handler._handle_captive_portal_probe("/hotspot-detect.html", "captive.apple.com") is True
+        handler.send_html.assert_called_once()
+        assert "Open Setup" in handler.send_html.call_args[0][0]
+
+    def test_wispr_probe_log_branch_is_cna_302(self, capsys, monkeypatch):
+        """The probe log must distinguish the detection-probe 302 from the
+        bridge 200 so the next hardware repro can decode which branch fired."""
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        handler = _make_handler()
+        handler.headers = {"User-Agent": "CaptiveNetworkSupport-514.120.2 wispr"}
+        handler._handle_captive_portal_probe("/hotspot-detect.html", "captive.apple.com")
+        out = capsys.readouterr().out
+        assert "-> cna-302" in out
+        assert "status=302" in out
 
     def test_probe_logs_host_ua_path_diagnostic_in_provisioning(self, capsys, monkeypatch):
         """#483: the access log records only the request line + status, so a
@@ -1404,6 +1474,18 @@ class TestDoGetCaptivePortalDispatch:
         handler.do_GET()
         handler.send_html.assert_not_called()
         handler.send_response.assert_called_with(302)
+
+    def test_cna_path_on_gateway_host_serves_bridge(self, monkeypatch):
+        """/cna is the detection-probe 302 target (litclock-dev#526): the
+        bridge on our own host. It must be dispatched as an app path — not
+        eaten by the probe handler — and serve the bridge, not the setup form."""
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        handler = _make_do_get_handler("/cna", "10.42.0.1")
+        handler.do_GET()
+        handler.send_html.assert_called_once()
+        sent = handler.send_html.call_args[0][0]
+        assert "Open Setup" in sent
+        assert "scan-wifi" not in sent
 
     def test_provisioning_mode_off_skips_probe_dispatch(self, monkeypatch):
         """Normal (post-setup) HTTPS server mode must never enter probe

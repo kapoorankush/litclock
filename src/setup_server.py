@@ -295,6 +295,31 @@ def _wifi_network_options():
     return result
 
 
+# WISPr 1.0 smart-client block (litclock-dev#526). iOS's captive detector
+# identifies itself as a WISPr client ("CaptiveNetworkSupport-<ver> wispr")
+# and the WISPr protocol carries the portal handoff as an XML island inside
+# an HTML comment: MessageType 100 / ResponseCode 0 = "captive network,
+# login page is at LoginURL". Browsers ignore the comment entirely, so this
+# is embedded in every captive response we serve to Apple clients. LoginURL
+# uses the raw gateway IP, not SETUP_HOSTNAME — the point is to give iOS a
+# target it can reach without trusting our wildcard DNS.
+_WISPR_XML_COMMENT = (
+    "<!--\n"
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    "<WISPAccessGatewayParam"
+    ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+    ' xsi:noNamespaceSchemaLocation="http://www.wballiance.net/wispr_2_0.xsd">\n'
+    "<Redirect>\n"
+    "<MessageType>100</MessageType>\n"
+    "<ResponseCode>0</ResponseCode>\n"
+    "<AccessProcedure>1.0</AccessProcedure>\n"
+    "<LocationName>LitClock Setup</LocationName>\n"
+    f"<LoginURL>http://{HOTSPOT_GATEWAY_IP}/cna</LoginURL>\n"
+    "</Redirect>\n"
+    "</WISPAccessGatewayParam>\n"
+    "-->"
+)
+
 # Precomputed at import time — everything in the bridge page is static
 # except SETUP_HOSTNAME and HOTSPOT_GATEWAY_IP, both module-level constants
 # known at import. iOS CNA can fire probes in quick bursts during first-boot
@@ -308,8 +333,7 @@ def _wifi_network_options():
 # sheet. The small-text fallback also prints the raw gateway IP so the user
 # has a recovery path if the hostname ever fails to resolve.
 _CNA_BRIDGE_HTML = (
-    "<!DOCTYPE html>"
-    '<html lang="en"><head>'
+    "<!DOCTYPE html>" + _WISPR_XML_COMMENT + '<html lang="en"><head>'
     '<meta charset="utf-8">'
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
     "<title>LitClock Setup</title>"
@@ -932,6 +956,37 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Location", f"http://{SETUP_HOSTNAME}/setup")
         self.end_headers()
 
+    def _is_cna_detection_probe(self):
+        """True when the request is Apple's WISPr detection client
+        (UA "CaptiveNetworkSupport-<ver> wispr") — the probe that decides
+        whether the CNA sheet rises. The sheet's WebView and real browsers
+        send a Safari-family UA instead and must NOT match."""
+        return "CaptiveNetworkSupport" in self.headers.get("User-Agent", "")
+
+    def _redirect_cna_probe(self):
+        """Answer the Apple detection probe the way commercial hotspots do:
+        302 off the Apple hostname to our own captive page, with the WISPr
+        XML block as the response body for smart clients that read it
+        instead of following the redirect. Returns the body byte count for
+        the probe log.
+
+        litclock-dev#526: iOS 26.5.x stopped promoting a 200-HTML answer
+        served under an Apple probe hostname to the CNA sheet (the sheet
+        would render spoofed content on an apple.com URL — a phishing
+        surface for the iOS 26 Captive Assist credential sync). Portals
+        that answer the probe with a redirect to their own host kept
+        auto-popping, so the detection probe gets this 302; the sheet's
+        WebView and manual browsers still get the 200 bridge. The Location
+        uses the raw gateway IP so reaching it needs no DNS at all."""
+        body = _WISPR_XML_COMMENT.encode()
+        self.send_response(302)
+        self.send_header("Location", f"http://{HOTSPOT_GATEWAY_IP}/cna")
+        self.send_header("Content-type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return len(body)
+
     def _handle_captive_portal_probe(self, path, host):
         """Respond to captive portal probe requests to trigger the portal sheet.
 
@@ -950,6 +1005,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         iOS gets the JS-free bridge HTML; Android / Windows / Firefox get a
         302 redirect to the real setup form.
         """
+
         # #483 diagnostic: the base access log (log_message) records only the
         # request line + status — NOT the Host header or User-Agent. Those are
         # exactly what a "portal didn't auto-open" repro needs: which host iOS
@@ -970,14 +1026,21 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                     flush=True,
                 )
 
-        # iOS probes — return a tiny JS-free bridge page. A non-"Success" 200
-        # opens the CNA sheet; keeping the response small (~1 KB, no JS) is
-        # what makes iOS actually pop the sheet instead of burying it in
-        # Control Center. The bridge links into the real setup form.
+        # iOS probes. The WISPr detection client gets a 302 to /cna on the
+        # gateway IP (iOS 26.5.x no longer reliably promotes 200-HTML served
+        # under an Apple hostname to the CNA sheet — see _redirect_cna_probe).
+        # Everything else hitting these paths (the CNA sheet's WebView, a
+        # manual browser) gets the tiny JS-free bridge: a non-"Success" 200,
+        # kept small so the sheet renders it instead of burying the portal
+        # in Control Center. The bridge links into the real setup form.
         if path in ("/hotspot-detect.html", "/library/test/success.html"):
-            body = _build_cna_bridge_html()
-            self.send_html(body)
-            _probe_log("cna-bridge", 200, len(body.encode()))
+            if self._is_cna_detection_probe():
+                nbytes = self._redirect_cna_probe()
+                _probe_log("cna-302", 302, nbytes)
+            else:
+                body = _build_cna_bridge_html()
+                self.send_html(body)
+                _probe_log("cna-bridge", 200, len(body.encode()))
             return True
         # Android probes — 302 redirect triggers "Sign in to network"
         if path in ("/generate_204", "/gen_204"):
@@ -997,9 +1060,13 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         host_clean = host.split(":")[0].lower()
         if host_clean in CAPTIVE_PORTAL_HOSTS:
             if host_clean in APPLE_CAPTIVE_PORTAL_HOSTS:
-                body = _build_cna_bridge_html()
-                self.send_html(body)
-                _probe_log("cna-bridge-hostmatch", 200, len(body.encode()))
+                if self._is_cna_detection_probe():
+                    nbytes = self._redirect_cna_probe()
+                    _probe_log("cna-302-hostmatch", 302, nbytes)
+                else:
+                    body = _build_cna_bridge_html()
+                    self.send_html(body)
+                    _probe_log("cna-bridge-hostmatch", 200, len(body.encode()))
             else:
                 self._redirect_to_setup()
                 _probe_log("redirect-setup-hostmatch", 302, 0)
@@ -1018,7 +1085,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         # would otherwise fall through to _build_setup_html() and re-trigger
         # the exact iOS CNA bug we're trying to fix.
         if PROVISIONING_MODE:
-            is_app_path = parsed.path in ("/", "/setup", "/scan-wifi")
+            is_app_path = parsed.path in ("/", "/setup", "/scan-wifi", "/cna")
             is_probe_host = host.split(":")[0].lower() in CAPTIVE_PORTAL_HOSTS
             if is_probe_host or not is_app_path:
                 if self._handle_captive_portal_probe(parsed.path, host):
@@ -1026,6 +1093,12 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
 
         if parsed.path == "/" or parsed.path == "/setup":
             self.send_html(_build_setup_html())
+
+        elif parsed.path == "/cna":
+            # Target of the detection-probe 302 (and the WISPr LoginURL):
+            # the tiny JS-free bridge on our own host, so the CNA sheet
+            # never has to render portal content under an Apple hostname.
+            self.send_html(_build_cna_bridge_html())
 
         elif parsed.path == "/scan-wifi":
             global _WIFI_SCAN_CACHE, _WIFI_SCAN_TIME
