@@ -77,6 +77,7 @@ Arthur's guide covers the case assembly beautifully, and our **[Hardware Assembl
 
 1. Power on. Within a minute the display shows a **"LitClock-Setup"** hotspot with its password and a QR code.
 2. Join the hotspot from your phone — the setup page opens automatically (or browse to the address shown on the display).
+   > **iPhone note:** current iOS (26.x) often doesn't open the sign-in page on its own — [a known iOS change](https://developer.apple.com/forums/thread/805035) affecting local setup hotspots like this one, not something the clock can fix. If nothing pops up within a minute, just open Safari: the setup page appears immediately. Android opens it automatically.
 3. Pick your home WiFi and enter its password. **That's the whole form** — location, timezone, and temperature units auto-detect once the clock is online.
 4. The display shows "Ready to read." with a QR code to the clock's control app. Scan it, tap **"Done — Start the Clock"** (or just wait — it starts on its own), and add the app to your home screen.
 
@@ -252,6 +253,7 @@ Flags:
 - **View service logs**: `journalctl -u litclock.service --since today`
 - **Force weather update**: `rm /run/litclock/weather-cache-*.json` (the cache lives in tmpfs and rebuilds on the next minute tick)
 - **WiFi disconnects (Pi Zero)**: see [WiFi stability](#wifi-stability-pi-zero-w--zero-2-w), or check `dmesg | grep brcmfmac` for errors
+- **Setup page doesn't open on iPhone**: a known iOS 26 behavior with offline setup hotspots (not fixable clock-side). Open Safari while joined to `LitClock-Setup` — the page loads right away, or go to the address shown on the display.
 - **WiFi fails during setup**: The setup page shows an error banner and lets you fix the password and resubmit. If it keeps failing, restart the Pi closer to your router.
 - **Start setup over**: app → System → Factory reset, or `sudo ./scripts/reset-setup.sh && sudo reboot` from a shell
 - **Clock stuck, or you need a shell**: SSH ships **off**. See **[Recovering a LitClock](docs/recovery.md)** for getting a shell via the console, enabling SSH from the SD card, resetting to first-boot, and the read-only Diagnostics tab.
