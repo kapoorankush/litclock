@@ -907,10 +907,13 @@ class TestHtmlError:
 
 class TestCnaBridge:
     def test_bridge_contains_setup_link(self):
-        """Bridge HTML links into the real setup form via SETUP_HOSTNAME."""
+        """Bridge CTA links into the real setup form via the raw gateway IP
+        (litclock-dev#526: no DNS dependency inside the CNA sheet); the
+        hostname stays available in the small print for humans."""
         html = setup_server._build_cna_bridge_html()
-        assert f'href="http://{setup_server.SETUP_HOSTNAME}/setup"' in html
+        assert f'href="http://{setup_server.HOTSPOT_GATEWAY_IP}/setup"' in html
         assert "Open Setup" in html
+        assert setup_server.SETUP_HOSTNAME in html
 
     def test_bridge_has_no_javascript(self):
         """Bridge must be JS-free — iOS CNA's WebView handles JS poorly and
@@ -949,6 +952,15 @@ class TestCnaBridge:
         html = setup_server._build_cna_bridge_html()
         assert "Safari" not in html
         assert "browser" in html.lower()
+
+    def test_bridge_has_no_wispr_xml(self):
+        """litclock-dev#526 /review: the bridge must NOT carry a WISPr XML
+        Redirect block. MessageType 100 / ResponseCode 0 solicits a
+        smart-client credential POST this server can't answer in valid
+        WISPr, and a LoginURL pointing at the page itself is a redirect
+        loop for a conforming WISPr state machine."""
+        html = setup_server._build_cna_bridge_html()
+        assert "WISPAccessGatewayParam" not in html
 
     def test_setup_hostname_uses_fake_tld(self):
         """Hostname must have a TLD so Safari treats it as a URL, not a search query."""
@@ -1171,6 +1183,7 @@ def _make_handler():
     from unittest.mock import MagicMock
 
     handler = setup_server.SetupHandler.__new__(setup_server.SetupHandler)
+    handler.headers = {}
     handler.send_response = MagicMock()
     handler.send_header = MagicMock()
     handler.end_headers = MagicMock()
@@ -1196,7 +1209,7 @@ class TestCaptivePortalProbeRouting:
         assert handler._handle_captive_portal_probe("/hotspot-detect.html", "captive.apple.com") is True
         sent_html = handler.send_html.call_args[0][0]
         assert "Open Setup" in sent_html
-        assert f"http://{setup_server.SETUP_HOSTNAME}/setup" in sent_html
+        assert f"http://{setup_server.HOTSPOT_GATEWAY_IP}/setup" in sent_html
 
     def test_ios_library_test_success_serves_bridge(self):
         handler = _make_handler()
@@ -1242,6 +1255,97 @@ class TestCaptivePortalProbeRouting:
         assert handler._handle_captive_portal_probe("/connecttest.txt", "www.msftconnecttest.com") is True
         handler.send_html.assert_not_called()
         handler.send_response.assert_called_once_with(302)
+
+    def test_wispr_detection_probe_gets_302_off_apple_host(self):
+        """litclock-dev#526: iOS 26.5.x stopped promoting a 200-HTML answer
+        served under an Apple hostname to the CNA sheet. The detection probe
+        (CaptiveNetworkSupport UA) must get a bodyless 302 to /cna on the
+        raw gateway IP — the commercial-hotspot pattern that kept
+        auto-popping — with the same no-store posture as send_html (a
+        cached captive decision persisting across joins is the known
+        failure mode)."""
+        handler = _make_handler()
+        handler.headers = {"User-Agent": "CaptiveNetworkSupport-514.120.2 wispr"}
+        handler.send_html = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        assert handler._handle_captive_portal_probe("/hotspot-detect.html", "captive.apple.com") is True
+        handler.send_html.assert_not_called()
+        handler.send_response.assert_called_once_with(302)
+        headers = dict(c.args for c in handler.send_header.call_args_list)
+        assert headers["Location"] == setup_server.CNA_URL
+        assert headers["Content-Length"] == "0"
+        assert "no-store" in headers["Cache-Control"]
+        handler.wfile.write.assert_not_called()
+
+    def test_wispr_detection_probe_302_on_apple_host_fallback(self, capsys, monkeypatch):
+        """The host-based fallback (Apple host, unexpected path) must apply
+        the same detection-probe split as the path branch, point Location
+        at /cna, and log the distinct '-hostmatch' branch label the
+        hardware QA playbook decodes."""
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        handler = _make_handler()
+        handler.headers = {"User-Agent": "CaptiveNetworkSupport-514.120.2 wispr"}
+        handler.send_html = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        assert handler._handle_captive_portal_probe("/", "captive.apple.com") is True
+        handler.send_html.assert_not_called()
+        handler.send_response.assert_called_once_with(302)
+        headers = dict(c.args for c in handler.send_header.call_args_list)
+        assert headers["Location"] == setup_server.CNA_URL
+        assert "-> cna-302-hostmatch" in capsys.readouterr().out
+
+    def test_bare_apple_host_wispr_probe_intercepted(self):
+        """litclock-dev#526 /review (Codex): bare apple.com is in Apple's
+        documented probe-host list. Before the host-set expansion, a wispr
+        probe to apple.com/ fell through to the FULL setup form under an
+        Apple hostname — the exact response shape iOS 26 stopped promoting."""
+        handler = _make_handler()
+        handler.headers = {"User-Agent": "CaptiveNetworkSupport-514.120.2 wispr"}
+        handler.send_html = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        assert handler._handle_captive_portal_probe("/", "apple.com") is True
+        handler.send_response.assert_called_once_with(302)
+
+    def test_ua_match_is_case_insensitive(self):
+        """The UA gate must not depend on Apple's exact casing."""
+        handler = _make_handler()
+        handler.headers = {"User-Agent": "captivenetworksupport-999 wispr"}
+        handler.send_html = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        assert handler._handle_captive_portal_probe("/hotspot-detect.html", "captive.apple.com") is True
+        handler.send_response.assert_called_once_with(302)
+
+    def test_missing_user_agent_gets_bridge_not_302(self):
+        """No User-Agent header must be treated as a browser (200 bridge),
+        not as the detection probe — documenting the no-UA contract
+        explicitly instead of relying on _make_handler defaults."""
+        handler = _make_handler()
+        handler.headers = {}
+        handler.send_html = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        assert handler._handle_captive_portal_probe("/hotspot-detect.html", "captive.apple.com") is True
+        handler.send_html.assert_called_once()
+        handler.send_response.assert_not_called()
+
+    def test_safari_ua_on_probe_path_still_gets_bridge(self):
+        """The CNA sheet's WebView (Safari-family UA) re-fetches the probe
+        path when rendering; it must keep getting the 200 bridge, not a
+        redirect loop through /cna."""
+        handler = _make_handler()
+        handler.headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1"
+        }
+        handler.send_html = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        assert handler._handle_captive_portal_probe("/hotspot-detect.html", "captive.apple.com") is True
+        handler.send_html.assert_called_once()
+        assert "Open Setup" in handler.send_html.call_args[0][0]
+
+    def test_wispr_probe_log_branch_is_cna_302(self, capsys, monkeypatch):
+        """The probe log must distinguish the detection-probe 302 from the
+        bridge 200 so the next hardware repro can decode which branch fired."""
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        handler = _make_handler()
+        handler.headers = {"User-Agent": "CaptiveNetworkSupport-514.120.2 wispr"}
+        handler._handle_captive_portal_probe("/hotspot-detect.html", "captive.apple.com")
+        out = capsys.readouterr().out
+        assert "-> cna-302" in out
+        assert "status=302" in out
 
     def test_probe_logs_host_ua_path_diagnostic_in_provisioning(self, capsys, monkeypatch):
         """#483: the access log records only the request line + status, so a
@@ -1404,6 +1508,56 @@ class TestDoGetCaptivePortalDispatch:
         handler.do_GET()
         handler.send_html.assert_not_called()
         handler.send_response.assert_called_with(302)
+
+    def test_cna_path_on_gateway_host_serves_bridge(self, monkeypatch):
+        """/cna is the detection-probe 302 target (litclock-dev#526): the
+        bridge on our own host. It must be dispatched as an app path — not
+        eaten by the probe handler — and serve the bridge, not the setup form."""
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        handler = _make_do_get_handler("/cna", "10.42.0.1")
+        handler.do_GET()
+        handler.send_html.assert_called_once()
+        sent = handler.send_html.call_args[0][0]
+        assert "Open Setup" in sent
+        assert "scan-wifi" not in sent
+
+    def test_cna_path_with_wispr_ua_terminates_redirect_chain(self, monkeypatch):
+        """The wispr client following the cna-302 Location must land on a
+        200 bridge, never another 302 — a redirect loop here means the CNA
+        sheet never opens, and CI is the only guard (iOS captive behavior
+        can't be simulated). Pins the loop-termination invariant of #526."""
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        handler = _make_do_get_handler("/cna", "10.42.0.1")
+        ua = "CaptiveNetworkSupport-514.120.2 wispr"
+        handler.headers.get = lambda k, d="": {"Host": "10.42.0.1", "User-Agent": ua}.get(k, d)
+        handler.do_GET()
+        handler.send_html.assert_called_once()
+        assert "Open Setup" in handler.send_html.call_args[0][0]
+        assert 302 not in [c.args[0] for c in handler.send_response.call_args_list]
+
+    def test_cna_path_404_in_normal_mode(self, monkeypatch):
+        """/cna is provisioning-only: post-setup there is no hotspot and
+        the bridge would be a dead end, so normal mode 404s it like any
+        other unknown path."""
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", False)
+        handler = _make_do_get_handler("/cna", "192.168.1.50")
+        handler.do_GET()
+        handler.send_html.assert_not_called()
+        handler.send_response.assert_called_once_with(404)
+
+    def test_unknown_path_wispr_ua_catchall_redirects_to_cna(self, monkeypatch):
+        """A detection probe from a host/path outside the known sets must
+        still get the DNS-free /cna redirect from the provisioning
+        catch-all, not the litclock.setup Location whose DNS-dependent
+        shape is what iOS 26 distrusts (#526 /review F5)."""
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        handler = _make_do_get_handler("/some-future-probe", "netcts.cdn-apple.com")
+        ua = "CaptiveNetworkSupport-514.120.2 wispr"
+        handler.headers.get = lambda k, d="": {"Host": "netcts.cdn-apple.com", "User-Agent": ua}.get(k, d)
+        handler.do_GET()
+        handler.send_response.assert_called_with(302)
+        headers = dict(c.args for c in handler.send_header.call_args_list)
+        assert headers["Location"] == setup_server.CNA_URL
 
     def test_provisioning_mode_off_skips_probe_dispatch(self, monkeypatch):
         """Normal (post-setup) HTTPS server mode must never enter probe

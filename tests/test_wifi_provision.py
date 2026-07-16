@@ -165,6 +165,55 @@ def test_captive_portal_dnsmasq_config_has_no_resolv(monkeypatch):
     assert "local=/#/" in conf
 
 
+def test_captive_portal_dnsmasq_nxdomains_private_relay_hosts(monkeypatch):
+    """litclock-dev#526 pcap: on join, iOS 26 tries iCloud Private Relay
+    (mask*.icloud.com); the /#/ wildcard spoofed it to the gateway which
+    then refused the connection — part of the spoof-then-refuse pattern
+    that suppresses the CNA sheet. Apple documents NXDOMAIN as the correct
+    answer on networks where relay is unavailable: `address=/name/` with
+    no IP. The specific entries must not carry the gateway IP."""
+    writes: list[dict] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        writes.append({"cmd": list(cmd), "input": kwargs.get("input")})
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    wifi_provision._setup_captive_portal()
+
+    tee = next(w for w in writes if "tee" in w["cmd"] and w["input"])
+    conf = tee["input"]
+    for host in ("mask.icloud.com", "mask-h2.icloud.com", "mask-api.icloud.com"):
+        assert f"address=/{host}/\n" in conf, f"{host} must be NXDOMAINed (bare address=, no IP)"
+        assert f"address=/{host}/{wifi_provision.HOTSPOT_GATEWAY}" not in conf
+
+
+def test_captive_portal_nft_drops_443_silently(monkeypatch):
+    """litclock-dev#526 pcap: the kernel's RST on spoofed 443/5223
+    connections (plus ICMP-unreachable on QUIC) is what iOS 26 reads as a
+    broken network ('network connection was lost') — the sheet stays down
+    even though the port-80 probe is answered. The nft table must contain
+    a walled-garden filter chain that DROPs tcp 443+5223 and udp 443
+    (silent, like commercial gateways) alongside the 80→8080 redirect."""
+    runs: list[dict] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        runs.append({"cmd": list(cmd), "input": kwargs.get("input")})
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    wifi_provision._setup_captive_portal()
+
+    nft = next(w for w in runs if "/usr/sbin/nft" in w["cmd"])
+    rules = nft["input"]
+    assert "tcp dport 80 redirect to :8080" in rules
+    assert "type filter hook prerouting" in rules
+    assert "tcp dport { 443, 5223 } drop" in rules
+    assert "udp dport 443 drop" in rules
+    # Single named table — teardown deletes it whole, chains included.
+    assert rules.count("table ip litclock_captive") == 1
+
+
 class TestTeardownCaptivePortal:
     """#343 (/review F3): the captive nft table holds a port-80→8080 redirect,
     and control_server now binds 80. Teardown must VERIFY the table is gone (not

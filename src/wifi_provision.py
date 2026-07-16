@@ -154,38 +154,69 @@ def _setup_captive_portal():
     #                no-resolv though no-resolv is what actually fixes type 65.
     # log-queries — NM doesn't pass --log-queries to shared-mode dnsmasq, so
     #                we add it here for captive-portal debugging.
+    # address=/mask*.icloud.com/ (no IP → NXDOMAIN) — iCloud Private Relay
+    #                ingress hosts. litclock-dev#526 pcap (2026-07-16): on
+    #                join, iOS 26.5.2 immediately tries Private Relay via
+    #                QUIC to mask.icloud.com; the wildcard spoofed it to the
+    #                gateway, which refused the connection — part of the
+    #                spoof-then-refuse pattern that makes iOS 26 treat the
+    #                hotspot as broken and suppress the captive sheet. Apple
+    #                documents that networks where relay is unavailable
+    #                should answer these names with NXDOMAIN so iOS falls
+    #                back to direct connections cleanly. A more-specific
+    #                address= always beats the /#/ wildcard in dnsmasq.
     subprocess.run(
         ["sudo", "mkdir", "-p", "/etc/NetworkManager/dnsmasq-shared.d"],
         capture_output=True,
     )
+    dnsmasq_conf = (
+        f"address=/#/{HOTSPOT_GATEWAY}\n"
+        "address=/mask.icloud.com/\n"
+        "address=/mask-h2.icloud.com/\n"
+        "address=/mask-api.icloud.com/\n"
+        "local=/#/\n"
+        "no-resolv\n"
+        "log-queries\n"
+    )
     subprocess.run(
         ["sudo", "tee", DNSMASQ_CAPTIVE_CONF],
-        input=f"address=/#/{HOTSPOT_GATEWAY}\nlocal=/#/\nno-resolv\nlog-queries\n",
+        input=dnsmasq_conf,
         capture_output=True,
         text=True,
     )
     logging.info("Captive portal DNS config written")
 
     # Redirect port 80 → setup server port 8080. Captive portal probes are
-    # plain HTTP, so port 80 is all we need.
+    # plain HTTP, so port 80 is all we need to ANSWER.
     #
-    # Port 443 is intentionally NOT redirected. The plain HTTP server on
-    # 8080 cannot speak TLS, so a 443 redirect makes iOS's HTTPS captive
-    # probe see a corrupt TLS handshake (the HTTP server reads the
-    # ClientHello bytes as garbage and responds "HTTP/1.1 400 Bad request
-    # version"). iOS 26.4.1 silently demotes the captive portal CNA popup
-    # when its HTTPS probe gets a hostile-looking response. With no
-    # listener on 443, the kernel sends a clean RST and iOS interprets
-    # that as "this network blocks HTTPS, fall back to the HTTP probe
-    # result" — which is exactly what we want. (issue #178)
+    # Port 443 is intentionally NOT redirected (the plain HTTP server can't
+    # speak TLS — a redirected ClientHello would read as garbage and iOS
+    # demotes the sheet on hostile-looking responses, issue #178). It is
+    # now DROPPED rather than left to the kernel's RST. litclock-dev#526
+    # pcap (2026-07-16, iOS 26.5.2): on join the phone's Apple services
+    # (iCloud gateway, location, Private Relay QUIC, APNs 5223, cached
+    # Apple IPs) all resolved to the spoofing gateway and got active
+    # refusals — 14 RSTs on 443 plus ICMP unreachables — before/while the
+    # captive check ran. iOS 26 reads that spoof-then-refuse pattern as a
+    # broken network ("network connection was lost") and suppresses the
+    # CNA sheet even though the port-80 probe was answered perfectly.
+    # Commercial walled gardens filter silently; matching that (drop, no
+    # RST, no ICMP) is the point of the filter chain below. The setup
+    # flow itself never needs 443/5223 — probes are plain HTTP on 80.
     #
     # Raspberry Pi OS Bookworm uses nftables (no iptables binary). Create a
-    # named table so we can cleanly delete it on teardown.
+    # named table so we can cleanly delete it on teardown (both chains go
+    # with the table).
     nft_rules = (
         "table ip litclock_captive {\n"
         "  chain prerouting {\n"
         "    type nat hook prerouting priority dstnat; policy accept;\n"
         "    tcp dport 80 redirect to :8080\n"
+        "  }\n"
+        "  chain walled_garden {\n"
+        "    type filter hook prerouting priority filter; policy accept;\n"
+        "    tcp dport { 443, 5223 } drop\n"
+        "    udp dport 443 drop\n"
         "  }\n"
         "}\n"
     )
