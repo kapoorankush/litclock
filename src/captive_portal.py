@@ -21,8 +21,12 @@ Captive portal detection URLs by platform:
 - Firefox:         http://detectportal.firefox.com/canonical.html
 
 When a phone gets a "wrong" response to these probes (anything other than
-the expected content), it shows a captive portal popup with the response.
-We redirect to the setup page.
+the expected content), it marks the network captive and shows a portal
+popup. setup_server answers in three shapes: Apple detection probes
+(CaptiveNetworkSupport UA) get a 302 to /cna on the gateway IP
+(litclock-dev#526); other requests to Apple probe hosts/paths get the
+small CNA bridge HTML; Android / Windows / Firefox probes get a 302 to
+the setup page.
 """
 
 import logging
@@ -56,14 +60,26 @@ CAPTIVE_PORTAL_PATHS = {
     "/success.txt",
 }
 
-# Apple probe hosts specifically — these get the iOS CNA bridge HTML
-# response. Other captive-portal hosts (Google, Microsoft, Firefox) get a
-# 302 redirect instead because Android / Windows / Firefox detectors
-# expect a redirect, not HTML. Kept as a separate set so the host-based
-# fallback in setup_server can gate bridge vs redirect correctly.
+# Apple probe hosts specifically — these get the iOS-specific handling in
+# setup_server (302-to-/cna for the CaptiveNetworkSupport detection probe,
+# the ~1 KB bridge HTML for the CNA WebView / manual browsers —
+# litclock-dev#526). Other captive-portal hosts (Google, Microsoft,
+# Firefox) get a 302 redirect to the setup form because Android / Windows /
+# Firefox detectors expect a redirect, not HTML. Kept as a separate set so
+# the host-based fallback in setup_server can gate the two correctly.
+# The list is the full documented iOS probe-host set (WBA captive-behavior
+# reference) — a probe to a host missing from here with path "/" would fall
+# through to the FULL setup form under an Apple hostname, the exact
+# response shape iOS 26 stopped promoting to the sheet.
 APPLE_CAPTIVE_PORTAL_HOSTS = {
     "captive.apple.com",
     "www.apple.com",
+    "apple.com",
+    "www.appleiphonecell.com",
+    "www.airport.us",
+    "www.ibook.info",
+    "www.itools.info",
+    "www.thinkdifferent.us",
 }
 
 # All known captive portal detection hosts. Used by setup_server.do_GET to
