@@ -130,6 +130,42 @@ class TestGiftMode:
         block = reset_sh_content[idx:elif_idx]
         assert "poweroff" in block
 
+    def test_gift_mode_disables_ssh_before_poweroff(self, reset_sh_content):
+        """#528: gift mode must force SSH off before shipping — an owner who
+        ever enabled SSH (QA, recovery) would otherwise hand the recipient a
+        device with SSH + default creds listening on their network. Every
+        layer: the SOCKET (Bookworm socket-activates sshd — disabling only
+        ssh.service leaves port 22 open, caught by hardware QA 2026-07-16),
+        the classic service, raspi-config posture, and the boot-partition
+        re-enable flags (sshswitch re-enables SSH if a bare `ssh` file
+        exists on /boot or /boot/firmware)."""
+        # rfind: the end-of-script branch is the LAST $GIFT_MODE test in the
+        # file (the first one is the early marker-write block).
+        idx = reset_sh_content.rfind('if [[ "$GIFT_MODE" == "true" ]]')
+        elif_idx = reset_sh_content.find("elif", idx)
+        block = reset_sh_content[idx:elif_idx]
+        # The socket is the load-bearing unit on current images — a
+        # service-only disable ships a device with port 22 still open.
+        assert "ssh.socket" in block, "must disable ssh.socket (Bookworm socket-activation)"
+        assert "systemctl disable --now ssh.socket ssh.service" in block
+        assert "raspi-config nonint do_ssh 1" in block
+        assert "/boot/firmware/ssh" in block and "/boot/ssh" in block
+        # And it must happen before the poweroff COMMAND (rfind: the word
+        # also appears in comments earlier in the branch).
+        assert block.find("systemctl disable --now ssh") < block.rfind("\n    poweroff")
+
+    def test_gift_mode_ssh_disable_after_env_wipe_failure_gate(self, reset_sh_content):
+        """#528: on a FAILED gift prep the script exits non-zero and the
+        device stays on — the owner may need SSH to fix it. The SSH disable
+        must therefore sit AFTER the ENV_WIPE_FAILED fatal gate so the
+        failure path never locks the owner out."""
+        idx = reset_sh_content.rfind('if [[ "$GIFT_MODE" == "true" ]]')
+        block = reset_sh_content[idx : reset_sh_content.find("elif", idx)]
+        gate_idx = block.find('"$ENV_WIPE_FAILED" == "true"')
+        ssh_idx = block.find("systemctl disable --now ssh")
+        assert gate_idx != -1 and ssh_idx != -1
+        assert gate_idx < ssh_idx
+
     def test_gift_mode_marker_written_before_shutdown_service_stop(self, reset_sh_content):
         """CRITICAL ordering invariant: the .welcome-mode marker must be written
         BEFORE `systemctl stop litclock-shutdown.service`. That stop fires the
@@ -385,9 +421,7 @@ def test_defaults_include_weather_location_mode_and_ip_country():
     from pathlib import Path
 
     content = (Path(__file__).parent.parent / "scripts/reset-setup.sh").read_text()
-    assert "export WEATHER_LOCATION_MODE=auto" in content, (
-        "#337 A3: reset-setup.sh DEFAULTS must include MODE=auto"
-    )
+    assert "export WEATHER_LOCATION_MODE=auto" in content, "#337 A3: reset-setup.sh DEFAULTS must include MODE=auto"
     assert "export WEATHER_IP_COUNTRY=" in content, (
         "#337 A3: reset-setup.sh DEFAULTS must include WEATHER_IP_COUNTRY= (empty)"
     )
@@ -418,9 +452,7 @@ class TestPrivilegeHardening387:
     def test_gift_message_uses_system_python_not_venv(self, reset_sh_content):
         # Running the pi-writable venv interpreter as root is a pi->root vector;
         # the stdlib-only heredoc uses the root-owned system python instead.
-        assert "/usr/bin/python3 - " in reset_sh_content, (
-            "gift-message processing must use the system python3 (#387)"
-        )
+        assert "/usr/bin/python3 - " in reset_sh_content, "gift-message processing must use the system python3 (#387)"
         assert '"$INSTALL_DIR/venv/bin/python3" - "$GIFT_MESSAGE_FILE"' not in reset_sh_content, (
             "must NOT run the pi-writable venv interpreter as root (#387)"
         )
@@ -438,9 +470,7 @@ class TestPrivilegeHardening387:
             assert "reset-setup.sh" in body and "/usr/local/lib/litclock" in body, (
                 f"{name} must install reset-setup.sh root-owned to /usr/local/lib/litclock (#387)"
             )
-            assert "/usr/local/lib/litclock/lib" in body, (
-                f"{name} must install the root-owned lib/state.sh dir (#387)"
-            )
+            assert "/usr/local/lib/litclock/lib" in body, f"{name} must install the root-owned lib/state.sh dir (#387)"
             assert "lib/state.sh" in body, f"{name} must install state.sh alongside (#387)"
 
 
@@ -455,9 +485,7 @@ class TestFactoryResetStrictEnvWipe:
         assert "--strict-env-wipe) STRICT_ENV_WIPE=true" in reset_sh_content
 
     def test_strict_guard_precedes_wifi_wipe_and_reboot(self, reset_sh_content):
-        guard_idx = reset_sh_content.find(
-            '"$STRICT_ENV_WIPE" == "true" && "$ENV_WIPE_FAILED" == "true"'
-        )
+        guard_idx = reset_sh_content.find('"$STRICT_ENV_WIPE" == "true" && "$ENV_WIPE_FAILED" == "true"')
         assert guard_idx != -1, "strict-env-wipe fail-closed guard missing"
         # Guard aborts non-zero right after the check.
         exit_idx = reset_sh_content.find("exit 1", guard_idx)

@@ -416,6 +416,35 @@ if [[ "$GIFT_MODE" == "true" ]]; then
         echo -e "${YELLOW}  sudo $0 --gift-mode${NC}"
         exit 1
     fi
+    # #528: force SSH off before shipping. The image ships SSH off, but an
+    # owner who enabled it (QA, recovery, tinkering) would otherwise hand
+    # the recipient a device with SSH listening + the well-known default
+    # creds the moment it joins THEIR network. Idempotent belt-and-
+    # suspenders across every way SSH can be on:
+    #   - ssh.socket — Raspberry Pi OS Bookworm SOCKET-ACTIVATES sshd: pid 1
+    #     holds port 22 via ssh.socket and spawns sshd per-connection.
+    #     Disabling ssh.service alone leaves the socket listening, so the
+    #     socket MUST be disabled — this is the load-bearing line on
+    #     current images (hardware QA 2026-07-16 caught a service-only
+    #     disable leaving port 22 open after reprovision). Harmless no-op
+    #     on older service-activated images.
+    #   - ssh.service — the classic always-on unit (older images).
+    #   - raspi-config do_ssh 1 — the canonical toggle; covers whatever the
+    #     image's native mechanism is.
+    #   - boot-partition flags — sshswitch.service turns SSH back on at boot
+    #     if a bare `ssh` file exists on /boot or /boot/firmware.
+    # Deliberately AFTER the env-wipe-failed gate above: on a failed prep
+    # the device stays on and the owner may still need SSH to fix it. Runs
+    # even over an SSH session — pam_systemd puts interactive sessions in
+    # their own scope, so stopping the unit doesn't kill the invoking shell
+    # (and the poweroff below ends it anyway). Recipient re-enables via
+    # console per docs/recovery.md, same as a fresh flash.
+    echo -n "Disabling SSH for shipping... "
+    systemctl disable --now ssh.socket ssh.service 2>/dev/null || true
+    raspi-config nonint do_ssh 1 2>/dev/null || true
+    rm -f /boot/ssh /boot/ssh.txt /boot/firmware/ssh /boot/firmware/ssh.txt 2>/dev/null || true
+    echo -e "${GREEN}done${NC}"
+
     # Marker was written earlier (pre-stop) so shutdown-splash has already
     # painted the welcome screen by now. Just power off.
     echo "Gift mode: powering off."
