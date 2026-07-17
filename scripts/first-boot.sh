@@ -562,9 +562,7 @@ ENVEOF
     fi
 
     # Step 3: Wait for setup completion
-    # FIRSTBOOT_SETUP_TIMEOUT: QA hook (systemd drop-in Environment=) so a
-    # hardware test of the #529 timeout path doesn't take 30 minutes.
-    if wait_for_setup "$SERVER_PID" "${FIRSTBOOT_SETUP_TIMEOUT:-1800}"; then
+    if wait_for_setup "$SERVER_PID" 1800; then
         log "Setup completed successfully!"
 
         # Step 4: Show success and finalize
@@ -619,7 +617,13 @@ ENVEOF
         # — .setup-complete was never written on this path, so the next
         # power-on re-runs first-boot cleanly.
         sudo touch /run/litclock-splash-suppress 2>/dev/null || true
-        sudo poweroff
+        # `sudo systemctl poweroff` (not bare `sudo poweroff`) — matches the
+        # sudo-systemctl form used everywhere else in this script and the
+        # scoped 020 sudoers allowlist, so it survives a future drop of the
+        # 010 passwordless-sudo grant. If the marker touch above failed, we
+        # still power off (a device stranded ON is worse than the splash
+        # getting repainted) — the poweroff is deliberately not gated on it.
+        sudo systemctl poweroff
         exit 1
     fi
 }

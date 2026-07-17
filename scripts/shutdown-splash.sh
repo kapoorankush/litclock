@@ -27,15 +27,17 @@ PYTHON="$INSTALL_DIR/venv/bin/python3"
 # (c) explicit `reboot|poweroff` allowlist — anything else falls through to
 # the list-jobs detection, so a spoofed "junk" hint can't suppress the
 # legitimate reboot signal.
-# #529: root-only splash suppression. The first-boot Setup-Incomplete
-# poweroff has already painted its recovery instructions and needs them to
-# PERSIST on the bistable e-ink through shutdown — so it touches this
-# marker (via sudo) and we exit without painting anything. The marker
-# lives directly in root-owned /run — deliberately NOT in pi-owned
-# /run/litclock/ next to the action hint — because suppression must not
-# be plantable by a pi-level process (it could otherwise hide the gift
-# welcome, which pi cannot touch: /etc/litclock is root-owned). tmpfs, so
-# it self-clears on the next boot; no stale suppression can survive.
+# #529: splash suppression. The first-boot Setup-Incomplete poweroff has
+# already painted its recovery instructions and needs them to PERSIST on
+# the bistable e-ink through shutdown — so it touches this marker (via
+# sudo) and we exit without painting anything. The marker lives directly
+# in root-owned /run, NOT in pi-owned /run/litclock/ next to the action
+# hint, so that creating it requires root. Note: on images carrying the
+# 010 passwordless-sudo grant (all current images), a pi-level process can
+# still `sudo touch` it — but such a process already has full root, so the
+# marker adds no new exposure there; the root-owned path only becomes a
+# real boundary once 010 is dropped. tmpfs, so it self-clears on the next
+# boot; no stale suppression can survive.
 if [[ -f /run/litclock-splash-suppress ]] && [[ ! -L /run/litclock-splash-suppress ]]; then
     exit 0
 fi

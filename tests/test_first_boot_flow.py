@@ -494,7 +494,9 @@ class TestSetupIncompletePoweroff:
 
     def test_timeout_path_powers_off(self, content):
         block = self._timeout_block(content)
-        assert "sudo poweroff" in block
+        # `sudo systemctl poweroff` — the sudo-systemctl form used elsewhere
+        # in this script + the scoped 020 sudoers allowlist (/review).
+        assert "sudo systemctl poweroff" in block
 
     def test_no_grace_sleep_between_paint_and_poweroff(self, content):
         """Owner decision on #529: NO delay between painting the recovery
@@ -514,7 +516,7 @@ class TestSetupIncompletePoweroff:
         BEFORE the poweroff."""
         block = self._timeout_block(content)
         marker_idx = block.find("sudo touch /run/litclock-splash-suppress")
-        off_idx = block.find("sudo poweroff")
+        off_idx = block.find("sudo systemctl poweroff")
         assert marker_idx != -1, "suppress marker touch missing"
         assert marker_idx < off_idx
 
@@ -526,8 +528,10 @@ class TestSetupIncompletePoweroff:
         assert "SSH" not in block.split("\n")[0], "Setup Incomplete copy must not mention SSH"
         assert "Unplug" in block or "unplug" in block
 
-    def test_setup_timeout_is_env_overridable(self, content):
-        """QA hook: the 30-minute wait must be overridable via
-        FIRSTBOOT_SETUP_TIMEOUT so the hardware test of this path doesn't
-        take half an hour."""
-        assert 'wait_for_setup "$SERVER_PID" "${FIRSTBOOT_SETUP_TIMEOUT:-1800}"' in content
+    def test_setup_timeout_is_hardcoded_not_env_overridable(self, content):
+        """/review: the setup wait is a fixed 1800s. No env-var override in
+        shipped code — a stray systemd drop-in setting it to 0 (instant
+        poweroff) or a huge value (infinite idle) is a footgun, and the QA
+        it was added for is complete."""
+        assert 'wait_for_setup "$SERVER_PID" 1800' in content
+        assert "FIRSTBOOT_SETUP_TIMEOUT" not in content
