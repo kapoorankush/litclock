@@ -146,13 +146,35 @@ class TestGiftMode:
         block = reset_sh_content[idx:elif_idx]
         # The socket is the load-bearing unit on current images — a
         # service-only disable ships a device with port 22 still open.
-        assert "ssh.socket" in block, "must disable ssh.socket (Bookworm socket-activation)"
-        assert "systemctl disable --now ssh.socket ssh.service" in block
+        # Disabled in a SEPARATE call from the service so a missing unit on
+        # an older image can't abort the other disable (/review).
+        assert "systemctl disable --now ssh.socket" in block, "must disable ssh.socket separately"
+        assert "systemctl disable --now ssh.service" in block, "must disable ssh.service separately"
         assert "raspi-config nonint do_ssh 1" in block
         assert "/boot/firmware/ssh" in block and "/boot/ssh" in block
         # And it must happen before the poweroff COMMAND (rfind: the word
         # also appears in comments earlier in the branch).
         assert block.find("systemctl disable --now ssh") < block.rfind("\n    poweroff")
+
+    def test_gift_mode_verifies_port_22_closed_as_gate(self, reset_sh_content):
+        """#528 /review: the SSH-off step is a security gate, not best-effort.
+        After disabling, it must verify port 22 is actually closed (the
+        disables are all `|| true`, and socket-activation means unit state
+        alone doesn't prove the port is shut) and refuse to power off if
+        sshd still listens — same abort-before-ship posture as the env-wipe
+        failure gate."""
+        idx = reset_sh_content.rfind('if [[ "$GIFT_MODE" == "true" ]]')
+        block = reset_sh_content[idx : reset_sh_content.find("elif", idx)]
+        assert "ss -H -ltn" in block, "must probe listening sockets to verify SSH is off"
+        # Exact port match, not a substring that would false-hit :2222 etc.
+        assert "grep -qx 22" in block
+        # The verify must sit AFTER the disables and gate the poweroff: the
+        # port-open branch exits before the poweroff command.
+        verify_idx = block.find("ss -H -ltn")
+        disable_idx = block.find("systemctl disable --now ssh.socket")
+        exit_idx = block.find("exit 1", verify_idx)
+        poweroff_idx = block.rfind("\n    poweroff")
+        assert disable_idx < verify_idx < exit_idx < poweroff_idx
 
     def test_gift_mode_ssh_disable_after_env_wipe_failure_gate(self, reset_sh_content):
         """#528: on a FAILED gift prep the script exits non-zero and the

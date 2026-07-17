@@ -424,10 +424,11 @@ if [[ "$GIFT_MODE" == "true" ]]; then
     #   - ssh.socket — Raspberry Pi OS Bookworm SOCKET-ACTIVATES sshd: pid 1
     #     holds port 22 via ssh.socket and spawns sshd per-connection.
     #     Disabling ssh.service alone leaves the socket listening, so the
-    #     socket MUST be disabled — this is the load-bearing line on
+    #     socket MUST be disabled — this is the load-bearing unit on
     #     current images (hardware QA 2026-07-16 caught a service-only
-    #     disable leaving port 22 open after reprovision). Harmless no-op
-    #     on older service-activated images.
+    #     disable leaving port 22 open after reprovision). Disabled in a
+    #     SEPARATE call from ssh.service so a missing unit on an older
+    #     service-only image can't abort the other disable (/review).
     #   - ssh.service — the classic always-on unit (older images).
     #   - raspi-config do_ssh 1 — the canonical toggle; covers whatever the
     #     image's native mechanism is.
@@ -440,10 +441,36 @@ if [[ "$GIFT_MODE" == "true" ]]; then
     # (and the poweroff below ends it anyway). Recipient re-enables via
     # console per docs/recovery.md, same as a fresh flash.
     echo -n "Disabling SSH for shipping... "
-    systemctl disable --now ssh.socket ssh.service 2>/dev/null || true
+    systemctl disable --now ssh.socket 2>/dev/null || true
+    systemctl disable --now ssh.service 2>/dev/null || true
     raspi-config nonint do_ssh 1 2>/dev/null || true
     rm -f /boot/ssh /boot/ssh.txt /boot/firmware/ssh /boot/firmware/ssh.txt 2>/dev/null || true
     echo -e "${GREEN}done${NC}"
+
+    # #528 /review: SSH-off is a security GATE, so verify port 22 is
+    # actually closed rather than trusting the best-effort disables above
+    # (each is `|| true`, and socket-activation means the service state
+    # alone doesn't prove the port is shut). If sshd still listens, refuse
+    # to power off — same posture as the env-wipe failure below: shipping a
+    # device with SSH + default creds reachable on the recipient's network
+    # is exactly what this step exists to prevent. `ss` ships in iproute2
+    # (always present on Pi OS); if it can't run we can't verify, so warn
+    # and proceed rather than hard-block a gift on missing tooling.
+    if command -v ss >/dev/null 2>&1; then
+        # Extract the local port (last colon-field of the Local Address
+        # column) and match EXACTLY 22 — avoids false hits on :2222, :220…
+        if ss -H -ltn 2>/dev/null | awk '{n=split($4,a,":"); print a[n]}' | grep -qx 22; then
+            echo -e "${RED}========================================${NC}"
+            echo -e "${RED}  SSH still listening — do NOT ship this device${NC}"
+            echo -e "${RED}========================================${NC}"
+            echo -e "${RED}Port 22 is still open after disabling SSH. NOT powering off${NC}"
+            echo -e "${RED}so a device with SSH + default creds isn't shipped. Check:${NC}"
+            echo -e "${YELLOW}  systemctl status ssh.socket ssh.service${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${YELLOW}Note: 'ss' unavailable — could not verify port 22 is closed.${NC}"
+    fi
 
     # Marker was written earlier (pre-stop) so shutdown-splash has already
     # painted the welcome screen by now. Just power off.
