@@ -562,7 +562,9 @@ ENVEOF
     fi
 
     # Step 3: Wait for setup completion
-    if wait_for_setup "$SERVER_PID" 1800; then
+    # FIRSTBOOT_SETUP_TIMEOUT: QA hook (systemd drop-in Environment=) so a
+    # hardware test of the #529 timeout path doesn't take 30 minutes.
+    if wait_for_setup "$SERVER_PID" "${FIRSTBOOT_SETUP_TIMEOUT:-1800}"; then
         log "Setup completed successfully!"
 
         # Step 4: Show success and finalize
@@ -594,7 +596,30 @@ ENVEOF
         log "First-boot setup finished successfully"
     else
         log_error "Setup did not complete"
-        display_message "Setup Incomplete" "Restart to try again" "Or SSH in to configure manually"
+        # #529: paint the recovery instructions, then power off instead of
+        # idling in a half-provisioned state (burning power, holding the
+        # hotspot, reading as "stuck" on a shelf). A power-cycle IS the
+        # on-screen recovery instruction, so the off state and the copy
+        # agree. No SSH mention — the device is about to be off, and gift
+        # recipients don't SSH.
+        display_message "Setup Incomplete" "Restart to try again" "Unplug, then plug back in"
+        # Deliberately NO grace sleep between paint and poweroff (owner
+        # decision on #529): the on-screen copy invites the user to pull
+        # power, so every second the Pi keeps running after painting it is
+        # a window for an unclean power cut (SD-corruption class). The
+        # 30-minute setup timeout above already was the grace period.
+        #
+        # Keep the message on-screen through the shutdown: the bistable
+        # e-ink persists it while off, but litclock-shutdown.service's
+        # ExecStop would repaint (welcome splash on a gifted device,
+        # "Powered Off" otherwise). The root-only marker makes
+        # shutdown-splash.sh exit without painting; /run is tmpfs so the
+        # marker self-clears and the NEXT boot re-enters provisioning with
+        # normal splash behavior. Setup/handoff markers are untouched here
+        # — .setup-complete was never written on this path, so the next
+        # power-on re-runs first-boot cleanly.
+        sudo touch /run/litclock-splash-suppress 2>/dev/null || true
+        sudo poweroff
         exit 1
     fi
 }
