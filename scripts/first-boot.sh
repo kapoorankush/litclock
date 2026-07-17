@@ -594,7 +594,36 @@ ENVEOF
         log "First-boot setup finished successfully"
     else
         log_error "Setup did not complete"
-        display_message "Setup Incomplete" "Restart to try again" "Or SSH in to configure manually"
+        # #529: paint the recovery instructions, then power off instead of
+        # idling in a half-provisioned state (burning power, holding the
+        # hotspot, reading as "stuck" on a shelf). A power-cycle IS the
+        # on-screen recovery instruction, so the off state and the copy
+        # agree. No SSH mention — the device is about to be off, and gift
+        # recipients don't SSH.
+        display_message "Setup Incomplete" "Restart to try again" "Unplug, then plug back in"
+        # Deliberately NO grace sleep between paint and poweroff (owner
+        # decision on #529): the on-screen copy invites the user to pull
+        # power, so every second the Pi keeps running after painting it is
+        # a window for an unclean power cut (SD-corruption class). The
+        # 30-minute setup timeout above already was the grace period.
+        #
+        # Keep the message on-screen through the shutdown: the bistable
+        # e-ink persists it while off, but litclock-shutdown.service's
+        # ExecStop would repaint (welcome splash on a gifted device,
+        # "Powered Off" otherwise). The root-only marker makes
+        # shutdown-splash.sh exit without painting; /run is tmpfs so the
+        # marker self-clears and the NEXT boot re-enters provisioning with
+        # normal splash behavior. Setup/handoff markers are untouched here
+        # — .setup-complete was never written on this path, so the next
+        # power-on re-runs first-boot cleanly.
+        sudo touch /run/litclock-splash-suppress 2>/dev/null || true
+        # `sudo systemctl poweroff` (not bare `sudo poweroff`) — matches the
+        # sudo-systemctl form used everywhere else in this script and the
+        # scoped 020 sudoers allowlist, so it survives a future drop of the
+        # 010 passwordless-sudo grant. If the marker touch above failed, we
+        # still power off (a device stranded ON is worse than the splash
+        # getting repainted) — the poweroff is deliberately not gated on it.
+        sudo systemctl poweroff
         exit 1
     fi
 }

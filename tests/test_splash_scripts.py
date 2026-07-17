@@ -116,6 +116,32 @@ class TestShutdownSplash:
         # falls through to the default greeting.
         assert ":-Welcome to LitClock}" in shutdown_content
 
+    def test_suppress_marker_exits_without_painting(self, shutdown_content):
+        """#529: the Setup-Incomplete poweroff paints its recovery copy and
+        needs it to persist through shutdown. The root-only suppress marker
+        must short-circuit the script BEFORE any action resolution (welcome
+        marker included) so nothing repaints over it."""
+        assert "/run/litclock-splash-suppress" in shutdown_content
+        # Compare against the welcome-mode CHECK, not its first mention (the
+        # header comment lists it earlier).
+        suppress_idx = shutdown_content.find("if [[ -f /run/litclock-splash-suppress ]]")
+        welcome_idx = shutdown_content.find("if [[ -f /etc/litclock/.welcome-mode ]]")
+        assert suppress_idx != -1 and welcome_idx != -1
+        assert suppress_idx < welcome_idx, "suppress check must precede welcome-mode check"
+        # The branch must exit, not fall through to a paint.
+        block = shutdown_content[suppress_idx : suppress_idx + 200]
+        assert "exit 0" in block
+
+    def test_suppress_marker_is_root_owned_path_not_hint_dir(self, shutdown_content):
+        """#529 security: suppression must NOT be plantable by a pi-level
+        process (it could hide the gift welcome, which pi can't otherwise
+        touch). The marker therefore lives directly in root-owned /run,
+        not in pi-owned /run/litclock/ where the action hint lives, and
+        symlinks are rejected."""
+        assert "/run/litclock/splash-suppress" not in shutdown_content
+        line = shutdown_content[shutdown_content.find("if [[ -f /run/litclock-splash-suppress ]]") :][:200]
+        assert "! -L" in line, "suppress marker check must reject symlinks"
+
     def test_uses_venv_python(self, shutdown_content):
         assert "venv/bin/python3" in shutdown_content
 

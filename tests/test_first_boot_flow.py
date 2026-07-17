@@ -470,3 +470,68 @@ def test_first_boot_default_env_includes_mode_and_ip_country():
     assert content.count("export WEATHER_IP_COUNTRY=") >= 2, (
         "#337 A3: first-boot.sh must include WEATHER_IP_COUNTRY= in both writer paths"
     )
+
+
+# ── #529: power off after the Setup-Incomplete timeout ──────────────
+
+
+class TestSetupIncompletePoweroff:
+    """#529: after the setup-wait times out, the device must paint recovery
+    instructions, wait a grace period, and power off — not idle forever in
+    a half-provisioned state."""
+
+    @pytest.fixture(scope="class")
+    def content(self):
+        with open(FIRST_BOOT_SH) as f:
+            return f.read()
+
+    def _timeout_block(self, content):
+        idx = content.find('display_message "Setup Incomplete"')
+        assert idx != -1, "Setup Incomplete branch missing"
+        # End at the function's closing brace on its own line — a bare
+        # find("}") would truncate at the first ${VAR:-default} expansion.
+        return content[idx : content.find("\n}", idx)]
+
+    def test_timeout_path_powers_off(self, content):
+        block = self._timeout_block(content)
+        # `sudo systemctl poweroff` — the sudo-systemctl form used elsewhere
+        # in this script + the scoped 020 sudoers allowlist (/review).
+        assert "sudo systemctl poweroff" in block
+
+    def test_no_grace_sleep_between_paint_and_poweroff(self, content):
+        """Owner decision on #529: NO delay between painting the recovery
+        copy and powering off. The copy invites the user to pull power, so
+        every running second after the paint is a window for an unclean
+        power cut (SD-corruption class). The 30-minute setup timeout was
+        the grace period."""
+        block = self._timeout_block(content)
+        # Match a sleep COMMAND (line-leading), not the word in comments.
+        assert not re.search(r"^\s*sleep\b", block, re.M), "no sleep command allowed in the Setup-Incomplete branch"
+        assert "FIRSTBOOT_POWEROFF_GRACE" not in block
+
+    def test_splash_suppressed_so_message_persists(self, content):
+        """The bistable e-ink keeps 'Setup Incomplete' visible while off —
+        but only if litclock-shutdown.service's ExecStop is told not to
+        repaint. The root-only suppress marker must be touched (via sudo)
+        BEFORE the poweroff."""
+        block = self._timeout_block(content)
+        marker_idx = block.find("sudo touch /run/litclock-splash-suppress")
+        off_idx = block.find("sudo systemctl poweroff")
+        assert marker_idx != -1, "suppress marker touch missing"
+        assert marker_idx < off_idx
+
+    def test_no_ssh_copy_on_powered_off_screen(self, content):
+        """The device is about to be off — 'SSH in' would be a lie on the
+        persisted screen (and gift recipients don't SSH). The recovery copy
+        is unplug/replug, which matches what a power-cycle actually does."""
+        block = self._timeout_block(content)
+        assert "SSH" not in block.split("\n")[0], "Setup Incomplete copy must not mention SSH"
+        assert "Unplug" in block or "unplug" in block
+
+    def test_setup_timeout_is_hardcoded_not_env_overridable(self, content):
+        """/review: the setup wait is a fixed 1800s. No env-var override in
+        shipped code — a stray systemd drop-in setting it to 0 (instant
+        poweroff) or a huge value (infinite idle) is a footgun, and the QA
+        it was added for is complete."""
+        assert 'wait_for_setup "$SERVER_PID" 1800' in content
+        assert "FIRSTBOOT_SETUP_TIMEOUT" not in content
