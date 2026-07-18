@@ -9,10 +9,22 @@ on:
         description: "Git ref to bake into the image (tag, branch, or SHA)"
         required: false
         default: "master"
+      promote_from:
+        description: "PROMOTE mode: dev candidate tag to publish FROM (skips the build). Leave empty for a normal build."
+        required: false
+        default: ""
+      release_version:
+        description: "PROMOTE mode: release tag to publish TO, e.g. v0.221.0 (only used with promote_from)."
+        required: false
+        default: ""
 
 jobs:
   build:
     name: Build Pi OS image
+    # Skip the ~60-min build entirely in PROMOTE mode — that path republishes
+    # an already-built-and-tested candidate instead of rebuilding. On a tag
+    # push there are no inputs, so promote_from is empty and the build runs.
+    if: ${{ github.event.inputs.promote_from == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     permissions:
@@ -41,18 +53,25 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           DISPATCH_REF: ${{ github.event.inputs.litclock_ref || 'master' }}
         run: |
+          # The commit the image is actually built from = the checked-out
+          # HEAD (which honors litclock_ref), NOT github.sha (the dispatch
+          # ref's HEAD). These diverge when litclock_ref != the dispatch ref,
+          # and the promote job later tags the release at this commit — so it
+          # must be the built one. On a tag push they're identical.
+          BUILT_SHA=$(git rev-parse HEAD)
           if [[ "${REF_TYPE}" == "tag" ]]; then
             VERSION="${REF_NAME}"
             VERSION="${VERSION#v}"  # strip leading v
             REF="${REF_NAME}"
           else
-            VERSION="dev-$(date +%Y%m%d)-${GITHUB_SHA::7}"
+            VERSION="dev-$(date +%Y%m%d)-${BUILT_SHA:0:7}"
             REF="${DISPATCH_REF}"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "ref=${REF}" >> "$GITHUB_OUTPUT"
-          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          echo "Version: ${VERSION}, Ref: ${REF}"
+          echo "sha=${BUILT_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "commit=${BUILT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION}, Ref: ${REF}, Commit: ${BUILT_SHA}"
 
       # pi-gen builds arm64 images via QEMU emulation on x86 runners
       - name: Set up QEMU
@@ -245,7 +264,7 @@ jobs:
             --prerelease \
             --title "Dev build ${{ steps.version.outputs.version }}" \
             --notes "Dev build from \`${{ steps.version.outputs.ref }}\` ($(date -u +%Y-%m-%dT%H:%M:%SZ)). Auto-generated, not for production use." \
-            --target "${{ github.sha }}" \
+            --target "${{ steps.version.outputs.commit }}" \
             "${{ steps.compress.outputs.img }}" \
             "${{ steps.compress.outputs.sha }}"
 
@@ -277,8 +296,168 @@ jobs:
           else
             gh release create "${REF_NAME}" \
               --title "LitClock ${{ steps.version.outputs.version }}" \
-              --target "${{ github.sha }}" \
+              --target "${{ steps.version.outputs.commit }}" \
               --generate-notes \
               "${IMG}" \
               "${SHA}"
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────
+  # PROMOTE mode (build-once, ship-what-you-tested)
+  #
+  # Best-practice release flow for image-touching changes:
+  #   1. workflow_dispatch a dev candidate build from the release commit
+  #   2. flash + fresh-flash-QA that exact image
+  #   3. workflow_dispatch this promote job (promote_from=<dev tag>,
+  #      release_version=vX.Y.Z) — it publishes the SAME tested bytes to the
+  #      release tag WITHOUT rebuilding. No second ~60-min build, and the
+  #      published image is byte-identical to the one you flashed.
+  #
+  # The release tag is created here with the repo's GITHUB_TOKEN. GitHub does
+  # NOT fire `push` events for refs created by GITHUB_TOKEN, so creating the
+  # tag does not re-trigger the tag-push build above. This is the ONLY thing
+  # preventing a rebuild-clobber: the `promote_from == ''` build gate is NOT a
+  # backstop — a tag-push event carries no inputs, so it would run `build`
+  # (not `promote`) and the tag-push release step would clobber the promoted
+  # image with rebuilt bytes. So never push a vX.Y.Z tag by hand while a
+  # promoted release is intended; let this job create it.
+  #
+  # Known cosmetic caveat: the candidate was built dev-shaped (its baked .git
+  # sits at master with no vX.Y.Z tag), so a freshly-flashed promoted image
+  # shows a bare SHA in the PWA version field (which reads `git describe`)
+  # until the first OTA fetches the release tag and re-anchors .git — then it
+  # reads vX.Y.Z. Self-heals within one update cycle. Not fixable by baking
+  # the version file: OTA'd devices intentionally trust git-describe over the
+  # (flash-time, never-rewritten) baked version.
+  #
+  # Provenance: the promote job does NOT re-attest. SLSA attestation is keyed
+  # to the image DIGEST, and the promoted image is byte-identical to the
+  # candidate — so the dev build's attestation verifies against the released
+  # asset unchanged (`gh attestation verify` reports the dev build run/commit,
+  # which is the truthful builder of those bytes). No id-token/attestations
+  # permission needed here.
+  # ─────────────────────────────────────────────────────────────────────
+  promote:
+    name: Promote tested candidate to release
+    if: ${{ github.event.inputs.promote_from != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Serialize promotes to the same release so two dispatches can't race and
+    # leave the release with one run's assets and another's metadata.
+    concurrency:
+      group: promote-${{ github.event.inputs.release_version }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+
+      - name: Validate inputs
+        env:
+          REL: ${{ github.event.inputs.release_version }}
+        run: |
+          if [ -z "$REL" ]; then
+            echo "::error::release_version is required in promote mode"; exit 1
+          fi
+          if ! echo "$REL" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::release_version must look like vX.Y.Z (got '$REL')"; exit 1
+          fi
+
+      - name: Download tested candidate — NO rebuild
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SRC: ${{ github.event.inputs.promote_from }}
+        run: |
+          set -euo pipefail
+          # Guard against promoting the wrong kind of source: the candidate
+          # must be a dev PRERELEASE, not an existing stable release someone
+          # typed by mistake.
+          if [ "$(gh release view "$SRC" --json isPrerelease -q .isPrerelease)" != "true" ]; then
+            echo "::error::promote_from ($SRC) is not a prerelease candidate"; exit 1
+          fi
+          mkdir cand && cd cand
+          gh release download "$SRC" --pattern '*.img.xz*'
+          # Enforce exactly one image + its sidecar so the globs below are
+          # unambiguous (multiple images would corrupt CAND_HASH / verify).
+          N=$(ls -1 ./*.img.xz 2>/dev/null | wc -l)
+          if [ "$N" -ne 1 ]; then
+            echo "::error::expected exactly one .img.xz on $SRC, found $N"; exit 1
+          fi
+          # Integrity of the downloaded candidate against its own sidecar.
+          sha256sum -c ./*.img.xz.sha256
+          echo "CAND_HASH=$(sha256sum ./*.img.xz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          # The tag must point at the commit the candidate was built from —
+          # the dev release stamped the actual built commit in target_commitish.
+          TSHA=$(gh release view "$SRC" --json targetCommitish -q .targetCommitish)
+          if [ -z "$TSHA" ]; then
+            echo "::error::could not resolve candidate target commit from $SRC"; exit 1
+          fi
+          echo "TARGET_SHA=$TSHA" >> "$GITHUB_ENV"
+
+      - name: Rename to release asset name (bytes unchanged)
+        env:
+          REL: ${{ github.event.inputs.release_version }}
+        run: |
+          set -euo pipefail
+          cd cand
+          VER="${REL#v}"
+          IMG=$(ls ./*.img.xz)
+          NEW="litclock-${VER}.img.xz"
+          # Explicit if (not `&& … || true`, which would mask a real mv error).
+          if [ "$IMG" != "./$NEW" ]; then
+            mv "$IMG" "$NEW"
+          fi
+          rm -f ./*.sha256
+          sha256sum "$NEW" > "${NEW}.sha256"
+          # Renaming must not change bytes.
+          if [ "$(sha256sum "$NEW" | cut -d' ' -f1)" != "$CAND_HASH" ]; then
+            echo "::error::hash changed during rename — aborting"; exit 1
+          fi
+          echo "IMG_PATH=cand/$NEW" >> "$GITHUB_ENV"
+          echo "SHA_PATH=cand/${NEW}.sha256" >> "$GITHUB_ENV"
+
+      - name: Publish release from tested bytes (creates the tag; idempotent)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REL: ${{ github.event.inputs.release_version }}
+        run: |
+          set -euo pipefail
+          # If a git tag named $REL already exists, it must point at the
+          # candidate's commit. Otherwise we'd clobber the assets of a
+          # different release (e.g. one a real tag-push build already
+          # published) while leaving its tag/notes at another commit —
+          # bytes and metadata would disagree. Refuse rather than clobber.
+          EXIST_TAG_SHA=$(git ls-remote origin "refs/tags/$REL^{}" | cut -f1)
+          [ -z "$EXIST_TAG_SHA" ] && EXIST_TAG_SHA=$(git ls-remote origin "refs/tags/$REL" | cut -f1)
+          if [ -n "$EXIST_TAG_SHA" ] && [ "$EXIST_TAG_SHA" != "$TARGET_SHA" ]; then
+            echo "::error::tag $REL already exists at $EXIST_TAG_SHA, not the candidate commit $TARGET_SHA — refusing to clobber"
+            exit 1
+          fi
+          if gh release view "$REL" --json id >/dev/null 2>&1; then
+            echo "Release $REL exists at the candidate commit — uploading tested bytes with --clobber"
+            gh release upload "$REL" "$IMG_PATH" "$SHA_PATH" --clobber
+          else
+            gh release create "$REL" \
+              --title "LitClock ${REL#v}" \
+              --target "$TARGET_SHA" \
+              --generate-notes \
+              "$IMG_PATH" "$SHA_PATH"
+          fi
+
+      - name: Verify published image == tested candidate (byte-exact)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REL: ${{ github.event.inputs.release_version }}
+        run: |
+          set -euo pipefail
+          mkdir got && cd got
+          gh release download "$REL" --pattern '*.img.xz'
+          GOT=$(sha256sum ./*.img.xz | cut -d' ' -f1)
+          echo "tested   : $CAND_HASH"
+          echo "published: $GOT"
+          if [ "$GOT" = "$CAND_HASH" ]; then
+            echo "PASS: released image is byte-identical to the flash-tested candidate"
+          else
+            echo "::error::published bytes differ from the tested candidate"; exit 1
           fi
