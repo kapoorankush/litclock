@@ -7,7 +7,7 @@ This script does NOT modify runtime code. It generates a stand-alone
 
     +-----------------------------------------------------------+ y=0
     | (4,4) [!]    [WEATHER 64x64]  Mon, April, 27       [QR]   |
-    |              (20,5)           (250,10)             (716,2)|
+    |              (20,5)           (250,10)             (713,0)|
     +-----------------------------------------------------------+ y=78  <-- divider
     |                                                           |
     | (quote area placeholder — y=80..480)                      |
@@ -18,7 +18,9 @@ The QR encodes `https://litclock.local`. PLAN A6 spec:
   - qrcode version 2 (25 modules)
   - error correction level M
   - 3 px / module, 0 border  -> 75x75 px output
-  - composited at x=716, y=2
+  - composited at x=713, y=0 (nudged from (716, 2) for the quiet zone)
+  - 4-module (12px) ISO 18004 quiet zone carved from the surroundings:
+    the composite white-outs the strip corner, notching the y=78 divider
 
 The relocated update-failed glyph moves from x=784 to x=4 (top-left of weather
 area), reusing the exact 12x12 "!" geometry from
@@ -53,8 +55,12 @@ QR_URL = "http://litclock.local"
 QR_VERSION = 2
 QR_BOX_SIZE = 3
 QR_BORDER = 0
-QR_POSITION = (716, 2)
+QR_POSITION = (713, 0)
 QR_EXPECTED_SIZE = (75, 75)
+# ISO 18004 quiet zone (4 modules = 12px). Mirrors literary_clock.py:
+# the composite white-outs the strip's top-right corner (notching the
+# y=78 divider under the QR) instead of baking a border into the QR image.
+QR_QUIET_ZONE = 4 * QR_BOX_SIZE
 
 # Locked from literary_clock.py:166-170 (relocation: x=784 -> x=4).
 GLYPH_POSITION = (4, 4)
@@ -148,10 +154,6 @@ def render_preview() -> Image.Image:
     # The relocated update-failed glyph at x=4, y=4 (was x=784).
     stamp_update_failed_glyph(draw, GLYPH_POSITION)
 
-    # The new QR at x=716, y=2.
-    qr_image = build_qr()
-    image.paste(qr_image, QR_POSITION)
-
     # Top-strip divider at y=78 — same as runtime literary_clock.py:115.
     draw.line([(0, TOP_STRIP_DIVIDER_Y), (DISPLAY_SIZE[0], TOP_STRIP_DIVIDER_Y)], fill=0, width=4)
     # Vertical divider after weather block — same as runtime literary_clock.py:117.
@@ -165,6 +167,25 @@ def render_preview() -> Image.Image:
             draw.text((40, 220), "(quote area — y=80..480, unchanged from current layout)", font=quote_font, fill=0)
         except OSError:
             pass
+
+    # The QR at x=713, y=0 — same order as the runtime: quiet-zone white-out
+    # (notches the divider under the QR) then paste.
+    qr_image = build_qr()
+    # Through row 80: PIL's width=4 line at y=78 paints rows 77..80 (mirrors
+    # the runtime notch in literary_clock.py).
+    draw.rectangle(
+        [(QR_POSITION[0] - QR_QUIET_ZONE, 0), (DISPLAY_SIZE[0] - 1, 80)],
+        fill=255,
+    )
+    # Emulate the quote images' blank 10px top margin (fitText margin=10 in
+    # image-gen/quote_to_image.php) — in the runtime that margin is what
+    # extends the bottom quiet zone below the notch. The placeholder outline
+    # drawn above would otherwise fake a black edge the real layout lacks.
+    draw.rectangle(
+        [(QR_POSITION[0] - QR_QUIET_ZONE, 80), (DISPLAY_SIZE[0] - 1, 89)],
+        fill=255,
+    )
+    image.paste(qr_image, QR_POSITION)
 
     return image
 

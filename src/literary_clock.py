@@ -52,9 +52,10 @@ DISPLAY_SIZE = (800, 480)
 # / CI can point it elsewhere.
 STATUS_FILE = os.environ.get("LITCLOCK_STATUS_FILE", "/run/litclock/current-quote.json")
 
-# Persistent QR code on the e-ink top strip (#245 A6). 75x75 px at x=716,y=2,
+# Persistent QR code on the e-ink top strip (#245 A6). 75x75 px at x=713,y=0,
 # encodes the PWA URL so non-tech users can scan-to-open instead of typing.
-# Geometry locked in M0 (validated via tools/control-pwa/validate_qr_layout.py).
+# Geometry locked in M0 (validated via tools/control-pwa/validate_qr_layout.py);
+# nudged (716,2)→(713,0) for the quiet zone (see QR_QUIET_ZONE).
 #
 # URL is plain HTTP — locked decision #257 dropped self-signed TLS for
 # control_server (iOS PWAs reject self-signed every launch + suppress AtHS icon
@@ -70,10 +71,24 @@ STATUS_FILE = os.environ.get("LITCLOCK_STATUS_FILE", "/run/litclock/current-quot
 # home/guest WiFi networks (issue #306). Resolved IP changes propagate within
 # ~60s — the e-ink re-renders every minute tick.
 QR_URL = control_base_url("litclock.local")
-QR_POSITION = (716, 2)
+QR_POSITION = (713, 0)
 QR_VERSION = 2
 QR_BOX_SIZE = 3
 QR_BORDER = 0
+# ISO/IEC 18004 quiet zone: 4 modules of white on every side = 12px at
+# box_size 3. The 78px strip can't hold (25 + 2*4) * 3 = 99px, so the border
+# isn't baked into the QR image (QR_BORDER stays 0) — _composite_settings_qr
+# carves it out of the surroundings instead: it white-outs the strip's
+# top-right corner (which notches the y=78 divider under the QR) before
+# pasting. That yields 4 modules right (x=788..799), 4+ modules left (date
+# text ends ≤ x=682) and 4 modules below. Bottom is the tight side: the
+# quote images' top margin puts the tallest corpus glyphs (brackets above
+# cap height) at display y=87 in the under-QR column range — measured
+# across all 4,809 corpus PNGs — so the QR sits at y=0 (not 2) to keep
+# rows 75..86 white: exactly 12px against the worst image. Top is 0px in
+# the framebuffer — physically backed by the panel's ~2-3mm inactive white
+# margin inside the bezel, which scanners see as quiet zone.
+QR_QUIET_ZONE = 4 * QR_BOX_SIZE
 
 # display_driver binds to hardware GPIO/SPI on import. Keep it lazy so
 # --dry-run (smoke test) can render an image without touching /dev/spidev*.
@@ -329,7 +344,8 @@ def _composite_settings_qr(image: Image.Image) -> None:
     hostname). Geometry
     locked in M0; the runtime composite mirrors what
     tools/control-pwa/validate_qr_layout.py proves scans on a real phone
-    at ~30cm.
+    at ~30cm. White-outs the strip corner first for the ISO 18004 quiet
+    zone (see QR_QUIET_ZONE) — this notches the y=78 divider under the QR.
 
     Issue #306: prefer IP over mDNS because Android Chrome and many home
     networks don't resolve `.local` reliably — encoding the IP bypasses
@@ -360,6 +376,20 @@ def _composite_settings_qr(image: Image.Image) -> None:
         # IPv4 URL up to 255.255.255.255 and the mDNS hostname fallback.
         qr.make(fit=False)
         qr_img = qr.make_image(fill_color="black", back_color="white").convert("1")
+        # Quiet zone (see QR_QUIET_ZONE comment): white-out the strip's
+        # top-right corner — including the y=78 divider's rightmost segment,
+        # drawn earlier in compose — so the QR gets its 4 modules of white on
+        # the right/left/bottom. Done here (not at the divider draw site) so
+        # a failed QR build leaves the divider intact end-to-end.
+        # y=80 inclusive: PIL's width=4 line at y=78 paints rows 77..80, so
+        # the divider spills one row into the quote paste area (over the
+        # quote images' always-white 10px top margin). Clearing through row
+        # 80 removes that spill under the QR without touching quote ink.
+        notch = ImageDraw.Draw(image)
+        notch.rectangle(
+            [(QR_POSITION[0] - QR_QUIET_ZONE, 0), (DISPLAY_SIZE[0] - 1, 80)],
+            fill=255,
+        )
         image.paste(qr_img, QR_POSITION)
     except Exception as e:
         logging.warning(f"QR composite skipped (non-fatal): {e}")

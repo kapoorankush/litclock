@@ -5,7 +5,8 @@ for the --dry-run contract). These exercise the pure helpers directly:
 
 - get_current_quote() pure function (locked decision A7).
 - _write_status_file() atomic write contract (OV3).
-- _composite_settings_qr() geometry (A6, paste at x=716, y=2).
+- _composite_settings_qr() geometry (A6, paste at x=713, y=0 — nudged from
+  (716, 2) for the 4-module quiet zone) + divider-notch quiet zone.
 - _stamp_update_failed_glyph() relocation (A6, x=4, y=4).
 
 Tests skip on interpreters without PIL/qrcode (dev box without venv).
@@ -202,8 +203,9 @@ class TestWriteStatusFile:
 
 class TestQrComposite:
     def test_qr_pasted_at_locked_position(self) -> None:
-        """75×75 QR at x=716, y=2 per locked decision A6. Sample interior
-        pixels to confirm the QR was actually drawn (not the white background)."""
+        """75×75 QR at x=713, y=0 (A6, nudged from (716, 2) for the quiet
+        zone). Sample interior pixels to confirm the QR was actually drawn
+        (not the white background)."""
         from PIL import Image
 
         image = Image.new(mode="1", size=(800, 480), color=255)
@@ -211,17 +213,17 @@ class TestQrComposite:
 
         # Top-left finder pattern of the QR sits at the paste origin.
         # In QR codes, the finder pattern is a 7×7 dark square — sampling
-        # the (0, 0) pixel of the pattern (image coords 716, 2) catches
+        # the (0, 0) pixel of the pattern (image coords 713, 0) catches
         # an actual dark module if compositing worked.
-        assert image.getpixel((716, 2)) == 0, "QR top-left finder pattern missing"
-        # And the bottom-right corner of the QR (image coords 716+74, 2+74)
+        assert image.getpixel((713, 0)) == 0, "QR top-left finder pattern missing"
+        # And the bottom-right corner of the QR (image coords 713+74, 0+74)
         # is part of the bottom-left finder pattern → also dark.
-        assert image.getpixel((716, 2 + 74)) == 0, "QR bottom-left finder missing"
+        assert image.getpixel((713, 74)) == 0, "QR bottom-left finder missing"
 
     def test_qr_does_not_overlap_top_strip_divider(self) -> None:
-        """QR ends at y=77 (2+75=77); the top-strip divider lives at y=78.
-        Sampling y=78 must be still 255 (no QR pixel) and the runtime then
-        draws the divider over the QR-free zone."""
+        """QR ends at y=74 (rows 0..74); the top-strip divider lives at y=78.
+        Sampling y=78 must be still 255 (no QR pixel — and the composite's
+        quiet-zone white-out keeps the divider notched there)."""
         from PIL import Image
 
         image = Image.new(mode="1", size=(800, 480), color=255)
@@ -229,6 +231,36 @@ class TestQrComposite:
         # The QR stops above y=78. Image was initialized to white (255), and
         # the QR composite shouldn't have written below row 76.
         assert image.getpixel((740, 78)) == 255
+
+    def test_qr_quiet_zone_notches_divider(self) -> None:
+        """ISO 18004 quiet zone (Reddit report, 2026-07): the composite must
+        white-out the strip's top-right corner so the y=78 divider no longer
+        runs flush against the QR's bottom modules, and the 4-module white
+        border survives on left/right. Pre-draw the divider exactly as
+        compose() does, then composite."""
+        from PIL import Image, ImageDraw
+
+        image = Image.new(mode="1", size=(800, 480), color=255)
+        draw = ImageDraw.Draw(image)
+        draw.line([(0, 78), (800, 78)], fill=0, width=4)
+        literary_clock._composite_settings_qr(image)
+
+        qx, qy = literary_clock.QR_POSITION
+        quiet = literary_clock.QR_QUIET_ZONE
+        assert quiet >= 4 * literary_clock.QR_BOX_SIZE
+
+        # Divider erased under the QR (QR occupies rows 0..74; PIL's width=4
+        # line at y=78 paints rows 77..80, and rows 75..76 are quiet zone —
+        # all must be white, or a stray line survives under the QR)...
+        for y in (75, 76, 77, 78, 79, 80):
+            assert image.getpixel((740, y)) == 255, f"divider not notched at y={y}"
+        # ...but intact left of the notch.
+        assert image.getpixel((qx - quiet - 2, 78)) == 0, "divider missing outside the notch"
+
+        # 4-module quiet zone: left column and right column fully white.
+        for y in range(0, 81):
+            assert image.getpixel((qx - quiet, y)) == 255, f"left quiet zone dirty at y={y}"
+            assert image.getpixel((qx + 75 + quiet - 1, y)) == 255, f"right quiet zone dirty at y={y}"
 
     def test_qr_url_fallback_locked_to_plain_http(self) -> None:
         """Pin the QR_URL fallback. #257 dropped TLS (plain HTTP only); #343
@@ -246,7 +278,7 @@ class TestQrComposite:
         )
         # #343: the port must be OMITTED at 80 — a visible port defeats the change.
         assert "litclock.local:" not in literary_clock.QR_URL, "QR URL must not carry a port at 80"
-        assert literary_clock.QR_POSITION == (716, 2)
+        assert literary_clock.QR_POSITION == (713, 0)
         assert literary_clock.QR_VERSION == 2
         assert literary_clock.QR_BOX_SIZE == 3
 
@@ -415,7 +447,7 @@ class TestQrUsesResolvedIp:
 
     def test_qr_geometry_unchanged_with_ip_url(self, monkeypatch) -> None:
         """A6 geometry pin: even with the longer/shorter IP-encoded URL,
-        the QR still paints at (716, 2) and stays above the y=78 divider.
+        the QR still paints at (713, 0) and stays above the y=78 divider.
         Catches a regression that bumps to fit=True or grows to V3."""
         from PIL import Image
 
@@ -425,8 +457,8 @@ class TestQrUsesResolvedIp:
 
         # Same finder-pattern checks as TestQrComposite — geometry must
         # not have shifted.
-        assert image.getpixel((716, 2)) == 0, "QR top-left finder pattern missing"
-        assert image.getpixel((716, 2 + 74)) == 0, "QR bottom-left finder missing"
+        assert image.getpixel((713, 0)) == 0, "QR top-left finder pattern missing"
+        assert image.getpixel((713, 74)) == 0, "QR bottom-left finder missing"
         assert image.getpixel((740, 78)) == 255, "QR overflowed past divider"
 
 
