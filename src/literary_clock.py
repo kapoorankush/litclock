@@ -75,20 +75,30 @@ QR_POSITION = (713, 0)
 QR_VERSION = 2
 QR_BOX_SIZE = 3
 QR_BORDER = 0
+QR_MODULES = 25  # version 2
+QR_SIZE = QR_MODULES * QR_BOX_SIZE  # 75px
+# Top-strip divider geometry, shared by compose() and the quiet-zone notch
+# below so they can never drift apart. PIL paints a width=4 horizontal line
+# at y=78 across rows 77..80 (centerline convention).
+DIVIDER_Y = 78
+DIVIDER_WIDTH = 4
 # ISO/IEC 18004 quiet zone: 4 modules of white on every side = 12px at
 # box_size 3. The 78px strip can't hold (25 + 2*4) * 3 = 99px, so the border
 # isn't baked into the QR image (QR_BORDER stays 0) — _composite_settings_qr
 # carves it out of the surroundings instead: it white-outs the strip's
-# top-right corner (which notches the y=78 divider under the QR) before
-# pasting. That yields 4 modules right (x=788..799), 4+ modules left (date
-# text ends ≤ x=682) and 4 modules below. Bottom is the tight side: the
-# quote images' top margin puts the tallest corpus glyphs (brackets above
-# cap height) at display y=87 in the under-QR column range — measured
-# across all 4,809 corpus PNGs — so the QR sits at y=0 (not 2) to keep
-# rows 75..86 white: exactly 12px against the worst image. Top is 0px in
-# the framebuffer — physically backed by the panel's ~2-3mm inactive white
-# margin inside the bezel, which scanners see as quiet zone.
+# top-right corner (which notches the divider under the QR) before pasting.
+# That yields 4 modules right (x=788..799), 4+ modules left (date text ends
+# ≤ x=682) and 4 modules below — the notch extends past the divider to
+# QR bottom + 12px (row 86), so the bottom quiet zone is STRUCTURAL, not
+# corpus-dependent. Today that carve is a no-op below row 80: the tallest
+# corpus glyphs (brackets above cap height) start at display y=87, measured
+# across all 4,809 corpus PNGs. If a future regen inks rows 81..86 under
+# the QR, the notch clips those pixels rather than breaking the QR scan
+# (and tests/test_literary_clock.py's corpus-clearance test flags it).
+# Top is 0px in the framebuffer — physically backed by the panel's ~2-3mm
+# inactive white margin inside the bezel, which scanners see as quiet zone.
 QR_QUIET_ZONE = 4 * QR_BOX_SIZE
+QR_NOTCH_BOTTOM = max(DIVIDER_Y + DIVIDER_WIDTH // 2, QR_POSITION[1] + QR_SIZE + QR_QUIET_ZONE - 1)
 
 # display_driver binds to hardware GPIO/SPI on import. Keep it lazy so
 # --dry-run (smoke test) can render an image without touching /dev/spidev*.
@@ -183,9 +193,9 @@ def main():
         temp_font = ImageFont.truetype(FONT_PATH, 24)
         draw.text((100, 20), f"{temp_high} / {temp_low}", font=temp_font, fill=0)
 
-    draw.line([(0, 78), (DISPLAY_SIZE[0], 78)], fill=0, width=4)
+    draw.line([(0, DIVIDER_Y), (DISPLAY_SIZE[0], DIVIDER_Y)], fill=0, width=DIVIDER_WIDTH)
     if weather is not None:
-        draw.line([(225, 0), (225, 78)], fill=0, width=4)
+        draw.line([(225, 0), (225, DIVIDER_Y)], fill=0, width=DIVIDER_WIDTH)
 
     _stamp_update_failed_glyph(image, draw)
     _composite_settings_qr(image)
@@ -381,13 +391,16 @@ def _composite_settings_qr(image: Image.Image) -> None:
         # drawn earlier in compose — so the QR gets its 4 modules of white on
         # the right/left/bottom. Done here (not at the divider draw site) so
         # a failed QR build leaves the divider intact end-to-end.
-        # y=80 inclusive: PIL's width=4 line at y=78 paints rows 77..80, so
-        # the divider spills one row into the quote paste area (over the
-        # quote images' always-white 10px top margin). Clearing through row
-        # 80 removes that spill under the QR without touching quote ink.
+        # Clear through QR_NOTCH_BOTTOM (row 86): covers every row the
+        # divider paints (77..80 — PIL centers a width-4 line on DIVIDER_Y)
+        # plus the full 4-module quiet zone below the QR, so the bottom
+        # clearance holds by construction regardless of divider geometry,
+        # draw ordering, or future corpus content. Rows 81..86 are the
+        # quote images' top margin today (worst corpus ink starts at 87),
+        # so this is currently a no-op there.
         notch = ImageDraw.Draw(image)
         notch.rectangle(
-            [(QR_POSITION[0] - QR_QUIET_ZONE, 0), (DISPLAY_SIZE[0] - 1, 80)],
+            [(QR_POSITION[0] - QR_QUIET_ZONE, 0), (DISPLAY_SIZE[0] - 1, QR_NOTCH_BOTTOM)],
             fill=255,
         )
         image.paste(qr_img, QR_POSITION)
