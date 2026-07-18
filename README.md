@@ -15,7 +15,7 @@
 
 <p align="center">A clock that tells the time with literature: 4,800+ curated book passages, one for every minute of the day, on a paper-like e-ink display — with the date and weather.</p>
 
-![LitClock on a shelf, showing a passage from Confess, Fletch at twenty-six minutes past ten](docs/media/litclock-photo.jpg)
+![LitClock on a table, showing a passage from Kane & Abel at seventeen minutes past ten](docs/media/litclock-photo.jpg)
 
 LitClock is built for people who want a literary clock on their shelf and never want to think about it again: setup is a two-minute, phone-only affair, and after that the clock configures, updates, and heals itself. **The defaults are the product.**
 

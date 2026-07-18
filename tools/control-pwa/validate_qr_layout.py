@@ -7,18 +7,20 @@ This script does NOT modify runtime code. It generates a stand-alone
 
     +-----------------------------------------------------------+ y=0
     | (4,4) [!]    [WEATHER 64x64]  Mon, April, 27       [QR]   |
-    |              (20,5)           (250,10)             (716,2)|
+    |              (20,5)           (250,10)             (713,0)|
     +-----------------------------------------------------------+ y=78  <-- divider
     |                                                           |
     | (quote area placeholder — y=80..480)                      |
     |                                                           |
     +-----------------------------------------------------------+ y=480
 
-The QR encodes `https://litclock.local`. PLAN A6 spec:
+The QR encodes `http://litclock.local` (plain HTTP — #257/#343). PLAN A6 spec:
   - qrcode version 2 (25 modules)
   - error correction level M
   - 3 px / module, 0 border  -> 75x75 px output
-  - composited at x=716, y=2
+  - composited at x=713, y=0 (nudged from (716, 2) for the quiet zone)
+  - 4-module (12px) ISO 18004 quiet zone carved from the surroundings:
+    the composite white-outs the strip corner, notching the y=78 divider
 
 The relocated update-failed glyph moves from x=784 to x=4 (top-left of weather
 area), reusing the exact 12x12 "!" geometry from
@@ -27,7 +29,7 @@ src/literary_clock.py:_stamp_update_failed_glyph (lines 147-170).
 Output: /tmp/litclock-qr-layout-preview.png (800x480, mode "1" greyscale to
 match the e-ink). Open the PNG, display it at native resolution on a 7.5"
 screen (or print at ~9.7" wide), and scan from ~30 cm with both iPhone
-Camera and Android Camera. Both must decode `https://litclock.local`.
+Camera and Android Camera. Both must decode `http://litclock.local`.
 
 Usage:
     python3 tools/control-pwa/validate_qr_layout.py [--out PATH]
@@ -53,8 +55,14 @@ QR_URL = "http://litclock.local"
 QR_VERSION = 2
 QR_BOX_SIZE = 3
 QR_BORDER = 0
-QR_POSITION = (716, 2)
+QR_POSITION = (713, 0)
 QR_EXPECTED_SIZE = (75, 75)
+# ISO 18004 quiet zone (4 modules = 12px). Mirrors literary_clock.py:
+# the composite white-outs the strip's top-right corner (notching the
+# divider under the QR) instead of baking a border into the QR image.
+# The notch reaches QR bottom + 12px so the bottom quiet zone is
+# structural — same expression as literary_clock.QR_NOTCH_BOTTOM.
+QR_QUIET_ZONE = 4 * QR_BOX_SIZE
 
 # Locked from literary_clock.py:166-170 (relocation: x=784 -> x=4).
 GLYPH_POSITION = (4, 4)
@@ -64,6 +72,18 @@ WEATHER_ICON_POSITION = (20, 5)
 WEATHER_ICON_SIZE = (64, 64)
 DATE_TEXT_POSITION = (250, 10)
 TOP_STRIP_DIVIDER_Y = 78
+DIVIDER_WIDTH = 4
+# Same expression as literary_clock.QR_NOTCH_BOTTOM: cover the divider's
+# painted rows AND the full 4-module quiet zone below the QR.
+QR_NOTCH_BOTTOM = max(
+    TOP_STRIP_DIVIDER_Y + DIVIDER_WIDTH // 2,
+    QR_POSITION[1] + QR_EXPECTED_SIZE[1] + QR_QUIET_ZONE - 1,
+)
+# Worst-case corpus ink starts one row below the notch (display y=87,
+# measured across all 4,809 quote PNGs — litclock-dev#530). The preview
+# paints a solid bar there so the phone-scan validation runs against the
+# TIGHTEST legal frame, not an optimistic all-white bottom.
+WORST_CASE_INK_Y = 87
 
 # Project assets (best-effort — script still runs if absent).
 PROJECT_FONT = REPO_ROOT / "fonts" / "Literata72pt-Regular.ttf"
@@ -148,10 +168,6 @@ def render_preview() -> Image.Image:
     # The relocated update-failed glyph at x=4, y=4 (was x=784).
     stamp_update_failed_glyph(draw, GLYPH_POSITION)
 
-    # The new QR at x=716, y=2.
-    qr_image = build_qr()
-    image.paste(qr_image, QR_POSITION)
-
     # Top-strip divider at y=78 — same as runtime literary_clock.py:115.
     draw.line([(0, TOP_STRIP_DIVIDER_Y), (DISPLAY_SIZE[0], TOP_STRIP_DIVIDER_Y)], fill=0, width=4)
     # Vertical divider after weather block — same as runtime literary_clock.py:117.
@@ -165,6 +181,25 @@ def render_preview() -> Image.Image:
             draw.text((40, 220), "(quote area — y=80..480, unchanged from current layout)", font=quote_font, fill=0)
         except OSError:
             pass
+
+    # The QR at x=713, y=0 — same order as the runtime: quiet-zone white-out
+    # (notches the divider under the QR, reaching QR bottom + 12px) then
+    # paste. Single rectangle so preview and runtime geometry share one
+    # expression (QR_NOTCH_BOTTOM).
+    qr_image = build_qr()
+    draw.rectangle(
+        [(QR_POSITION[0] - QR_QUIET_ZONE, 0), (DISPLAY_SIZE[0] - 1, QR_NOTCH_BOTTOM)],
+        fill=255,
+    )
+    image.paste(qr_image, QR_POSITION)
+
+    # Adversarial bottom edge: solid ink bar at the worst-case corpus row so
+    # the phone-scan check validates the TIGHTEST real frame (a solid bar is
+    # harsher than the thin bracket glyphs that actually live there).
+    draw.rectangle(
+        [(QR_POSITION[0], WORST_CASE_INK_Y), (QR_POSITION[0] + QR_EXPECTED_SIZE[0] - 1, WORST_CASE_INK_Y + 2)],
+        fill=0,
+    )
 
     return image
 
@@ -188,8 +223,18 @@ def collision_report() -> list[str]:
     ww, wh = WEATHER_ICON_SIZE
     weather_rect = (wx, wy, wx + ww, wy + wh)
 
-    # Approx date-text bounding box (48pt across ~14 chars). Conservative width.
-    date_rect = (DATE_TEXT_POSITION[0], DATE_TEXT_POSITION[1], DATE_TEXT_POSITION[0] + 460, DATE_TEXT_POSITION[1] + 56)
+    # Approx date-text bounding box. Longest real date string ("Wed,
+    # September 30" at 48pt Literata) measures 433px from x=250 → ends at
+    # x≈683; 440 keeps ~7px of conservatism without falsely colliding with
+    # the quiet-zone erase rectangle that starts at x=701.
+    date_rect = (DATE_TEXT_POSITION[0], DATE_TEXT_POSITION[1], DATE_TEXT_POSITION[0] + 440, DATE_TEXT_POSITION[1] + 56)
+
+    # The quiet-zone erase rectangle is destructive at runtime — anything
+    # inside it gets white-outed every minute tick. Model it so a future
+    # layout/copy change (e.g., localized month names, #19) that drifts into
+    # x>=701 is flagged here instead of showing up as a truncated date on
+    # the e-ink.
+    erase_rect = (QR_POSITION[0] - QR_QUIET_ZONE, 0, DISPLAY_SIZE[0], QR_NOTCH_BOTTOM + 1)
 
     pairs = [
         ("QR", qr_rect, "weather icon", weather_rect),
@@ -197,6 +242,9 @@ def collision_report() -> list[str]:
         ("QR", qr_rect, "update-failed glyph", glyph_rect),
         ("update-failed glyph", glyph_rect, "weather icon", weather_rect),
         ("update-failed glyph", glyph_rect, "date text", date_rect),
+        ("quiet-zone erase rect", erase_rect, "date text", date_rect),
+        ("quiet-zone erase rect", erase_rect, "weather icon", weather_rect),
+        ("quiet-zone erase rect", erase_rect, "update-failed glyph", glyph_rect),
     ]
     for a_name, a, b_name, b in pairs:
         if a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]:
