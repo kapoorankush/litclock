@@ -2,6 +2,18 @@
 
 All notable changes to LitClock are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/) — dates are ISO 8601.
 
+## [v0.221.0] - 2026-07-18
+
+### Security
+- **Gift mode now forces SSH off before the device powers down** (#21). "Prepare for Gifting" wipes WiFi and resets config, but never touched SSH — so an owner who had ever enabled SSH would hand the recipient a device with SSH and the well-known default credentials listening the moment it joined the recipient's network. The gift flow now disables SSH across every vector (the `ssh.socket` unit that Bookworm socket-activates — disabling `ssh.service` alone left port 22 open, caught by on-hardware A/B testing — plus `ssh.service`, `raspi-config`, and the `/boot` re-enable flags) and verifies port 22 is actually closed before powering off, refusing to ship if it isn't. Recipients re-enable SSH from the console if they need it, same as a fresh flash.
+
+### Fixed
+- **A first-boot that times out now powers the device off instead of idling** (#22). When setup wasn't completed in the window, the e-ink painted "Setup Incomplete" and the Pi then sat powered on indefinitely — drawing current, holding the hotspot, reading as "stuck" on a shelf. It now paints the recovery instructions ("Unplug, then plug back in") and powers off immediately, with the message persisting on the bistable e-ink while off so the on-screen instruction and the device's actual state agree. A power cycle is the recovery.
+- **iOS captive-portal probe handling hardened** (#20). Fixed a real hole where a probe to the bare `apple.com` host fell through to the full 20 KB setup form instead of the small bridge page. Apple detection probes now get a redirect off the Apple hostname (the pattern commercial portals use), the full documented Apple probe-host set is covered, and iCloud Private Relay / APNs traffic on the isolated hotspot is answered cleanly instead of being spoofed-then-refused. Note: extensive on-hardware investigation (including packet captures) established that current iOS (26.x) does **not** auto-open the captive sheet for offline setup hotspots regardless of the server's response — this is a client-side iOS change, not something the clock can fix. The documented "open your browser" fallback works every time and the e-ink instructs it; Android auto-opens as before.
+
+### Changed
+- **Release tooling: build-once, promote** (#23). The image workflow gained a promote path so a release can ship the exact image that was flash-tested, instead of rebuilding an untested image at tag time. Internal/CI only — no device-facing change.
+
 ## [v0.220.0] - 2026-07-15
 
 ### Fixed
