@@ -2,6 +2,11 @@
 
 All notable changes to LitClock are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/) — dates are ISO 8601.
 
+## [v0.222.0] - 2026-07-23
+
+### Fixed
+- **The settings QR now has its ISO 18004 quiet zone** (#25). The top-strip QR rendered flush against the divider line (no border — 2px of white above, 9px to the right), while the spec wants 4 modules (12px) of clear space on all sides; a Reddit report showed the divider running straight into the QR's bottom modules. The 78px strip can't hold a conventionally bordered QR, so the quiet zone is carved from the surroundings instead: the composite white-outs the strip's top-right corner and notches the divider under the QR before pasting, guaranteeing 12px left, right, and below by construction (the top edge rides the panel's physical inactive margin). Clearance verified against all 4,809 corpus images, with a new test that fails loudly if a future corpus regen inks the notch region. README hero photo refreshed to show the current layout.
+
 ## [v0.221.0] - 2026-07-18
 
 ### Security
