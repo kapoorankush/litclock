@@ -230,10 +230,17 @@ function TurnQuoteIntoImage($time, $quote, $timestring, $title, $author, $imagen
     // whole UTF-8 chars.
     $qlen = strlen($quote);
     $word_char_at = function ($i) use ($quote, $qlen) {
-        // Is a Unicode letter or number the char starting at byte $i? (4-byte
-        // window always spans the full first char; the anchored match ignores
-        // any trailing partial bytes of the next char.)
-        return $i < $qlen && preg_match('/^[\p{L}\p{N}]/u', substr($quote, $i, 4)) === 1;
+        // Is a Unicode letter or number the char starting at byte $i? The window
+        // is exactly one UTF-8 char, sized from its lead byte. A fixed 4-byte
+        // window can slice the NEXT char mid-sequence, and PCRE /u validates the
+        // WHOLE subject before matching — an invalid tail returns false
+        // (PREG_BAD_UTF8_ERROR) even when the first char IS a letter (#19).
+        if ($i >= $qlen) {
+            return false;
+        }
+        $b = ord($quote[$i]);
+        $len = ($b < 0x80) ? 1 : (($b < 0xE0) ? 2 : (($b < 0xF0) ? 3 : 4));
+        return preg_match('/^[\p{L}\p{N}]/u', substr($quote, $i, $len)) === 1;
     };
     if ($word_char_at($ts_char_end)) {
         // case 1 — mid-word: keep the whole word bold
