@@ -32,7 +32,13 @@ on:
     paths:
       - 'src/quote_renderer.py'
       - 'src/gd_measure.py'
+      # render_invariants derives notch geometry from literary_clock's QR
+      # constants — a geometry-only change must re-run this gate
+      - 'src/literary_clock.py'
       - 'tools/render_invariants.py'
+      - 'tools/validate_measurement.py'
+      - 'tools/gd_measure_dump.php'
+      - 'tools/gd-expected-measurements.json.gz'
       - 'spikes/531-runtime-render/**'
       - 'image-gen/litclock_annotated.csv'
       - 'image-gen/quote_to_image.php'
@@ -99,6 +105,13 @@ jobs:
         # validates the frozen spike copy instead of the production module.
         # With -m, imports resolve via PYTHONPATH (src/ first).
         run: python3 -m validate_gd_measure
+
+      - name: Expected-dump check (the Pi's no-PHP gate, kept honest here)
+        # Verifies the committed tools/gd-expected-measurements.json.gz
+        # still matches live PHP-GD-derived reality: a font swap or a
+        # gd_measure change that invalidates the dump must fail HERE, not
+        # on the Pi at Stage-2 flip time.
+        run: python3 tools/validate_measurement.py check
 
       - name: Layout parity (GD probe vs production module, full corpus)
         run: |

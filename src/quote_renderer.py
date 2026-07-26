@@ -433,6 +433,15 @@ def iter_corpus(
             )
 
 
+def rows_for_time(csv_path: str | os.PathLike, hhmm: str) -> list[CorpusRow]:
+    """All corpus rows for one HHMM bucket, in file order (the runtime
+    selection pool — mirrors the clock's PNG glob semantics). strict=False:
+    at runtime the Python renderer IS the renderer, so PHP-parity guards
+    are a CI concern, and one odd row elsewhere in the CSV must not take
+    down selection for this bucket."""
+    return [r for r in iter_corpus(csv_path, strict=False) if r.hhmm == hhmm]
+
+
 def render_row(row: CorpusRow) -> tuple[Image.Image, Image.Image, int, Layout]:
     """Render both production variants for a corpus row:
     (quote_image, credits_image, font_size, layout). The credits image is a

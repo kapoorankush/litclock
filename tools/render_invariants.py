@@ -47,16 +47,14 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "src"))
 
+# #530 settings-QR quiet-zone notch geometry, in QUOTE-IMAGE coordinates —
+# derived from literary_clock's own constants (src/ is on sys.path above)
+# so the gate can never drift from the composite that does the erasing.
+import literary_clock as _lc  # noqa: E402
 import quote_renderer as qr  # noqa: E402
 
-# #530 settings-QR quiet-zone notch geometry, in QUOTE-IMAGE coordinates
-# (the clock pastes the 800x400 image at panel (0, 80)). The notch white-outs
-# panel rows 0..QR_NOTCH_BOTTOM(86) for x >= QR_POSITION.x(713) -
-# QR_QUIET_ZONE(12) — public-repo literary_clock.py constants (the dev-repo
-# copy predates the #530 fix; keep these in sync with the public repo).
-# Ink inside this region would be ERASED by the notch on the panel.
-NOTCH_X0 = 713 - 12  # panel x == image x
-NOTCH_ROWS = 86 - 80 + 1  # panel rows 80..86 == image rows 0..6
+NOTCH_X0 = _lc.QR_POSITION[0] - _lc.QR_QUIET_ZONE  # panel x == image x
+NOTCH_ROWS = _lc.QR_NOTCH_BOTTOM - _lc.QUOTE_AREA_Y + 1  # panel rows 80..86 == image rows 0..6
 
 
 # Ink = pixel < INK_THRESHOLD, the bilevel boundary. GD's palette rendering

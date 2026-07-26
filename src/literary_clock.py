@@ -100,6 +100,32 @@ DIVIDER_WIDTH = 4
 QR_QUIET_ZONE = 4 * QR_BOX_SIZE
 QR_NOTCH_BOTTOM = max(DIVIDER_Y + DIVIDER_WIDTH // 2, QR_POSITION[1] + QR_SIZE + QR_QUIET_ZONE - 1)
 
+# The 800x400 quote area is pasted at this panel row (below the top strip).
+QUOTE_AREA_Y = 80
+QUOTE_AREA_H = 400
+
+# Runtime quote rendering (dev#531 Stage 2). When LITCLOCK_RUNTIME_RENDER is
+# true, the clock renders the quote from the corpus CSV via
+# src/quote_renderer.py instead of opening a pre-rendered PNG. Fallback
+# order on ANY failure: pre-rendered PNG for this minute (right time, right
+# content) -> the existing 144pt time draw (right time, no quote). There is
+# deliberately NO "last-good frame" tier: a stale frame shows the WRONG
+# minute's timestring, and on a clock a wrong time is worse than a plain
+# one. The rendered frame is persisted to tmpfs (best-effort, atomic) so
+# support bundles and the status file can reference what was painted.
+RUNTIME_RENDER_DIR = os.environ.get("LITCLOCK_RUNTIME_RENDER_DIR", "/run/litclock")
+CORPUS_CSV = os.path.join(PROJECT_ROOT, "image-gen", "litclock_annotated.csv")
+# The flag alone is not enough: this device's freetype-py wheel must first
+# be PROVEN to reproduce GD metrics (tools/validate_measurement.py check
+# --stamp writes this marker only on a 100% pass). Guards against enabling
+# runtime rendering in an unvalidated environment, where subtly-wrong
+# hinted metrics would render ugly-but-sane frames no per-minute sanity
+# check can catch (dev#537 review). Delete the marker after any freetype-py
+# or font change and re-run the check.
+RUNTIME_VALIDATED_MARKER = os.environ.get(
+    "LITCLOCK_RUNTIME_VALIDATED_MARKER", os.path.join(PROJECT_ROOT, ".runtime-render-validated")
+)
+
 # display_driver binds to hardware GPIO/SPI on import. Keep it lazy so
 # --dry-run (smoke test) can render an image without touching /dev/spidev*.
 from weather_providers import open_meteo, openweathermap  # noqa: E402
@@ -170,21 +196,40 @@ def main():
             logging.error(f"Icon file not found: {e}")
 
     now = datetime.now()
-    quote_meta = get_current_quote(now=now, allow_nsfw=allow_nsfw)
+    quote_meta = None
+    if _runtime_render_enabled():
+        quote_meta = get_current_quote_runtime(now=now, allow_nsfw=allow_nsfw)
+    if quote_meta is None:
+        quote_meta = get_current_quote(now=now, allow_nsfw=allow_nsfw)
 
     draw = ImageDraw.Draw(image)
 
     if quote_meta is None:
         # No quote image for this minute — fall back to drawing the time
         # in 144pt Literata. Existing behavior since v0.1; preserved for
-        # corpus gaps (e.g., minutes without a literary match).
+        # corpus gaps (e.g., minutes without a literary match). Also the
+        # final tier of the runtime-render fallback chain: right time, no
+        # quote — never a stale quote.
         time_font = ImageFont.truetype(FONT_PATH, 144)
         draw.text((220, 150), now.strftime("%H:%M"), font=time_font, fill=0)
         logging.info("Time drawn on image")
+    elif "image" in quote_meta:
+        image.paste(quote_meta["image"], (0, QUOTE_AREA_Y))
+        logging.info(f"Runtime-rendered quote pasted (fs={quote_meta.get('font_size')})")
     else:
-        quote_image = Image.open(quote_meta["image_path"]).convert("1")
-        image.paste(quote_image, (0, 80))
-        logging.info(f"Quote image pasted from {quote_meta['image_path']}")
+        try:
+            quote_image = Image.open(quote_meta["image_path"]).convert("1")
+            image.paste(quote_image, (0, QUOTE_AREA_Y))
+            logging.info(f"Quote image pasted from {quote_meta['image_path']}")
+        except Exception as e:
+            # Corrupt/unreadable/race-deleted PNG must degrade to the plain
+            # time draw, not kill the whole per-minute render (dev#537
+            # review) — this tier is also the runtime-render fallback, so
+            # an exception here would void the "never crash-loop" contract.
+            logging.error(f"quote PNG unusable ({quote_meta['image_path']}): {e}; drawing time")
+            quote_meta = None
+            time_font = ImageFont.truetype(FONT_PATH, 144)
+            draw.text((220, 150), now.strftime("%H:%M"), font=time_font, fill=0)
 
     date_font = ImageFont.truetype(FONT_PATH, 48)
     draw.text((250, 10), now.strftime("%a, %B %d"), font=date_font, fill=0)
@@ -204,6 +249,152 @@ def main():
     # Status-file publication is __main__'s job, after the hardware
     # confirms the new frame reached the panel (codex /review M2 catch).
     return image, quote_meta, now
+
+
+def _runtime_render_enabled() -> bool:
+    if os.getenv("LITCLOCK_RUNTIME_RENDER", "false").lower() not in ("1", "true"):
+        return False
+    try:
+        with open(RUNTIME_VALIDATED_MARKER, encoding="utf-8") as fh:
+            marker = fh.read()
+    except OSError:
+        logging.warning(
+            "LITCLOCK_RUNTIME_RENDER is set but this device is not validated "
+            f"({RUNTIME_VALIDATED_MARKER} missing) — run "
+            "`venv/bin/python3 tools/validate_measurement.py check --stamp` "
+            "first; using pre-rendered images"
+        )
+        return False
+    # The marker records which FreeType it validated. A freetype-py bump
+    # (OTA venv rebuild) must invalidate it — hinted metrics are version-
+    # sensitive and a stale marker would keep the flag honored in a
+    # now-unproven environment (dev#537 review, finding 2).
+    try:
+        import freetype
+
+        current = ".".join(map(str, freetype.version()))
+    except Exception as e:
+        logging.warning(f"LITCLOCK_RUNTIME_RENDER set but freetype-py unusable ({e}); using pre-rendered images")
+        return False
+    stamped = next((t.split("=", 1)[1] for t in marker.split() if t.startswith("freetype=")), None)
+    if stamped != current:
+        logging.warning(
+            f"runtime-render validation marker is for FreeType {stamped}, installed is "
+            f"{current} — re-run `tools/validate_measurement.py check --stamp`; "
+            "using pre-rendered images"
+        )
+        return False
+    return True
+
+
+def _runtime_frame_ok(frame) -> str | None:
+    """Sanity-check a rendered mode-"L" quote frame BEFORE it may replace a
+    pre-rendered PNG on the panel. Returns a rejection reason or None.
+
+    Catches the "rendered but garbage" class that raises nothing: wrong
+    canvas, an all-white frame, or ink inside the settings-QR quiet-zone
+    notch (which _composite_settings_qr would silently erase — #530).
+    Ink = pixel < 128, matching both GD's AA rounding and the dither=NONE
+    conversion this frame is about to get. Subtle wrongness (bad break,
+    off-by-one font size) is NOT detectable here — that correctness is
+    proven per-PR by the render-invariants CI, not per-minute on the Pi."""
+    if frame.size != (DISPLAY_SIZE[0], QUOTE_AREA_H):
+        return f"unexpected frame size {frame.size}"
+    ink = frame.point(lambda v: 255 if v < 128 else 0)
+    if ink.getbbox() is None:
+        return "frame has no ink"
+    notch_rows = QR_NOTCH_BOTTOM - QUOTE_AREA_Y + 1  # panel rows 80..86 -> frame rows 0..6
+    notch = ink.crop((QR_POSITION[0] - QR_QUIET_ZONE, 0, frame.size[0], notch_rows))
+    if notch.getbbox() is not None:
+        return "ink inside the settings-QR quiet-zone notch"
+    return None
+
+
+def _persist_runtime_frame(frame) -> str | None:
+    """Atomically write the painted frame to tmpfs (same tempfile+replace
+    pattern as the status file). Best-effort: the render must not fail
+    because /run/litclock is missing on a dev box.
+
+    Ordering note (dev#537 review, finding 7): this runs at selection
+    time, BEFORE epd.display() confirms — unlike the status file, which
+    __main__ writes only post-display (OV3). If the panel write then
+    fails, this PNG shows a frame the panel never painted. Accepted: no
+    consumer dereferences image_path today (verified control_server +
+    diagnostics); it exists for support bundles, where
+    what-the-clock-TRIED-to-paint is the useful artifact."""
+    target = os.path.join(RUNTIME_RENDER_DIR, "current-quote.png")
+    try:
+        fd, tmp = tempfile.mkstemp(dir=RUNTIME_RENDER_DIR, suffix=".png")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                frame.save(fh, format="PNG")
+            os.replace(tmp, target)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return target
+    except Exception as e:
+        logging.warning(f"runtime frame not persisted (non-fatal): {e}")
+        return None
+
+
+def get_current_quote_runtime(
+    now: datetime | None = None,
+    allow_nsfw: bool = False,
+) -> dict | None:
+    """Render the current-minute quote from the corpus (dev#531 Stage 2).
+
+    Returns the same metadata shape as get_current_quote() plus an
+    ``image`` key holding the ready-to-paste mode-"1" frame (converted
+    with dither=NONE — the renderer emits grey AA fringes, and default
+    Floyd-Steinberg would speckle them into black dots). Returns ``None``
+    on ANY failure — missing freetype-py, corpus read error, RenderError,
+    sanity rejection — and the caller falls back to the pre-rendered PNG
+    path, then the plain time draw. One bad row must degrade one minute,
+    never crash-loop the timer."""
+    now = now or datetime.now()
+    try:
+        import quote_renderer
+    except ImportError as e:
+        logging.warning(f"runtime render enabled but renderer unavailable ({e}); using images")
+        return None
+    try:
+        rows = quote_renderer.rows_for_time(CORPUS_CSV, now.strftime("%H%M"))
+    except Exception as e:
+        logging.error(f"runtime render: corpus read failed: {e}")
+        return None
+    if not allow_nsfw:
+        rows = [r for r in rows if not r.is_nsfw]
+    if not rows:
+        return None  # corpus gap — identical outcome to the PNG-glob miss
+    row = rows[randrange(len(rows))]
+    # ONE guard around render+validate+convert+persist: the "returns None
+    # on ANY failure" contract must hold for unexpected shapes too, not
+    # just RenderError (dev#537 review — a sanity-check or convert crash
+    # previously escaped and would have killed the whole render).
+    try:
+        _, credits_img, font_size, _ = quote_renderer.render_row(row)
+        reason = _runtime_frame_ok(credits_img)
+        if reason is not None:
+            logging.error(f"runtime render rejected for {row.basename}: {reason}; falling back")
+            return None
+        frame = credits_img.convert("1", dither=Image.Dither.NONE)
+    except Exception as e:
+        logging.error(f"runtime render failed for {row.basename}: {e}; falling back")
+        return None
+    return {
+        "quote": row.quote,
+        "author": row.author,
+        "title": row.title,
+        "time": row.time,
+        "image_path": _persist_runtime_frame(frame) or "",
+        "picked_at": _time.time(),
+        "image": frame,
+        "font_size": font_size,
+    }
 
 
 def get_current_quote(
