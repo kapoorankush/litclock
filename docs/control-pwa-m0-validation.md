@@ -99,3 +99,5 @@ and the relocated update-failed glyph are wired into runtime in M2.
 - **Maskable safe zone: passed** under all standard adaptive-icon shapes (square / circle / squircle / teardrop). Logo content fits inside the 80% safe-zone circle on a solid `--bg` canvas.
 
 Ready to land. The next PR (M1) creates the Flask control server skeleton, fluid type tokens via `clamp()`, and `src/config.py`. M2 is when the assets validated here actually wire into runtime.
+
+> **Historical note (dev#538, 2026-07-25):** the top-strip geometry documented below is the M0/PLAN-A6 snapshot. Production masthead geometry changed in #530 (QR quiet zone) and dev#538 (shared-baseline masthead); `validate_qr_layout.py` now imports placement from `src/literary_clock.py` instead of carrying its own copy.

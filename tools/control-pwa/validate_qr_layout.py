@@ -43,9 +43,15 @@ from pathlib import Path
 
 import qrcode
 import qrcode.constants
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# dev#538: masthead geometry comes from the PRODUCTION module — this tool
+# carried a drifting third copy of the strip layout twice (pre-#530 QR,
+# pre-#538 masthead); importing kills that failure class.
+sys.path.insert(0, str(REPO_ROOT / "src"))
+import literary_clock as _lc  # noqa: E402
+
 DEFAULT_OUT = Path("/tmp/litclock-qr-layout-preview.png")
 DISPLAY_SIZE = (800, 480)
 
@@ -67,10 +73,12 @@ QR_QUIET_ZONE = 4 * QR_BOX_SIZE
 # Locked from literary_clock.py:166-170 (relocation: x=784 -> x=4).
 GLYPH_POSITION = (4, 4)
 
-# Existing top-strip features that the QR must not collide with.
-WEATHER_ICON_POSITION = (20, 5)
-WEATHER_ICON_SIZE = (64, 64)
-DATE_TEXT_POSITION = (250, 10)
+# Existing top-strip features that the QR must not collide with —
+# sourced from production (dev#538 V8-G2 lockup geometry).
+_MH = _lc._masthead_metrics()
+WEATHER_ICON_POSITION = (_MH["icon_x"], _MH["icon_y"])
+WEATHER_ICON_SIZE = (_lc.ICON_SIZE, _lc.ICON_SIZE)
+DATE_TEXT_POSITION = (_lc.DATE_X, _MH["date_y"])
 TOP_STRIP_DIVIDER_Y = 78
 DIVIDER_WIDTH = 4
 # Same expression as literary_clock.QR_NOTCH_BOTTOM: cover the divider's
@@ -124,54 +132,17 @@ def stamp_update_failed_glyph(draw: ImageDraw.ImageDraw, position: tuple[int, in
     draw.rectangle([(x0 + 5, y0 + 9), (x0 + 6, y0 + 10)], fill=0)
 
 
-def paste_weather_placeholder(image: Image.Image) -> bool:
-    """Paste a real sun.xbm icon if available; otherwise an outlined 64x64 box.
-    Returns True if the real asset was used."""
-    if SUN_ICON_XBM.exists():
-        try:
-            with Image.open(SUN_ICON_XBM) as raw:
-                icon = ImageOps.invert(raw.resize(WEATHER_ICON_SIZE).convert("L"))
-            image.paste(icon, WEATHER_ICON_POSITION)
-            return True
-        except (OSError, ValueError) as exc:
-            print(f"warn: could not load {SUN_ICON_XBM}: {exc}", file=sys.stderr)
-    # Fallback placeholder: outlined 64x64 box.
-    draw = ImageDraw.Draw(image)
-    x, y = WEATHER_ICON_POSITION
-    w, h = WEATHER_ICON_SIZE
-    draw.rectangle([(x, y), (x + w - 1, y + h - 1)], outline=0, width=2)
-    draw.text((x + 6, y + 24), "WEATHER", fill=0)
-    return False
-
-
-def draw_date_placeholder(draw: ImageDraw.ImageDraw) -> None:
-    """Mirror `literary_clock.py:108-109` — date text at (250, 10), 48pt
-    Literata. Uses fixed copy so the preview is reproducible."""
-    text = "Mon, April, 27"
-    if PROJECT_FONT.exists():
-        try:
-            font = ImageFont.truetype(str(PROJECT_FONT), 48)
-        except OSError:
-            font = ImageFont.load_default()
-    else:
-        font = ImageFont.load_default()
-    draw.text(DATE_TEXT_POSITION, text, font=font, fill=0)
-
-
 def render_preview() -> Image.Image:
     image = Image.new(mode="1", size=DISPLAY_SIZE, color=255)
     draw = ImageDraw.Draw(image)
 
-    paste_weather_placeholder(image)
-    draw_date_placeholder(draw)
+    # Production masthead (dev#538): date + weather lockup + rules drawn by
+    # the same code the clock runs. Fixed strings keep the preview stable.
+    icon_path = str(SUN_ICON_XBM) if SUN_ICON_XBM.exists() else None
+    _lc._compose_masthead(image, draw, "Mon, September 04", "100°F", "82°F", icon_path)
 
     # The relocated update-failed glyph at x=4, y=4 (was x=784).
     stamp_update_failed_glyph(draw, GLYPH_POSITION)
-
-    # Top-strip divider at y=78 — same as runtime literary_clock.py:115.
-    draw.line([(0, TOP_STRIP_DIVIDER_Y), (DISPLAY_SIZE[0], TOP_STRIP_DIVIDER_Y)], fill=0, width=4)
-    # Vertical divider after weather block — same as runtime literary_clock.py:117.
-    draw.line([(225, 0), (225, TOP_STRIP_DIVIDER_Y)], fill=0, width=4)
 
     # Quote-area placeholder so the preview reads as a recognizable layout.
     draw.rectangle([(0, 80), (DISPLAY_SIZE[0] - 1, DISPLAY_SIZE[1] - 1)], outline=0, width=1)
