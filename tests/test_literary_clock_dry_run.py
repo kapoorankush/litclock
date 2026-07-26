@@ -130,12 +130,14 @@ class TestDryRunExitCodes:
 
 
 class TestDryRunNoHardware:
-    """Load-bearing: --dry-run must never import display_driver, because
-    display_driver binds GPIO / opens /dev/spidev* at import time."""
+    """Load-bearing: --dry-run must never import the vendor waveshare_epd
+    driver, which binds GPIO / opens /dev/spidev*. (display_driver itself is
+    import-safe since the any-panel abstraction — geometry/config resolution
+    only; the hardware bind happens in display_driver.get_panel().)"""
 
     def test_dry_run_does_not_import_display_driver(self):
-        """Introspect sys.modules after --dry-run and assert display_driver
-        is absent."""
+        """Introspect sys.modules after --dry-run and assert the vendor
+        hardware driver is absent."""
         # Use a subprocess so we get a clean module table. Have the process
         # run the __main__ block, then dump sys.modules keys.
         harness_src = (
@@ -148,8 +150,8 @@ class TestDryRunNoHardware:
             f"    runpy.run_path({str(LITERARY_CLOCK)!r}, run_name='__main__')\n"
             "except SystemExit:\n"
             "    pass\n"
-            "# Fail loudly if display_driver or waveshare_epd leaked in.\n"
-            "banned = [m for m in sys.modules if m.startswith('display_driver') or m.startswith('waveshare_epd')]\n"
+            "# Fail loudly if the vendor hardware driver leaked in.\n"
+            "banned = [m for m in sys.modules if m.startswith('waveshare_epd')]\n"
             "if banned:\n"
             "    sys.stdout.write('BANNED_IMPORTS: ' + ','.join(banned) + '\\n')\n"
             "    sys.exit(2)\n"
@@ -209,21 +211,21 @@ class TestDryRunNoHardware:
 
 class TestStructural:
     def test_display_driver_import_inside_main_block(self):
-        """Invariant: `from display_driver import epd7in5` must be inside
-        the `if __name__ == '__main__'` block AND after the --dry-run
-        short-circuit. Module-level import would open GPIO on every test
-        collection and kill the smoke test."""
+        """Invariant: `display_driver.get_panel(` — the call that imports the
+        vendor driver and binds GPIO — must be inside the
+        `if __name__ == '__main__'` block AND after the --dry-run
+        short-circuit. A module-level panel bind would open GPIO on every
+        test collection and kill the smoke test. (The `import display_driver`
+        line itself is module-level and hardware-free by design.)"""
         src = LITERARY_CLOCK.read_text()
         main_idx = src.find('if __name__ == "__main__":')
-        import_idx = src.find("from display_driver import epd7in5")
+        bind_idx = src.find("display_driver.get_panel(")
         dry_run_exit_idx = src.find("sys.exit(0)")
         assert main_idx != -1
-        assert import_idx != -1, "display_driver import missing (is it still used?)"
-        assert import_idx > main_idx, (
-            "display_driver import must be inside the __main__ block so --dry-run never triggers it"
-        )
+        assert bind_idx != -1, "display_driver.get_panel call missing (is it still used?)"
+        assert bind_idx > main_idx, "the panel bind must be inside the __main__ block so --dry-run never triggers it"
         assert dry_run_exit_idx != -1
-        assert import_idx > dry_run_exit_idx, "display_driver import must come AFTER the --dry-run short-circuit"
+        assert bind_idx > dry_run_exit_idx, "the panel bind must come AFTER the --dry-run short-circuit"
 
     def test_dry_run_flag_is_argparse_action(self):
         src = LITERARY_CLOCK.read_text()
@@ -261,13 +263,13 @@ class TestStructural:
         # rfind to skip the `def _write_heartbeat():` header and find the
         # actual call site, which lives in the production block.
         hb_call_idx = src.rfind("_write_heartbeat()")
-        driver_idx = src.find("from display_driver import epd7in5")
+        bind_idx = src.find("display_driver.get_panel(")
         def_idx = src.find("def _write_heartbeat")
         assert hb_call_idx != -1 and def_idx != -1, "_write_heartbeat must be defined and called"
         assert hb_call_idx != def_idx, "_write_heartbeat() must be CALLED somewhere, not just defined"
-        assert driver_idx != -1
-        assert hb_call_idx > driver_idx, (
-            "_write_heartbeat() call must be inside the production path (after the display_driver import), "
+        assert bind_idx != -1
+        assert hb_call_idx > bind_idx, (
+            "_write_heartbeat() call must be inside the production path (after the panel bind), "
             "never reachable from --dry-run"
         )
 
