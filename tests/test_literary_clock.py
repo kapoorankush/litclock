@@ -631,3 +631,259 @@ class TestStructural:
         re-hardcode a stale port."""
         src = self._src()
         assert "control_base_url(ip)" in src
+
+
+class TestRuntimeRender:
+    """dev#531 Stage 2 — runtime quote rendering behind LITCLOCK_RUNTIME_RENDER."""
+
+    def test_flag_off_values(self, monkeypatch, tmp_path) -> None:
+        marker = tmp_path / ".runtime-render-validated"
+        marker.write_text("freetype=0.0.0\n")
+        monkeypatch.setattr(literary_clock, "RUNTIME_VALIDATED_MARKER", str(marker))
+        for raw in ("false", "0", "no", ""):
+            monkeypatch.setenv("LITCLOCK_RUNTIME_RENDER", raw)
+            assert literary_clock._runtime_render_enabled() is False
+        monkeypatch.delenv("LITCLOCK_RUNTIME_RENDER", raising=False)
+        assert literary_clock._runtime_render_enabled() is False
+
+    def test_flag_requires_validation_marker(self, monkeypatch, tmp_path) -> None:
+        """dev#537 review: the flag alone must not enable runtime rendering —
+        the device's freetype environment has to be stamped as validated."""
+        monkeypatch.setenv("LITCLOCK_RUNTIME_RENDER", "true")
+        monkeypatch.setattr(literary_clock, "RUNTIME_VALIDATED_MARKER", str(tmp_path / "missing-marker"))
+        assert literary_clock._runtime_render_enabled() is False
+
+    def _blank_frame(self):
+        from PIL import Image
+
+        return Image.new("L", (literary_clock.DISPLAY_SIZE[0], literary_clock.QUOTE_AREA_H), 255)
+
+    def test_frame_ok_accepts_normal_ink(self) -> None:
+        from PIL import ImageDraw
+
+        frame = self._blank_frame()
+        ImageDraw.Draw(frame).rectangle([(10, 100), (400, 150)], fill=0)
+        assert literary_clock._runtime_frame_ok(frame) is None
+
+    def test_frame_ok_rejects_wrong_size(self) -> None:
+        from PIL import Image
+
+        assert "size" in literary_clock._runtime_frame_ok(Image.new("L", (800, 480), 255))
+
+    def test_frame_ok_rejects_blank(self) -> None:
+        assert "no ink" in literary_clock._runtime_frame_ok(self._blank_frame())
+
+    def test_frame_ok_rejects_notch_ink(self) -> None:
+        frame = self._blank_frame()
+        # one black pixel inside the QR quiet-zone notch region
+        frame.putpixel((literary_clock.QR_POSITION[0], 2), 0)
+        # plus normal body ink so the blank check doesn't trip first
+        from PIL import ImageDraw
+
+        ImageDraw.Draw(frame).rectangle([(10, 100), (400, 150)], fill=0)
+        assert "notch" in literary_clock._runtime_frame_ok(frame)
+
+    def test_frame_ok_ignores_light_grey_in_notch(self) -> None:
+        """>=128 grey is not ink: dither=NONE thresholds it to white."""
+        from PIL import ImageDraw
+
+        frame = self._blank_frame()
+        frame.putpixel((literary_clock.QR_POSITION[0], 2), 200)
+        ImageDraw.Draw(frame).rectangle([(10, 100), (400, 150)], fill=0)
+        assert literary_clock._runtime_frame_ok(frame) is None
+
+    def test_persist_runtime_frame_atomic(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr(literary_clock, "RUNTIME_RENDER_DIR", str(tmp_path))
+        replaced = []
+        real_replace = os.replace
+
+        def tracking_replace(src, dst):
+            replaced.append(dst)
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(os, "replace", tracking_replace)
+        path = literary_clock._persist_runtime_frame(self._blank_frame().convert("1"))
+        assert path == str(tmp_path / "current-quote.png")
+        assert replaced == [path]
+        assert (tmp_path / "current-quote.png").exists()
+        assert list(tmp_path.iterdir()) == [tmp_path / "current-quote.png"]  # no temp litter
+
+    def test_persist_runtime_frame_swallows_failure(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr(literary_clock, "RUNTIME_RENDER_DIR", str(tmp_path / "missing"))
+        assert literary_clock._persist_runtime_frame(self._blank_frame().convert("1")) is None
+
+    def _write_runtime_corpus(self, tmp_path, monkeypatch) -> None:
+        csv_path = tmp_path / "corpus.csv"
+        csv_path.write_text(
+            "00:00|midnight|It was midnight already in the quiet house.|T1|A1\n"
+            "00:00|midnight|Still midnight there, the clocks all agreed.|T2|A2|yes\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(literary_clock, "CORPUS_CSV", str(csv_path))
+        monkeypatch.setattr(literary_clock, "RUNTIME_RENDER_DIR", str(tmp_path))
+
+    def test_runtime_quote_none_on_missing_renderer(self, monkeypatch, tmp_path) -> None:
+        """Any import failure degrades to the PNG path, never raises."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def failing_import(name, *a, **kw):
+            if name == "quote_renderer":
+                raise ImportError("no freetype")
+            return real_import(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", failing_import)
+        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0)) is None
+
+
+try:
+    import freetype  # noqa: F401
+
+    _HAVE_FREETYPE = True
+except ImportError:
+    _HAVE_FREETYPE = False
+
+
+@pytest.mark.skipif(not _HAVE_FREETYPE, reason="freetype-py required for runtime render tests")
+class TestRuntimeRenderWithFreetype:
+    """End-to-end runtime render tests (need freetype-py + repo fonts)."""
+
+    _write_runtime_corpus = TestRuntimeRender._write_runtime_corpus
+
+    def test_runtime_quote_renders_and_persists(self, monkeypatch, tmp_path) -> None:
+        self._write_runtime_corpus(tmp_path, monkeypatch)
+        meta = literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0))
+        assert meta is not None
+        assert meta["image"].mode == "1"
+        assert meta["image"].size == (800, literary_clock.QUOTE_AREA_H)
+        assert meta["quote"].startswith("It was midnight")  # nsfw row filtered
+        assert meta["title"] == "T1" and meta["author"] == "A1"
+        assert meta["image_path"] == str(tmp_path / "current-quote.png")
+        assert (tmp_path / "current-quote.png").exists()
+
+    def test_runtime_quote_includes_nsfw_when_allowed(self, monkeypatch, tmp_path) -> None:
+        self._write_runtime_corpus(tmp_path, monkeypatch)
+        seen = set()
+        for _ in range(20):
+            meta = literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0), allow_nsfw=True)
+            seen.add(meta["title"])
+        assert seen == {"T1", "T2"}
+
+    def test_runtime_quote_none_for_empty_bucket(self, monkeypatch, tmp_path) -> None:
+        self._write_runtime_corpus(tmp_path, monkeypatch)
+        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 3, 7)) is None
+
+    def test_runtime_quote_none_on_render_failure(self, monkeypatch, tmp_path) -> None:
+        self._write_runtime_corpus(tmp_path, monkeypatch)
+        import quote_renderer
+
+        def boom(row):
+            raise quote_renderer.RenderError("nofit", "test")
+
+        monkeypatch.setattr(quote_renderer, "render_row", boom)
+        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0)) is None
+
+    def test_runtime_quote_none_on_sanity_rejection(self, monkeypatch, tmp_path) -> None:
+        self._write_runtime_corpus(tmp_path, monkeypatch)
+        from PIL import Image
+
+        import quote_renderer
+
+        blank = Image.new("L", (800, literary_clock.QUOTE_AREA_H), 255)
+
+        def blank_render(row):
+            return blank, blank, 20, None
+
+        monkeypatch.setattr(quote_renderer, "render_row", blank_render)
+        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0)) is None
+
+
+class TestQuotePngFallback:
+    """dev#537 review: a corrupt/unreadable quote PNG must degrade to the
+    plain time draw, never kill the whole per-minute render."""
+
+    def test_corrupt_png_falls_back_to_time_draw(self, monkeypatch, tmp_path) -> None:
+        bad = tmp_path / "quote_0000_0_credits.png"
+        bad.write_bytes(b"not a png at all")
+        monkeypatch.setenv("WEATHER_ENABLED", "false")
+        monkeypatch.delenv("LITCLOCK_RUNTIME_RENDER", raising=False)
+        monkeypatch.setattr(
+            literary_clock,
+            "get_current_quote",
+            lambda now=None, allow_nsfw=False: {
+                "quote": "q",
+                "author": "a",
+                "title": "t",
+                "time": "00:00",
+                "image_path": str(bad),
+                "picked_at": 0.0,
+            },
+        )
+        image, quote_meta, _now = literary_clock.main()
+        assert image is not None and image.size == literary_clock.DISPLAY_SIZE
+        # meta cleared so the status file reports the honest time-only frame
+        assert quote_meta is None
+
+
+@pytest.mark.skipif(not _HAVE_FREETYPE, reason="freetype-py required")
+class TestMainRuntimeWiring:
+    """dev#537 review finding 5: pin main()'s flag→runtime→paste and
+    flag→runtime-None→PNG-glob wiring, not just the helpers."""
+
+    def _arm(self, monkeypatch, tmp_path) -> None:
+        csv_path = tmp_path / "corpus.csv"
+        csv_path.write_text(
+            "00:00|midnight|It was midnight already in the quiet house.|T1|A1\n",
+            encoding="utf-8",
+        )
+        marker = tmp_path / ".runtime-render-validated"
+        import freetype
+
+        marker.write_text(f"freetype={'.'.join(map(str, freetype.version()))}\n")
+        monkeypatch.setattr(literary_clock, "CORPUS_CSV", str(csv_path))
+        monkeypatch.setattr(literary_clock, "RUNTIME_RENDER_DIR", str(tmp_path))
+        monkeypatch.setattr(literary_clock, "RUNTIME_VALIDATED_MARKER", str(marker))
+        monkeypatch.setenv("LITCLOCK_RUNTIME_RENDER", "true")
+        monkeypatch.setenv("WEATHER_ENABLED", "false")
+
+        class MidnightDT(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 1, 1, 0, 0)
+
+        monkeypatch.setattr(literary_clock, "datetime", MidnightDT)
+
+    def test_main_uses_runtime_frame(self, monkeypatch, tmp_path) -> None:
+        self._arm(monkeypatch, tmp_path)
+        image, quote_meta, _ = literary_clock.main()
+        assert quote_meta is not None and "image" in quote_meta
+        # the runtime frame's ink actually landed in the quote area
+        area = image.crop((0, literary_clock.QUOTE_AREA_Y, 800, 480))
+        assert area.getbbox() is not None
+
+    def test_main_falls_back_to_png_glob_when_runtime_none(self, monkeypatch, tmp_path) -> None:
+        self._arm(monkeypatch, tmp_path)
+        monkeypatch.setattr(literary_clock, "get_current_quote_runtime", lambda **kw: None)
+        consulted = []
+
+        def recording_glob(now=None, allow_nsfw=False):
+            consulted.append(True)
+            return None
+
+        monkeypatch.setattr(literary_clock, "get_current_quote", recording_glob)
+        image, quote_meta, _ = literary_clock.main()
+        assert consulted == [True]
+        assert quote_meta is None  # PNG glob empty -> time draw
+        assert image.size == literary_clock.DISPLAY_SIZE
+
+    def test_flag_on_with_matching_marker(self, monkeypatch, tmp_path) -> None:
+        self._arm(monkeypatch, tmp_path)
+        for raw in ("true", "1", "TRUE"):
+            monkeypatch.setenv("LITCLOCK_RUNTIME_RENDER", raw)
+            assert literary_clock._runtime_render_enabled() is True
+
+    def test_marker_freetype_mismatch_disables_runtime(self, monkeypatch, tmp_path) -> None:
+        self._arm(monkeypatch, tmp_path)
+        (tmp_path / ".runtime-render-validated").write_text("freetype=9.9.9\n")
+        assert literary_clock._runtime_render_enabled() is False
