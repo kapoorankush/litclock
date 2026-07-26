@@ -1,0 +1,118 @@
+name: Render invariants
+
+# dev#531 Stage-1 gate for the runtime quote renderer.
+#
+# Three checks, in dependency order (each one makes the next meaningful):
+#
+#   1. Measurement exactness: validate_gd_measure.py re-asserts that
+#      src/gd_measure.py is byte-exact vs PHP imagettfbbox IN THIS
+#      ENVIRONMENT (66,582 measurements). freetype-py wheels bundle their
+#      own libfreetype and hinted metrics are version-sensitive — if the
+#      runner's php-gd FreeType drifts from the wheel's, this fails loud
+#      and the parity verdict below can't be trusted (dev#534 B6/T2).
+#      PYTHONPATH puts src/ first so the PRODUCTION module is validated,
+#      not the spike copy.
+#
+#   2. Layout parity: full-corpus fs + line-break fingerprint from the GD
+#      probe (PHP) diffed against the production module's probe mode —
+#      the Stage-0 4,809/4,809 gate, re-proven on every PR.
+#
+#   3. Render invariants: tools/render_invariants.py renders every corpus
+#      row through src/quote_renderer.py and enforces I1-I5 (coverage,
+#      fit sanity, #530 QR-notch clearance, credits collision, filename
+#      identity). The per-quote report is published as an artifact; the
+#      rendered images are NOT a shipping artifact (releases still come
+#      from corpus_edit ship until the Stage-2 flip).
+#
+# ~10-15 min; paths-filtered to renderer-relevant changes.
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'src/quote_renderer.py'
+      - 'src/gd_measure.py'
+      - 'tools/render_invariants.py'
+      - 'spikes/531-runtime-render/**'
+      - 'image-gen/litclock_annotated.csv'
+      - 'image-gen/quote_to_image.php'
+      - 'fonts/**'
+      - 'requirements.txt'
+      - 'requirements-dev.txt'
+      - '.github/workflows/render-invariants.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LITCLOCK_HOME: ${{ github.workspace }}
+  PYTHONPATH: ${{ github.workspace }}/src:${{ github.workspace }}/spikes/531-runtime-render
+
+concurrency:
+  group: render-invariants-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  render-invariants:
+    name: Measurement + parity + invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Generator drift check
+        # The parity oracle below is the spike probe (gd_layout_probe.php),
+        # a validated mirror of quote_to_image.php's fitText — validated
+        # against THIS exact generator. If the generator changes, green
+        # parity would prove nothing: fail loud and force a re-verification
+        # of probe + port semantics before updating this pin (dev#536
+        # review, C3).
+        run: |
+          want=eb9605915e9d309e48eafc616ccb48a6b54123c0
+          got=$(sha1sum image-gen/quote_to_image.php | cut -d' ' -f1)
+          if [ "$got" != "$want" ]; then
+            echo "::error::image-gen/quote_to_image.php changed (sha1 $got != pinned $want)."
+            echo "The layout-parity oracle was validated against the pinned generator."
+            echo "Re-verify gd_layout_probe.php + src/quote_renderer.py against the new"
+            echo "generator, then update the pin in this workflow."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install PHP + GD (measurement oracle)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q php-cli php-gd
+          php -r 'echo "PHP ", PHP_VERSION, " GD ", gd_info()["GD Version"], PHP_EOL;'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Measurement exactness (validate_gd_measure)
+        # -m, not a script path: running the file directly puts the SPIKE
+        # directory at sys.path[0], which shadows src/gd_measure.py and
+        # validates the frozen spike copy instead of the production module.
+        # With -m, imports resolve via PYTHONPATH (src/ first).
+        run: python3 -m validate_gd_measure
+
+      - name: Layout parity (GD probe vs production module, full corpus)
+        run: |
+          php spikes/531-runtime-render/gd_layout_probe.php 0 1 > /tmp/gd_probe.out
+          python3 tools/render_invariants.py probe 0 1 > /tmp/py_probe.out
+          python3 spikes/531-runtime-render/compare_layout.py --diff /tmp/gd_probe.out /tmp/py_probe.out
+
+      - name: Render invariants (full corpus)
+        run: python3 tools/render_invariants.py check --report render-invariants-report.json
+
+      - name: Publish per-quote report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-invariants-report
+          path: render-invariants-report.json
+          if-no-files-found: ignore
