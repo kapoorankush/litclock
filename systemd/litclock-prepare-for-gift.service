@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock — Prepare device for gifting (wipe WiFi, paint welcome, power off)
-Documentation=https://github.com/kapoorankush/litclock/issues/280
+Documentation=https://github.com/kruczek-lab/litclock/issues/280
 # Same interlock as wifi-reset: don't run mid-update.
 Conflicts=litclock-update.service
 After=litclock-update.service

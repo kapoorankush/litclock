@@ -1,6 +1,6 @@
 # Creating SD Cards for Friends & Family
 
-> **Tip:** The easiest way to create SD cards is to download the pre-built image from [Releases](https://github.com/kapoorankush/litclock/releases/latest) and flash it directly. The steps below are only needed if you want to clone a customized setup.
+> **Tip:** The easiest way to create SD cards is to download the pre-built image from [Releases](https://github.com/kruczek-lab/litclock/releases/latest) and flash it directly. The steps below are only needed if you want to clone a customized setup.
 
 If you want to make pre-configured SD cards from a working clock:
 

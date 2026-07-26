@@ -1,6 +1,6 @@
 [Unit]
 Description=WiFi Watchdog Timer (every 5 minutes)
-Documentation=https://github.com/kapoorankush/litclock
+Documentation=https://github.com/kruczek-lab/litclock
 
 [Timer]
 OnBootSec=5min

@@ -212,7 +212,7 @@ resolve_target_sha() {
         return 0
     fi
     local tag
-    tag=$(github_api_latest_release_tag "kapoorankush" "litclock")
+    tag=$(github_api_latest_release_tag "kruczek-lab" "litclock")
     if [[ -z "$tag" ]]; then
         printf "[resolve] warn: no latest Release tag resolved\n" >&2
         return 0

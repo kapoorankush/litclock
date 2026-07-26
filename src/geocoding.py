@@ -74,7 +74,7 @@ def geocode_location(query, country_code=None):
         req = urllib.request.Request(
             url,
             headers={
-                "User-Agent": "LitClock/1.0 (https://github.com/kapoorankush/litclock)",
+                "User-Agent": "LitClock/1.0 (https://github.com/kruczek-lab/litclock)",
             },
         )
         with urllib.request.urlopen(req, timeout=10) as resp:

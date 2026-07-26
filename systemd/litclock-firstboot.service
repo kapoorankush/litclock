@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock First-Boot Setup
-Documentation=https://github.com/kapoorankush/litclock
+Documentation=https://github.com/kruczek-lab/litclock
 After=sysinit.target NetworkManager.service litclock-splash.service
 Wants=NetworkManager.service
 

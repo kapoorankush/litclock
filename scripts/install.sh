@@ -3,7 +3,7 @@
 # LitClock E-Ink Display Installer
 # For Raspberry Pi Zero WH with Waveshare 7.5" e-Paper HAT (V2)
 #
-# Usage: curl -sSL https://raw.githubusercontent.com/kapoorankush/litclock/master/scripts/install.sh | bash
+# Usage: curl -sSL https://raw.githubusercontent.com/kruczek-lab/litclock/master/scripts/install.sh | bash
 #
 # This script will:
 # 1. Install system dependencies
@@ -31,7 +31,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Configuration
 INSTALL_DIR="/home/pi/litclock"
-REPO_URL="https://github.com/kapoorankush/litclock.git"
+REPO_URL="https://github.com/kruczek-lab/litclock.git"
 BCM2835_VERSION="1.75"
 BCM2835_URL="https://www.airspayce.com/mikem/bcm2835/bcm2835-${BCM2835_VERSION}.tar.gz"
 

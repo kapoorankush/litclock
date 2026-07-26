@@ -5,9 +5,9 @@
 <h1 align="center">LitClock</h1>
 
 <p align="center">
-  <a href="https://github.com/kapoorankush/litclock/actions/workflows/lint.yml"><img src="https://github.com/kapoorankush/litclock/actions/workflows/lint.yml/badge.svg" alt="Tests"></a>
-  <a href="https://github.com/kapoorankush/litclock/actions/workflows/build-image.yml"><img src="https://github.com/kapoorankush/litclock/actions/workflows/build-image.yml/badge.svg" alt="Image Build"></a>
-  <a href="https://github.com/kapoorankush/litclock/releases/latest"><img src="https://img.shields.io/github/v/release/kapoorankush/litclock?label=Download%20Image&color=brightgreen" alt="Download Image"></a>
+  <a href="https://github.com/kruczek-lab/litclock/actions/workflows/lint.yml"><img src="https://github.com/kruczek-lab/litclock/actions/workflows/lint.yml/badge.svg" alt="Tests"></a>
+  <a href="https://github.com/kruczek-lab/litclock/actions/workflows/build-image.yml"><img src="https://github.com/kruczek-lab/litclock/actions/workflows/build-image.yml/badge.svg" alt="Image Build"></a>
+  <a href="https://github.com/kruczek-lab/litclock/releases/latest"><img src="https://img.shields.io/github/v/release/kruczek-lab/litclock?label=Download%20Image&color=brightgreen" alt="Download Image"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11-blue.svg" alt="Python 3.11"></a>
   <a href="https://www.raspberrypi.com/"><img src="https://img.shields.io/badge/platform-Raspberry%20Pi-c51a4a.svg" alt="Platform"></a>
@@ -44,7 +44,7 @@ Full details in **[Hardware Assembly](docs/hardware-assembly.md)**.
 
 ### 2. Flash the SD card
 
-1. Download the latest `.img.xz` from **[Releases](https://github.com/kapoorankush/litclock/releases/latest)**
+1. Download the latest `.img.xz` from **[Releases](https://github.com/kruczek-lab/litclock/releases/latest)**
 2. Flash it to the microSD card with [Raspberry Pi Imager](https://www.raspberrypi.com/software/) or [balenaEtcher](https://etcher.balena.io/)
 
 That's it — no config files to edit, no SSH to set up. Everything else happens from your phone after power-on.
@@ -55,7 +55,7 @@ That's it — no config files to edit, no SSH to set up. Everything else happens
 On a fresh Raspberry Pi OS Lite install, SSH in (or connect a keyboard) and run:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/kapoorankush/litclock/master/scripts/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/kruczek-lab/litclock/master/scripts/install.sh | bash
 ```
 
 The installer sets up system dependencies, the BCM2835 driver, SPI, NTP sync, the Python venv, all systemd services, and downloads the quote-image set (~130 MB — needs network; the clock falls back to a time-only display if the download fails). It also detects Pi Zero W hardware and offers the [WiFi stability fixes](#wifi-stability-pi-zero-w--zero-2-w). Reboot when it finishes — from there the flow matches the flashed image.

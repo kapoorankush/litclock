@@ -236,7 +236,7 @@ jobs:
 
       # SLSA build provenance: sign the compressed image so downstream users
       # can verify it was built by this workflow from a specific commit.
-      # Verify with: gh attestation verify litclock-<version>.img.xz --owner kapoorankush
+      # Verify with: gh attestation verify litclock-<version>.img.xz --owner kruczek-lab
       # Skipped on private repos — GitHub's attestation API rejects user-owned
       # private repos. Will start working automatically when the repo goes public.
       - name: Attest build provenance

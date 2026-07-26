@@ -3,7 +3,7 @@
 ## Reporting a Vulnerability
 
 If you discover a security vulnerability in this project, please report it
-through [GitHub Security Advisories](https://github.com/kapoorankush/litclock/security/advisories/new)
+through [GitHub Security Advisories](https://github.com/kruczek-lab/litclock/security/advisories/new)
 rather than opening a public issue.
 
 You will receive a response within a few days. If the issue is confirmed, a fix

@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock — Factory reset (wipe config + WiFi, reboot into setup)
-Documentation=https://github.com/kapoorankush/litclock/issues/510
+Documentation=https://github.com/kruczek-lab/litclock/issues/510
 # Bidirectional interlock with the weekly/PWA updater: if an update fires mid-
 # reset, systemd SIGTERMs the reset script and leaves the device half-wiped with
 # no reboot. The route also pre-checks update_is_busy() for a friendly 409, but

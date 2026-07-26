@@ -121,7 +121,7 @@ chore(deps): update Pillow to 10.0
 
 ```bash
 # Clone the repository
-git clone https://github.com/kapoorankush/litclock.git
+git clone https://github.com/kruczek-lab/litclock.git
 cd litclock
 
 # Create virtual environment. --system-site-packages lets the venv see
@@ -317,7 +317,7 @@ _THIS_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$_THIS_SCRIPT_DIR/lib/state.sh"
 ```
 
-**`scripts/lib/state.sh`** exposes two helpers any shell script that mutates `/home/pi/litclock/env.sh` MUST use to interoperate with `src/config.py:atomic_update`'s `fcntl.flock` on the PWA side. Skipping them re-introduces [#274](https://github.com/kapoorankush/litclock/issues/274):
+**`scripts/lib/state.sh`** exposes two helpers any shell script that mutates `/home/pi/litclock/env.sh` MUST use to interoperate with `src/config.py:atomic_update`'s `fcntl.flock` on the PWA side. Skipping them re-introduces [#274](https://github.com/kruczek-lab/litclock/issues/274):
 
 - `atomic_write_env_sh DEST CONTENT` — full-body overwrite via `mktemp` + `mv -f` under the sidecar flock. Use for "rewrite env.sh from defaults" callers (`reset-setup.sh`, `prepare-for-cloning.sh`).
 - `with_env_lock CMD...` — run CMD holding the env.sh sidecar flock. Use for `>>` append-per-var callers (`update.sh` Phase 3). CMD runs in a subshell so use a side-channel tempfile if you need to pass data back to the caller.

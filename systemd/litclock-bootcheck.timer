@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock LKG auto-revert cadence (bootcheck)
-Documentation=https://github.com/kapoorankush/litclock/issues/209
+Documentation=https://github.com/kruczek-lab/litclock/issues/209
 # Drives litclock-bootcheck.service. The service is a fast oneshot that
 # decides "did the clock paint since this boot?" and, on a persistent
 # failure, self-heals via the LKG SHA.

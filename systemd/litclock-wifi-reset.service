@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock — Reset WiFi and re-enter firstboot AP-mode
-Documentation=https://github.com/kapoorankush/litclock/issues/245
+Documentation=https://github.com/kruczek-lab/litclock/issues/245
 # D11 — systemd-native interlock against reset-during-update. If the update
 # service is currently running (or queued), systemd refuses to start this
 # unit. The /api/wifi/reset route also pre-checks via systemctl is-active +

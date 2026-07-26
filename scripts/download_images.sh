@@ -261,7 +261,7 @@ quarantine_if_verify_failed() {
 }
 
 # Defaults — overridable via env or flags for testing.
-REPO_SLUG="${LITCLOCK_REPO_SLUG:-kapoorankush/litclock}"
+REPO_SLUG="${LITCLOCK_REPO_SLUG:-kruczek-lab/litclock}"
 API_BASE_URL="${LITCLOCK_API_BASE_URL:-https://api.github.com}"
 ASSET_NAME="${LITCLOCK_ASSET_NAME:-litclock-images.tar.gz}"
 REPO_ROOT=""
