@@ -104,6 +104,129 @@ QR_NOTCH_BOTTOM = max(DIVIDER_Y + DIVIDER_WIDTH // 2, QR_POSITION[1] + QR_SIZE +
 QUOTE_AREA_Y = 80
 QUOTE_AREA_H = 400
 
+# ---- Masthead geometry (dev#538 V8-G2, owner-approved on hardware) ----
+# The top strip reads as one typeset dateline: the date and the LOW temp
+# line stand on a shared baseline placed so worst-case descenders clear
+# the horizontal rule by RULE_CLEARANCE — mirroring how the quote's
+# ascenders sit just below the rule. The weather cell is a centered
+# lockup (icon + fixed-width two-line temp slot), so its position never
+# shifts with the day's digits. All vertical placement derives from font
+# metrics at the PINNED Pillow/FreeType versions (dev + Pi ship the same
+# lock); geometry margins are small, so an unpinned Pillow bump must
+# re-run the masthead tests. NOTE: textbbox() bottoms are EXCLUSIVE
+# (first row below the ink) — every derivation here relies on that.
+RULE_CLEARANCE = 4
+# Top ink row of the width-4 divider PIL paints at DIVIDER_Y
+# (centerline convention: rows DIVIDER_Y-1 .. DIVIDER_Y+2).
+RULE_TOP = DIVIDER_Y - DIVIDER_WIDTH // 2 + 1
+WEATHER_DIVIDER_X = 225  # ink columns 224..227
+# Last white column left of the vertical rule's ink — the weather cell the
+# lockup centers in is columns 0..WEATHER_CELL_RIGHT. RULE_CLEARANCE is a
+# bound the tests assert near the rule, NOT space removed from centering
+# (subtracting it shifted the approved layout 1px left — dev#538 pixel-diff).
+WEATHER_CELL_RIGHT = WEATHER_DIVIDER_X - DIVIDER_WIDTH // 2 - 1
+DATE_X = 250
+DATE_FONT_SIZE = 48
+TEMP_FONT_SIZE = 24
+TEMP_LINE_PITCH = 28  # baseline-to-baseline for the two temp lines (8px min ink gap — reviewed)
+ICON_SIZE = 64  # icons are native 32x32 -> exact 2x integer scale (NEAREST)
+LOCKUP_GAP = 12
+LOCKUP_MIN_X = 18  # stay clear of the update-failed glyph zone (ink x<=16)
+# The temp slot is sized over EVERY string _format_temp can emit
+# (the full accepted band x both units), so any accepted value fits by
+# construction. Hand-picked reference strings lost this game twice —
+# "-40°C" tied the slot, then "100°C" beat it ("0" is wider than "9" in
+# Literata and °C wider than °F). ~600 textbbox probes, once per process.
+TEMP_BAND = (-99, 199)  # also the _format_temp acceptance band
+
+_masthead_cache: dict = {}
+
+
+def _reset_masthead_cache() -> None:
+    """Test hook — the cache assumes FONT_PATH and the size constants are
+    immutable for the process lifetime (true in production: fresh process
+    per minute). Tests that monkeypatch them must clear it."""
+    _masthead_cache.clear()
+
+
+def _masthead_metrics() -> dict:
+    """Derived masthead placement (cached: fonts + metrics are static)."""
+    if _masthead_cache:
+        return _masthead_cache
+    date_font = ImageFont.truetype(FONT_PATH, DATE_FONT_SIZE)
+    temp_font = ImageFont.truetype(FONT_PATH, TEMP_FONT_SIZE)
+    probe = ImageDraw.Draw(Image.new("1", (4, 4)))
+    asc_date = date_font.getmetrics()[0]
+    # descender depth below the baseline for the deepest date glyphs
+    desc_depth = probe.textbbox((0, 0), "Jy", font=date_font)[3] - asc_date
+    baseline = RULE_TOP - RULE_CLEARANCE - desc_depth
+    slot = max(
+        probe.textbbox((0, 0), f"{n}{deg}", font=temp_font)[2]
+        for n in range(TEMP_BAND[0], TEMP_BAND[1] + 1)
+        for deg in ("°F", "°C")
+    )
+    group = ICON_SIZE + LOCKUP_GAP + slot
+    icon_x = max((WEATHER_CELL_RIGHT - group) // 2, LOCKUP_MIN_X)  # centers in 0..WEATHER_CELL_RIGHT
+    _masthead_cache.update(
+        date_font=date_font,
+        temp_font=temp_font,
+        temp_asc=temp_font.getmetrics()[0],
+        baseline=baseline,
+        date_y=baseline - asc_date,
+        icon_x=icon_x,
+        icon_y=RULE_TOP - RULE_CLEARANCE - ICON_SIZE,
+        slot_right=icon_x + group,
+    )
+    return _masthead_cache
+
+
+def _format_temp(value, degrees: str) -> str | None:
+    """Bound the weather temp domain (dev#538 review): finite numeric within
+    a physical sanity band -> 'N°F'/'N°C'; anything else returns None and the
+    caller suppresses weather for this render. Prevents API garbage from
+    crashing the per-minute render (round(None)) or drawing junk into the
+    fixed-width lockup slot."""
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not (TEMP_BAND[0] <= n <= TEMP_BAND[1]):  # NaN-safe; band == slot sizing domain
+        return None
+    return f"{round(n):d}{degrees}"
+
+
+def _compose_masthead(image, draw, date_text: str, temp_high: str | None, temp_low: str | None, icon_path: str | None):
+    """Draw the top strip: date, weather lockup (when temps present), rules.
+    Call AFTER the quote paste — the rule's bottom ink row (DIVIDER_Y+2 ==
+    QUOTE_AREA_Y) must overwrite the quote image's top margin row, as it
+    always has. A missing/corrupt icon leaves the icon area blank but never
+    moves the temps (fixed slot geometry) and never raises."""
+    mh = _masthead_metrics()
+    have_weather = temp_high is not None and temp_low is not None
+    if have_weather:
+        if icon_path:
+            try:
+                icon_image = ImageOps.invert(
+                    Image.open(icon_path).resize((ICON_SIZE, ICON_SIZE), Image.NEAREST).convert("L")
+                )
+                image.paste(icon_image, (mh["icon_x"], mh["icon_y"]))
+            except OSError as e:
+                # FileNotFoundError AND corrupt-file (UnidentifiedImageError
+                # is an OSError subclass) — dev#538 review: the old narrow
+                # except let a corrupt icon kill the whole render.
+                logging.error(f"Weather icon unusable ({icon_path}): {e}; leaving icon area blank")
+        for line_text, line_baseline in (
+            (temp_high, mh["baseline"] - TEMP_LINE_PITCH),
+            (temp_low, mh["baseline"]),
+        ):
+            w = draw.textbbox((0, 0), line_text, font=mh["temp_font"])[2]
+            draw.text((mh["slot_right"] - w, line_baseline - mh["temp_asc"]), line_text, font=mh["temp_font"], fill=0)
+    draw.text((DATE_X, mh["date_y"]), date_text, font=mh["date_font"], fill=0)
+    draw.line([(0, DIVIDER_Y), (DISPLAY_SIZE[0], DIVIDER_Y)], fill=0, width=DIVIDER_WIDTH)
+    if have_weather:
+        draw.line([(WEATHER_DIVIDER_X, 0), (WEATHER_DIVIDER_X, DIVIDER_Y)], fill=0, width=DIVIDER_WIDTH)
+
+
 # Runtime quote rendering (dev#531 Stage 2). When LITCLOCK_RUNTIME_RENDER is
 # true, the clock renders the quote from the corpus CSV via
 # src/quote_renderer.py instead of opening a pre-rendered PNG. Fallback
@@ -180,20 +303,30 @@ def main():
 
     image = Image.new(mode="1", size=DISPLAY_SIZE, color=255)
 
+    temp_high = temp_low = icon_path = None
+    if weather is not None and not isinstance(weather, dict):
+        logging.warning(f"weather payload is not a mapping ({type(weather).__name__}); suppressing weather")
+        weather = None
     if weather is not None:
         degrees = "°F" if units == "imperial" else "°C"
-        temp_high = f"{round(weather['temperatureMax'])}{degrees}"
-        temp_low = f"{round(weather['temperatureMin'])}{degrees}"
-        icon = weather["icon"]
-        logging.debug(f"Weather: {temp_high} / {temp_low}, icon: {icon}")
-
-        icon_path = os.path.join(PROJECT_ROOT, "icons", f"{icon}.xbm")
-        try:
-            icon_image = ImageOps.invert(Image.open(icon_path).resize((64, 64)).convert("L"))
-            image.paste(icon_image, (20, 5))
-            logging.info(f"Icon image pasted from {icon_path}")
-        except FileNotFoundError as e:
-            logging.error(f"Icon file not found: {e}")
+        temp_high = _format_temp(weather.get("temperatureMax"), degrees)
+        temp_low = _format_temp(weather.get("temperatureMin"), degrees)
+        if temp_high is None or temp_low is None:
+            # Malformed provider payload (None/NaN/non-numeric/absurd) —
+            # suppress weather for this render rather than crash or draw
+            # garbage into the masthead (dev#538 review).
+            logging.warning(
+                f"weather temps unusable (max={weather.get('temperatureMax')!r} "
+                f"min={weather.get('temperatureMin')!r}); suppressing weather"
+            )
+            weather = None
+            temp_high = temp_low = None
+        else:
+            icon = weather.get("icon")
+            # icon may be absent/garbage without costing the temps —
+            # _compose_masthead handles icon_path=None (dev#541 review)
+            icon_path = os.path.join(PROJECT_ROOT, "icons", f"{icon}.xbm") if isinstance(icon, str) and icon else None
+            logging.debug(f"Weather: {temp_high} / {temp_low}, icon: {icon_path}")
 
     now = datetime.now()
     quote_meta = None
@@ -231,16 +364,7 @@ def main():
             time_font = ImageFont.truetype(FONT_PATH, 144)
             draw.text((220, 150), now.strftime("%H:%M"), font=time_font, fill=0)
 
-    date_font = ImageFont.truetype(FONT_PATH, 48)
-    draw.text((250, 10), now.strftime("%a, %B %d"), font=date_font, fill=0)
-
-    if weather is not None:
-        temp_font = ImageFont.truetype(FONT_PATH, 24)
-        draw.text((100, 20), f"{temp_high} / {temp_low}", font=temp_font, fill=0)
-
-    draw.line([(0, DIVIDER_Y), (DISPLAY_SIZE[0], DIVIDER_Y)], fill=0, width=DIVIDER_WIDTH)
-    if weather is not None:
-        draw.line([(225, 0), (225, DIVIDER_Y)], fill=0, width=DIVIDER_WIDTH)
+    _compose_masthead(image, draw, now.strftime("%a, %B %d"), temp_high, temp_low, icon_path)
 
     _stamp_update_failed_glyph(image, draw)
     _composite_settings_qr(image)

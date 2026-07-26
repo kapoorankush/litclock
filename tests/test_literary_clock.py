@@ -887,3 +887,199 @@ class TestMainRuntimeWiring:
         self._arm(monkeypatch, tmp_path)
         (tmp_path / ".runtime-render-validated").write_text("freetype=9.9.9\n")
         assert literary_clock._runtime_render_enabled() is False
+
+
+class TestMastheadGeometry:
+    """dev#538 V8-G2: shared-baseline masthead with centered weather lockup.
+    Ink = pixel 0 on the mode-'1' strip. All bounds from the review:
+    horizontal rule ink rows 77..80, vertical rule ink cols 224..227,
+    QR notch erases x>=701, update-failed glyph zone x<=16."""
+
+    RULE_TOP = 77
+    VRULE_LEFT = 224
+
+    def _strip(self, date_text="Sat, July 25", hi="100°F", lo="82°F", icon="sun"):
+        from PIL import Image, ImageDraw
+
+        img = Image.new("1", literary_clock.DISPLAY_SIZE, 1)
+        draw = ImageDraw.Draw(img)
+        icon_path = os.path.join(literary_clock.PROJECT_ROOT, "icons", f"{icon}.xbm") if icon else None
+        literary_clock._compose_masthead(img, draw, date_text, hi, lo, icon_path)
+        return img
+
+    def _ink_bbox(self, img, box):
+        region = img.crop(box)
+        inv = region.point(lambda v: 255 if v == 0 else 0)
+        return inv.getbbox()
+
+    def test_date_clearance_and_bound_full_sweep(self):
+        """Worst-case dates found by width/descender sweep (review C1: the
+        widest is 'Mon, September 04', NOT September 30), then rendered and
+        checked: descenders >= RULE_CLEARANCE above the rule, right edge
+        clear of the QR notch with real margin."""
+        from PIL import Image, ImageDraw
+
+        probe = ImageDraw.Draw(Image.new("1", (4, 4)))
+        f = literary_clock._masthead_metrics()["date_font"]
+        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        months = ["January", "February", "March", "April", "May", "June",
+                  "July", "August", "September", "October", "November", "December"]
+        candidates = [f"{d}, {m} {n:02d}" for d in days for m in months for n in (4, 9, 30, 28)]
+        widest = sorted(candidates, key=lambda s: probe.textbbox((0, 0), s, font=f)[2])[-6:]
+        deepest = [f"{d}, {m} 30" for d in days[:1] for m in months]  # descender set
+        for date_text in widest + deepest:
+            img = self._strip(date_text=date_text)
+            bb = self._ink_bbox(img, (literary_clock.DATE_X, 0, 800, self.RULE_TOP))
+            assert bb is not None
+            bottom = bb[3]  # exclusive bottom
+            assert bottom - 1 <= self.RULE_TOP - 1 - literary_clock.RULE_CLEARANCE, (date_text, bb)
+            right = literary_clock.DATE_X + bb[2]
+            assert right < 695, f"{date_text} right edge {right} too close to QR notch (701)"
+
+    def test_temp_matrix_clearances_and_line_separation(self):
+        temps = [("9°F", "5°F"), ("82°F", "64°F"), ("100°F", "82°F"), ("110°F", "99°F"),
+                 ("-8°F", "-22°F"), ("-40°F", "-44°F"), ("38°C", "27°C"), ("-12°C", "-22°C"),
+                 ("-40°C", "-44°C")]
+        for hi, lo in temps:
+            img = self._strip(hi=hi, lo=lo)
+            # nothing in the clearance band left of the vertical rule
+            gx = self.VRULE_LEFT - literary_clock.RULE_CLEARANCE
+            gap = self._ink_bbox(img, (gx, 0, self.VRULE_LEFT, self.RULE_TOP))
+            assert gap is None, (hi, lo, "ink in vertical-rule clearance band")
+            # nothing in the clearance band above the horizontal rule (whole cell)
+            clr = self.RULE_TOP - literary_clock.RULE_CLEARANCE
+            band = self._ink_bbox(img, (0, clr, self.VRULE_LEFT, self.RULE_TOP))
+            assert band is None, (hi, lo, "ink in horizontal-rule clearance band")
+            # the two temp lines never touch (review I3: >= 2px separation)
+            mh = literary_clock._masthead_metrics()
+            x0 = mh["icon_x"] + literary_clock.ICON_SIZE + 1
+            hi_bb = self._ink_bbox(img, (x0, 0, self.VRULE_LEFT, mh["baseline"] - literary_clock.TEMP_LINE_PITCH + 2))
+            split = mh["baseline"] - literary_clock.TEMP_LINE_PITCH + 2
+            lo_bb = self._ink_bbox(img, (x0, split, self.VRULE_LEFT, self.RULE_TOP))
+            assert hi_bb is not None and lo_bb is not None
+            # REAL separation: bottom of the high line to top of the low line
+            hi_bottom_abs = hi_bb[3]  # exclusive, in absolute rows
+            lo_top_abs = split + lo_bb[1]
+            assert lo_top_abs - hi_bottom_abs >= 2, (hi, lo, hi_bottom_abs, lo_top_abs)
+
+    def test_all_22_icons_stay_inside_lockup(self):
+        import glob as _glob
+
+        mh = literary_clock._masthead_metrics()
+        for p in sorted(_glob.glob(os.path.join(literary_clock.PROJECT_ROOT, "icons", "*.xbm"))):
+            name = os.path.basename(p)[:-4]
+            img = self._strip(icon=name)
+            icon_bb = self._ink_bbox(img, (0, 0, mh["icon_x"] + literary_clock.ICON_SIZE + 1, self.RULE_TOP))
+            assert icon_bb is not None, name
+            # icon ink never below the clearance band nor left of the glyph zone
+            assert mh["icon_x"] >= literary_clock.LOCKUP_MIN_X
+            assert icon_bb[3] - 1 <= self.RULE_TOP - 1 - literary_clock.RULE_CLEARANCE, name
+            assert icon_bb[0] >= literary_clock.LOCKUP_MIN_X, name
+
+    def test_icon_position_static_across_temps(self):
+        a = self._strip(hi="9°F", lo="5°F")
+        b = self._strip(hi="-40°C", lo="-44°C")
+        mh = literary_clock._masthead_metrics()
+        x, y, px = mh["icon_x"], mh["icon_y"], literary_clock.ICON_SIZE
+        box = (x, y, x + px, y + px)
+        assert list(a.crop(box).getdata()) == list(b.crop(box).getdata())
+
+    def test_missing_icon_keeps_slot_and_survives(self, tmp_path):
+        img = self._strip(icon=None)
+        ok = self._strip()
+        mh = literary_clock._masthead_metrics()
+        # temps identical with and without icon (fixed slot geometry)
+        tbox = (mh["icon_x"] + literary_clock.ICON_SIZE, 0, self.VRULE_LEFT, self.RULE_TOP)
+        assert list(img.crop(tbox).getdata()) == list(ok.crop(tbox).getdata())
+
+    def test_corrupt_icon_survives(self, tmp_path):
+        bad = tmp_path / "junk.xbm"
+        bad.write_bytes(b"this is not an xbm")
+        from PIL import Image, ImageDraw
+
+        img = Image.new("1", literary_clock.DISPLAY_SIZE, 1)
+        literary_clock._compose_masthead(img, ImageDraw.Draw(img), "Sat, July 25", "100°F", "82°F", str(bad))
+        # temps still drawn
+        mh = literary_clock._masthead_metrics()
+        assert self._ink_bbox(img, (mh["icon_x"] + literary_clock.ICON_SIZE, 0, self.VRULE_LEFT, self.RULE_TOP))
+
+    def test_no_weather_state(self):
+        img = self._strip(hi=None, lo=None, icon=None)
+        # no vertical rule, no lockup ink in the weather cell
+        assert self._ink_bbox(img, (0, 0, self.VRULE_LEFT + 4, self.RULE_TOP)) is None
+        # date still present
+        assert self._ink_bbox(img, (literary_clock.DATE_X, 0, 800, self.RULE_TOP)) is not None
+
+    def test_lockup_clear_of_update_glyph_zone(self):
+        img = self._strip()
+        assert self._ink_bbox(img, (0, 0, 17, self.RULE_TOP)) is None
+
+
+class TestFormatTemp:
+    """dev#538 review: bound the weather temp domain."""
+
+    def test_valid_values(self):
+        assert literary_clock._format_temp(82.4, "°F") == "82°F"
+        assert literary_clock._format_temp(-12.6, "°C") == "-13°C"
+        assert literary_clock._format_temp(0, "°F") == "0°F"
+        assert literary_clock._format_temp("99", "°F") == "99°F"
+        assert literary_clock._format_temp(-0.4, "°F") == "0°F"
+
+    def test_garbage_returns_none(self):
+        for bad in (None, float("nan"), float("inf"), -float("inf"), "N/A", "", [], {}, 1000, -300):
+            assert literary_clock._format_temp(bad, "°F") is None, bad
+
+
+class TestMainWeatherHardening:
+    """dev#541 review: malformed weather payloads reach main() safely."""
+
+    def _run_main(self, monkeypatch, payload):
+        from weather_providers import open_meteo
+
+        class Stub:
+            def __init__(self, *a, **kw): ...
+            def get_weather(self):
+                return payload
+
+        monkeypatch.setenv("WEATHER_ENABLED", "true")
+        monkeypatch.setenv("WEATHER_LATITUDE", "30")
+        monkeypatch.setenv("WEATHER_LONGITUDE", "-97")
+        monkeypatch.delenv("OPENWEATHERMAP_APIKEY", raising=False)
+        monkeypatch.delenv("LITCLOCK_RUNTIME_RENDER", raising=False)
+        monkeypatch.setattr(open_meteo, "OpenMeteo", Stub)
+        monkeypatch.setattr(literary_clock, "open_meteo", open_meteo)
+        image, _meta, _now = literary_clock.main()
+        assert image is not None and image.size == literary_clock.DISPLAY_SIZE
+        return image
+
+    def test_missing_icon_key_survives(self, monkeypatch):
+        img = self._run_main(monkeypatch, {"temperatureMax": 100, "temperatureMin": 82})
+        # temps drawn even with no icon key
+        mh = literary_clock._masthead_metrics()
+        region = img.crop((mh["icon_x"] + literary_clock.ICON_SIZE, 0, 224, 77))
+        assert region.point(lambda v: 255 if v == 0 else 0).getbbox() is not None
+
+    def test_non_mapping_payload_survives(self, monkeypatch):
+        self._run_main(monkeypatch, ["not", "a", "dict"])
+
+    def test_garbage_temps_suppress_weather(self, monkeypatch):
+        img = self._run_main(monkeypatch, {"temperatureMax": "N/A", "temperatureMin": None, "icon": "sun"})
+        region = img.crop((0, 0, 228, 77))
+        assert region.point(lambda v: 255 if v == 0 else 0).getbbox() is None
+
+
+class TestTempSlotDomain:
+    """dev#541 review: every string _format_temp can emit fits the slot."""
+
+    def test_band_edges_fit_slot(self):
+        from PIL import Image, ImageDraw
+
+        mh = literary_clock._masthead_metrics()
+        probe = ImageDraw.Draw(Image.new("1", (4, 4)))
+        slot = mh["slot_right"] - (mh["icon_x"] + literary_clock.ICON_SIZE + literary_clock.LOCKUP_GAP)
+        for n in (-99, -40, 0, 100, 199):
+            for deg in ("°F", "°C"):
+                s = literary_clock._format_temp(n, deg)
+                assert s is not None
+                w = probe.textbbox((0, 0), s, font=mh["temp_font"])[2]
+                assert w <= slot, (s, w, slot)
