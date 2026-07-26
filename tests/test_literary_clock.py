@@ -854,10 +854,21 @@ class TestMainRuntimeWiring:
 
         monkeypatch.setattr(literary_clock, "datetime", MidnightDT)
 
+    def _real_png(self, tmp_path) -> str:
+        """A genuine 800x400 PNG — main() opens image_path, and a missing
+        file trips the corrupt-PNG guard (which nulls the meta)."""
+        from PIL import Image
+
+        p = tmp_path / "fallback.png"
+        Image.new("1", (800, 400), 1).save(p)
+        return str(p)
+
     def test_main_uses_runtime_frame(self, monkeypatch, tmp_path) -> None:
         self._arm(monkeypatch, tmp_path)
         image, quote_meta, _ = literary_clock.main()
         assert quote_meta is not None and "image" in quote_meta
+        # the producer must TAG it — deleting that line must fail a test
+        assert quote_meta["render_mode"] == "runtime"
         # the runtime frame's ink actually landed in the quote area
         area = image.crop((0, literary_clock.QUOTE_AREA_Y, 800, 480))
         assert area.getbbox() is not None
@@ -882,6 +893,38 @@ class TestMainRuntimeWiring:
         for raw in ("true", "1", "TRUE"):
             monkeypatch.setenv("LITCLOCK_RUNTIME_RENDER", raw)
             assert literary_clock._runtime_render_enabled() is True
+
+    def test_runtime_attempted_but_lost_is_image_fallback(self, monkeypatch, tmp_path) -> None:
+        """dev#543 F3: the alarm condition must be distinguishable from
+        'runtime rendering is simply off on this device'."""
+        self._arm(monkeypatch, tmp_path)
+        png = self._real_png(tmp_path)
+        monkeypatch.setattr(literary_clock, "get_current_quote_runtime", lambda **kw: None)
+        monkeypatch.setattr(
+            literary_clock,
+            "get_current_quote",
+            lambda now=None, allow_nsfw=False: {
+                "quote": "q", "author": "a", "title": "t", "time": "00:00",
+                "image_path": png, "picked_at": 0.0, "render_mode": "image",
+            },
+        )
+        _image, quote_meta, _now = literary_clock.main()
+        assert quote_meta["render_mode"] == "image-fallback"
+
+    def test_runtime_disabled_stays_plain_image(self, monkeypatch, tmp_path) -> None:
+        self._arm(monkeypatch, tmp_path)
+        png = self._real_png(tmp_path)
+        monkeypatch.setenv("LITCLOCK_RUNTIME_RENDER", "false")
+        monkeypatch.setattr(
+            literary_clock,
+            "get_current_quote",
+            lambda now=None, allow_nsfw=False: {
+                "quote": "q", "author": "a", "title": "t", "time": "00:00",
+                "image_path": png, "picked_at": 0.0, "render_mode": "image",
+            },
+        )
+        _image, quote_meta, _now = literary_clock.main()
+        assert quote_meta["render_mode"] == "image"
 
     def test_marker_freetype_mismatch_disables_runtime(self, monkeypatch, tmp_path) -> None:
         self._arm(monkeypatch, tmp_path)
@@ -1083,3 +1126,44 @@ class TestTempSlotDomain:
                 assert s is not None
                 w = probe.textbbox((0, 0), s, font=mh["temp_font"])[2]
                 assert w <= slot, (s, w, slot)
+
+
+class TestRenderModeSignal:
+    """dev#531: the status file must say WHICH render tier painted the frame.
+    The fallback chain is invisible to the viewer, so this field is the only
+    evidence distinguishing a healthy runtime-render fleet from one silently
+    falling back — it gates the images-retirement decision."""
+
+    def _write_and_read(self, monkeypatch, tmp_path, quote_meta):
+        target = tmp_path / "current-quote.json"
+        monkeypatch.setattr(literary_clock, "STATUS_FILE", str(target))
+        literary_clock._write_status_file(quote_meta, datetime(2026, 1, 1, 12, 0))
+        return json.loads(target.read_text())
+
+    def test_runtime_mode_recorded(self, monkeypatch, tmp_path):
+        meta = {"quote": "q", "author": "a", "title": "t", "image_path": "/run/litclock/current-quote.png",
+                "picked_at": 1.0, "render_mode": "runtime"}
+        assert self._write_and_read(monkeypatch, tmp_path, meta)["render_mode"] == "runtime"
+
+    def test_image_fallback_mode_recorded(self, monkeypatch, tmp_path):
+        meta = {"quote": "q", "author": "a", "title": "t", "image_path": "/x/quote_1200_0_credits.png",
+                "picked_at": 1.0, "render_mode": "image"}
+        assert self._write_and_read(monkeypatch, tmp_path, meta)["render_mode"] == "image"
+
+    def test_no_quote_is_time_only(self, monkeypatch, tmp_path):
+        assert self._write_and_read(monkeypatch, tmp_path, None)["render_mode"] == "time-only"
+
+    def test_legacy_meta_without_field_is_unknown_not_a_claim(self, monkeypatch, tmp_path):
+        """A meta dict lacking the field means UNKNOWN — not runtime (a false
+        all-clear) and not time-only (a false claim that no quote painted;
+        dev#543 review F4). Only quote_meta=None is genuinely time-only."""
+        meta = {"quote": "q", "author": "a", "title": "t", "image_path": "/x.png", "picked_at": 1.0}
+        assert self._write_and_read(monkeypatch, tmp_path, meta)["render_mode"] is None
+
+    def test_glob_path_tags_image_mode(self, monkeypatch, tmp_path):
+        (tmp_path / "images" / "metadata").mkdir(parents=True)
+        png = tmp_path / "images" / "metadata" / "quote_1200_0_credits.png"
+        png.write_bytes(b"x")
+        monkeypatch.setattr(literary_clock, "PROJECT_ROOT", str(tmp_path))
+        meta = literary_clock.get_current_quote(now=datetime(2026, 1, 1, 12, 0))
+        assert meta is not None and meta["render_mode"] == "image"

@@ -1405,3 +1405,76 @@ class TestSupportLogsEndpointMore:
         with diag_env.test_client() as c:
             r = c.get("/api/diagnostics/journal?unit=litclock.service&lines=25")
         assert "deadbeefsecret999" not in r.get_data(as_text=True), "deep ?lines path must redact too"
+
+
+class TestRenderModeInSupportPayload:
+    """dev#531/#543 review: the render tier must be VISIBLE in the support
+    bundle, not merely present in the values dict. build_copy_payload prints
+    an explicit field list, so a new key is invisible until printed — and an
+    invisible render_mode defeats the whole point of collecting it."""
+
+    def _payload(self, **extra):
+        from control_server.routes.diagnostics._copy_payload import build_copy_payload
+
+        values = {"quote": "It was midnight.", "author": "A", "title": "T", "time": "00:00"}
+        values.update(extra)
+        return build_copy_payload(values)
+
+    def test_runtime_mode_is_printed(self):
+        assert "Rendered by: runtime" in self._payload(render_mode="runtime")
+
+    def test_image_fallback_is_printed(self):
+        # the condition the bundle exists to reveal
+        assert "Rendered by: image" in self._payload(render_mode="image")
+
+    def test_absent_on_legacy_clocks(self):
+        assert "Rendered by:" not in self._payload()
+
+
+class TestDiagnosticsFieldsAreActuallyRendered:
+    """dev#543 review F1: the schema keystone gates POLICY coverage, not
+    SURFACING. `render_mode` reached the values dict, the privacy policy and
+    the JSON API while appearing in zero human-readable artifact — which is
+    how a field meant to be read ships unreadable. This gate closes that
+    hole for every future field."""
+
+    # Fields deliberately not printed as label/value rows: structured blobs
+    # rendered by their own sections, or duplicates of a rendered field.
+    NOT_RENDERED_BY_DESIGN = {
+        "service_states",  # own section with per-unit journal tails
+        "recent_log_entries",  # own section
+        "quote",  # rendered as a blockquote, not a row
+        "author",  # folded into the attribution line
+        "title",
+        "time",
+        "uptime_s",  # rendered via uptime_human
+    }
+
+    def test_every_schema_field_is_rendered_somewhere(self):
+        import re
+        from pathlib import Path
+
+        from control_server._diagnostics_privacy import schema_keys
+
+        root = Path(__file__).resolve().parent.parent / "src" / "control_server"
+        payload_src = (root / "routes" / "diagnostics" / "_copy_payload.py").read_text()
+        template_src = (root / "templates" / "diagnostics.html.j2").read_text()
+        haystack = payload_src + template_src
+        missing = [
+            k
+            for k in sorted(schema_keys())
+            if k not in self.NOT_RENDERED_BY_DESIGN and not re.search(rf"['\"]{re.escape(k)}['\"]", haystack)
+        ]
+        assert not missing, (
+            f"diagnostics fields collected but never rendered to a human: {missing}. "
+            "Add them to _copy_payload.py's section table (or the Last quote block) "
+            "and/or diagnostics.html.j2 rows, or list them in NOT_RENDERED_BY_DESIGN "
+            "with a reason."
+        )
+
+    def test_render_mode_specifically_is_rendered(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent / "src" / "control_server"
+        assert "render_mode" in (root / "routes" / "diagnostics" / "_copy_payload.py").read_text()
+        assert "render_mode" in (root / "templates" / "diagnostics.html.j2").read_text()
