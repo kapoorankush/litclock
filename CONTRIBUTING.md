@@ -356,10 +356,10 @@ scrape / gather → prepare review → manual review → merge → clean → det
 | 9 | `detect_nsfw.py` | Flag NSFW content via keywords and optional LLM | See below |
 | 10 | `review_nsfw.py` | Interactive human review of NSFW flags, then merge decisions | See below |
 | 11 | `validate_time_parser.py` | Validate every time phrase parses to its expected time | None |
-| 12 | `generate_images.py` | Generate 800x400 PNG quote images with highlighted time phrase | None |
+| 12 | `generate_images.py` | DEPRECATED (dev#540): legacy fallback with whole-word bolding — diverges from the exact-span contract; refuses to run | None |
 
 `time_parser.py` is a library module used by other scripts — not invoked directly.
-`quote_to_image.php` is the primary image generator (produces better output than `generate_images.py`); run it from the `image-gen/` directory.
+`quote_to_image.php` is the primary image generator; run it from the `image-gen/` directory. (`generate_images.py` is deprecated — see the table.)
 
 ### Editing the quote corpus
 
@@ -390,6 +390,41 @@ Subcommands for debugging (all safe to run on the working tree):
 | `ship MSG` | Full end-to-end pipeline. Supports `--dry-run`, `--no-release`, `--no-push`, `--branch NAME`. |
 
 See issue #211 for the original design and issue #299 for the manifest + CI integrity layer.
+
+### How bolding works — the timestring column IS the bold spec
+
+The renderer bolds **exactly** the case-insensitive match of a row's
+`timestring` column inside its quote — nothing more, nothing less (dev#540,
+2026-07). There are no renderer heuristics: no whole-word extension, no
+punctuation absorption, no word-boundary detection.
+
+**This is a deliberate contract, and it matters most for language
+maintainers:** if a bold looks wrong on the clock, it is a **data fix in
+your language's corpus rows — never a renderer fix.** The rules:
+
+- **Punctuation inside the timestring stays bold** because it is part of the
+  matched string: `eleven o'clock`, `half-past ten`, `11:37 A.M.` all bold
+  their internal punctuation. Punctuation *outside* the match (the period
+  after "midnight.", a closing quote mark) always renders in regular weight.
+- **Want a whole word bolded? Put the whole word in the column.** If the
+  quote says "noonday" and you want "noonday" bold, the timestring must be
+  `noonday`, not `noon`. A timestring whose match starts or ends in the
+  middle of a word renders a half-bold word (`no**on**day`) — almost always
+  a row bug.
+- **The validator has your back:** `corpus_edit.py validate` (and the `ship`
+  pipeline) warns on any changed row whose timestring match has a mid-word
+  edge, and the render-invariants CI reports a corpus-wide census. Fix the
+  row it names — adjust the timestring, or fix a typo in the quote (a
+  missing space is the classic cause).
+- **If the timestring appears more than once in the quote, the FIRST
+  occurrence is bolded** (same as the PHP `stristr` behavior it has always
+  had). If the wrong occurrence bolds, make the timestring more specific —
+  include a neighboring word so the match is unique.
+- **Why no smart heuristics?** They don't survive languages. Word-boundary
+  detection that works for English breaks on no-space CJK text, French
+  punctuation spacing, and combining marks. Exact-span means your corpus
+  file fully controls what readers see, in any language, and you never need
+  to read renderer code to fix a bolding problem.
 
 ### detect_nsfw.py
 

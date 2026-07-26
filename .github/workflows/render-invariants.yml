@@ -75,7 +75,7 @@ jobs:
         # of probe + port semantics before updating this pin (dev#536
         # review, C3).
         run: |
-          want=eb9605915e9d309e48eafc616ccb48a6b54123c0
+          want=c595a9dcef81766ebc6ec21c75050452c4b988a8
           got=$(sha1sum image-gen/quote_to_image.php | cut -d' ' -f1)
           if [ "$got" != "$want" ]; then
             echo "::error::image-gen/quote_to_image.php changed (sha1 $got != pinned $want)."

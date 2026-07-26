@@ -206,59 +206,15 @@ function TurnQuoteIntoImage($time, $quote, $timestring, $title, $author, $imagen
     $ts_char_start = strlen($before);
     $ts_char_end   = $ts_char_start + strlen($timestring);
 
-    // Extend the bold end past characters attached to the last time-word, but
-    // do NOT drag a hyphen/dash-joined FOLLOWING word into bold. Three cases:
-    //   1. Timestring ends MID-WORD ("ten" inside "tenth"): the next char is a
-    //      letter/number — keep the whole word bold exactly as the original
-    //      whole-word bolder did. A genuinely wrong mid-word match is a corpus
-    //      data issue (see #502), not a renderer concern; we don't want to turn
-    //      it into a NEW mid-word bold here.
-    //   2. Timestring ends at a word boundary with TERMINATING punctuation
-    //      ("midnight." / "...past ten,"): the punctuation runs to the next
-    //      space (or end) with no letter/number after it — keep it bold, matching
-    //      the original bolder and avoiding churn on ~2400 images.
-    //   3. Timestring ends at a hyphen/dash-join ("...four minutes to ten-four...",
-    //      #504): the punctuation run hits a letter/number before any space —
-    //      bold only the timestring ("ten"), symmetric to the leading-fragment
-    //      fix in #503.
-    //
-    // "letter/number" is UTF-8-aware (\p{L}\p{N} over the char starting at the
-    // byte offset), so a join into a NON-ASCII word ("ten—東京", "ten-δεκα") is
-    // caught too, while multibyte punctuation (em-dash, ellipsis, curly quotes —
-    // all \p{P}) is treated as punctuation, same as ASCII (#504 review). Offsets
-    // stay at char boundaries: ts_char_end is the match end, and the scan advances
-    // whole UTF-8 chars.
-    $qlen = strlen($quote);
-    $word_char_at = function ($i) use ($quote, $qlen) {
-        // Is a Unicode letter or number the char starting at byte $i? The window
-        // is exactly one UTF-8 char, sized from its lead byte. A fixed 4-byte
-        // window can slice the NEXT char mid-sequence, and PCRE /u validates the
-        // WHOLE subject before matching — an invalid tail returns false
-        // (PREG_BAD_UTF8_ERROR) even when the first char IS a letter (#19).
-        if ($i >= $qlen) {
-            return false;
-        }
-        $b = ord($quote[$i]);
-        $len = ($b < 0x80) ? 1 : (($b < 0xE0) ? 2 : (($b < 0xF0) ? 3 : 4));
-        return preg_match('/^[\p{L}\p{N}]/u', substr($quote, $i, $len)) === 1;
-    };
-    if ($word_char_at($ts_char_end)) {
-        // case 1 — mid-word: keep the whole word bold
-        while ($ts_char_end < $qlen && $quote[$ts_char_end] !== ' ') {
-            $ts_char_end++;
-        }
-    } else {
-        // cases 2 & 3 — look ahead over the trailing punctuation run: extend only
-        // if it terminates the word (reaches a space/end before any letter/number).
-        $scan = $ts_char_end;
-        while ($scan < $qlen && $quote[$scan] !== ' ' && !$word_char_at($scan)) {
-            $b = ord($quote[$scan]);           // advance one whole UTF-8 char
-            $scan += ($b < 0x80) ? 1 : (($b < 0xE0) ? 2 : (($b < 0xF0) ? 3 : 4));
-        }
-        if ($scan >= $qlen || $quote[$scan] === ' ') {
-            $ts_char_end = $scan;
-        }
-    }
+    // Bold EXACTLY the matched timestring span (dev#540, 2026-07-26).
+    // The #503/#504 boundary-extension cases (mid-word whole-word bolding,
+    // trailing-punctuation bolding, hyphen-join guard) were REMOVED: the CSV
+    // timestring column is the bold spec, so bolding errors are corpus data
+    // fixes, not renderer heuristics — essential once contributors maintain
+    // per-language corpora (#19/#532). Punctuation INSIDE the timestring
+    // stays bold (it is part of the matched string); punctuation outside the
+    // span never is. A match whose edge lands mid-word renders a half-bold
+    // word — that is a data bug; corpus_edit's validator flags such rows.
 
     // divide text in an array of words, based on spaces
     $quote_array = explode(' ', $quote);
