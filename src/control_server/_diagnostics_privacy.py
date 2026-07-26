@@ -104,6 +104,7 @@ PRIVACY_POLICY: Final[dict[str, RowPolicy]] = {
     "title": RowPolicy("safe-clear", "safe-clear"),
     "time": RowPolicy("safe-clear", "safe-clear"),
     "picked_at": RowPolicy("safe-clear", "safe-clear"),
+    "render_mode": RowPolicy("safe-clear", "safe-clear"),
     # --- Setup markers (operational booleans / paths) ---
     "setup_complete": RowPolicy("safe-clear", "safe-clear"),
     "handoff_complete": RowPolicy("safe-clear", "safe-clear"),

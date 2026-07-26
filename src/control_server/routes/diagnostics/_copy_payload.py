@@ -139,6 +139,18 @@ def build_copy_payload(
             attr_parts.append(str(when))
         if attr_parts:
             lines.append(f"— {' · '.join(attr_parts)}")
+        # Which render tier painted it (dev#531). Printed for EVERY quote:
+        # "image-fallback" (runtime attempted and lost) is the exact
+        # condition this bundle exists to reveal, and it is invisible on
+        # the panel itself. picked_at rides along so a reader can tell
+        # whether the tier describes THIS minute or a stale write
+        # (dev#543 review F5).
+        render_mode = values.get("render_mode")
+        if render_mode:
+            lines.append(f"Rendered by: {render_mode}")
+        picked_at = values.get("picked_at")
+        if picked_at:
+            lines.append(f"Picked at: {picked_at}")
         lines.append("")
     # Recent log entries (snapshot, max 4)
     recent = values.get("recent_log_entries") or []

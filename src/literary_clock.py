@@ -330,10 +330,18 @@ def main():
 
     now = datetime.now()
     quote_meta = None
-    if _runtime_render_enabled():
+    runtime_attempted = _runtime_render_enabled()
+    if runtime_attempted:
         quote_meta = get_current_quote_runtime(now=now, allow_nsfw=allow_nsfw)
     if quote_meta is None:
         quote_meta = get_current_quote(now=now, allow_nsfw=allow_nsfw)
+        if quote_meta is not None and runtime_attempted:
+            # "image" alone can't tell "runtime rendering is off on this
+            # device" from "runtime rendering is failing every minute" —
+            # and with the flag defaulting off, EVERY device reports the
+            # former today, which would make the fleet evidence useless
+            # (dev#543 review F3). Distinguish the alarm condition.
+            quote_meta["render_mode"] = "image-fallback"
 
     draw = ImageDraw.Draw(image)
 
@@ -518,6 +526,7 @@ def get_current_quote_runtime(
         "picked_at": _time.time(),
         "image": frame,
         "font_size": font_size,
+        "render_mode": "runtime",
     }
 
 
@@ -555,6 +564,7 @@ def get_current_quote(
         "time": meta.get("time", now.strftime("%H:%M")),
         "image_path": chosen,
         "picked_at": _time.time(),
+        "render_mode": "image",
     }
 
 
@@ -585,6 +595,19 @@ def _write_status_file(quote_meta: dict | None, now: datetime) -> None:
     payload: dict = {
         "time": now.strftime("%H:%M"),
         "picked_at": _time.time(),
+        # Which tier of the render chain actually painted this frame
+        # (dev#531). The chain is invisible to the viewer, so this is the
+        # ONLY evidence distinguishing a healthy runtime-render fleet from
+        # one silently falling back — what the images-retirement decision
+        # rests on. Values:
+        #   "runtime"        rendered on-device from the corpus
+        #   "image-fallback" runtime was ATTEMPTED and lost -> the alarm
+        #   "image"          runtime not enabled here; PNG by design
+        #   "time-only"      no quote for this minute -> 144pt time drawn
+        #   None             unknown (a meta without the field; never
+        #                    claim a tier we can't prove — dev#543 F4)
+        # Rendered in the diagnostics page + support bundle.
+        "render_mode": "time-only" if quote_meta is None else quote_meta.get("render_mode"),
     }
     if quote_meta:
         payload.update(
