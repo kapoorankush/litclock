@@ -83,12 +83,12 @@ install_system_packages() {
         python3-pip \
         python3-venv \
         python3-dev \
-        ttf-wqy-zenhei \
-        ttf-wqy-microhei \
+        fonts-wqy-zenhei \
+        fonts-wqy-microhei \
         libopenjp2-7-dev \
         libjpeg-dev \
         zlib1g-dev \
-        libfreetype6-dev \
+        libfreetype-dev \
         liblcms2-dev \
         libwebp-dev \
         tcl8.6-dev \
