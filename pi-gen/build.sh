@@ -3,8 +3,14 @@
 # Build a LitClock Raspberry Pi OS image using pi-gen (Docker).
 #
 # Usage:
-#   ./pi-gen/build.sh                  # Build from master
+#   ./pi-gen/build.sh                  # Build from master (64-bit image)
 #   LITCLOCK_REF=v2026.03.0 ./pi-gen/build.sh  # Build from a tag
+#   LITCLOCK_ARCH=armhf ./pi-gen/build.sh      # 32-bit image (Pi Zero W / Pi 1)
+#
+# Architectures:
+#   arm64 (default) — Pi Zero 2 W, Pi 3/4/5
+#   armhf           — 32-bit ARMv6 image for the original Pi Zero W and Pi 1
+#                     (an arm64 image shows ZERO boot activity on those boards)
 #
 # Requires: Docker
 #
@@ -12,10 +18,19 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
-PI_GEN_TAG="2025-05-06-raspios-bookworm-arm64"
-WORK_DIR="${SCRIPT_DIR}/work"
+LITCLOCK_ARCH="${LITCLOCK_ARCH:-arm64}"
+case "${LITCLOCK_ARCH}" in
+    arm64|armhf) ;;
+    *) echo "ERROR: LITCLOCK_ARCH must be arm64 or armhf (got '${LITCLOCK_ARCH}')" >&2; exit 1 ;;
+esac
+# The armhf and arm64 releases are cut from different pi-gen branches, so the
+# tag encodes the arch. Keep both halves of this name in sync with the CI
+# pins in .github/workflows/build-image.yml.
+PI_GEN_TAG="2025-05-06-raspios-bookworm-${LITCLOCK_ARCH}"
+WORK_DIR="${SCRIPT_DIR}/work-${LITCLOCK_ARCH}"
 
 echo "=== LitClock Image Builder ==="
+echo "arch: ${LITCLOCK_ARCH}"
 echo "pi-gen tag: ${PI_GEN_TAG}"
 echo "LITCLOCK_REF: ${LITCLOCK_REF:-master}"
 echo ""

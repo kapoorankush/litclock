@@ -60,6 +60,7 @@ image-gen/pilot*.progress.jsonl
 
 # pi-gen build artifacts
 pi-gen/work/
+pi-gen/work-*/
 
 # Internal agent-planning scaffolding, browse logs, deploy reports — never commit
 .gstack/

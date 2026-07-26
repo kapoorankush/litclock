@@ -20,7 +20,7 @@ on:
 
 jobs:
   build:
-    name: Build Pi OS image
+    name: Build Pi OS image (${{ matrix.arch }})
     # Skip the ~60-min build entirely in PROMOTE mode — that path republishes
     # an already-built-and-tested candidate instead of rebuilding. On a tag
     # push there are no inputs, so promote_from is empty and the build runs.
@@ -31,6 +31,17 @@ jobs:
       contents: write       # needed for creating releases
       id-token: write       # OIDC token for Sigstore signing (SLSA attestation)
       attestations: write   # post attestation to GitHub's attestation store
+    strategy:
+      # Two images per release: arm64 for the Pi Zero 2 W / 3 / 4 / 5, and
+      # armhf (32-bit ARMv6) for the original Pi Zero W and Pi 1 — an arm64
+      # image shows ZERO boot activity on those boards (hardware QA 2026-07).
+      # max-parallel 1 serializes the legs so the release-create/upload steps
+      # never race on the same tag; fail-fast off so one arch's build break
+      # doesn't discard the other's finished 60-minute image.
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        arch: [arm64, armhf]
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -78,18 +89,25 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y qemu-user-static
 
       - name: Clone pi-gen
-        # Pinned to the 2025-05-06 bookworm-arm64 tag. Tags are immutable in
-        # practice but CAN be force-updated — we verify the commit SHA to detect
-        # any upstream tampering.
+        # Pinned to the 2025-05-06 bookworm release tag for the matrix arch.
+        # Tags are immutable in practice but CAN be force-updated — we verify
+        # the commit SHA to detect any upstream tampering. The armhf pin is
+        # trust-on-first-use: record the SHA the first successful armhf build
+        # prints below, then commit it as PIGEN_SHA_ARMHF to lock it.
         env:
-          PIGEN_TAG: 2025-05-06-raspios-bookworm-arm64
-          PIGEN_SHA: 49e1078c1b07ff4948d304e0149d3bc698e0006a
+          PIGEN_TAG: 2025-05-06-raspios-bookworm-${{ matrix.arch }}
+          PIGEN_SHA_ARM64: 49e1078c1b07ff4948d304e0149d3bc698e0006a
+          PIGEN_SHA_ARMHF: ""
+          ARCH: ${{ matrix.arch }}
         run: |
           git clone --depth 1 --branch "$PIGEN_TAG" \
             https://github.com/RPi-Distro/pi-gen.git /tmp/pi-gen
           ACTUAL=$(git -C /tmp/pi-gen rev-parse HEAD)
-          if [ "$ACTUAL" != "$PIGEN_SHA" ]; then
-            echo "ERROR: pi-gen HEAD $ACTUAL != expected $PIGEN_SHA" >&2
+          if [ "$ARCH" = "arm64" ]; then EXPECTED="$PIGEN_SHA_ARM64"; else EXPECTED="$PIGEN_SHA_ARMHF"; fi
+          if [ -z "$EXPECTED" ]; then
+            echo "::warning::pi-gen tag $PIGEN_TAG is not SHA-pinned yet — observed HEAD $ACTUAL. Commit it as the $ARCH pin in build-image.yml to lock the supply chain."
+          elif [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "ERROR: pi-gen HEAD $ACTUAL != expected $EXPECTED" >&2
             echo "The upstream tag may have been force-updated. Review before bumping." >&2
             exit 1
           fi
@@ -215,7 +233,10 @@ jobs:
             exit 1
           fi
 
-          IMG_NAME="litclock-${{ steps.version.outputs.version }}.img"
+          # Arch-suffixed so both matrix legs can share one release without
+          # clobbering each other's asset (arm64 = Zero 2 W/3/4/5, armhf =
+          # original Zero W / Pi 1).
+          IMG_NAME="litclock-${{ steps.version.outputs.version }}-${{ matrix.arch }}.img"
 
           # Rename to versioned name
           mv "${IMG}" "/tmp/${IMG_NAME}"
@@ -248,25 +269,37 @@ jobs:
       # On manual dispatch: upload as a dev pre-release
       # (GitHub Releases assets don't count toward Actions storage quota,
       # unlike artifacts which accrue GB-hours against the 500 MB free tier)
+      #
+      # Idempotent create-or-clobber (NOT delete-and-recreate): the two matrix
+      # legs share this tag, so a delete here would discard the sibling
+      # arch's finished 60-minute image. Re-runs replace assets via --clobber.
       - name: Upload dev build
         if: github.ref_type != 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.version.outputs.version }}"
-          # Delete existing release with this tag (idempotent re-runs)
-          gh release delete "${TAG}" --yes --cleanup-tag 2>/dev/null || true
-          # Clean up dev releases older than 7 days
-          gh release list --json tagName,createdAt \
-            --jq '.[] | select(.tagName | startswith("dev-")) | select((.createdAt | fromdateiso8601) < (now - 604800)) | .tagName' \
-          | xargs -I{} gh release delete {} --yes --cleanup-tag 2>/dev/null || true
-          gh release create "${TAG}" \
-            --prerelease \
-            --title "Dev build ${{ steps.version.outputs.version }}" \
-            --notes "Dev build from \`${{ steps.version.outputs.ref }}\` ($(date -u +%Y-%m-%dT%H:%M:%SZ)). Auto-generated, not for production use." \
-            --target "${{ steps.version.outputs.commit }}" \
-            "${{ steps.compress.outputs.img }}" \
-            "${{ steps.compress.outputs.sha }}"
+          # Clean up dev releases older than 7 days — one leg only, so the
+          # matrix doesn't double-fire the deletions.
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            gh release list --json tagName,createdAt \
+              --jq '.[] | select(.tagName | startswith("dev-")) | select((.createdAt | fromdateiso8601) < (now - 604800)) | .tagName' \
+            | xargs -I{} gh release delete {} --yes --cleanup-tag 2>/dev/null || true
+          fi
+          if gh release view "${TAG}" --json id >/dev/null 2>&1; then
+            echo "Dev release ${TAG} already exists — uploading ${{ matrix.arch }} assets with --clobber"
+            gh release upload "${TAG}" \
+              "${{ steps.compress.outputs.img }}" \
+              "${{ steps.compress.outputs.sha }}" --clobber
+          else
+            gh release create "${TAG}" \
+              --prerelease \
+              --title "Dev build ${{ steps.version.outputs.version }}" \
+              --notes "Dev build from \`${{ steps.version.outputs.ref }}\` ($(date -u +%Y-%m-%dT%H:%M:%SZ)). Auto-generated, not for production use." \
+              --target "${{ steps.version.outputs.commit }}" \
+              "${{ steps.compress.outputs.img }}" \
+              "${{ steps.compress.outputs.sha }}"
+          fi
 
       # On tag push: create GitHub Release
       #
@@ -378,15 +411,20 @@ jobs:
           fi
           mkdir cand && cd cand
           gh release download "$SRC" --pattern '*.img.xz*'
-          # Enforce exactly one image + its sidecar so the globs below are
-          # unambiguous (multiple images would corrupt CAND_HASH / verify).
+          # One image per arch (arm64 + armhf since the matrix split; a single
+          # legacy unsuffixed image is also accepted). At least one required.
           N=$(ls -1 ./*.img.xz 2>/dev/null | wc -l)
-          if [ "$N" -ne 1 ]; then
-            echo "::error::expected exactly one .img.xz on $SRC, found $N"; exit 1
+          if [ "$N" -lt 1 ]; then
+            echo "::error::no .img.xz assets on $SRC"; exit 1
           fi
-          # Integrity of the downloaded candidate against its own sidecar.
-          sha256sum -c ./*.img.xz.sha256
-          echo "CAND_HASH=$(sha256sum ./*.img.xz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "Promoting $N image(s) from $SRC"
+          # Integrity of every downloaded candidate against its own sidecar.
+          for S in ./*.img.xz.sha256; do
+            sha256sum -c "$S"
+          done
+          # Record the tested hashes; the rename and post-publish verify
+          # steps compare against this file (bytes must never change).
+          sha256sum ./*.img.xz | awk '{print $1}' | sort > ../cand.sums
           # The tag must point at the commit the candidate was built from —
           # the dev release stamped the actual built commit in target_commitish.
           TSHA=$(gh release view "$SRC" --json targetCommitish -q .targetCommitish)
@@ -395,27 +433,36 @@ jobs:
           fi
           echo "TARGET_SHA=$TSHA" >> "$GITHUB_ENV"
 
-      - name: Rename to release asset name (bytes unchanged)
+      - name: Rename to release asset names (bytes unchanged)
         env:
           REL: ${{ github.event.inputs.release_version }}
         run: |
           set -euo pipefail
           cd cand
           VER="${REL#v}"
-          IMG=$(ls ./*.img.xz)
-          NEW="litclock-${VER}.img.xz"
-          # Explicit if (not `&& … || true`, which would mask a real mv error).
-          if [ "$IMG" != "./$NEW" ]; then
-            mv "$IMG" "$NEW"
-          fi
+          for IMG in ./*.img.xz; do
+            BASE=$(basename "$IMG")
+            # Preserve the arch suffix; a pre-matrix candidate without one
+            # keeps the legacy unsuffixed release name.
+            case "$BASE" in
+              *-arm64.img.xz) NEW="litclock-${VER}-arm64.img.xz" ;;
+              *-armhf.img.xz) NEW="litclock-${VER}-armhf.img.xz" ;;
+              *)              NEW="litclock-${VER}.img.xz" ;;
+            esac
+            # Explicit if (not `&& … || true`, which would mask a real mv error).
+            if [ "$BASE" != "$NEW" ]; then
+              mv "$IMG" "$NEW"
+            fi
+          done
           rm -f ./*.sha256
-          sha256sum "$NEW" > "${NEW}.sha256"
-          # Renaming must not change bytes.
-          if [ "$(sha256sum "$NEW" | cut -d' ' -f1)" != "$CAND_HASH" ]; then
-            echo "::error::hash changed during rename — aborting"; exit 1
+          for IMG in ./*.img.xz; do
+            sha256sum "$(basename "$IMG")" > "$(basename "$IMG").sha256"
+          done
+          # Renaming must not change bytes: same multiset of hashes as tested.
+          sha256sum ./*.img.xz | awk '{print $1}' | sort > ../renamed.sums
+          if ! diff ../cand.sums ../renamed.sums; then
+            echo "::error::hashes changed during rename — aborting"; exit 1
           fi
-          echo "IMG_PATH=cand/$NEW" >> "$GITHUB_ENV"
-          echo "SHA_PATH=cand/${NEW}.sha256" >> "$GITHUB_ENV"
 
       - name: Publish release from tested bytes (creates the tag; idempotent)
         env:
@@ -436,16 +483,16 @@ jobs:
           fi
           if gh release view "$REL" --json id >/dev/null 2>&1; then
             echo "Release $REL exists at the candidate commit — uploading tested bytes with --clobber"
-            gh release upload "$REL" "$IMG_PATH" "$SHA_PATH" --clobber
+            gh release upload "$REL" cand/*.img.xz cand/*.img.xz.sha256 --clobber
           else
             gh release create "$REL" \
               --title "LitClock ${REL#v}" \
               --target "$TARGET_SHA" \
               --generate-notes \
-              "$IMG_PATH" "$SHA_PATH"
+              cand/*.img.xz cand/*.img.xz.sha256
           fi
 
-      - name: Verify published image == tested candidate (byte-exact)
+      - name: Verify published images == tested candidate (byte-exact)
         env:
           GH_TOKEN: ${{ github.token }}
           REL: ${{ github.event.inputs.release_version }}
@@ -453,11 +500,11 @@ jobs:
           set -euo pipefail
           mkdir got && cd got
           gh release download "$REL" --pattern '*.img.xz'
-          GOT=$(sha256sum ./*.img.xz | cut -d' ' -f1)
-          echo "tested   : $CAND_HASH"
-          echo "published: $GOT"
-          if [ "$GOT" = "$CAND_HASH" ]; then
-            echo "PASS: released image is byte-identical to the flash-tested candidate"
+          sha256sum ./*.img.xz | awk '{print $1}' | sort > ../got.sums
+          echo "tested:";    cat ../cand.sums
+          echo "published:"; cat ../got.sums
+          if diff ../cand.sums ../got.sums; then
+            echo "PASS: released images are byte-identical to the flash-tested candidates"
           else
-            echo "::error::published bytes differ from the tested candidate"; exit 1
+            echo "::error::published bytes differ from the tested candidates"; exit 1
           fi
