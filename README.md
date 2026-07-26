@@ -33,7 +33,7 @@ Four steps, roughly an afternoon (most of it waiting for the 3D printer).
 
 | Part | Notes | ~Cost |
 |------|-------|-------|
-| [Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) | Get the **WH** variant (pre-soldered header) unless you like soldering | $15 |
+| [Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) | Get the **WH** variant (pre-soldered header) unless you like soldering. Must be the **Zero 2** — the flashable image is 64-bit and will not boot on the original Pi Zero W (see [Troubleshooting](#troubleshooting)) | $15 |
 | [Waveshare 7.5" e-Paper HAT (V2)](https://www.amazon.com/dp/B075R4QY3L) | 800×480, black/white ([product page](https://www.waveshare.com/7.5inch-e-paper-hat.htm)) | $60 |
 | microSDHC card | 32 GB recommended | $10 |
 | Micro-USB power supply | 5V/2A minimum | $10 |
@@ -247,6 +247,7 @@ Flags:
 
 **Start here (no shell needed):** open `http://litclock.local/diagnostics` (or tap "Open full diagnostics" in the control app). It shows version, last render time, WiFi + weather status, error flags, and recent logs. Screenshot it, or use "Download full logs" to export a redacted support bundle safe to attach to an issue.
 
+- **Pi doesn't boot at all after flashing** (no activity LED pattern, display never changes): the released image is built for **64-bit** Raspberry Pi OS (arm64) and only boots on ARMv8 boards — Pi Zero **2** W, Pi 3/4/5. The original Pi Zero W, Pi 1, and Pi 2 are 32-bit-only and show no boot activity at all with this image; use the DIY installer on 32-bit Raspberry Pi OS Lite instead. If the board is a Zero 2 W, re-verify the download against its published `.sha256` and re-flash — a truncated download or interrupted flash produces the same dead-boot symptom.
 - **Wrong city, units, or timezone**: fix it in the app → Settings. If setup couldn't detect your location at all (some networks block IP geolocation), the app offers a one-tap "use my browser's timezone" fallback so the clock runs correctly with weather off.
 - **Display not updating**: Check SPI is enabled with `ls /dev/spi*`
 - **Check service status**: `systemctl status litclock.timer`
