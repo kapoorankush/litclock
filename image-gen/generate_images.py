@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 """
-Generate images for literary clock quotes.
-Skips quotes that already have images.
+DEPRECATED (dev#540) — do not use for shipping images.
 
-NOTE: The PHP version (quote_to_image.php) produces better output and is
-the preferred tool for generating quote images. Use this Python version
-only as a fallback.
+This legacy fallback predates the exact-span bolding contract: it bolds
+whole space-delimited words, which now DIVERGES from the production
+renderers (quote_to_image.php and src/quote_renderer.py). Kept only as a
+historical reference; it refuses to run without --i-know-this-diverges.
 """
+
+import sys as _sys
+
+if "--i-know-this-diverges" not in _sys.argv:
+    _sys.exit(
+        "generate_images.py is DEPRECATED (dev#540): its whole-word bolding "
+        "diverges from the exact-span contract. Use quote_to_image.php or "
+        "src/quote_renderer.py. Pass --i-know-this-diverges to override."
+    )
 
 import csv
 from pathlib import Path

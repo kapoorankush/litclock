@@ -156,6 +156,19 @@ def cmd_check(args: argparse.Namespace) -> int:
 
         report.append(entry)
 
+    # WARN tier (dev#540): mid-word timestring edges — data bugs that
+    # render half-bold words under exact-span bolding. Non-gating until the
+    # known 11 rows are fixed in the next corpus release; then tighten.
+    midword = [
+        (r.ordinal, r.time, edge)
+        for r in rows
+        if (edge := qr.timestring_midword_edge(r.quote, r.timestring))
+    ]
+    if midword:
+        print(f"WARN: {len(midword)} row(s) with mid-word timestring edges (half-bold words; dev#540):")
+        for o, t, edge in midword[:15]:
+            print(f"  row {o} ({t}): {edge}")
+
     rendered = sum(1 for e in report if "error" not in e)
     summary = {
         "corpus_rows": len(rows),
@@ -164,6 +177,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         "invariant_violations": len(failures),
         "wall_seconds": round(time.time() - t_start, 1),
         "corpus_sha1": hashlib.sha1(csv_path.read_bytes()).hexdigest(),
+        "midword_edge_rows": len(midword),
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps({"summary": summary, "failures": failures, "rows": report}, indent=1) + "\n")
@@ -211,7 +225,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
         if idx < 0:
             print(f"{rows}|NOSTRING")
             continue
-        s, e = qr.extend_boundary(qb, idx, idx + len(tsb))
+        s, e = idx, idx + len(tsb)  # exact-span bolding (dev#540)
         fitted = qr.fit(qb.split(b" "), s, e)
         if fitted is None:
             print(f"{rows}|NOFIT")

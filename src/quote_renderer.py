@@ -12,8 +12,9 @@ A/B pass on the owner clock, calibrated blind machine judge clean):
   - the layout algorithm mirrors fitText byte-for-byte: greedy wrap on
     measured advance widths over the space-split quote, line height
     ``php_round(fs*1.618)``, grow-until-fit from 18 while the paragraph
-    height stays under ``H-100``, exact-char-span bold with the #503/#504
-    boundary extension (one-UTF-8-char probe window, #27);
+    height stays under ``H-100``, bold = EXACTLY the matched timestring
+    span (dev#540 — the #503/#504 boundary-extension cases were deleted;
+    bolding errors are corpus data fixes, see timestring_midword_edge);
   - credits use ``gd_bbox`` (measureSizeOfTextbox port) verbatim, including
     the two-line balance loop and the single-line ``left``-based x.
 
@@ -90,7 +91,7 @@ _ESCAPE_CHAIN = (
     (_BS + '"', '"'),
 )
 
-# \p{L}\p{N} equivalent for the boundary-extension probe. [^\W_] = word
+# \p{L}\p{N} equivalent for the corpus-quality mid-word probe. [^\W_] = word
 # chars minus underscore. Python \w and PCRE \p{L}\p{N} agree on the EN
 # corpus (Stage-0 parity); the corpus guards below stay armed for #532.
 _WORD_RE = re.compile(r"^[^\W_]", re.UNICODE)
@@ -188,36 +189,49 @@ def find_timestring(quote_bytes: bytes, timestring_bytes: bytes) -> int:
     return quote_bytes.lower().find(timestring_bytes.lower())
 
 
+# ---- Corpus-quality helpers (NOT part of rendering — dev#540) ----
+# The renderer bolds EXACTLY the matched timestring span (owner decision
+# 2026-07-26, dev#540): the CSV row IS the bold spec, so bolding errors are
+# data fixes contributors can make per-language — no renderer heuristics.
+# The #503/#504 boundary-extension case machinery (mid-word extension,
+# trailing-punctuation bolding, hyphen-join guard) was deleted here; the
+# word-char predicate survives ONLY to flag questionable data at edit time.
+
+
 def _word_char_at(qb: bytes, i: int) -> bool:
     # One UTF-8 char starting at byte i (i is always at a char boundary);
     # decode-with-ignore drops any trailing partial char in the 4-byte
-    # window, matching the PHP lead-byte-sized window (#27). On MALFORMED
-    # UTF-8 the two could diverge (PCRE /u returns false, ignore-decode may
-    # skip to the next valid char) — unreachable here: qb is the encoding
-    # of a Python str, which is valid UTF-8 by construction.
+    # window (#27 semantics). Corpus-quality use only.
     if i >= len(qb):
         return False
     ch = qb[i : i + 4].decode("utf-8", "ignore")[:1]
     return bool(ch) and bool(_WORD_RE.match(ch))
 
 
-def extend_boundary(qb: bytes, start: int, end: int) -> tuple[int, int]:
-    """Bold-span boundary extension, cases 1-3 from the PHP (#503/#504):
-    mid-word match keeps the whole word bold; a trailing punctuation run is
-    kept bold only when it terminates the word (reaches space/end before
-    any letter/number)."""
-    qlen = len(qb)
-    if _word_char_at(qb, end):
-        while end < qlen and qb[end : end + 1] != b" ":
-            end += 1
-    else:
-        scan = end
-        while scan < qlen and qb[scan : scan + 1] != b" " and not _word_char_at(qb, scan):
-            b = qb[scan]
-            scan += 1 if b < 0x80 else 2 if b < 0xE0 else 3 if b < 0xF0 else 4
-        if scan >= qlen or qb[scan : scan + 1] == b" ":
-            end = scan
-    return start, end
+def timestring_midword_edge(quote: str, timestring: str) -> str | None:
+    """Data-quality probe for corpus tooling: does the timestring's match
+    start or end in the middle of a word? Returns 'start', 'end', 'both',
+    or None. A mid-word edge renders a half-bold word — almost always a
+    corpus bug (missing space, or the timestring should include the whole
+    word, e.g. 'noon' vs 'noonday', '230' vs '0230'). Fix the row, never
+    the renderer."""
+    qb = quote.encode("utf-8")
+    tsb = timestring.encode("utf-8")
+    idx = find_timestring(qb, tsb)
+    if idx < 0:
+        return None
+    prev = idx - 1
+    while prev > 0 and 0x80 <= qb[prev] < 0xC0:  # back up over UTF-8 continuation bytes
+        prev -= 1
+    start_mid = idx > 0 and _word_char_at(qb, idx) and _word_char_at(qb, prev)
+    end_mid = _word_char_at(qb, idx + len(tsb))
+    if start_mid and end_mid:
+        return "both"
+    if start_mid:
+        return "start"
+    if end_mid:
+        return "end"
+    return None
 
 
 @dataclass(frozen=True)
@@ -309,7 +323,8 @@ def render_quote(quote: str, timestring: str) -> tuple[Image.Image, int, Layout]
     idx = find_timestring(qb, tsb)
     if idx < 0:
         raise RenderError("nostring", f"timestring {timestring!r} not in quote")
-    ts_start, ts_end = extend_boundary(qb, idx, idx + len(tsb))
+    # Exact-span bolding (dev#540): the matched CSV timestring, nothing more.
+    ts_start, ts_end = idx, idx + len(tsb)
 
     fitted = fit(qb.split(b" "), ts_start, ts_end)
     if fitted is None:

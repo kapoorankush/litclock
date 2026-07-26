@@ -1,6 +1,6 @@
 """Unit tests for src/quote_renderer.py (dev#531 Stage 1).
 
-Pure-function tests (preprocess, boundary extension, corpus iteration) run
+Pure-function tests (preprocess, exact-span bolding, corpus iteration) run
 everywhere. Tests that measure or render text require freetype-py and the
 repo fonts; they skip cleanly where freetype-py isn't installed (same
 pattern as the hardware-gated eink tests). The full-corpus layout-parity
@@ -78,33 +78,40 @@ def test_find_timestring_is_ascii_case_insensitive():
 
 
 def _span(quote: str, ts: str) -> str:
+    """The bolded text for a timestring: with exact-span bolding (dev#540)
+    this is ALWAYS the matched substring itself."""
     qb = quote.encode()
     idx = qr.find_timestring(qb, ts.encode())
     assert idx >= 0
-    s, e = qr.extend_boundary(qb, idx, idx + len(ts.encode()))
-    return qb[s:e].decode()
+    return qb[idx : idx + len(ts.encode())].decode()
 
 
-def test_boundary_case1_midword_keeps_whole_word():
-    assert _span("in the tenth hour", "ten") == "tenth"
-
-
-def test_boundary_case2_terminating_punctuation_stays_bold():
-    assert _span("struck midnight. Then", "midnight") == "midnight."
+def test_exact_span_never_extends():
+    # dev#540: the CSV timestring IS the bold spec — no case machinery.
+    assert _span("in the tenth hour", "ten") == "ten"  # mid-word: half-bold = data bug, flagged by probe
+    assert _span("struck midnight. Then", "midnight") == "midnight"  # trailing punct stays regular
     assert _span("at midnight", "midnight") == "midnight"
-
-
-def test_boundary_case3_hyphen_join_not_dragged():
-    # #504: punctuation run hits a letter before any space -> only the ts
     assert _span("four minutes to ten-four they said", "ten") == "ten"
+    assert _span("at ten\u2014\u6771\u4eac station", "ten") == "ten"
+    assert _span("at ten\u2026 then", "ten") == "ten"
 
 
-def test_boundary_multibyte_punctuation_and_letters():
-    # em-dash into a CJK letter: case 3, no extension (#27 one-char window —
-    # a fixed 4-byte probe window would slice 東 and misreport)
-    assert _span("at ten—東京 station", "ten") == "ten"
-    # multibyte punctuation terminating the word: case 2, extended
-    assert _span("at ten… then", "ten") == "ten…"
+def test_interior_punctuation_stays_bold():
+    # punctuation INSIDE the CSV phrase is part of the matched span
+    assert _span("it was eleven o'clock at night", "eleven o'clock") == "eleven o'clock"
+    assert _span("by half-past ten they left", "half-past ten") == "half-past ten"
+
+
+def test_midword_edge_probe():
+    # the corpus-quality probe flags what exact-span will render half-bold
+    assert qr.timestring_midword_edge("The noonday siren blew", "noon") == "end"
+    assert qr.timestring_midword_edge("at 0230 hours sharp", "230") == "start"
+    assert qr.timestring_midword_edge("it was 11:37 A.M.local time", "11:37 A.M.") == "end"
+    assert qr.timestring_midword_edge("struck midnight. Then", "midnight") is None
+    # em-dash join is punctuation, not a word char -> not mid-word
+    assert qr.timestring_midword_edge("at ten\u2014\u6771\u4eac station", "ten") is None
+    assert qr.timestring_midword_edge("caf\u00e9ten time", "ten") == "start"  # multibyte word char before match
+    assert qr.timestring_midword_edge("no match here", "midnight") is None
 
 
 # ------------------------------------------------------------- corpus reader
@@ -179,7 +186,7 @@ def test_fit_returns_largest_fitting_size():
     quote = "It was almost midnight when the church bells finally stopped ringing across the empty square."
     qb = qr.preprocess_quote(quote).encode()
     idx = qr.find_timestring(qb, b"midnight")
-    s, e = qr.extend_boundary(qb, idx, idx + len(b"midnight"))
+    s, e = idx, idx + len(b"midnight")
     fitted = qr.fit(qb.split(b" "), s, e)
     assert fitted is not None
     lay, fs = fitted
@@ -195,7 +202,7 @@ def test_layout_ops_reassemble_to_quote():
     quote = "It was ten—東京 o'clock. Nobody knew what the ten-four signal meant at midnight."
     qb = quote.encode()
     idx = qr.find_timestring(qb, b"ten")
-    s, e = qr.extend_boundary(qb, idx, idx + 3)
+    s, e = idx, idx + 3
     lay = qr.layout_pass(qb.split(b" "), 20, s, e)
     assert lay is not None
     assert b"".join(sb for _, _, sb, _ in lay.ops) == qb.replace(b" ", b"")
@@ -284,3 +291,26 @@ def test_iter_corpus_guard_scans_all_fields(tmp_path):
     p = _write_corpus(tmp_path, f"00:00|midnight|clean midnight quote|bad{BS}title|A\n")
     with pytest.raises(qr.CorpusGuardError):
         list(qr.iter_corpus(p))
+
+
+def test_midword_edge_both():
+    # match glued on BOTH sides -> 'both' (dev#542 review: uncovered branch)
+    assert qr.timestring_midword_edge("xten9 o'clock", "ten") == "both"
+
+
+needs_freetype_2 = needs_freetype  # alias for readability below
+
+
+@needs_freetype_2
+def test_layout_ops_bold_is_exact_span():
+    """The bold ops must cover EXACTLY the matched bytes — asserted at the
+    layout level, not just span slicing (dev#542 review)."""
+    for quote, ts in [
+        ("struck midnight. Then all was calm again", "midnight"),
+        ("in the tenth hour of the long day", "ten"),
+    ]:
+        qb = quote.encode()
+        idx = qr.find_timestring(qb, ts.encode())
+        lay = qr.layout_pass(qb.split(b" "), 20, idx, idx + len(ts.encode()))
+        bold_bytes = b"".join(sb for _, _, sb, bold in lay.ops if bold)
+        assert bold_bytes == ts.encode(), (quote, bold_bytes)
