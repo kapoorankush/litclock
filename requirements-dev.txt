@@ -2,3 +2,9 @@ ruff>=0.16.0
 pytest>=9.1.1
 pytest-mock>=3.15.1
 pyyaml>=6.0.3
+# GD-exact measurement for src/gd_measure.py (dev#531 Stage 1). Pinned ==:
+# the wheel BUNDLES libfreetype and hinted metrics are version-sensitive —
+# a silent bump could shift layout parity. render-invariants CI re-validates
+# exactness on every renderer PR. Moves to requirements.in at the Stage-2
+# on-device flip (after validate_gd_measure passes on the Pi).
+freetype-py==2.5.1
