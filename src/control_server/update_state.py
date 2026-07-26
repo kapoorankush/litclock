@@ -52,14 +52,14 @@ SYSTEMCTL_BIN: Final[str] = os.environ.get("LITCLOCK_SYSTEMCTL", "/usr/bin/syste
 UPDATE_UNIT: Final[str] = "litclock-update.service"
 TAGS_URL_TEMPLATE: Final[str] = "https://api.github.com/repos/{owner}/{repo}/tags?per_page=100"
 CHANGELOG_URL_TEMPLATE: Final[str] = "https://raw.githubusercontent.com/{owner}/{repo}/{tag}/CHANGELOG.md"
-DEFAULT_OWNER: Final[str] = "kapoorankush"
+DEFAULT_OWNER: Final[str] = "kruczek-lab"
 DEFAULT_REPO: Final[str] = "litclock"
 GH_API_TIMEOUT_S: Final[int] = 10
 # GitHub's API requires every request to send a User-Agent header per
 # https://docs.github.com/en/rest/overview/resources-in-the-rest-api#user-agent-required.
 # Python's default `Python-urllib/3.x` works for /tags today but GH has
 # historically returned 403 to unidentified clients. Pin our own value.
-HTTP_USER_AGENT: Final[str] = "litclock-control-server (+https://github.com/kapoorankush/litclock)"
+HTTP_USER_AGENT: Final[str] = "litclock-control-server (+https://github.com/kruczek-lab/litclock)"
 RELEASE_TAG_RE: Final[re.Pattern[str]] = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 # `git config credential.helper=store` writes one URL-per-line to this path
 # in the form `https://user:token@github.com`. The bash side already reads

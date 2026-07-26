@@ -33,7 +33,7 @@ the tab) and paste it here (or attach a screenshot). It includes version, render
 WiFi/weather, error flags, and recent log tails, with secrets redacted.
 
 **If you already have a shell** (SSH ships off — enable it from the console first;
-see the [Recovery guide](https://github.com/kapoorankush/litclock/blob/master/docs/recovery.md)):
+see the [Recovery guide](https://github.com/kruczek-lab/litclock/blob/master/docs/recovery.md)):
 
 ```
 journalctl -u litclock.service --since today

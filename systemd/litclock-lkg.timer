@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock Last-Known-Good writer cadence
-Documentation=https://github.com/kapoorankush/litclock/issues/241
+Documentation=https://github.com/kruczek-lab/litclock/issues/241
 # Drives litclock-lkg.service as a poll loop. The service itself is now a
 # fast oneshot (~50ms) that checks three gates (post-update grace, fresh
 # heartbeat, HEAD-vs-recorded) and writes lkg-sha when all pass.

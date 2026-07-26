@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock handoff last-resort completer cadence (EPIC #383 PR2, #388)
-Documentation=https://github.com/kapoorankush/litclock/issues/388
+Documentation=https://github.com/kruczek-lab/litclock/issues/388
 
 [Timer]
 # Fire ~10 min after boot — long enough that a healthy control_server has

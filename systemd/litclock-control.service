@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock Control PWA
-Documentation=https://github.com/kapoorankush/litclock/issues/245
+Documentation=https://github.com/kruczek-lab/litclock/issues/245
 After=sysinit.target NetworkManager.service litclock-firstboot.service
 Wants=NetworkManager.service
 # #343: never give up permanently. If the port-80 bind fails because the

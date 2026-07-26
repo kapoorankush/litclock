@@ -38,10 +38,33 @@ def signal_handler(signum, frame):
 # Configure logging
 setup_logging()
 
-# Constants
+import display_driver  # noqa: E402 — geometry/config only; hardware bind stays lazy (get_panel in __main__)
+
+# Constants. DISPLAY_SIZE follows the configured EINK_MODEL; the layout below
+# was designed on the original 800×480 canvas, so fixed positions are
+# expressed in that reference space and scaled through _sx/_sy/_sf. At
+# 800×480 all three are identity — the 7.5" V2 frame is pixel-identical to
+# the pre-abstraction renderer (locked by tests/test_literary_clock.py).
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONT_PATH = os.path.join(PROJECT_ROOT, "fonts", "Literata72pt-Regular.ttf")
-DISPLAY_SIZE = (800, 480)
+DISPLAY_SIZE = display_driver.display_geometry()
+_REF_SIZE = (800, 480)
+_SCALE_X = DISPLAY_SIZE[0] / _REF_SIZE[0]
+_SCALE_Y = DISPLAY_SIZE[1] / _REF_SIZE[1]
+_SCALE_MIN = min(_SCALE_X, _SCALE_Y)
+
+
+def _sx(v: int) -> int:
+    return round(v * _SCALE_X)
+
+
+def _sy(v: int) -> int:
+    return round(v * _SCALE_Y)
+
+
+def _sf(v: int, minimum: int = 10) -> int:
+    return max(minimum, round(v * _SCALE_MIN))
+
 
 # Status file for the Control PWA (#245 M2 / OV3). literary_clock.py writes
 # this after each render so /api/status can mirror exactly what's on the
@@ -71,17 +94,24 @@ STATUS_FILE = os.environ.get("LITCLOCK_STATUS_FILE", "/run/litclock/current-quot
 # home/guest WiFi networks (issue #306). Resolved IP changes propagate within
 # ~60s — the e-ink re-renders every minute tick.
 QR_URL = control_base_url("litclock.local")
-QR_POSITION = (713, 0)
 QR_VERSION = 2
 QR_BOX_SIZE = 3
 QR_BORDER = 0
 QR_MODULES = 25  # version 2
-QR_SIZE = QR_MODULES * QR_BOX_SIZE  # 75px
+QR_SIZE = QR_MODULES * QR_BOX_SIZE  # 75px — fixed for scannability, NOT scaled
 # Top-strip divider geometry, shared by compose() and the quiet-zone notch
 # below so they can never drift apart. PIL paints a width=4 horizontal line
-# at y=78 across rows 77..80 (centerline convention).
-DIVIDER_Y = 78
+# at y=78 (800×480 reference) across rows 77..80 (centerline convention).
+DIVIDER_Y = _sy(78)
 DIVIDER_WIDTH = 4
+# Corner-QR anchor, derived from the panel width. At 800×480 this is the
+# locked (713, 0) geometry (800 − 75 − 12; validated on-phone in M0).
+QR_POSITION = (DISPLAY_SIZE[0] - QR_SIZE - 4 * QR_BOX_SIZE, 0)
+# The QR is a fixed 75px (a smaller one stops scanning), so on small panels
+# it can't ride in the top strip without swallowing the layout — skip it
+# when it would extend past a third of the panel height. The PWA stays
+# reachable via the handoff-splash QR and http://litclock.local.
+QR_CORNER_FITS = (QR_SIZE + 4 * QR_BOX_SIZE) <= DISPLAY_SIZE[1] // 3
 # ISO/IEC 18004 quiet zone: 4 modules of white on every side = 12px at
 # box_size 3. The 78px strip can't hold (25 + 2*4) * 3 = 99px, so the border
 # isn't baked into the QR image (QR_BORDER stays 0) — _composite_settings_qr
@@ -100,8 +130,9 @@ DIVIDER_WIDTH = 4
 QR_QUIET_ZONE = 4 * QR_BOX_SIZE
 QR_NOTCH_BOTTOM = max(DIVIDER_Y + DIVIDER_WIDTH // 2, QR_POSITION[1] + QR_SIZE + QR_QUIET_ZONE - 1)
 
-# display_driver binds to hardware GPIO/SPI on import. Keep it lazy so
-# --dry-run (smoke test) can render an image without touching /dev/spidev*.
+# The vendor waveshare driver binds hardware GPIO/SPI when instantiated —
+# the panel bind (get_panel) happens only in the __main__ hardware path so
+# --dry-run (smoke test) renders without touching /dev/spidev*.
 from weather_providers import open_meteo, openweathermap  # noqa: E402
 
 
@@ -163,8 +194,9 @@ def main():
 
         icon_path = os.path.join(PROJECT_ROOT, "icons", f"{icon}.xbm")
         try:
-            icon_image = ImageOps.invert(Image.open(icon_path).resize((64, 64)).convert("L"))
-            image.paste(icon_image, (20, 5))
+            icon_px = _sf(64, 16)
+            icon_image = ImageOps.invert(Image.open(icon_path).resize((icon_px, icon_px)).convert("L"))
+            image.paste(icon_image, (_sx(20), _sy(5)))
             logging.info(f"Icon image pasted from {icon_path}")
         except FileNotFoundError as e:
             logging.error(f"Icon file not found: {e}")
@@ -178,24 +210,24 @@ def main():
         # No quote image for this minute — fall back to drawing the time
         # in 144pt Literata. Existing behavior since v0.1; preserved for
         # corpus gaps (e.g., minutes without a literary match).
-        time_font = ImageFont.truetype(FONT_PATH, 144)
-        draw.text((220, 150), now.strftime("%H:%M"), font=time_font, fill=0)
+        time_font = ImageFont.truetype(FONT_PATH, _sf(144))
+        draw.text((_sx(220), _sy(150)), now.strftime("%H:%M"), font=time_font, fill=0)
         logging.info("Time drawn on image")
     else:
         quote_image = Image.open(quote_meta["image_path"]).convert("1")
-        image.paste(quote_image, (0, 80))
+        _paste_quote_image(image, quote_image)
         logging.info(f"Quote image pasted from {quote_meta['image_path']}")
 
-    date_font = ImageFont.truetype(FONT_PATH, 48)
-    draw.text((250, 10), now.strftime("%a, %B %d"), font=date_font, fill=0)
+    date_font = ImageFont.truetype(FONT_PATH, _sf(48, 12))
+    draw.text((_sx(250), _sy(10)), now.strftime("%a, %B %d"), font=date_font, fill=0)
 
     if weather is not None:
-        temp_font = ImageFont.truetype(FONT_PATH, 24)
-        draw.text((100, 20), f"{temp_high} / {temp_low}", font=temp_font, fill=0)
+        temp_font = ImageFont.truetype(FONT_PATH, _sf(24))
+        draw.text((_sx(100), _sy(20)), f"{temp_high} / {temp_low}", font=temp_font, fill=0)
 
     draw.line([(0, DIVIDER_Y), (DISPLAY_SIZE[0], DIVIDER_Y)], fill=0, width=DIVIDER_WIDTH)
     if weather is not None:
-        draw.line([(225, 0), (225, DIVIDER_Y)], fill=0, width=DIVIDER_WIDTH)
+        draw.line([(_sx(225), 0), (_sx(225), DIVIDER_Y)], fill=0, width=DIVIDER_WIDTH)
 
     _stamp_update_failed_glyph(image, draw)
     _composite_settings_qr(image)
@@ -204,6 +236,31 @@ def main():
     # Status-file publication is __main__'s job, after the hardware
     # confirms the new frame reached the panel (codex /review M2 catch).
     return image, quote_meta, now
+
+
+# The corpus PNGs are pre-rendered for the 800×480 reference layout (800×400,
+# pasted under the 80px top strip). On the reference panel the paste is
+# byte-exact, untouched. Any other panel scale-to-fits the pre-rendered art:
+# grayscale LANCZOS resample, then re-threshold to 1-bit (resizing a mode-"1"
+# image directly produces unreadable speckle). Legibility of very long quotes
+# degrades on small panels — a per-resolution corpus is the real fix (tracked
+# as follow-up); this keeps every panel functional today.
+QUOTE_TOP = _sy(80)
+
+
+def _paste_quote_image(image: Image.Image, quote_image: Image.Image) -> None:
+    target_w = DISPLAY_SIZE[0]
+    target_h = DISPLAY_SIZE[1] - QUOTE_TOP
+    qw, qh = quote_image.size
+    if (target_w, target_h) == (qw, qh) or DISPLAY_SIZE == _REF_SIZE:
+        image.paste(quote_image, (0, QUOTE_TOP))
+        return
+    factor = min(target_w / qw, target_h / qh)
+    new_w = max(1, round(qw * factor))
+    new_h = max(1, round(qh * factor))
+    scaled = quote_image.convert("L").resize((new_w, new_h), Image.Resampling.LANCZOS)
+    scaled = scaled.point(lambda p: 255 if p > 128 else 0).convert("1")
+    image.paste(scaled, ((target_w - new_w) // 2, QUOTE_TOP))
 
 
 def get_current_quote(
@@ -365,6 +422,9 @@ def _composite_settings_qr(image: Image.Image) -> None:
     Best-effort — qrcode lib is already a project dep (used by
     src/eink_display.py for the first-boot hotspot QR), but if anything
     goes sideways at runtime we log and skip rather than fail the render."""
+    if not QR_CORNER_FITS:
+        logging.info("Corner QR skipped: %sx%s panel too small for the 75px top-strip QR", *DISPLAY_SIZE)
+        return
     try:
         import qrcode  # noqa: PLC0415 — local import keeps test monkeypatching trivial
         import qrcode.constants  # noqa: PLC0415
@@ -475,8 +535,8 @@ if __name__ == "__main__":
 
     if args.dry_run:
         # Smoke test path: exercise image composition end-to-end (fonts, corpus,
-        # weather fallbacks) without importing display_driver (which binds GPIO
-        # and opens /dev/spidev* on import). Any exception becomes a non-zero
+        # weather fallbacks) without instantiating the panel (get_panel binds
+        # GPIO and opens /dev/spidev*). Any exception becomes a non-zero
         # exit with a traceback — update.sh reads that and reverts. main()
         # returns (image, quote_meta, now) but doesn't publish the status
         # file (that's __main__'s post-hardware job), so the smoke render
@@ -501,17 +561,16 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
-    # Hardware import is lazy — deferred until we actually need to talk to the display.
-    from display_driver import epd7in5  # noqa: E402
-
     image, quote_meta, now = main()
     epd = None
 
     try:
         logging.info("Initializing e-Paper display...")
-        epd = epd7in5.EPD()
+        # Hardware bind happens here (get_panel imports the vendor driver) —
+        # the --dry-run path above never reaches this point.
+        epd = display_driver.get_panel()
         _epd = epd  # Set global for signal handler
-        logging.info("EPD object created.")
+        logging.info("EPD object created (%s, %sx%s).", epd.model, epd.width, epd.height)
 
         epd.init()
         logging.info("EPD initialized.")

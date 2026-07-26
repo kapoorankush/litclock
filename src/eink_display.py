@@ -27,28 +27,52 @@ except ImportError:
 # Configure logging
 setup_logging()
 
-# Constants
-DISPLAY_SIZE = (800, 480)
+import display_driver  # noqa: E402 — geometry only; hardware import stays lazy
+
+# Constants. DISPLAY_SIZE follows the configured EINK_MODEL (issue: any-panel
+# support); every layout in this file was designed on the original 800×480
+# canvas, so positions/sizes below are expressed in that reference space and
+# scaled through the _sx/_sy/_sf helpers. At 800×480 all three are identity,
+# keeping the 7.5" V2 output pixel-identical to the pre-abstraction renderer.
+DISPLAY_SIZE = display_driver.display_geometry()
+_REF_SIZE = (800, 480)
+_SCALE_X = DISPLAY_SIZE[0] / _REF_SIZE[0]
+_SCALE_Y = DISPLAY_SIZE[1] / _REF_SIZE[1]
+_SCALE_MIN = min(_SCALE_X, _SCALE_Y)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONT_PATH = os.path.join(PROJECT_ROOT, "fonts", "Literata72pt-Regular.ttf")
 FONT_PATH_BOLD = os.path.join(PROJECT_ROOT, "fonts", "Literata72pt-Black.ttf")
+
+
+def _sx(v: int) -> int:
+    """Scale a reference-space x coordinate/width to the real canvas."""
+    return round(v * _SCALE_X)
+
+
+def _sy(v: int) -> int:
+    """Scale a reference-space y coordinate/height to the real canvas."""
+    return round(v * _SCALE_Y)
+
+
+def _sf(v: int, minimum: int = 10) -> int:
+    """Scale a font/detail size by the limiting axis, with a legibility
+    floor — 1-bit e-ink text under ~10px dissolves into noise."""
+    return max(minimum, round(v * _SCALE_MIN))
+
 
 # Hotspot info screen layout (normal + retry variants). Both variants stack
 # their instruction block from the bottom up with these constants so the
 # 3-line retry screen and 4-line normal screen sit flush at the same
 # baseline. Promoted from function-local vars so future layout tweaks have
 # one place to change.
-HOTSPOT_INFO_LINE_HEIGHT = 28
-HOTSPOT_INFO_BOTTOM_PADDING = 20
+HOTSPOT_INFO_LINE_HEIGHT = _sf(28, 12)
+HOTSPOT_INFO_BOTTOM_PADDING = _sy(20)
 
 
 def get_display():
     """Get the e-paper display object. Returns None if not available."""
     try:
-        from display_driver import epd7in5
-
-        epd = epd7in5.EPD()
-        return epd
+        return display_driver.get_panel()
     except Exception as e:
         logging.warning(f"Could not initialize display: {e}")
         return None
@@ -70,7 +94,7 @@ def generate_qr_image(data: str, box_size: int = 10, border: int = 2) -> Image.I
     return qr_image.convert("1")
 
 
-def create_qr_display_image(url: str, title: str = None, caption: str = None, qr_size: int = 280) -> Image.Image:
+def create_qr_display_image(url: str, title: str = None, caption: str = None, qr_size: int = None) -> Image.Image:
     """
     Create a full display image with QR code, title, and caption.
 
@@ -78,20 +102,27 @@ def create_qr_display_image(url: str, title: str = None, caption: str = None, qr
         url: URL or data to encode in QR code
         title: Large text above QR code (optional)
         caption: Smaller text below QR code (optional)
-        qr_size: Size of QR code in pixels
+        qr_size: Size of QR code in pixels (default: scaled from the
+            280px reference size, floored for scannability)
 
     Returns:
         PIL Image ready for display
     """
+    if qr_size is None:
+        # Phone-scannability floor: below ~100px a version-1 QR at arm's
+        # length stops scanning reliably; small panels give the QR most of
+        # the screen instead.
+        qr_size = max(min(100, DISPLAY_SIZE[1] - _sy(120)), _sf(280))
+
     # Create white background
     image = Image.new("1", DISPLAY_SIZE, 255)
     draw = ImageDraw.Draw(image)
 
     # Load fonts
     try:
-        title_font = ImageFont.truetype(FONT_PATH_BOLD, 36)
-        caption_font = ImageFont.truetype(FONT_PATH, 24)
-        small_font = ImageFont.truetype(FONT_PATH, 18)
+        title_font = ImageFont.truetype(FONT_PATH_BOLD, _sf(36))
+        caption_font = ImageFont.truetype(FONT_PATH, _sf(24))
+        small_font = ImageFont.truetype(FONT_PATH, _sf(18))
     except Exception:
         # Fallback to default font
         title_font = ImageFont.load_default()
@@ -100,15 +131,15 @@ def create_qr_display_image(url: str, title: str = None, caption: str = None, qr
 
     # Calculate positions
     qr_x = (DISPLAY_SIZE[0] - qr_size) // 2
-    qr_y = 100  # Starting Y position for QR code
+    qr_y = _sy(100)  # Starting Y position for QR code
 
     # Draw title if provided
     if title:
         bbox = draw.textbbox((0, 0), title, font=title_font)
         title_width = bbox[2] - bbox[0]
         title_x = (DISPLAY_SIZE[0] - title_width) // 2
-        draw.text((title_x, 30), title, font=title_font, fill=0)
-        qr_y = 90
+        draw.text((title_x, _sy(30)), title, font=title_font, fill=0)
+        qr_y = _sy(90)
 
     # Generate and paste QR code
     qr_image = generate_qr_image(url)
@@ -120,7 +151,7 @@ def create_qr_display_image(url: str, title: str = None, caption: str = None, qr
         bbox = draw.textbbox((0, 0), caption, font=caption_font)
         caption_width = bbox[2] - bbox[0]
         caption_x = (DISPLAY_SIZE[0] - caption_width) // 2
-        caption_y = qr_y + qr_size + 20
+        caption_y = qr_y + qr_size + _sy(20)
         draw.text((caption_x, caption_y), caption, font=caption_font, fill=0)
 
     # Draw URL in small text at bottom
@@ -128,7 +159,7 @@ def create_qr_display_image(url: str, title: str = None, caption: str = None, qr
     bbox = draw.textbbox((0, 0), url_display, font=small_font)
     url_width = bbox[2] - bbox[0]
     url_x = (DISPLAY_SIZE[0] - url_width) // 2
-    draw.text((url_x, DISPLAY_SIZE[1] - 40), url_display, font=small_font, fill=0)
+    draw.text((url_x, DISPLAY_SIZE[1] - _sy(40)), url_display, font=small_font, fill=0)
 
     return image
 
@@ -141,9 +172,9 @@ def create_qr_display_image(url: str, title: str = None, caption: str = None, qr
 # is appended when the message cannot fit in MAX_TITLE_LINES at the title
 # font size — better than mid-word truncation because the recipient can
 # tell at a glance that more text was intended.
-TITLE_SIDE_MARGIN = 40
+TITLE_SIDE_MARGIN = _sx(40)
 MAX_TITLE_LINES = 2
-TITLE_LINE_SPACING = 4
+TITLE_LINE_SPACING = max(1, _sf(4, minimum=1))
 ELLIPSIS = "…"
 
 # Auto-fit ladder for the welcome/status title (gift-message #280 truncation
@@ -249,14 +280,14 @@ def _fit_title(text: str, font_path: str, max_width: int) -> tuple[list[str], "I
     """
     if not text:
         try:
-            return [], ImageFont.truetype(font_path, TITLE_FIT_TIERS[0][0])
+            return [], ImageFont.truetype(font_path, _sf(TITLE_FIT_TIERS[0][0]))
         except Exception:
             return [], ImageFont.load_default()
 
     last: tuple[list[str], ImageFont.FreeTypeFont, int] | None = None
     for size, max_lines in TITLE_FIT_TIERS:
         try:
-            font = ImageFont.truetype(font_path, size)
+            font = ImageFont.truetype(font_path, _sf(size))
         except Exception:
             font = ImageFont.load_default()
         # Natural wrap: max_lines=len(text)+1 can never truncate, so this is the
@@ -289,8 +320,8 @@ def create_status_image(title: str, message: str = None, submessage: str = None)
     # Load the secondary fonts (fixed sizes). The TITLE font is chosen
     # per-message by _fit_title below, not fixed here.
     try:
-        message_font = ImageFont.truetype(FONT_PATH, 28)
-        small_font = ImageFont.truetype(FONT_PATH, 20)
+        message_font = ImageFont.truetype(FONT_PATH, _sf(28))
+        small_font = ImageFont.truetype(FONT_PATH, _sf(20))
     except Exception:
         message_font = ImageFont.load_default()
         small_font = ImageFont.load_default()
@@ -319,11 +350,11 @@ def create_status_image(title: str, message: str = None, submessage: str = None)
     # setup steps) push the title block toward the top so the page reads
     # top-down; otherwise center the title vertically in the upper half.
     if message and "\n" in message:
-        title_y = 60
+        title_y = _sy(60)
     elif message:
-        title_y = 150
+        title_y = _sy(150)
     else:
-        title_y = 200
+        title_y = _sy(200)
 
     if title_block:
         draw.multiline_text(
@@ -340,7 +371,7 @@ def create_status_image(title: str, message: str = None, submessage: str = None)
     # lines the title occupied so a 2-line gift welcome doesn't crash into
     # the steps list (#319 follow-up to the wrap fix).
     if message:
-        message_y = title_y + title_block_height + 30
+        message_y = title_y + title_block_height + _sy(30)
         bbox = draw.textbbox((0, 0), message, font=message_font)
         msg_width = bbox[2] - bbox[0]
         msg_x = (DISPLAY_SIZE[0] - msg_width) // 2
@@ -351,7 +382,7 @@ def create_status_image(title: str, message: str = None, submessage: str = None)
         bbox = draw.textbbox((0, 0), submessage, font=small_font)
         sub_width = bbox[2] - bbox[0]
         sub_x = (DISPLAY_SIZE[0] - sub_width) // 2
-        draw.text((sub_x, DISPLAY_SIZE[1] - 60), submessage, font=small_font, fill=0)
+        draw.text((sub_x, DISPLAY_SIZE[1] - _sy(60)), submessage, font=small_font, fill=0)
 
     return image
 
@@ -415,10 +446,10 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
 
     # Load fonts
     try:
-        title_font = ImageFont.truetype(FONT_PATH_BOLD, 36)
-        label_font = ImageFont.truetype(FONT_PATH_BOLD, 22)
-        value_font = ImageFont.truetype(FONT_PATH, 24)
-        small_font = ImageFont.truetype(FONT_PATH, 18)
+        title_font = ImageFont.truetype(FONT_PATH_BOLD, _sf(36))
+        label_font = ImageFont.truetype(FONT_PATH_BOLD, _sf(22))
+        value_font = ImageFont.truetype(FONT_PATH, _sf(24))
+        small_font = ImageFont.truetype(FONT_PATH, _sf(18))
     except Exception:
         title_font = ImageFont.load_default()
         label_font = ImageFont.load_default()
@@ -437,24 +468,25 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
     title = "Couldn't Join Your WiFi" if is_retry else "WiFi Setup"
     bbox = draw.textbbox((0, 0), title, font=title_font)
     title_width = bbox[2] - bbox[0]
-    draw.text(((DISPLAY_SIZE[0] - title_width) // 2, 20), title, font=title_font, fill=0)
+    draw.text(((DISPLAY_SIZE[0] - title_width) // 2, _sy(20)), title, font=title_font, fill=0)
 
     # WiFi QR code (standard format that phones auto-recognize). Same QR in
     # the retry state — the hotspot credentials are unchanged, only the
-    # user-facing instructions differ.
+    # user-facing instructions differ. Scannability floor of 100px on small
+    # panels — a WIFI: QR that can't scan defeats the whole screen.
     wifi_qr_data = f"WIFI:T:WPA;S:{ssid};P:{password};;"
-    qr_size = 220
+    qr_size = max(min(100, DISPLAY_SIZE[1] - _sy(160)), _sf(220))
     qr_image = generate_qr_image(wifi_qr_data)
     qr_image = qr_image.resize((qr_size, qr_size), Image.Resampling.NEAREST)
 
     # Place QR on left side
-    qr_x = 40
-    qr_y = 80
+    qr_x = _sx(40)
+    qr_y = _sy(80)
     image.paste(qr_image, (qr_x, qr_y))
 
     # Text info on right side
-    text_x = qr_x + qr_size + 30
-    text_y = qr_y + 10
+    text_x = qr_x + qr_size + _sx(30)
+    text_y = qr_y + _sy(10)
 
     # Labels explicitly prefixed with "Hotspot" so a user reading the retry
     # screen doesn't confuse these values (which join the Pi's temporary
@@ -462,10 +494,10 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
     # setup form is actually asking for). Consistent "Hotspot X:" framing
     # across both fields reinforces the disambiguation.
     draw.text((text_x, text_y), "Hotspot Network:", font=label_font, fill=0)
-    draw.text((text_x, text_y + 30), ssid, font=value_font, fill=0)
+    draw.text((text_x, text_y + _sf(30, 14)), ssid, font=value_font, fill=0)
 
-    draw.text((text_x, text_y + 80), "Hotspot Password:", font=label_font, fill=0)
-    draw.text((text_x, text_y + 110), password, font=value_font, fill=0)
+    draw.text((text_x, text_y + _sf(80, 36)), "Hotspot Password:", font=label_font, fill=0)
+    draw.text((text_x, text_y + _sf(110, 50)), password, font=value_font, fill=0)
 
     # Bottom instruction block. dnsmasq's wildcard on the hotspot resolves
     # every hostname to `ip`, and nftables redirects 80→8080, so
@@ -500,9 +532,9 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
 
 # Handoff splash layout (EPIC #383 PR2, #388). Settings summary block on the
 # left, PWA QR top-right. Column where the dotted-leader values start.
-HANDOFF_LEFT_MARGIN = 50
-HANDOFF_VALUE_COLUMN = 330
-HANDOFF_ROW_HEIGHT = 34
+HANDOFF_LEFT_MARGIN = _sx(50)
+HANDOFF_VALUE_COLUMN = _sx(330)
+HANDOFF_ROW_HEIGHT = _sf(34, 14)
 # Short so the value never collides with the top-right QR (the "scan the QR"
 # call to action lives on its own line below the summary block).
 HANDOFF_NOT_DETECTED = "Not detected"
@@ -514,17 +546,71 @@ HANDOFF_SSID_MAX_LINES = 2
 # Vertical offsets from the URL text baseline down to the caveat label,
 # and from the label down to the first SSID line. Named so a future
 # spacing tweak doesn't have to grep pixel arithmetic.
-HANDOFF_CAVEAT_TOP_GAP = 28  # url_y → caveat_label_y
-HANDOFF_CAVEAT_SSID_GAP = 24  # caveat_label_y → first ssid line
+HANDOFF_CAVEAT_TOP_GAP = _sf(28, 12)  # url_y → caveat_label_y
+HANDOFF_CAVEAT_SSID_GAP = _sf(24, 11)  # caveat_label_y → first ssid line
 # Per-line vertical spacing for the SSID value. Two values because the
 # bold label_font (22pt) is taller than the small_font (18pt); a wrapped
 # SSID at small_font packs tighter.
-HANDOFF_SSID_LINE_HEIGHT_LARGE = 24  # label_font (22pt bold)
-HANDOFF_SSID_LINE_HEIGHT_SMALL = 22  # small_font (18pt regular)
+HANDOFF_SSID_LINE_HEIGHT_LARGE = _sf(24, 11)  # label_font (22pt bold)
+HANDOFF_SSID_LINE_HEIGHT_SMALL = _sf(22, 10)  # small_font (18pt regular)
 # Caveat label copy — hoisted alongside HANDOFF_NOT_DETECTED so future
 # copy iterations have ONE intercept point (matches the splash's other
 # user-visible strings).
 HANDOFF_CAVEAT_LABEL = "Scan with your phone on:"
+
+# Below these logical dimensions the settings-summary column and the
+# 100px-scannability-floor QR can't share a row without colliding, so the
+# splash renders a compact variant (heading + QR + URL + bottom status) and
+# leaves the settings detail to the PWA the QR opens. 500×300 keeps every
+# panel from 4.2" (400×300 → compact) down on the compact path while the
+# 5.83"/7.5" class renders the full summary.
+HANDOFF_COMPACT_MAX_WIDTH = 500
+HANDOFF_COMPACT_MAX_HEIGHT = 300
+
+
+def _create_handoff_splash_compact(settings: dict, qr_url: str) -> Image.Image:
+    """Small-panel handoff splash: heading left, QR right, URL under the QR,
+    status line along the bottom. The full variant's settings rows, tip
+    lines, and SSID caveat are deliberately dropped — at these sizes they
+    collide with the QR, and every one of them is available in the PWA the
+    QR opens."""
+    has_location = bool(settings.get("has_location"))
+
+    image = Image.new("1", DISPLAY_SIZE, 255)
+    draw = ImageDraw.Draw(image)
+
+    try:
+        brand_font = ImageFont.truetype(FONT_PATH_BOLD, _sf(26, 12))
+        small_font = ImageFont.truetype(FONT_PATH, _sf(18))
+    except Exception:
+        brand_font = small_font = ImageFont.load_default()
+
+    margin = max(6, _sx(50))
+    qr_size = min(100, DISPLAY_SIZE[1] - 3 * _sf(18) - 12)
+    qr_x = DISPLAY_SIZE[0] - qr_size - margin // 2
+    qr_y = 4
+    qr_image = generate_qr_image(qr_url).resize((qr_size, qr_size), Image.Resampling.NEAREST)
+    image.paste(qr_image, (qr_x, qr_y))
+    url_text = qr_url.replace("http://", "")
+    url_w = draw.textlength(url_text, font=small_font)
+    draw.text((qr_x + (qr_size - url_w) // 2, qr_y + qr_size + 2), url_text, font=small_font, fill=0)
+
+    draw.text((margin // 2, 4), "LITCLOCK", font=brand_font, fill=0)
+    heading = "Ready to read." if has_location else "Almost ready."
+    text_max = qr_x - margin // 2 - 4
+    heading_lines, heading_fit = _fit_title(heading, FONT_PATH_BOLD, max(40, text_max))
+    heading_y = 4 + _sf(30, 14)
+    for line in heading_lines or [heading]:
+        draw.text((margin // 2, heading_y), line, font=heading_fit, fill=0)
+        heading_y += _sf(44, 18)
+
+    cta = "Scan to change settings." if has_location else "Scan to set your timezone."
+    draw.text((margin // 2, heading_y), cta, font=small_font, fill=0)
+
+    bottom = "Quotes start shortly." if has_location else "Quotes wait for your timezone."
+    draw.text((margin // 2, DISPLAY_SIZE[1] - _sf(18) - 4), bottom, font=small_font, fill=0)
+
+    return image
 
 
 def _fit_ssid_to_band(ssid: str, font, draw, max_w: int, max_lines: int = HANDOFF_SSID_MAX_LINES) -> list[str]:
@@ -605,35 +691,42 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
     Failure (no location, tz unknown): "Almost ready." + "Not detected" rows +
     a "scan the QR to set your timezone" call to action, because a clock that
     paints quotes at the wrong time is worse than no clock (design-review A2).
+
+    Small panels (below HANDOFF_COMPACT_MAX_*) get the compact variant — the
+    full layout's summary column and QR physically collide there.
     """
+    if DISPLAY_SIZE[0] < HANDOFF_COMPACT_MAX_WIDTH or DISPLAY_SIZE[1] < HANDOFF_COMPACT_MAX_HEIGHT:
+        return _create_handoff_splash_compact(settings, qr_url)
+
     has_location = bool(settings.get("has_location"))
 
     image = Image.new("1", DISPLAY_SIZE, 255)
     draw = ImageDraw.Draw(image)
 
     try:
-        brand_font = ImageFont.truetype(FONT_PATH_BOLD, 26)
-        heading_font = ImageFont.truetype(FONT_PATH_BOLD, 40)
-        label_font = ImageFont.truetype(FONT_PATH_BOLD, 22)
-        row_font = ImageFont.truetype(FONT_PATH, 22)
-        small_font = ImageFont.truetype(FONT_PATH, 18)
+        brand_font = ImageFont.truetype(FONT_PATH_BOLD, _sf(26))
+        heading_font = ImageFont.truetype(FONT_PATH_BOLD, _sf(40))
+        label_font = ImageFont.truetype(FONT_PATH_BOLD, _sf(22))
+        row_font = ImageFont.truetype(FONT_PATH, _sf(22))
+        small_font = ImageFont.truetype(FONT_PATH, _sf(18))
     except Exception:
         brand_font = heading_font = label_font = row_font = small_font = ImageFont.load_default()
 
     # Brand wordmark + hairline rule, top-left.
-    draw.text((HANDOFF_LEFT_MARGIN, 28), "LITCLOCK", font=brand_font, fill=0)
-    draw.line((HANDOFF_LEFT_MARGIN, 66, HANDOFF_LEFT_MARGIN + 150, 66), fill=0, width=2)
+    draw.text((HANDOFF_LEFT_MARGIN, _sy(28)), "LITCLOCK", font=brand_font, fill=0)
+    draw.line((HANDOFF_LEFT_MARGIN, _sy(66), HANDOFF_LEFT_MARGIN + _sx(150), _sy(66)), fill=0, width=2)
 
     # PWA QR, top-right. A5: encode the just-acquired IP (100% scan success vs
     # flaky Android mDNS). URL printed under it as the human-readable fallback.
-    qr_size = 200
+    # 100px scannability floor on small panels (matches the other QR screens).
+    qr_size = max(min(100, DISPLAY_SIZE[1] - _sy(120)), _sf(200))
     qr_x = DISPLAY_SIZE[0] - qr_size - HANDOFF_LEFT_MARGIN
-    qr_y = 40
+    qr_y = _sy(40)
     qr_image = generate_qr_image(qr_url).resize((qr_size, qr_size), Image.Resampling.NEAREST)
     image.paste(qr_image, (qr_x, qr_y))
     url_text = qr_url.replace("http://", "")
     url_w = draw.textlength(url_text, font=small_font)
-    url_y = qr_y + qr_size + 6
+    url_y = qr_y + qr_size + _sy(6)
     draw.text((qr_x + (qr_size - url_w) // 2, url_y), url_text, font=small_font, fill=0)
 
     # Cross-network caveat (#399). The QR encodes a LAN-only IP, so a phone
@@ -693,10 +786,10 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
 
     # Heading.
     heading = "Ready to read." if has_location else "Almost ready."
-    draw.text((HANDOFF_LEFT_MARGIN, 92), heading, font=heading_font, fill=0)
+    draw.text((HANDOFF_LEFT_MARGIN, _sy(92)), heading, font=heading_font, fill=0)
 
     # Settings summary block.
-    draw.text((HANDOFF_LEFT_MARGIN, 158), "Your settings — auto-detected:", font=label_font, fill=0)
+    draw.text((HANDOFF_LEFT_MARGIN, _sy(158)), "Your settings — auto-detected:", font=label_font, fill=0)
     location_value = settings.get("location_name") or HANDOFF_NOT_DETECTED if has_location else HANDOFF_NOT_DETECTED
     timezone_value = settings.get("timezone") or HANDOFF_NOT_DETECTED if has_location else HANDOFF_NOT_DETECTED
     rows = [
@@ -705,27 +798,27 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
         ("Units", settings.get("units_label", "Imperial (°F)")),
         ("Mature quotes", "On" if settings.get("mature_enabled") else "Off"),
     ]
-    row_y = 200
+    row_y = _sy(200)
     for label, value in rows:
         _draw_dotted_row(draw, row_y, label, value, row_font)
         row_y += HANDOFF_ROW_HEIGHT
 
     # Call to action + educational note, lower-left.
     cta = "To change anything, scan the QR." if has_location else "Scan the QR to set your timezone."
-    draw.text((HANDOFF_LEFT_MARGIN, row_y + 14), cta, font=row_font, fill=0)
+    draw.text((HANDOFF_LEFT_MARGIN, row_y + _sy(14)), cta, font=row_font, fill=0)
     tip_lines = [
         "Tip: this QR lives in the corner of every",
         "quote — scan it any time to return to settings.",
     ]
-    tip_y = row_y + 52
+    tip_y = row_y + _sy(52)
     for line in tip_lines:
         draw.text((HANDOFF_LEFT_MARGIN, tip_y), line, font=small_font, fill=0)
-        tip_y += 24
+        tip_y += _sf(24, 11)
 
     # Bottom status line, centered.
     bottom = "Quotes start shortly." if has_location else "Quotes start once your timezone is set."
     bottom_w = draw.textlength(bottom, font=row_font)
-    draw.text(((DISPLAY_SIZE[0] - bottom_w) // 2, DISPLAY_SIZE[1] - 44), bottom, font=row_font, fill=0)
+    draw.text(((DISPLAY_SIZE[0] - bottom_w) // 2, DISPLAY_SIZE[1] - _sy(44)), bottom, font=row_font, fill=0)
 
     return image
 

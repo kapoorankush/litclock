@@ -25,10 +25,11 @@ cd /home/pi/litclock
 
 # Ensure piwheels is configured in /etc/pip.conf. Raspberry Pi OS ships
 # this by default, but reinforce so on-device pip installs (update.sh)
-# always see pre-built aarch64 wheels and don't fall back to sdist
-# compilation on a gcc-less image (#214). Idempotent: only write if
-# piwheels isn't already configured, so we don't clobber settings a
-# future Pi OS release might add.
+# always see pre-built wheels for the image's architecture (aarch64 or
+# armv6/armhf) and don't fall back to sdist compilation on a gcc-less
+# image (#214). Idempotent: only write if piwheels isn't already
+# configured, so we don't clobber settings a future Pi OS release
+# might add.
 if [ ! -f /etc/pip.conf ] || ! grep -q 'piwheels' /etc/pip.conf 2>/dev/null; then
     cat > /etc/pip.conf << 'EOF'
 [global]

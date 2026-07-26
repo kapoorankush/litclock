@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock Weekly Auto-Update
-Documentation=https://github.com/kapoorankush/litclock/issues/209
+Documentation=https://github.com/kruczek-lab/litclock/issues/209
 # Don't start mid-firstboot — the provisioning flow owns the clock at that
 # point and a concurrent git reset would race setup state. The real
 # "firstboot finished" signal is /etc/litclock/.setup-complete (written

@@ -66,12 +66,13 @@ docker run --rm hello-world
 ./pi-gen/build.sh
 ```
 
-This clones pi-gen into `pi-gen/work/`, copies the custom stage, and builds via Docker. The output `.img` file appears in `pi-gen/work/pi-gen/deploy/`.
+This clones pi-gen into `pi-gen/work-<arch>/`, copies the custom stage, and builds via Docker. The output `.img` file appears in `pi-gen/work-<arch>/pi-gen/deploy/`.
 
 ### Build Options
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `LITCLOCK_ARCH` | `arm64` | Image architecture: `arm64` (Pi Zero 2 W, Pi 3/4/5) or `armhf` (32-bit, original Pi Zero W / Pi 1) |
 | `LITCLOCK_REF` | `master` | Git ref to bake into the image (tag, branch, or SHA) |
 | `LITCLOCK_VERSION` | `dev` | Version string written to `/etc/litclock-version` |
 | `LITCLOCK_SHA` | current HEAD | Git SHA written to `/etc/litclock-version` |
@@ -81,6 +82,16 @@ Example: build from a specific tag:
 ```bash
 LITCLOCK_REF=v0.218.0 LITCLOCK_VERSION=0.218.0 ./pi-gen/build.sh
 ```
+
+Example: 32-bit image for the original Pi Zero W:
+
+```bash
+LITCLOCK_ARCH=armhf ./pi-gen/build.sh
+```
+
+CI (the `Build Image` workflow) builds **both** architectures per run via a
+matrix and publishes them as `litclock-<version>-arm64.img.xz` and
+`litclock-<version>-armhf.img.xz` on the same release.
 
 ## What the Image Includes
 

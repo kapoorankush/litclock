@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock Boot Splash Screen
-Documentation=https://github.com/kapoorankush/litclock
+Documentation=https://github.com/kruczek-lab/litclock
 After=sysinit.target
 
 [Service]

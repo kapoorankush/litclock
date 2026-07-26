@@ -3,7 +3,7 @@
 # LitClock E-Ink Display Installer
 # For Raspberry Pi Zero WH with Waveshare 7.5" e-Paper HAT (V2)
 #
-# Usage: curl -sSL https://raw.githubusercontent.com/kapoorankush/litclock/master/scripts/install.sh | bash
+# Usage: curl -sSL https://raw.githubusercontent.com/kruczek-lab/litclock/master/scripts/install.sh | bash
 #
 # This script will:
 # 1. Install system dependencies
@@ -29,9 +29,29 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# Prompt helper safe under `curl | bash`. In that mode bash's stdin IS the
+# script pipe and sits at EOF by the time main() runs, so a bare `read -p`
+# returns failure immediately — and under `set -e` that kills the installer
+# silently right after the banner. Read from the controlling terminal when
+# stdin isn't a tty; if there's no usable terminal either (fully
+# non-interactive), fall back to the prompt's default (empty response).
+ask_user() {
+    # $1 = prompt text, $2 = variable name to store the response in
+    local _prompt="$1" _var="$2" _resp=""
+    if [ -t 0 ]; then
+        read -r -p "$_prompt" _resp || true
+    elif { exec 3< /dev/tty; } 2>/dev/null; then
+        read -r -u 3 -p "$_prompt" _resp || true
+        exec 3<&-
+    else
+        echo "${_prompt}(non-interactive — using default)"
+    fi
+    printf -v "$_var" '%s' "$_resp"
+}
+
 # Configuration
 INSTALL_DIR="/home/pi/litclock"
-REPO_URL="https://github.com/kapoorankush/litclock.git"
+REPO_URL="https://github.com/kruczek-lab/litclock.git"
 BCM2835_VERSION="1.75"
 BCM2835_URL="https://www.airspayce.com/mikem/bcm2835/bcm2835-${BCM2835_VERSION}.tar.gz"
 
@@ -191,7 +211,7 @@ setup_wifi_stability() {
     echo "[Y] Yes, apply fixes (Recommended)"
     echo "[n] No, skip"
     echo ""
-    read -p "Apply WiFi stability fixes? [Y/n]: " response
+    ask_user "Apply WiFi stability fixes? [Y/n]: " response
     if [[ "$response" =~ ^[Nn]$ ]]; then
         log_info "Skipping WiFi stability fixes"
         return 0
@@ -249,7 +269,7 @@ clone_repository() {
 
     if [ -d "$INSTALL_DIR" ]; then
         log_warn "Directory $INSTALL_DIR already exists"
-        read -p "Do you want to remove it and re-clone? (y/N): " response
+        ask_user "Do you want to remove it and re-clone? (y/N): " response
         if [[ "$response" =~ ^[Yy]$ ]]; then
             rm -rf "$INSTALL_DIR"
         else
@@ -523,7 +543,7 @@ main() {
     echo "Installation directory: $INSTALL_DIR"
     echo ""
 
-    read -p "Continue with installation? (Y/n): " response
+    ask_user "Continue with installation? (Y/n): " response
     if [[ "$response" =~ ^[Nn]$ ]]; then
         echo "Installation cancelled."
         exit 0

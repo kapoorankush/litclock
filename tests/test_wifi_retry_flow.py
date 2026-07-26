@@ -462,6 +462,13 @@ class TestConnectAndTeardown:
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
         monkeypatch.setattr(setup_server, "ENV_FILE", tmp_env_file)
         monkeypatch.setattr(setup_server, "SIGNAL_FILE", signal_file)
+        # Stub the IP-geo resolver like every other test in this file: the
+        # real one makes an outbound ip-api.com call whose retry backoff
+        # (1/3/9s) outlives _wait_for_thread AND the os.kill monkeypatch —
+        # the worker thread then fires a REAL SIGTERM at the pytest process
+        # (observed as the full suite dying at ~98% with no summary on any
+        # network that blocks ip-api.com).
+        monkeypatch.setattr(setup_server, "_resolve_location_from_ip", lambda: None)
 
         connect_calls = []
         teardown_calls = []
@@ -826,6 +833,16 @@ class TestConnectAndTeardownOrdering:
 
         sys.modules.pop("wifi_provision", None)
         sys.modules["wifi_provision"] = fake_wp
+
+        # Hermeticity: the success path calls _resolve_location_from_ip, which
+        # makes a REAL ip-api.com request with 1/3/9s retry backoff on networks
+        # that block it — the worker thread then outlives _wait_for_thread AND
+        # the test's os.kill monkeypatch and fires a real SIGTERM at the pytest
+        # process (full suite died at ~98% with no summary). Stub it here so
+        # every test using this helper is network-free; a test that needs to
+        # observe the call re-patches it after calling this helper (see
+        # test_success_path_call_ordering).
+        monkeypatch.setattr(setup_server, "_resolve_location_from_ip", lambda: None)
         return calls
 
     def test_success_path_call_ordering(self, monkeypatch, tmp_env_file, tmp_path):

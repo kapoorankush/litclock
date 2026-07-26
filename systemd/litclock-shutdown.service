@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock Shutdown Splash Screen
-Documentation=https://github.com/kapoorankush/litclock
+Documentation=https://github.com/kruczek-lab/litclock
 DefaultDependencies=no
 # Conflicts= triggers our STOP (and ExecStop) when systemd isolates to any of
 # the four shutdown targets.

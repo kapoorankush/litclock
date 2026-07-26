@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock Last-Known-Good writer (heartbeat-gated)
-Documentation=https://github.com/kapoorankush/litclock/issues/241
+Documentation=https://github.com/kruczek-lab/litclock/issues/241
 # Driven by litclock-lkg.timer. NOT a dependency of litclock.service —
 # the original Requisite=litclock.service + WantedBy=litclock.service
 # combination caused the writer to fail-start at boot (parallel-start

@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock on-boot location re-resolve (#337 A2/A8)
-Documentation=https://github.com/kapoorankush/litclock/issues/337
+Documentation=https://github.com/kruczek-lab/litclock/issues/337
 # #337 A2: gate on the handoff-complete marker. On a fresh-flash boot, setup_server
 # is still doing its own post-WiFi IP-geo resolve via _resolve_location_from_ip;
 # firing this oneshot in parallel would do a redundant ip-api.com call AND fight

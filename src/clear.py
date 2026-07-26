@@ -1,9 +1,9 @@
-from display_driver import epd7in5
+import display_driver
 
 
 def main():
     try:
-        epd = epd7in5.EPD()
+        epd = display_driver.get_panel()
         epd.init()
         epd.Clear()
         epd.sleep()

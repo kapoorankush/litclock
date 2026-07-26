@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock handoff last-resort completer (EPIC #383 PR2, #388)
-Documentation=https://github.com/kapoorankush/litclock/issues/388
+Documentation=https://github.com/kruczek-lab/litclock/issues/388
 # Last-resort safety net: if control_server crashed during the post-WiFi
 # handoff window and never wrote .handoff-complete, this rescues the clock
 # from a stuck splash ~10 min after boot (litclock-control.service's

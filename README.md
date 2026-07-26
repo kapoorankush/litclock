@@ -5,9 +5,9 @@
 <h1 align="center">LitClock</h1>
 
 <p align="center">
-  <a href="https://github.com/kapoorankush/litclock/actions/workflows/lint.yml"><img src="https://github.com/kapoorankush/litclock/actions/workflows/lint.yml/badge.svg" alt="Tests"></a>
-  <a href="https://github.com/kapoorankush/litclock/actions/workflows/build-image.yml"><img src="https://github.com/kapoorankush/litclock/actions/workflows/build-image.yml/badge.svg" alt="Image Build"></a>
-  <a href="https://github.com/kapoorankush/litclock/releases/latest"><img src="https://img.shields.io/github/v/release/kapoorankush/litclock?label=Download%20Image&color=brightgreen" alt="Download Image"></a>
+  <a href="https://github.com/kruczek-lab/litclock/actions/workflows/lint.yml"><img src="https://github.com/kruczek-lab/litclock/actions/workflows/lint.yml/badge.svg" alt="Tests"></a>
+  <a href="https://github.com/kruczek-lab/litclock/actions/workflows/build-image.yml"><img src="https://github.com/kruczek-lab/litclock/actions/workflows/build-image.yml/badge.svg" alt="Image Build"></a>
+  <a href="https://github.com/kruczek-lab/litclock/releases/latest"><img src="https://img.shields.io/github/v/release/kruczek-lab/litclock?label=Download%20Image&color=brightgreen" alt="Download Image"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11-blue.svg" alt="Python 3.11"></a>
   <a href="https://www.raspberrypi.com/"><img src="https://img.shields.io/badge/platform-Raspberry%20Pi-c51a4a.svg" alt="Platform"></a>
@@ -33,7 +33,7 @@ Four steps, roughly an afternoon (most of it waiting for the 3D printer).
 
 | Part | Notes | ~Cost |
 |------|-------|-------|
-| [Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) | Get the **WH** variant (pre-soldered header) unless you like soldering | $15 |
+| [Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) | Get the **WH** variant (pre-soldered header) unless you like soldering. The original Pi Zero W also works — flash the `armhf` image for it (see step 2) — but it's slower | $15 |
 | [Waveshare 7.5" e-Paper HAT (V2)](https://www.amazon.com/dp/B075R4QY3L) | 800×480, black/white ([product page](https://www.waveshare.com/7.5inch-e-paper-hat.htm)) | $60 |
 | microSDHC card | 32 GB recommended | $10 |
 | Micro-USB power supply | 5V/2A minimum | $10 |
@@ -44,7 +44,9 @@ Full details in **[Hardware Assembly](docs/hardware-assembly.md)**.
 
 ### 2. Flash the SD card
 
-1. Download the latest `.img.xz` from **[Releases](https://github.com/kapoorankush/litclock/releases/latest)**
+1. Download the latest `.img.xz` from **[Releases](https://github.com/kruczek-lab/litclock/releases/latest)** — pick the one for your board:
+   - `litclock-*-arm64.img.xz` — Pi Zero **2** W, Pi 3/4/5 (64-bit)
+   - `litclock-*-armhf.img.xz` — original Pi Zero W, Pi 1 (32-bit; the arm64 image will not boot on these)
 2. Flash it to the microSD card with [Raspberry Pi Imager](https://www.raspberrypi.com/software/) or [balenaEtcher](https://etcher.balena.io/)
 
 That's it — no config files to edit, no SSH to set up. Everything else happens from your phone after power-on.
@@ -55,7 +57,7 @@ That's it — no config files to edit, no SSH to set up. Everything else happens
 On a fresh Raspberry Pi OS Lite install, SSH in (or connect a keyboard) and run:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/kapoorankush/litclock/master/scripts/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/kruczek-lab/litclock/master/scripts/install.sh | bash
 ```
 
 The installer sets up system dependencies, the BCM2835 driver, SPI, NTP sync, the Python venv, all systemd services, and downloads the quote-image set (~130 MB — needs network; the clock falls back to a time-only display if the download fails). It also detects Pi Zero W hardware and offers the [WiFi stability fixes](#wifi-stability-pi-zero-w--zero-2-w). Reboot when it finishes — from there the flow matches the flashed image.
@@ -152,6 +154,8 @@ export WEATHER_TTL=3600
 | `ALLOW_NSFW_QUOTES` | Show quotes with mature content (default: `false`) |
 | `WEATHER_TTL` | Weather cache duration in seconds (default: `3600`) |
 | `OPENWEATHERMAP_APIKEY` | Optional — use OpenWeatherMap instead of Open-Meteo (see below) |
+| `EINK_MODEL` | E-ink panel driver name (default: `epd7in5_V2` — the 7.5" V2). Any mono panel from the Waveshare library works, e.g. `epd2in7_V2`; layouts scale to the panel and the pre-rendered quote art scales to fit (see below) |
+| `EINK_ROTATE` | `180` to flip the frame for upside-down mounts (default: `0`) |
 
 <details>
 <summary><b>Advanced: using OpenWeatherMap instead of Open-Meteo</b></summary>
@@ -163,6 +167,33 @@ By default the clock uses Open-Meteo, which is free and requires no signup. If y
 3. Restart the timer: `sudo systemctl restart litclock.timer`.
 
 The OpenWeatherMap free tier allows 1,000 calls per day; the clock caches forecasts for an hour by default, so usage stays well within limits.
+</details>
+
+<details>
+<summary><b>Advanced: using a different Waveshare e-ink panel</b></summary>
+
+LitClock is designed around the 7.5" V2 panel, but the display layer is
+model-agnostic: set `EINK_MODEL` in `env.sh` to any **mono** panel driver name
+from the vendored [Waveshare library](https://github.com/waveshare/e-Paper)
+(`lib/e-Paper/RaspberryPi_JetsonNano/python/lib/waveshare_epd/`) — for example
+`epd2in7_V2` (2.7", 264×176) or `epd4in2` (4.2", 400×300) — and restart
+(`sudo reboot`, or `sudo systemctl restart litclock.timer litclock-control.service`).
+
+What to expect on non-7.5" panels:
+
+- **Setup, splash, and status screens** re-layout to the panel size (small
+  panels get compact variants; QR codes keep a 100px scannability floor).
+- **Quote faces** are pre-rendered for the 7.5" layout and scale-to-fit other
+  panels. On small panels long quotes lose legibility — a per-resolution quote
+  corpus is the eventual fix; until then small panels trade fidelity.
+- **The corner settings QR** is skipped on panels too small to hold it; use
+  the setup-time QR or `http://litclock.local` to reach the control app.
+- Color/red-channel panels (`epd…b`/`…c` variants) are not supported — mono
+  only.
+- `EINK_ROTATE=180` flips the frame for upside-down mounts.
+
+Portrait-native panels are composed landscape and rotated by the driver. If a
+panel misreports its size, `EINK_WIDTH`/`EINK_HEIGHT` override the canvas.
 </details>
 
 <details>
@@ -247,6 +278,7 @@ Flags:
 
 **Start here (no shell needed):** open `http://litclock.local/diagnostics` (or tap "Open full diagnostics" in the control app). It shows version, last render time, WiFi + weather status, error flags, and recent logs. Screenshot it, or use "Download full logs" to export a redacted support bundle safe to attach to an issue.
 
+- **Pi doesn't boot at all after flashing** (no activity LED pattern, display never changes): check the image matches the board — the `arm64` image only boots ARMv8 boards (Pi Zero **2** W, Pi 3/4/5); the original Pi Zero W and Pi 1 need the `armhf` image. If the image/board pairing is right, re-verify the download against its published `.sha256` and re-flash — a truncated download or interrupted flash produces the same dead-boot symptom.
 - **Wrong city, units, or timezone**: fix it in the app → Settings. If setup couldn't detect your location at all (some networks block IP geolocation), the app offers a one-tap "use my browser's timezone" fallback so the clock runs correctly with weather off.
 - **Display not updating**: Check SPI is enabled with `ls /dev/spi*`
 - **Check service status**: `systemctl status litclock.timer`

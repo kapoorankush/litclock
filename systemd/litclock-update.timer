@@ -1,6 +1,6 @@
 [Unit]
 Description=LitClock Weekly Auto-Update Timer
-Documentation=https://github.com/kapoorankush/litclock/issues/209
+Documentation=https://github.com/kruczek-lab/litclock/issues/209
 
 [Timer]
 # Weekly at 03:00 local time. Local time honors /etc/timezone so an
