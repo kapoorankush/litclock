@@ -2,6 +2,16 @@
 
 All notable changes to LitClock are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/) — dates are ISO 8601.
 
+## [Unreleased]
+
+### Added
+- **The clock can now render quotes on-device, from the corpus CSV.** A Python port of the PHP image generator (`src/quote_renderer.py`) reproduces the pre-rendered images glyph-for-glyph: 66,582 measurements and all 4,809 corpus rows verified exact against the original GD/FreeType pipeline, enforced by a new render-invariants CI gate on every corpus or renderer change. Runtime rendering ships **off by default** behind `LITCLOCK_RUNTIME_RENDER`, double-gated by an on-device validation marker that `tools/validate_measurement.py check --stamp` writes only after this exact device's font stack reproduces all 284,022 reference measurements — so the flag cannot enable an unproven environment. Fallback on any failure is right-time-only: freshly-rendered quote → pre-rendered PNG for this minute → plain time draw; never a stale frame, because on a clock a wrong time is worse than no quote. This is the foundation for editing quotes without a 4,800-image regeneration, and for future translated corpora.
+- **Diagnostics now record which render tier painted each frame.** `render_mode` (`runtime` / `image` / `image-fallback` / `time-only`) appears in the status file, the diagnostics page, and the support-bundle copy text, so "runtime rendering is off" and "runtime rendering is failing every minute and silently falling back" are distinguishable from a support bundle. A structural test asserts every diagnostics field is actually rendered in at least one human-readable surface.
+
+### Changed
+- **The top strip is now a typeset masthead.** The date and the LOW temperature line stand on a shared baseline placed so worst-case descenders clear the horizontal rule by the same tightness the quote's ascenders keep below it; the weather cell is a centered icon-plus-temperatures lockup whose slot is sized programmatically over every temperature the formatter can emit, so no accepted value can overflow or shift the layout. Malformed weather data suppresses the weather cell instead of drawing garbage. `example.png` regenerated to show the new layout.
+- **Bolding is now exactly the annotated time phrase.** The renderer previously extended bold through trailing punctuation and to word boundaries around the matched timestring; on some quotes that bolded a stray period or half a word. The corpus CSV's timestring column is now the bold spec, byte for byte — what the annotator marked is what bolds. 4,693 rows are pixel-identical, 116 gained a font size from reclaimed width, 0 regressed. `image-gen/generate_images.py` (whole-word bolding) is deprecated with a refuse-to-run guard; CONTRIBUTING documents the bolding contract for corpus editors and future translators.
+
 ## [v0.222.0] - 2026-07-23
 
 ### Fixed
