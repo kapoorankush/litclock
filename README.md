@@ -33,14 +33,22 @@ Four steps, roughly an afternoon (most of it waiting for the 3D printer).
 
 | Part | Notes | ~Cost |
 |------|-------|-------|
-| [Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) | Get the **WH** variant (pre-soldered header) unless you like soldering | $15 |
-| [Waveshare 7.5" e-Paper HAT (V2)](https://www.amazon.com/dp/B075R4QY3L) | 800×480, black/white ([product page](https://www.waveshare.com/7.5inch-e-paper-hat.htm)) | $60 |
+| [Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) | **Zero 2 W only** — the only board this is tested on (see note). For the 40-pin header: buy the **WH** variant pre-soldered, solder your own, or tap in a solderless **hammer header** — no iron needed | $15 list |
+| [Waveshare 7.5" e-Paper HAT (V2)](https://www.amazon.com/dp/B075R4QY3L) | **V2 only**, the one tested panel — Waveshare **SKU 13504**, Amazon **ASIN B075R4QY3L**. 800×480, black/white. Not the tri-colour B/C, not the 7.5" HD, not V1 (see note) ([product page](https://www.waveshare.com/7.5inch-e-paper-hat.htm)) | $60 |
 | microSDHC card | 32 GB recommended | $10 |
 | Micro-USB power supply | 5V/2A minimum | $10 |
 | 3D-printed case *(optional)* | PLA — see step 3 | $5–30 |
 | M2.5 threaded inserts + screws, USB-C→Micro-USB adapter *(case only)* | Inserts secure the case; the adapter puts a clean USB-C port on the back | $8 |
 
 Full details in **[Hardware Assembly](docs/hardware-assembly.md)**.
+
+> **The Raspberry Pi Zero 2 W is the only board LitClock is tested on.** Everything here — the image, the display code, the wiring, the case — is built and verified against that one board. Other Pis are not supported and have not been tried: the case is cut for the Zero's footprint, and nothing about the e-ink path has been validated anywhere else. A larger 64-bit Pi (3/4/5) may boot the image, but none of it is verified, so treat that as your own experiment rather than a supported build.
+>
+> A **32-bit** Pi cannot run it at all. The image is 64-bit (arm64), so an original Pi Zero W or a Pi 1/2 (ARMv6/ARMv7) shows no boot activity whatsoever — no display, no WiFi, nothing on the network, and no error message to go on. Worth ruling out first if a freshly flashed card seems dead.
+>
+> **The display must be the 7.5" V2, 800×480, black/white** — Waveshare **SKU 13504**, sold on Amazon as **ASIN B075R4QY3L**. That is the only panel this is tested on, and the clock drives it with Waveshare's `epd7in5_V2` driver. Waveshare sells several different 7.5" panels under similar names and they are not interchangeable: V1 is 640×384, the 7.5" HD is 880×528, and the B and C models are tri-colour. The layout is built for exactly 800×480, so a mismatched panel will not simply render smaller — it will not work. Whatever the listing is called, confirm it states **800×480** and **two colours (black/white)** before you buy.
+>
+> **On price and stock:** $15 is the list price, but as of July 2026 the Zero 2 W is frequently out of stock and often resold well above list. Check the authorized resellers before committing to the build, and be wary of marketplace listings at several times the price.
 
 ### 2. Flash the SD card
 
@@ -313,6 +321,7 @@ Flags:
 
 **Start here (no shell needed):** open `http://litclock.local/diagnostics` (or tap "Open full diagnostics" in the control app). It shows version, last render time, WiFi + weather status, error flags, and recent logs. Screenshot it, or use "Download full logs" to export a redacted support bundle safe to attach to an issue.
 
+- **Flashed the card and nothing happens at all** (no display activity, no WiFi, no `litclock.local`): check which board you have. The image is 64-bit only, so an original Pi Zero W or a Pi 1/2 shows no boot activity whatsoever — it cannot execute the 64-bit kernel. You need a Pi Zero 2 W.
 - **Wrong city, units, or timezone**: fix it in the app → Settings. If setup couldn't detect your location at all (some networks block IP geolocation), the app offers a one-tap "use my browser's timezone" fallback so the clock runs correctly with weather off.
 - **Display not updating**: Check SPI is enabled with `ls /dev/spi*`
 - **Check service status**: `systemctl status litclock.timer`
