@@ -50,17 +50,45 @@ Full details in **[Hardware Assembly](docs/hardware-assembly.md)**.
 That's it — no config files to edit, no SSH to set up. Everything else happens from your phone after power-on.
 
 <details>
-<summary><b>Installing on an existing Raspberry Pi OS instead</b> (terminal required)</summary>
+<summary><b>Running your own code on the clock</b> (terminal required)</summary>
 
-On a fresh Raspberry Pi OS Lite install, SSH in (or connect a keyboard) and run:
+> **The one-line `curl … | bash` installer has been retired.** It had to make
+> system-level decisions — SPI overlays, sudo rules, group membership — on a
+> machine whose settings belong to you, which made it impossible to test
+> honestly. It had also drifted from the image build: it never writes the
+> `dtoverlay=spi0-1cs` line the e-Paper HAT needs, which the image does.
+> `scripts/install.sh` is still in the tree for reference, but it is
+> unmaintained and untested — please don't run it.
+
+The flashed image contains a git checkout at `/home/pi/litclock`, so it doubles
+as a development environment:
+
+1. Flash the released image and finish WiFi setup
+2. SSH in — **SSH ships disabled**, see [Recovering a LitClock](docs/recovery.md) for how to turn it on
+3. Fetch your fork and check out your branch:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/kapoorankush/litclock/master/scripts/install.sh | bash
+cd /home/pi/litclock
+git remote add fork https://github.com/<you>/litclock.git
+git fetch --depth 1 fork <your-branch>
+git checkout -b <your-branch> FETCH_HEAD
+sudo systemctl restart litclock.service litclock-control.service
 ```
 
-The installer sets up system dependencies, the BCM2835 driver, SPI, NTP sync, the Python venv, all systemd services, and downloads the quote-image set (~130 MB — needs network; the clock falls back to a time-only display if the download fails). It also detects Pi Zero W hardware and offers the [WiFi stability fixes](#wifi-stability-pi-zero-w--zero-2-w). Reboot when it finishes — from there the flow matches the flashed image.
+`litclock.service` paints the panel; `litclock-control.service` serves the
+control app. Restart both, or changes to the app will look like they never
+applied. If your branch changes `requirements.txt`, also run
+`./venv/bin/pip install -r requirements.txt` — the checkout does not rebuild
+the venv.
 
-The installer and updater are for existing OS installs only; for a fresh SD card, the downloadable image above is the way.
+> **Turn off the auto-updater first.** `litclock-update.timer` ships enabled and
+> fires on its own — Sunday 03:00, with up to seven days of jitter. It resolves
+> the latest release tag and `git reset --hard`s onto it, so it will silently
+> discard your branch while you are not looking:
+>
+> ```bash
+> sudo systemctl disable --now litclock-update.timer
+> ```
 </details>
 
 ### 3. Print and assemble the case
@@ -322,13 +350,13 @@ cd /home/pi/litclock && ./scripts/runtheclock.sh
 
 ### WiFi Stability (Pi Zero W / Zero 2 W)
 
-The Raspberry Pi Zero W and Zero 2 W have a known WiFi stability issue with the BCM43430 chip that can cause the system to hang and become unreachable. The flashed image applies mitigations out of the box, and the DIY installer detects the hardware and offers them:
+The Raspberry Pi Zero W and Zero 2 W have a known WiFi stability issue with the Broadcom WiFi chip that can cause the system to hang and become unreachable. The flashed image applies these mitigations out of the box:
 
 - **Driver parameters**: Disables roaming and problematic power features
 - **Power management**: Disables WiFi power saving
 - **Watchdog**: Automatically reboots if WiFi becomes unreachable
 
-If you experience WiFi disconnections or system hangs, re-run the installer to re-apply the fixes.
+If you experience WiFi disconnections or system hangs, confirm all three mitigations are in place: `cat /etc/modprobe.d/brcmfmac.conf`, `iwconfig wlan0 | grep "Power Management"` (should read `off`), and `systemctl status wifi-watchdog.timer`.
 
 ### Going deeper
 
