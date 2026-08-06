@@ -69,6 +69,13 @@ pi-gen/work/
 /images/
 !images/.installed-version
 
+# Runtime-renderer validation marker. Written ONLY by
+# `tools/validate_measurement.py check --stamp` on the machine whose FreeType
+# it actually verified, and read by literary_clock.py before honouring
+# LITCLOCK_RUNTIME_RENDER. Machine-specific state: if it were committed, every
+# checkout would claim a validation it never ran.
+.runtime-render-validated
+
 # Scratch dirs and locks used by scripts/download_images.sh (transient).
 .litclock-images-staging.*
 .litclock-images.lock
