@@ -16,8 +16,9 @@ This checklist complements the automated tests in `tests/test_*_sh.py` (which co
 ## install.sh — RETIRED, do not QA
 
 The DIY installer is no longer a supported path; the flashed image is the only
-one. The script is kept for reference but is unmaintained and untested, so there
-is nothing here to verify. Flashed-image provisioning is covered by
+one. The script is kept in the tree and held in sync with the image build by CI,
+but it is unsupported as a way to set up a clock and is never exercised on real
+hardware, so there is nothing here to QA. Flashed-image provisioning is covered by
 `first-boot.sh` below and by the in-chroot smoke test in
 `pi-gen/stage3/05-smoke-test/`.
 

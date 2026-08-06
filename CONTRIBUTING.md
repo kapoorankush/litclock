@@ -130,10 +130,15 @@ cd litclock
 python3 -m venv --system-site-packages venv
 source venv/bin/activate
 
-# Install dependencies. requirements-apt.txt lists packages that come from
-# apt on the Pi (don't pip-install them into the venv — it either fails
-# to compile on a gcc-less image, or shadows the apt version with a binary
-# that gpiozero may then pick as its pin_factory backend — see #214).
+# Install dependencies. On a dev box this plain install is what you want —
+# pip's copies of the GPIO libs let the tests import them.
+#
+# On the Pi it is NOT. requirements-apt.txt lists packages that come from
+# apt there, and pip-installing them into the venv either fails to compile
+# on a gcc-less image, or shadows the apt version with a binary that
+# gpiozero may then pick as its pin_factory backend (see #214). Every
+# install path filters those names out first; the README shows the filter
+# if you are working on the device.
 pip install -r requirements.txt
 ```
 

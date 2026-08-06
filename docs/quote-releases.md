@@ -81,7 +81,8 @@ If a v2 release introduces a problem:
 
 1. Edit `.images-version` back to `v1` on a branch.
 2. Open a PR, merge.
-3. Trigger `build-image.yml` to cut a fresh OS image pinned to v1.
+3. **Cut a `v*` tag containing the revert.** Deployed Pis resolve the highest semver tag, so a revert that only lands on `master` reaches none of them — they keep running v2 until a tag carries the revert. This step is the rollback; the merge alone is not.
+4. Trigger `build-image.yml` to cut a fresh OS image pinned to v1, so newly flashed cards are correct too.
 
 The v2 release itself can stay on GitHub — nothing consumes it unless a `.images-version` commit points at it.
 

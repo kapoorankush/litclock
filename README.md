@@ -62,20 +62,36 @@ That's it — no config files to edit, no SSH to set up. Everything else happens
 > set up a clock, and nobody tests it end to end on real hardware. Please
 > don't run it.
 
-> **Turn off both auto-recovery paths before you start**, or the clock will
-> silently discard your branch while you are not looking. Two separate units
-> `git reset --hard` the checkout:
+> **Turn the clock's self-repair off as soon as you have a shell**, before you
+> check anything out. Left on, it will reboot the Pi under you and eventually
+> throw your branch away. Two units matter:
 >
 > - `litclock-update.timer` ships enabled and fires Sunday 03:00, with up to
->   seven days of jitter. It resolves the latest release tag and resets onto it.
-> - `litclock-bootcheck.timer` is the one people miss. If the clock boots and
->   never paints a quote — the normal state of work in progress — it starts
->   `litclock-update.service` **directly** in rollback mode, about 12 minutes
->   after boot and every 5 minutes after that. Disabling the update *timer*
->   does not stop it, because it never goes through the timer.
+>   seven days of jitter. It resolves the latest release tag and
+>   `git reset --hard`s onto it.
+> - `litclock-bootcheck.timer` is the one people miss. Starting ~12 minutes
+>   after boot and every 5 minutes after that, it checks whether the clock has
+>   painted a quote — and a branch that doesn't paint is indistinguishable from
+>   a broken clock. The first two failed boots each trigger
+>   `sudo systemctl reboot`, so your SSH session dies with no explanation. On
+>   the third it starts `litclock-update.service` in rollback mode, which
+>   resets the checkout to the last known-good SHA.
 >
 > ```bash
 > sudo systemctl disable --now litclock-update.timer litclock-bootcheck.timer
+> sudo systemctl mask litclock-update.service
+> ```
+>
+> Masking the service, and not just disabling its timer, also closes the third
+> route to the same `git reset --hard`: the **Apply update** button in the
+> control app, which starts the service directly.
+>
+> Put it back when you're done, or you'll hand over a clock with no recovery
+> net — this is what stops a bad update bricking a device with no keyboard:
+>
+> ```bash
+> sudo systemctl unmask litclock-update.service
+> sudo systemctl enable --now litclock-update.timer litclock-bootcheck.timer
 > ```
 
 The flashed image contains a git checkout at `/home/pi/litclock`, so it doubles
@@ -104,9 +120,11 @@ the apt copy. Every install path filters them out first, so do the same:
 
 ```bash
 cd /home/pi/litclock
+REQ=$(mktemp)
 EXCLUDE_RE=$(grep -vE '^[[:space:]]*(#|$)' requirements-apt.txt | sed 's/\./\\./g' | paste -sd'|')
-grep -vE "^(${EXCLUDE_RE})==" requirements.txt > /tmp/requirements-dev.txt
-./venv/bin/pip install --upgrade -r /tmp/requirements-dev.txt
+grep -vE "^(${EXCLUDE_RE})==" requirements.txt > "$REQ"
+./venv/bin/pip install --upgrade -r "$REQ"
+rm -f "$REQ"
 ```
 
 </details>
