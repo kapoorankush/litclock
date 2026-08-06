@@ -287,8 +287,8 @@ The 5 apt-provisioned names (`gpiozero`, `lgpio`, `pigpio`, `spidev`,
 `colorzero`) are listed in `requirements.in` so the resolver has the
 full constraint graph AND the lockfile is self-documenting. The install
 paths (`scripts/update.sh`, `pi-gen/stage3/01-setup-app/00-run.sh`)
-filter these names out of
-the generated lock before pip-install via `requirements-apt.txt` —
+filter these names out of the generated lock before pip-install via
+`requirements-apt.txt` —
 they come from apt at runtime via `--system-site-packages` (issue #214).
 
 **Why not eager `--upgrade-strategy`?** PR #322 narrowed `update.sh` to

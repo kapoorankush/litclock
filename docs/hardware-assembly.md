@@ -18,8 +18,9 @@
 2. **Connect the HAT** to the Pi's 40-pin GPIO header — align pin 1 and press firmly
 3. **Connect the e-Paper display** to the HAT via the flat ribbon cable — lift the connector latch, slide the cable in (contacts facing down), and close the latch
 4. **Insert the SD card** into the Pi
-5. **SPI is already enabled** by the image — if the display stays blank, check that `/dev/spidev0.0` exists and see [Recovering a LitClock](recovery.md)
-6. **Power on** via Micro USB (or USB-C if using the [3D-printed case](#3d-printed-case) adapter) — the display should show the boot splash within ~30 seconds
+5. **Power on** via Micro USB (or USB-C if using the [3D-printed case](#3d-printed-case) adapter) — the display should show the boot splash within ~30 seconds
+
+SPI is already enabled by the image, so there is nothing to configure. If the display stays blank after a couple of minutes, reseat the ribbon cable and the HAT first — that is the usual cause. If it is still blank you need a shell to go further: [Recovering a LitClock](recovery.md) covers getting console access, and from there `ls /dev/spidev0.0` confirms whether SPI came up.
 
 ## E-ink Display Notes
 

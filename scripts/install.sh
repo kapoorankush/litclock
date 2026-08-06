@@ -1,9 +1,19 @@
 #!/bin/bash
 #
+# ===========================================================================
+# RETIRED - DO NOT RUN THIS SCRIPT.
+#
+# The one-line `curl ... | bash` install this script used to advertise has
+# been withdrawn. Flash the released LitClock image instead; see the README.
+#
+# This file is kept because CI holds it in sync with the pi-gen image build
+# (package list, systemd units, BCM2835 version) so the two cannot drift. It
+# is not a supported way to set up a clock, and it is not tested end to end
+# on real hardware.
+# ===========================================================================
+#
 # LitClock E-Ink Display Installer
 # For Raspberry Pi Zero WH with Waveshare 7.5" e-Paper HAT (V2)
-#
-# Usage: curl -sSL https://raw.githubusercontent.com/kapoorankush/litclock/master/scripts/install.sh | bash
 #
 # This script will:
 # 1. Install system dependencies

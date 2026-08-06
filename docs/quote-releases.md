@@ -51,9 +51,13 @@ The #192 audit tooling can find more changes; folding multiple small corrections
 
 Release creation (`gh release create`) is a side effect on GitHub. Bumping `.images-version` is a source-of-truth change in the repo. Separating them keeps the Git history reviewable in isolation ("this PR shipped image corpus v2") and lets PR review catch a wrong version number before the release is visible to fresh installs.
 
-### Why you must also cut an OS image
+### Why the tag matters, and why you should still cut an OS image
 
-`update.sh` does not run automatically on user devices (by design — see issue #209 for the broader update-policy brainstorm). Existing deployed Pis will stay on whatever image set was baked into their SD flash until a power user manually runs `update.sh`. For a truly zero-maintenance user base, the only path a quote change reaches their device is a fresh flash. So: a quote bump without a paired OS image tag ships to nobody.
+Deployed Pis do pick up quote changes on their own: `litclock-update.timer` runs `update.sh` weekly, and its Phase 2c calls `download_images.sh`, which syncs the image set to whatever `.images-version` pins.
+
+The catch is *which* commit they read that from. `update.sh` does not track `master` — it resolves the highest semver tag and `git reset --hard`s onto that SHA. So a `.images-version` bump sitting on `master` reaches nobody until a `v*` tag contains it. **Merging the bump is not shipping it; tagging is.**
+
+Cutting a fresh OS image is a separate benefit: it bakes the new quote set into the `.img.xz` so a newly flashed card is correct before it ever reaches the network, rather than downloading the corpus on first update.
 
 ## Auth while the repo is private
 

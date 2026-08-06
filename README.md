@@ -56,9 +56,27 @@ That's it — no config files to edit, no SSH to set up. Everything else happens
 > system-level decisions — SPI overlays, sudo rules, group membership — on a
 > machine whose settings belong to you, which made it impossible to test
 > honestly. It had also drifted from the image build: it never writes the
-> `dtoverlay=spi0-1cs` line the e-Paper HAT needs, which the image does.
-> `scripts/install.sh` is still in the tree for reference, but it is
-> unmaintained and untested — please don't run it.
+> `dtoverlay=spi0-1cs` line the image does, which pins the display to CE0.
+> `scripts/install.sh` is still in the tree, and CI still holds it in sync with
+> the image build so the two don't diverge — but it is unsupported as a way to
+> set up a clock, and nobody tests it end to end on real hardware. Please
+> don't run it.
+
+> **Turn off both auto-recovery paths before you start**, or the clock will
+> silently discard your branch while you are not looking. Two separate units
+> `git reset --hard` the checkout:
+>
+> - `litclock-update.timer` ships enabled and fires Sunday 03:00, with up to
+>   seven days of jitter. It resolves the latest release tag and resets onto it.
+> - `litclock-bootcheck.timer` is the one people miss. If the clock boots and
+>   never paints a quote — the normal state of work in progress — it starts
+>   `litclock-update.service` **directly** in rollback mode, about 12 minutes
+>   after boot and every 5 minutes after that. Disabling the update *timer*
+>   does not stop it, because it never goes through the timer.
+>
+> ```bash
+> sudo systemctl disable --now litclock-update.timer litclock-bootcheck.timer
+> ```
 
 The flashed image contains a git checkout at `/home/pi/litclock`, so it doubles
 as a development environment:
@@ -77,18 +95,20 @@ sudo systemctl restart litclock.service litclock-control.service
 
 `litclock.service` paints the panel; `litclock-control.service` serves the
 control app. Restart both, or changes to the app will look like they never
-applied. If your branch changes `requirements.txt`, also run
-`./venv/bin/pip install -r requirements.txt` — the checkout does not rebuild
-the venv.
+applied. The checkout does not rebuild the venv, so if your branch changes
+`requirements.txt` you have to reinstall — but **not** with a plain
+`pip install -r requirements.txt`. The packages named in `requirements-apt.txt`
+come from apt on the image; pip would try to build them from source, which
+needs a compiler the image does not have, and a successful build would shadow
+the apt copy. Every install path filters them out first, so do the same:
 
-> **Turn off the auto-updater first.** `litclock-update.timer` ships enabled and
-> fires on its own — Sunday 03:00, with up to seven days of jitter. It resolves
-> the latest release tag and `git reset --hard`s onto it, so it will silently
-> discard your branch while you are not looking:
->
-> ```bash
-> sudo systemctl disable --now litclock-update.timer
-> ```
+```bash
+cd /home/pi/litclock
+EXCLUDE_RE=$(grep -vE '^[[:space:]]*(#|$)' requirements-apt.txt | sed 's/\./\\./g' | paste -sd'|')
+grep -vE "^(${EXCLUDE_RE})==" requirements.txt > /tmp/requirements-dev.txt
+./venv/bin/pip install --upgrade -r /tmp/requirements-dev.txt
+```
+
 </details>
 
 ### 3. Print and assemble the case
