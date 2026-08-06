@@ -130,10 +130,15 @@ cd litclock
 python3 -m venv --system-site-packages venv
 source venv/bin/activate
 
-# Install dependencies. requirements-apt.txt lists packages that come from
-# apt on the Pi (don't pip-install them into the venv — it either fails
-# to compile on a gcc-less image, or shadows the apt version with a binary
-# that gpiozero may then pick as its pin_factory backend — see #214).
+# Install dependencies. On a dev box this plain install is what you want —
+# pip's copies of the GPIO libs let the tests import them.
+#
+# On the Pi it is NOT. requirements-apt.txt lists packages that come from
+# apt there, and pip-installing them into the venv either fails to compile
+# on a gcc-less image, or shadows the apt version with a binary that
+# gpiozero may then pick as its pin_factory backend (see #214). Every
+# install path filters those names out first; the README shows the filter
+# if you are working on the device.
 pip install -r requirements.txt
 ```
 
@@ -286,9 +291,9 @@ still letting `pip-compile --upgrade` pick newer compatible releases.
 The 5 apt-provisioned names (`gpiozero`, `lgpio`, `pigpio`, `spidev`,
 `colorzero`) are listed in `requirements.in` so the resolver has the
 full constraint graph AND the lockfile is self-documenting. The install
-paths (`scripts/install.sh`, `scripts/update.sh`,
-`pi-gen/stage3/01-setup-app/00-run.sh`) filter these names out of
-the generated lock before pip-install via `requirements-apt.txt` —
+paths (`scripts/update.sh`, `pi-gen/stage3/01-setup-app/00-run.sh`)
+filter these names out of the generated lock before pip-install via
+`requirements-apt.txt` —
 they come from apt at runtime via `--system-site-packages` (issue #214).
 
 **Why not eager `--upgrade-strategy`?** PR #322 narrowed `update.sh` to

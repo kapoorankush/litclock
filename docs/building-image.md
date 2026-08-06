@@ -84,7 +84,7 @@ LITCLOCK_REF=v0.218.0 LITCLOCK_VERSION=0.218.0 ./pi-gen/build.sh
 
 ## What the Image Includes
 
-The custom pi-gen stage (`pi-gen/stage3/`) replicates everything `scripts/install.sh` does:
+The custom pi-gen stage (`pi-gen/stage3/`) provisions everything a working clock needs:
 
 1. **System packages** — Python, image libraries, fonts, wireless tools, qrencode
 2. **BCM2835 library** — compiled from source for GPIO/SPI access
@@ -128,7 +128,7 @@ Insert the SD card into a Pi Zero 2W and power on, then check:
 
 1. **Splash screen** — "LitClock / Starting..." appears on the e-ink display
 2. **WiFi hotspot** — "LitClock-Setup" network becomes available
-3. **Phone setup** — connect to the hotspot, scan the QR code on the display, complete the setup form (location, timezone, API key)
+3. **Phone setup** — connect to the hotspot, scan the QR code on the display, and submit the setup form (WiFi network and password only — location, timezone and units are detected automatically after the Pi joins your network)
 4. **Clock starts** — after setup, the display updates every minute with a literary quote
 5. **Version metadata** — SSH in and verify:
    ```bash

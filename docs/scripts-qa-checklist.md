@@ -13,16 +13,14 @@ This checklist complements the automated tests in `tests/test_*_sh.py` (which co
 
 ---
 
-## install.sh
+## install.sh — RETIRED, do not QA
 
-**Scenario:** Fresh user installs LitClock from scratch on a stock Raspberry Pi OS image.
-
-| # | Test | Expected | Result |
-|---|------|----------|--------|
-| 1 | Run `bash scripts/install.sh` on a stock Pi OS image (Bookworm, user `pi`) | Script completes without errors. All systemd units enabled. `/home/pi/litclock/venv/` exists. | [ ] |
-| 2 | After install: `systemctl is-enabled litclock.timer litclock-firstboot.service litclock-splash.service` | Each returns `enabled` | [ ] |
-| 3 | After install: `ls /home/pi/litclock/env.sh` | File exists and is owned by `pi:pi` | [ ] |
-| 4 | After install: reboot | Boot splash shows on e-ink within 30s | [ ] |
+The DIY installer is no longer a supported path; the flashed image is the only
+one. The script is kept in the tree and held in sync with the image build by CI,
+but it is unsupported as a way to set up a clock and is never exercised on real
+hardware, so there is nothing here to QA. Flashed-image provisioning is covered by
+`first-boot.sh` below and by the in-chroot smoke test in
+`pi-gen/stage3/05-smoke-test/`.
 
 ---
 

@@ -69,6 +69,13 @@ pi-gen/work/
 /images/
 !images/.installed-version
 
+# Renderer-validation marker: records the local font stack a measurement run
+# was verified against. Machine-specific by nature - committing it would let
+# every checkout claim a validation it never ran. The tooling that writes and
+# reads it is not in this repo yet; this rule is here so a stray marker from a
+# development checkout can never be committed by accident.
+.runtime-render-validated
+
 # Scratch dirs and locks used by scripts/download_images.sh (transient).
 .litclock-images-staging.*
 .litclock-images.lock

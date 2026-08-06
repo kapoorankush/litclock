@@ -14,7 +14,7 @@ you probably do not need any of the shell steps below.
 ## Getting a shell (console)
 
 The clock has no keyboard or screen of its own, so "console" means plugging the
-Pi into a monitor (micro-HDMI) and a USB keyboard.
+Pi into a monitor (mini-HDMI on the Zero 2 W) and a USB keyboard.
 
 1. Power off, connect a monitor + keyboard, power on.
 2. Log in at the prompt: user `pi`, password `raspberry`.

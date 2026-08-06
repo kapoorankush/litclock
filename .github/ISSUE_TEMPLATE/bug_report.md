@@ -23,7 +23,7 @@ What should happen instead.
 - **Pi model**: (e.g., Pi Zero 2 W)
 - **Display**: (e.g., Waveshare 7.5" V2)
 - **OS**: (output of `cat /etc/os-release | head -2`)
-- **Installation method**: (DIY install / pre-configured SD card)
+- **Installation method**: (flashed LitClock image / pre-configured SD card / other)
 
 ## Logs / diagnostics
 

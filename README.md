@@ -50,17 +50,83 @@ Full details in **[Hardware Assembly](docs/hardware-assembly.md)**.
 That's it — no config files to edit, no SSH to set up. Everything else happens from your phone after power-on.
 
 <details>
-<summary><b>Installing on an existing Raspberry Pi OS instead</b> (terminal required)</summary>
+<summary><b>Running your own code on the clock</b> (terminal required)</summary>
 
-On a fresh Raspberry Pi OS Lite install, SSH in (or connect a keyboard) and run:
+> **The one-line `curl … | bash` installer has been retired.** It had to make
+> system-level decisions — SPI overlays, sudo rules, group membership — on a
+> machine whose settings belong to you, which made it impossible to test
+> honestly. It had also drifted from the image build: it never writes the
+> `dtoverlay=spi0-1cs` line the image does, which pins the display to CE0.
+> `scripts/install.sh` is still in the tree, and CI still holds it in sync with
+> the image build so the two don't diverge — but it is unsupported as a way to
+> set up a clock, and nobody tests it end to end on real hardware. Please
+> don't run it.
+
+> **Turn the clock's self-repair off as soon as you have a shell**, before you
+> check anything out. Left on, it will reboot the Pi under you and eventually
+> throw your branch away. Two units matter:
+>
+> - `litclock-update.timer` ships enabled and fires Sunday 03:00, with up to
+>   seven days of jitter. It resolves the latest release tag and
+>   `git reset --hard`s onto it.
+> - `litclock-bootcheck.timer` is the one people miss. Starting ~12 minutes
+>   after boot and every 5 minutes after that, it checks whether the clock has
+>   painted a quote — and a branch that doesn't paint is indistinguishable from
+>   a broken clock. The first two failed boots each trigger
+>   `sudo systemctl reboot`, so your SSH session dies with no explanation. On
+>   the third it starts `litclock-update.service` in rollback mode, which
+>   resets the checkout to the last known-good SHA.
+>
+> ```bash
+> sudo systemctl disable --now litclock-update.timer litclock-bootcheck.timer
+> sudo systemctl mask litclock-update.service
+> ```
+>
+> Masking the service, and not just disabling its timer, also closes the third
+> route to the same `git reset --hard`: the **Apply update** button in the
+> control app, which starts the service directly.
+>
+> Put it back when you're done, or you'll hand over a clock with no recovery
+> net — this is what stops a bad update bricking a device with no keyboard:
+>
+> ```bash
+> sudo systemctl unmask litclock-update.service
+> sudo systemctl enable --now litclock-update.timer litclock-bootcheck.timer
+> ```
+
+The flashed image contains a git checkout at `/home/pi/litclock`, so it doubles
+as a development environment:
+
+1. Flash the released image and finish WiFi setup
+2. SSH in — **SSH ships disabled**, see [Recovering a LitClock](docs/recovery.md) for how to turn it on
+3. Fetch your fork and check out your branch:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/kapoorankush/litclock/master/scripts/install.sh | bash
+cd /home/pi/litclock
+git remote add fork https://github.com/<you>/litclock.git
+git fetch --depth 1 fork <your-branch>
+git checkout -b <your-branch> FETCH_HEAD
+sudo systemctl restart litclock.service litclock-control.service
 ```
 
-The installer sets up system dependencies, the BCM2835 driver, SPI, NTP sync, the Python venv, all systemd services, and downloads the quote-image set (~130 MB — needs network; the clock falls back to a time-only display if the download fails). It also detects Pi Zero W hardware and offers the [WiFi stability fixes](#wifi-stability-pi-zero-w--zero-2-w). Reboot when it finishes — from there the flow matches the flashed image.
+`litclock.service` paints the panel; `litclock-control.service` serves the
+control app. Restart both, or changes to the app will look like they never
+applied. The checkout does not rebuild the venv, so if your branch changes
+`requirements.txt` you have to reinstall — but **not** with a plain
+`pip install -r requirements.txt`. The packages named in `requirements-apt.txt`
+come from apt on the image; pip would try to build them from source, which
+needs a compiler the image does not have, and a successful build would shadow
+the apt copy. Every install path filters them out first, so do the same:
 
-The installer and updater are for existing OS installs only; for a fresh SD card, the downloadable image above is the way.
+```bash
+cd /home/pi/litclock
+REQ=$(mktemp)
+EXCLUDE_RE=$(grep -vE '^[[:space:]]*(#|$)' requirements-apt.txt | sed 's/\./\\./g' | paste -sd'|')
+grep -vE "^(${EXCLUDE_RE})==" requirements.txt > "$REQ"
+./venv/bin/pip install --upgrade -r "$REQ"
+rm -f "$REQ"
+```
+
 </details>
 
 ### 3. Print and assemble the case
@@ -126,7 +192,7 @@ Every LitClock serves a small web app on your home network at **`http://litclock
 
 Weather works out of the box — no signup, no API key. The clock uses [Open-Meteo](https://open-meteo.com) as its default forecast provider, and location, timezone, and units are auto-detected during setup. Day-to-day changes are made in the control app's **Settings** tab. That's the whole configuration.
 
-Under the hood, settings live in `/home/pi/litclock/env.sh`. You only need to touch this file on a DIY install or for the advanced options below:
+Under the hood, settings live in `/home/pi/litclock/env.sh`. You only need to touch this file for the advanced options below:
 
 ```bash
 # Weather location (written by setup / the control app; override here if you want)
@@ -168,7 +234,7 @@ The OpenWeatherMap free tier allows 1,000 calls per day; the clock caches foreca
 <details>
 <summary><b>Advanced: overriding location coordinates</b></summary>
 
-The control app's Location setting handles geocoding for most users (it accepts city names, postal codes, and has an Advanced panel for raw coordinates). If you'd rather edit the file directly — for example on a DIY install — set `WEATHER_LATITUDE` and `WEATHER_LONGITUDE` in `env.sh`.
+The control app's Location setting handles geocoding for most users (it accepts city names, postal codes, and has an Advanced panel for raw coordinates). If you'd rather edit the file directly over SSH, set `WEATHER_LATITUDE` and `WEATHER_LONGITUDE` in `env.sh`.
 
 Finding coordinates:
 
@@ -322,13 +388,13 @@ cd /home/pi/litclock && ./scripts/runtheclock.sh
 
 ### WiFi Stability (Pi Zero W / Zero 2 W)
 
-The Raspberry Pi Zero W and Zero 2 W have a known WiFi stability issue with the BCM43430 chip that can cause the system to hang and become unreachable. The flashed image applies mitigations out of the box, and the DIY installer detects the hardware and offers them:
+The Raspberry Pi Zero W and Zero 2 W have a known WiFi stability issue with the Broadcom WiFi chip that can cause the system to hang and become unreachable. The flashed image applies these mitigations out of the box:
 
 - **Driver parameters**: Disables roaming and problematic power features
 - **Power management**: Disables WiFi power saving
 - **Watchdog**: Automatically reboots if WiFi becomes unreachable
 
-If you experience WiFi disconnections or system hangs, re-run the installer to re-apply the fixes.
+If you experience WiFi disconnections or system hangs, confirm all three mitigations are in place: `cat /etc/modprobe.d/brcmfmac.conf`, `iwconfig wlan0 | grep "Power Management"` (should read `off`), and `systemctl status wifi-watchdog.timer`.
 
 ### Going deeper
 

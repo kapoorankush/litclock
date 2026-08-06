@@ -2,7 +2,6 @@
 
 Quote images (`images/quote_HHMM_N.png` and `images/metadata/*`) are **not** stored in git. They live as a GitHub Release asset under a tag of the form `litclock-images-vN` and are fetched on demand by:
 
-- `scripts/install.sh` — during a fresh DIY install
 - `scripts/update.sh` — during an in-place update on an existing device (Phase 2c)
 - `.github/workflows/build-image.yml` — when pi-gen bakes an OS image
 
@@ -52,9 +51,13 @@ The #192 audit tooling can find more changes; folding multiple small corrections
 
 Release creation (`gh release create`) is a side effect on GitHub. Bumping `.images-version` is a source-of-truth change in the repo. Separating them keeps the Git history reviewable in isolation ("this PR shipped image corpus v2") and lets PR review catch a wrong version number before the release is visible to fresh installs.
 
-### Why you must also cut an OS image
+### Why the tag matters, and why you should still cut an OS image
 
-`update.sh` does not run automatically on user devices (by design — see issue #209 for the broader update-policy brainstorm). Existing deployed Pis will stay on whatever image set was baked into their SD flash until a power user manually runs `update.sh`. For a truly zero-maintenance user base, the only path a quote change reaches their device is a fresh flash. So: a quote bump without a paired OS image tag ships to nobody.
+Deployed Pis do pick up quote changes on their own: `litclock-update.timer` runs `update.sh` weekly, and its Phase 2c calls `download_images.sh`, which syncs the image set to whatever `.images-version` pins.
+
+The catch is *which* commit they read that from. `update.sh` does not track `master` — it resolves the highest semver tag and `git reset --hard`s onto that SHA. So a `.images-version` bump sitting on `master` reaches nobody until a `v*` tag contains it. **Merging the bump is not shipping it; tagging is.**
+
+Cutting a fresh OS image is a separate benefit: it bakes the new quote set into the `.img.xz` so a newly flashed card is correct before it ever reaches the network, rather than downloading the corpus on first update.
 
 ## Auth while the repo is private
 
@@ -78,7 +81,8 @@ If a v2 release introduces a problem:
 
 1. Edit `.images-version` back to `v1` on a branch.
 2. Open a PR, merge.
-3. Trigger `build-image.yml` to cut a fresh OS image pinned to v1.
+3. **Cut a `v*` tag containing the revert.** Deployed Pis resolve the highest semver tag, so a revert that only lands on `master` reaches none of them — they keep running v2 until a tag carries the revert. This step is the rollback; the merge alone is not.
+4. Trigger `build-image.yml` to cut a fresh OS image pinned to v1, so newly flashed cards are correct too.
 
 The v2 release itself can stay on GitHub — nothing consumes it unless a `.images-version` commit points at it.
 
