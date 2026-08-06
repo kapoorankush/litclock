@@ -11,7 +11,7 @@ Scripts are organized into `scripts/` (shell) and `src/` (Python):
 | `scripts/update.sh` | `./scripts/update.sh` | Pull latest code and apply updates in-place |
 | `scripts/reset-setup.sh` | `sudo ./scripts/reset-setup.sh [--yes] [--reboot] [--wipe-wifi] [--gift-mode]` | Reset configuration (see [Resetting the Clock](../README.md#resetting)); `--gift-mode` preps the device for shipping with a welcome splash |
 | `scripts/prepare-for-cloning.sh` | `sudo ./scripts/prepare-for-cloning.sh` | Wipe config and credentials for SD card cloning (see [Creating SD Cards](sd-card-cloning.md)) |
-| `scripts/install.sh` | `curl -sSL <url> \| bash` | One-line installer (see [DIY Installation](../README.md#2-flash-the-sd-card)) |
+| `scripts/install.sh` | _(retired — do not run)_ | Superseded by the flashed image. Kept for reference only; unmaintained and untested |
 
 ## eink_display.py subcommands
 

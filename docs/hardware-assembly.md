@@ -14,11 +14,11 @@
 
 ## Assembly
 
-1. **Flash the SD card** with Raspberry Pi OS using [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
+1. **Flash the SD card** with the latest LitClock image using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) — see [Flash the SD card](../README.md#2-flash-the-sd-card)
 2. **Connect the HAT** to the Pi's 40-pin GPIO header — align pin 1 and press firmly
 3. **Connect the e-Paper display** to the HAT via the flat ribbon cable — lift the connector latch, slide the cable in (contacts facing down), and close the latch
 4. **Insert the SD card** into the Pi
-5. **Enable SPI** — after first boot, run `sudo raspi-config` → Interface Options → SPI → Enable (the installer does this automatically if you use `install.sh`)
+5. **SPI is already enabled** by the image — if the display stays blank, check that `/dev/spidev0.0` exists and see [Recovering a LitClock](recovery.md)
 6. **Power on** via Micro USB (or USB-C if using the [3D-printed case](#3d-printed-case) adapter) — the display should show the boot splash within ~30 seconds
 
 ## E-ink Display Notes

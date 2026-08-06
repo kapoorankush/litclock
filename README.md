@@ -154,7 +154,7 @@ Every LitClock serves a small web app on your home network at **`http://litclock
 
 Weather works out of the box — no signup, no API key. The clock uses [Open-Meteo](https://open-meteo.com) as its default forecast provider, and location, timezone, and units are auto-detected during setup. Day-to-day changes are made in the control app's **Settings** tab. That's the whole configuration.
 
-Under the hood, settings live in `/home/pi/litclock/env.sh`. You only need to touch this file on a DIY install or for the advanced options below:
+Under the hood, settings live in `/home/pi/litclock/env.sh`. You only need to touch this file for the advanced options below:
 
 ```bash
 # Weather location (written by setup / the control app; override here if you want)
@@ -196,7 +196,7 @@ The OpenWeatherMap free tier allows 1,000 calls per day; the clock caches foreca
 <details>
 <summary><b>Advanced: overriding location coordinates</b></summary>
 
-The control app's Location setting handles geocoding for most users (it accepts city names, postal codes, and has an Advanced panel for raw coordinates). If you'd rather edit the file directly — for example on a DIY install — set `WEATHER_LATITUDE` and `WEATHER_LONGITUDE` in `env.sh`.
+The control app's Location setting handles geocoding for most users (it accepts city names, postal codes, and has an Advanced panel for raw coordinates). If you'd rather edit the file directly over SSH, set `WEATHER_LATITUDE` and `WEATHER_LONGITUDE` in `env.sh`.
 
 Finding coordinates:
 

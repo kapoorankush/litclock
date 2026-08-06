@@ -2,7 +2,6 @@
 
 Quote images (`images/quote_HHMM_N.png` and `images/metadata/*`) are **not** stored in git. They live as a GitHub Release asset under a tag of the form `litclock-images-vN` and are fetched on demand by:
 
-- `scripts/install.sh` — during a fresh DIY install
 - `scripts/update.sh` — during an in-place update on an existing device (Phase 2c)
 - `.github/workflows/build-image.yml` — when pi-gen bakes an OS image
 

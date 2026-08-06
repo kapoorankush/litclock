@@ -84,7 +84,7 @@ LITCLOCK_REF=v0.218.0 LITCLOCK_VERSION=0.218.0 ./pi-gen/build.sh
 
 ## What the Image Includes
 
-The custom pi-gen stage (`pi-gen/stage3/`) replicates everything `scripts/install.sh` does:
+The custom pi-gen stage (`pi-gen/stage3/`) provisions everything a working clock needs:
 
 1. **System packages** — Python, image libraries, fonts, wireless tools, qrencode
 2. **BCM2835 library** — compiled from source for GPIO/SPI access
