@@ -26,10 +26,10 @@ Two subcommands:
 
 ``probe``
     Emit the Stage-0 parity fingerprint (``row|fs|breaks`` lines + #inputs
-    header) from the PRODUCTION module, byte-compatible with
-    spikes/531-runtime-render/gd_layout_probe.php output and
-    compare_layout.py --diff. This is how the port is proven to make the
-    same layout decisions as GD: run the PHP probe, run this, diff.
+    header) from the PRODUCTION module, byte-compatible with the GD probe
+    kept in the development repo (``gd_layout_probe.php`` output and
+    ``compare_layout.py --diff``). This is how the port is proven to make
+    the same layout decisions as GD: run the PHP probe, run this, diff.
 
 Ink threshold: any pixel < 255 counts as ink (anti-aliased fringes
 included) — I3/I4 are strict by design.

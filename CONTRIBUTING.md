@@ -413,7 +413,8 @@ your language's corpus rows — never a renderer fix.** The rules:
   a row bug.
 - **The validator has your back:** `corpus_edit.py validate` (and the `ship`
   pipeline) warns on any changed row whose timestring match has a mid-word
-  edge, and the render-invariants CI reports a corpus-wide census. Fix the
+  edge, and the development repo's render-invariants CI reports a
+  corpus-wide census. Fix the
   row it names — adjust the timestring, or fix a typo in the quote (a
   missing space is the classic cause).
 - **If the timestring appears more than once in the quote, the FIRST
