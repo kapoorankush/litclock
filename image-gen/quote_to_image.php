@@ -206,7 +206,7 @@ function TurnQuoteIntoImage($time, $quote, $timestring, $title, $author, $imagen
     $ts_char_start = strlen($before);
     $ts_char_end   = $ts_char_start + strlen($timestring);
 
-    // Bold EXACTLY the matched timestring span (dev#540, 2026-07-26).
+    // Bold EXACTLY the matched timestring span (litclock-dev#540, 2026-07-26).
     // The #503/#504 boundary-extension cases (mid-word whole-word bolding,
     // trailing-punctuation bolding, hyphen-join guard) were REMOVED: the CSV
     // timestring column is the bold spec, so bolding errors are corpus data

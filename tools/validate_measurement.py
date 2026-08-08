@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Environment gate for GD-exact measurement — runs WITHOUT PHP (dev#531 Stage 2).
+"""Environment gate for GD-exact measurement — runs WITHOUT PHP (litclock-dev#531 Stage 2).
 
 src/gd_measure.py replicates libgd's hinted-FreeType metrics. That exactness
 is environment-sensitive: freetype-py wheels BUNDLE their own libfreetype,
@@ -70,7 +70,7 @@ def build_sample(csv_path: Path) -> list[str]:
     with a trailing-space variant (trailing spaces hit GD's xmax=advance
     rule). Words are pooled from quote AND title/author fields — the CRED
     face renders credits, and accented glyphs often appear ONLY there
-    (Brontë, García; dev#537 review, finding 3). Non-ASCII words are
+    (Brontë, García; litclock-dev#537 review, finding 3). Non-ASCII words are
     included exhaustively (capped, seeded) because per-glyph hinting drift
     is exactly where FreeType versions disagree first. Seed pinned so
     regeneration is reproducible."""
@@ -154,7 +154,7 @@ def _validate_dump_coverage(payload: dict) -> None:
     """Refuse a truncated/weakened dump BEFORE scoring against it — the
     check iterates whatever the dump contains, so without this a dump
     missing faces/sizes/strings would silently shrink coverage while
-    still printing 100% (dev#537 review). Expectations come from this
+    still printing 100% (litclock-dev#537 review). Expectations come from this
     tool's OWN constants, never from the dump's self-description."""
     strings = payload["strings"]
     if len(set(strings)) < 800:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Full-corpus render + invariant gate for the runtime quote renderer
-(dev#531 Stage 1).
+(litclock-dev#531 Stage 1).
 
 Two subcommands:
 
@@ -156,7 +156,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
         report.append(entry)
 
-    # WARN tier (dev#540): mid-word timestring edges — data bugs that
+    # WARN tier (litclock-dev#540): mid-word timestring edges — data bugs that
     # render half-bold words under exact-span bolding. Non-gating until the
     # known 11 rows are fixed in the next corpus release; then tighten.
     midword = [
@@ -165,7 +165,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         if (edge := qr.timestring_midword_edge(r.quote, r.timestring))
     ]
     if midword:
-        print(f"WARN: {len(midword)} row(s) with mid-word timestring edges (half-bold words; dev#540):")
+        print(f"WARN: {len(midword)} row(s) with mid-word timestring edges (half-bold words; litclock-dev#540):")
         for o, t, edge in midword[:15]:
             print(f"  row {o} ({t}): {edge}")
 
@@ -225,7 +225,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
         if idx < 0:
             print(f"{rows}|NOSTRING")
             continue
-        s, e = idx, idx + len(tsb)  # exact-span bolding (dev#540)
+        s, e = idx, idx + len(tsb)  # exact-span bolding (litclock-dev#540)
         fitted = qr.fit(qb.split(b" "), s, e)
         if fitted is None:
             print(f"{rows}|NOFIT")

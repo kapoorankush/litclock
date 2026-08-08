@@ -1,6 +1,6 @@
 """Runtime quote renderer — Python/PIL port of image-gen/quote_to_image.php.
 
-Produces the same layout as the GD pipeline (dev#531 Stage-0 evidence:
+Produces the same layout as the GD pipeline (litclock-dev#531 Stage-0 evidence:
 layout parity 4,809/4,809 fs + line breaks on the full EN corpus, hardware
 A/B pass on the owner clock, calibrated blind machine judge clean):
 
@@ -13,7 +13,7 @@ A/B pass on the owner clock, calibrated blind machine judge clean):
     measured advance widths over the space-split quote, line height
     ``php_round(fs*1.618)``, grow-until-fit from 18 while the paragraph
     height stays under ``H-100``, bold = EXACTLY the matched timestring
-    span (dev#540 — the #503/#504 boundary-extension cases were deleted;
+    span (litclock-dev#540 — the #503/#504 boundary-extension cases were deleted;
     bolding errors are corpus data fixes, see timestring_midword_edge);
   - credits use ``gd_bbox`` (measureSizeOfTextbox port) verbatim, including
     the two-line balance loop and the single-line ``left``-based x.
@@ -189,9 +189,9 @@ def find_timestring(quote_bytes: bytes, timestring_bytes: bytes) -> int:
     return quote_bytes.lower().find(timestring_bytes.lower())
 
 
-# ---- Corpus-quality helpers (NOT part of rendering — dev#540) ----
+# ---- Corpus-quality helpers (NOT part of rendering — litclock-dev#540) ----
 # The renderer bolds EXACTLY the matched timestring span (owner decision
-# 2026-07-26, dev#540): the CSV row IS the bold spec, so bolding errors are
+# 2026-07-26, litclock-dev#540): the CSV row IS the bold spec, so bolding errors are
 # data fixes contributors can make per-language — no renderer heuristics.
 # The #503/#504 boundary-extension case machinery (mid-word extension,
 # trailing-punctuation bolding, hyphen-join guard) was deleted here; the
@@ -323,7 +323,7 @@ def render_quote(quote: str, timestring: str) -> tuple[Image.Image, int, Layout]
     idx = find_timestring(qb, tsb)
     if idx < 0:
         raise RenderError("nostring", f"timestring {timestring!r} not in quote")
-    # Exact-span bolding (dev#540): the matched CSV timestring, nothing more.
+    # Exact-span bolding (litclock-dev#540): the matched CSV timestring, nothing more.
     ts_start, ts_end = idx, idx + len(tsb)
 
     fitted = fit(qb.split(b" "), ts_start, ts_end)
@@ -424,7 +424,7 @@ def iter_corpus(
                 # Guard the WHOLE row, not just the quote field: an
                 # fgetcsv-vs-csv.reader escape divergence can column-shift
                 # the parse, landing the offending backslash in a field
-                # other than row[2] (dev#536 review, codex).
+                # other than row[2] (litclock-dev#536 review, codex).
                 guard_corpus_row("|".join(row), warn=warn)
             time = row[0]
             key = time[:2] + time[3:5]
@@ -462,7 +462,7 @@ def render_row(row: CorpusRow) -> tuple[Image.Image, Image.Image, int, Layout]:
     (quote_image, credits_image, font_size, layout). The credits image is a
     copy — callers keep both, unlike the PHP which mutates and saves twice.
     The layout is exposed so invariant checks can assert on paragraph
-    height, not just the pixels (dev#536 review)."""
+    height, not just the pixels (litclock-dev#536 review)."""
     img, font_size, layout = render_quote(row.quote, row.timestring)
     credits_img = img.copy()
     add_credits(credits_img, row.title, row.author)

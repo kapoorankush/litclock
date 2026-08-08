@@ -1,4 +1,4 @@
-"""GD-exact text measurement for the runtime quote renderer (dev#531 Stage 1).
+"""GD-exact text measurement for the runtime quote renderer (litclock-dev#531 Stage 1).
 
 Replicates libgd 2.3.3 ``gdImageStringFTEx`` metrics math for angle=0,
 byte-for-byte (Stage-0 validation: 66,582/66,582 measurements exact vs PHP
@@ -106,7 +106,7 @@ def gd_pen_positions(font_path: str, ptsize: int, s: str) -> list[int]:
     """Per-char draw offsets (int 96-DPI px), exactly as gdft.c places glyph
     bitmaps: pen accumulated in METRIC_RES=300 DPI 26.6 space, each glyph
     blitted at ``(int)(pen * hdpi/(METRIC_RES*64))``. Drawing each char at
-    x + offset reproduces GD's intra-word geometry (dev#531 attempt-2 A/B:
+    x + offset reproduces GD's intra-word geometry (litclock-dev#531 attempt-2 A/B:
     word-at-a-time PIL drawing let hinted PIL advances drift px-narrower
     than GD ink at large fs, reading as double-spaces)."""
     import freetype

@@ -1408,7 +1408,7 @@ class TestSupportLogsEndpointMore:
 
 
 class TestRenderModeInSupportPayload:
-    """dev#531/#543 review: the render tier must be VISIBLE in the support
+    """litclock-dev#531/#543 review: the render tier must be VISIBLE in the support
     bundle, not merely present in the values dict. build_copy_payload prints
     an explicit field list, so a new key is invisible until printed — and an
     invisible render_mode defeats the whole point of collecting it."""
@@ -1432,7 +1432,7 @@ class TestRenderModeInSupportPayload:
 
 
 class TestDiagnosticsFieldsAreActuallyRendered:
-    """dev#543 review F1: the schema keystone gates POLICY coverage, not
+    """litclock-dev#543 review F1: the schema keystone gates POLICY coverage, not
     SURFACING. `render_mode` reached the values dict, the privacy policy and
     the JSON API while appearing in zero human-readable artifact — which is
     how a field meant to be read ships unreadable. This gate closes that

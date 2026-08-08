@@ -268,7 +268,7 @@ def validate_rows(rows: list[Row]) -> list[str]:
 
 
 def validate_midword_edges(rows: list[Row]) -> list[str]:
-    """WARN-tier data-quality check (dev#540): a timestring whose match
+    """WARN-tier data-quality check (litclock-dev#540): a timestring whose match
     starts or ends mid-word renders a half-bold word under exact-span
     bolding. Almost always a row bug (missing space, or the timestring
     should include the whole word: 'noon' vs 'noonday', '230' vs '0230').
@@ -395,7 +395,10 @@ def cmd_validate(_args: argparse.Namespace) -> int:
         return 2
     midword = validate_midword_edges(changed)
     if midword:
-        print(f"WARN: {len(midword)} changed row(s) have mid-word timestring edges (dev#540):", file=sys.stderr)
+        print(
+            f"WARN: {len(midword)} changed row(s) have mid-word timestring edges (litclock-dev#540):",
+            file=sys.stderr,
+        )
         for line in midword:
             print(line, file=sys.stderr)
     print(f"OK: {len(changed)} changed row(s) validate cleanly; bucket contiguity OK.")
@@ -688,12 +691,15 @@ def _cmd_ship_csv(args: argparse.Namespace) -> int:
             print("       Re-run with --skip-validate to override (rare — prefer fixing the row).", file=sys.stderr)
             return 2
 
-    # Mid-word bold-edge warning runs on BOTH ship and validate (dev#540 —
+    # Mid-word bold-edge warning runs on BOTH ship and validate (litclock-dev#540 —
     # ship is the primary workflow; a warn only in `validate` is bypassable
     # by never running it). Non-fatal: the owner may rarely intend it.
     midword_warns = validate_midword_edges(changed)
     if midword_warns:
-        print(f"WARN: {len(midword_warns)} changed row(s) have mid-word timestring edges (dev#540):", file=sys.stderr)
+        print(
+            f"WARN: {len(midword_warns)} changed row(s) have mid-word timestring edges (litclock-dev#540):",
+            file=sys.stderr,
+        )
         for line in midword_warns:
             print(line, file=sys.stderr)
 
