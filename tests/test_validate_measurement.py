@@ -1,4 +1,4 @@
-"""Dump-coverage rejection tests for tools/validate_measurement.py (dev#537).
+"""Dump-coverage rejection tests for tools/validate_measurement.py (litclock-dev#537).
 
 A truncated or weakened dump must be refused BEFORE scoring — otherwise the
 check iterates whatever the dump contains and prints a meaningless 100%.

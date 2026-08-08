@@ -104,7 +104,7 @@ QR_NOTCH_BOTTOM = max(DIVIDER_Y + DIVIDER_WIDTH // 2, QR_POSITION[1] + QR_SIZE +
 QUOTE_AREA_Y = 80
 QUOTE_AREA_H = 400
 
-# ---- Masthead geometry (dev#538 V8-G2, owner-approved on hardware) ----
+# ---- Masthead geometry (litclock-dev#538 V8-G2, owner-approved on hardware) ----
 # The top strip reads as one typeset dateline: the date and the LOW temp
 # line stand on a shared baseline placed so worst-case descenders clear
 # the horizontal rule by RULE_CLEARANCE — mirroring how the quote's
@@ -123,7 +123,7 @@ WEATHER_DIVIDER_X = 225  # ink columns 224..227
 # Last white column left of the vertical rule's ink — the weather cell the
 # lockup centers in is columns 0..WEATHER_CELL_RIGHT. RULE_CLEARANCE is a
 # bound the tests assert near the rule, NOT space removed from centering
-# (subtracting it shifted the approved layout 1px left — dev#538 pixel-diff).
+# (subtracting it shifted the approved layout 1px left — litclock-dev#538 pixel-diff).
 WEATHER_CELL_RIGHT = WEATHER_DIVIDER_X - DIVIDER_WIDTH // 2 - 1
 DATE_X = 250
 DATE_FONT_SIZE = 48
@@ -181,7 +181,7 @@ def _masthead_metrics() -> dict:
 
 
 def _format_temp(value, degrees: str) -> str | None:
-    """Bound the weather temp domain (dev#538 review): finite numeric within
+    """Bound the weather temp domain (litclock-dev#538 review): finite numeric within
     a physical sanity band -> 'N°F'/'N°C'; anything else returns None and the
     caller suppresses weather for this render. Prevents API garbage from
     crashing the per-minute render (round(None)) or drawing junk into the
@@ -212,7 +212,7 @@ def _compose_masthead(image, draw, date_text: str, temp_high: str | None, temp_l
                 image.paste(icon_image, (mh["icon_x"], mh["icon_y"]))
             except OSError as e:
                 # FileNotFoundError AND corrupt-file (UnidentifiedImageError
-                # is an OSError subclass) — dev#538 review: the old narrow
+                # is an OSError subclass) — litclock-dev#538 review: the old narrow
                 # except let a corrupt icon kill the whole render.
                 logging.error(f"Weather icon unusable ({icon_path}): {e}; leaving icon area blank")
         for line_text, line_baseline in (
@@ -227,7 +227,7 @@ def _compose_masthead(image, draw, date_text: str, temp_high: str | None, temp_l
         draw.line([(WEATHER_DIVIDER_X, 0), (WEATHER_DIVIDER_X, DIVIDER_Y)], fill=0, width=DIVIDER_WIDTH)
 
 
-# Runtime quote rendering (dev#531 Stage 2). When LITCLOCK_RUNTIME_RENDER is
+# Runtime quote rendering (litclock-dev#531 Stage 2). When LITCLOCK_RUNTIME_RENDER is
 # true, the clock renders the quote from the corpus CSV via
 # src/quote_renderer.py instead of opening a pre-rendered PNG. Fallback
 # order on ANY failure: pre-rendered PNG for this minute (right time, right
@@ -243,7 +243,7 @@ CORPUS_CSV = os.path.join(PROJECT_ROOT, "image-gen", "litclock_annotated.csv")
 # --stamp writes this marker only on a 100% pass). Guards against enabling
 # runtime rendering in an unvalidated environment, where subtly-wrong
 # hinted metrics would render ugly-but-sane frames no per-minute sanity
-# check can catch (dev#537 review). Delete the marker after any freetype-py
+# check can catch (litclock-dev#537 review). Delete the marker after any freetype-py
 # or font change and re-run the check.
 RUNTIME_VALIDATED_MARKER = os.environ.get(
     "LITCLOCK_RUNTIME_VALIDATED_MARKER", os.path.join(PROJECT_ROOT, ".runtime-render-validated")
@@ -314,7 +314,7 @@ def main():
         if temp_high is None or temp_low is None:
             # Malformed provider payload (None/NaN/non-numeric/absurd) —
             # suppress weather for this render rather than crash or draw
-            # garbage into the masthead (dev#538 review).
+            # garbage into the masthead (litclock-dev#538 review).
             logging.warning(
                 f"weather temps unusable (max={weather.get('temperatureMax')!r} "
                 f"min={weather.get('temperatureMin')!r}); suppressing weather"
@@ -324,7 +324,7 @@ def main():
         else:
             icon = weather.get("icon")
             # icon may be absent/garbage without costing the temps —
-            # _compose_masthead handles icon_path=None (dev#541 review)
+            # _compose_masthead handles icon_path=None (litclock-dev#541 review)
             icon_path = os.path.join(PROJECT_ROOT, "icons", f"{icon}.xbm") if isinstance(icon, str) and icon else None
             logging.debug(f"Weather: {temp_high} / {temp_low}, icon: {icon_path}")
 
@@ -340,7 +340,7 @@ def main():
             # device" from "runtime rendering is failing every minute" —
             # and with the flag defaulting off, EVERY device reports the
             # former today, which would make the fleet evidence useless
-            # (dev#543 review F3). Distinguish the alarm condition.
+            # (litclock-dev#543 review F3). Distinguish the alarm condition.
             quote_meta["render_mode"] = "image-fallback"
 
     draw = ImageDraw.Draw(image)
@@ -364,7 +364,7 @@ def main():
             logging.info(f"Quote image pasted from {quote_meta['image_path']}")
         except Exception as e:
             # Corrupt/unreadable/race-deleted PNG must degrade to the plain
-            # time draw, not kill the whole per-minute render (dev#537
+            # time draw, not kill the whole per-minute render (litclock-dev#537
             # review) — this tier is also the runtime-render fallback, so
             # an exception here would void the "never crash-loop" contract.
             logging.error(f"quote PNG unusable ({quote_meta['image_path']}): {e}; drawing time")
@@ -400,7 +400,7 @@ def _runtime_render_enabled() -> bool:
     # The marker records which FreeType it validated. A freetype-py bump
     # (OTA venv rebuild) must invalidate it — hinted metrics are version-
     # sensitive and a stale marker would keep the flag honored in a
-    # now-unproven environment (dev#537 review, finding 2).
+    # now-unproven environment (litclock-dev#537 review, finding 2).
     try:
         import freetype
 
@@ -447,7 +447,7 @@ def _persist_runtime_frame(frame) -> str | None:
     pattern as the status file). Best-effort: the render must not fail
     because /run/litclock is missing on a dev box.
 
-    Ordering note (dev#537 review, finding 7): this runs at selection
+    Ordering note (litclock-dev#537 review, finding 7): this runs at selection
     time, BEFORE epd.display() confirms — unlike the status file, which
     __main__ writes only post-display (OV3). If the panel write then
     fails, this PNG shows a frame the panel never painted. Accepted: no
@@ -477,7 +477,7 @@ def get_current_quote_runtime(
     now: datetime | None = None,
     allow_nsfw: bool = False,
 ) -> dict | None:
-    """Render the current-minute quote from the corpus (dev#531 Stage 2).
+    """Render the current-minute quote from the corpus (litclock-dev#531 Stage 2).
 
     Returns the same metadata shape as get_current_quote() plus an
     ``image`` key holding the ready-to-paste mode-"1" frame (converted
@@ -505,7 +505,7 @@ def get_current_quote_runtime(
     row = rows[randrange(len(rows))]
     # ONE guard around render+validate+convert+persist: the "returns None
     # on ANY failure" contract must hold for unexpected shapes too, not
-    # just RenderError (dev#537 review — a sanity-check or convert crash
+    # just RenderError (litclock-dev#537 review — a sanity-check or convert crash
     # previously escaped and would have killed the whole render).
     try:
         _, credits_img, font_size, _ = quote_renderer.render_row(row)
@@ -596,7 +596,7 @@ def _write_status_file(quote_meta: dict | None, now: datetime) -> None:
         "time": now.strftime("%H:%M"),
         "picked_at": _time.time(),
         # Which tier of the render chain actually painted this frame
-        # (dev#531). The chain is invisible to the viewer, so this is the
+        # (litclock-dev#531). The chain is invisible to the viewer, so this is the
         # ONLY evidence distinguishing a healthy runtime-render fleet from
         # one silently falling back — what the images-retirement decision
         # rests on. Values:
@@ -605,7 +605,7 @@ def _write_status_file(quote_meta: dict | None, now: datetime) -> None:
         #   "image"          runtime not enabled here; PNG by design
         #   "time-only"      no quote for this minute -> 144pt time drawn
         #   None             unknown (a meta without the field; never
-        #                    claim a tier we can't prove — dev#543 F4)
+        #                    claim a tier we can't prove — litclock-dev#543 F4)
         # Rendered in the diagnostics page + support bundle.
         "render_mode": "time-only" if quote_meta is None else quote_meta.get("render_mode"),
     }

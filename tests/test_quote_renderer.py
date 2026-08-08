@@ -1,4 +1,4 @@
-"""Unit tests for src/quote_renderer.py (dev#531 Stage 1).
+"""Unit tests for src/quote_renderer.py (litclock-dev#531 Stage 1).
 
 Pure-function tests (preprocess, exact-span bolding, corpus iteration) run
 everywhere. Tests that measure or render text require freetype-py and the
@@ -78,7 +78,7 @@ def test_find_timestring_is_ascii_case_insensitive():
 
 
 def _span(quote: str, ts: str) -> str:
-    """The bolded text for a timestring: with exact-span bolding (dev#540)
+    """The bolded text for a timestring: with exact-span bolding (litclock-dev#540)
     this is ALWAYS the matched substring itself."""
     qb = quote.encode()
     idx = qr.find_timestring(qb, ts.encode())
@@ -87,7 +87,7 @@ def _span(quote: str, ts: str) -> str:
 
 
 def test_exact_span_never_extends():
-    # dev#540: the CSV timestring IS the bold spec — no case machinery.
+    # litclock-dev#540: the CSV timestring IS the bold spec — no case machinery.
     assert _span("in the tenth hour", "ten") == "ten"  # mid-word: half-bold = data bug, flagged by probe
     assert _span("struck midnight. Then", "midnight") == "midnight"  # trailing punct stays regular
     assert _span("at midnight", "midnight") == "midnight"
@@ -287,14 +287,14 @@ def test_render_row_exposes_layout(tmp_path):
 
 def test_iter_corpus_guard_scans_all_fields(tmp_path):
     # column-shift scenario: the backslash lands in the TITLE field — the
-    # guard must still catch it (fgetcsv escape divergence, dev#536 review)
+    # guard must still catch it (fgetcsv escape divergence, litclock-dev#536 review)
     p = _write_corpus(tmp_path, f"00:00|midnight|clean midnight quote|bad{BS}title|A\n")
     with pytest.raises(qr.CorpusGuardError):
         list(qr.iter_corpus(p))
 
 
 def test_midword_edge_both():
-    # match glued on BOTH sides -> 'both' (dev#542 review: uncovered branch)
+    # match glued on BOTH sides -> 'both' (litclock-dev#542 review: uncovered branch)
     assert qr.timestring_midword_edge("xten9 o'clock", "ten") == "both"
 
 
@@ -304,7 +304,7 @@ needs_freetype_2 = needs_freetype  # alias for readability below
 @needs_freetype_2
 def test_layout_ops_bold_is_exact_span():
     """The bold ops must cover EXACTLY the matched bytes — asserted at the
-    layout level, not just span slicing (dev#542 review)."""
+    layout level, not just span slicing (litclock-dev#542 review)."""
     for quote, ts in [
         ("struck midnight. Then all was calm again", "midnight"),
         ("in the tenth hour of the long day", "ten"),

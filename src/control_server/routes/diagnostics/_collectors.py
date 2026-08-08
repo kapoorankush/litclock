@@ -836,7 +836,7 @@ def collect_diagnostics() -> dict[str, Any]:
         "title": quote_payload.get("title") or None,
         "time": quote_payload.get("time") or None,
         "picked_at": quote_payload.get("picked_at"),
-        # Which render tier painted the last frame (dev#531). Absent from
+        # Which render tier painted the last frame (litclock-dev#531). Absent from
         # pre-runtime-render clocks -> None, which reads as "old firmware",
         # not as a fallback event.
         "render_mode": quote_payload.get("render_mode") or None,

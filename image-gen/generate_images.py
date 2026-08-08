@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DEPRECATED (dev#540) — do not use for shipping images.
+DEPRECATED (litclock-dev#540) — do not use for shipping images.
 
 This legacy fallback predates the exact-span bolding contract: it bolds
 whole space-delimited words, which now DIVERGES from the production
@@ -12,7 +12,7 @@ import sys as _sys
 
 if "--i-know-this-diverges" not in _sys.argv:
     _sys.exit(
-        "generate_images.py is DEPRECATED (dev#540): its whole-word bolding "
+        "generate_images.py is DEPRECATED (litclock-dev#540): its whole-word bolding "
         "diverges from the exact-span contract. Use quote_to_image.php or "
         "src/quote_renderer.py. Pass --i-know-this-diverges to override."
     )

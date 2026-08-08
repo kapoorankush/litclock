@@ -46,7 +46,7 @@ import qrcode.constants
 from PIL import Image, ImageDraw, ImageFont
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-# dev#538: masthead geometry comes from the PRODUCTION module — this tool
+# litclock-dev#538: masthead geometry comes from the PRODUCTION module — this tool
 # carried a drifting third copy of the strip layout twice (pre-#530 QR,
 # pre-#538 masthead); importing kills that failure class.
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -74,7 +74,7 @@ QR_QUIET_ZONE = 4 * QR_BOX_SIZE
 GLYPH_POSITION = (4, 4)
 
 # Existing top-strip features that the QR must not collide with —
-# sourced from production (dev#538 V8-G2 lockup geometry).
+# sourced from production (litclock-dev#538 V8-G2 lockup geometry).
 _MH = _lc._masthead_metrics()
 WEATHER_ICON_POSITION = (_MH["icon_x"], _MH["icon_y"])
 WEATHER_ICON_SIZE = (_lc.ICON_SIZE, _lc.ICON_SIZE)
@@ -136,7 +136,7 @@ def render_preview() -> Image.Image:
     image = Image.new(mode="1", size=DISPLAY_SIZE, color=255)
     draw = ImageDraw.Draw(image)
 
-    # Production masthead (dev#538): date + weather lockup + rules drawn by
+    # Production masthead (litclock-dev#538): date + weather lockup + rules drawn by
     # the same code the clock runs. Fixed strings keep the preview stable.
     icon_path = str(SUN_ICON_XBM) if SUN_ICON_XBM.exists() else None
     _lc._compose_masthead(image, draw, "Mon, September 04", "100°F", "82°F", icon_path)

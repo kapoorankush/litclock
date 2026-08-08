@@ -634,7 +634,7 @@ class TestStructural:
 
 
 class TestRuntimeRender:
-    """dev#531 Stage 2 — runtime quote rendering behind LITCLOCK_RUNTIME_RENDER."""
+    """litclock-dev#531 Stage 2 — runtime quote rendering behind LITCLOCK_RUNTIME_RENDER."""
 
     def test_flag_off_values(self, monkeypatch, tmp_path) -> None:
         marker = tmp_path / ".runtime-render-validated"
@@ -647,7 +647,7 @@ class TestRuntimeRender:
         assert literary_clock._runtime_render_enabled() is False
 
     def test_flag_requires_validation_marker(self, monkeypatch, tmp_path) -> None:
-        """dev#537 review: the flag alone must not enable runtime rendering —
+        """litclock-dev#537 review: the flag alone must not enable runtime rendering —
         the device's freetype environment has to be stamped as validated."""
         monkeypatch.setenv("LITCLOCK_RUNTIME_RENDER", "true")
         monkeypatch.setattr(literary_clock, "RUNTIME_VALIDATED_MARKER", str(tmp_path / "missing-marker"))
@@ -800,7 +800,7 @@ class TestRuntimeRenderWithFreetype:
 
 
 class TestQuotePngFallback:
-    """dev#537 review: a corrupt/unreadable quote PNG must degrade to the
+    """litclock-dev#537 review: a corrupt/unreadable quote PNG must degrade to the
     plain time draw, never kill the whole per-minute render."""
 
     def test_corrupt_png_falls_back_to_time_draw(self, monkeypatch, tmp_path) -> None:
@@ -828,7 +828,7 @@ class TestQuotePngFallback:
 
 @pytest.mark.skipif(not _HAVE_FREETYPE, reason="freetype-py required")
 class TestMainRuntimeWiring:
-    """dev#537 review finding 5: pin main()'s flag→runtime→paste and
+    """litclock-dev#537 review finding 5: pin main()'s flag→runtime→paste and
     flag→runtime-None→PNG-glob wiring, not just the helpers."""
 
     def _arm(self, monkeypatch, tmp_path) -> None:
@@ -895,7 +895,7 @@ class TestMainRuntimeWiring:
             assert literary_clock._runtime_render_enabled() is True
 
     def test_runtime_attempted_but_lost_is_image_fallback(self, monkeypatch, tmp_path) -> None:
-        """dev#543 F3: the alarm condition must be distinguishable from
+        """litclock-dev#543 F3: the alarm condition must be distinguishable from
         'runtime rendering is simply off on this device'."""
         self._arm(monkeypatch, tmp_path)
         png = self._real_png(tmp_path)
@@ -933,7 +933,7 @@ class TestMainRuntimeWiring:
 
 
 class TestMastheadGeometry:
-    """dev#538 V8-G2: shared-baseline masthead with centered weather lockup.
+    """litclock-dev#538 V8-G2: shared-baseline masthead with centered weather lockup.
     Ink = pixel 0 on the mode-'1' strip. All bounds from the review:
     horizontal rule ink rows 77..80, vertical rule ink cols 224..227,
     QR notch erases x>=701, update-failed glyph zone x<=16."""
@@ -1059,7 +1059,7 @@ class TestMastheadGeometry:
 
 
 class TestFormatTemp:
-    """dev#538 review: bound the weather temp domain."""
+    """litclock-dev#538 review: bound the weather temp domain."""
 
     def test_valid_values(self):
         assert literary_clock._format_temp(82.4, "°F") == "82°F"
@@ -1074,7 +1074,7 @@ class TestFormatTemp:
 
 
 class TestMainWeatherHardening:
-    """dev#541 review: malformed weather payloads reach main() safely."""
+    """litclock-dev#541 review: malformed weather payloads reach main() safely."""
 
     def _run_main(self, monkeypatch, payload):
         from weather_providers import open_meteo
@@ -1112,7 +1112,7 @@ class TestMainWeatherHardening:
 
 
 class TestTempSlotDomain:
-    """dev#541 review: every string _format_temp can emit fits the slot."""
+    """litclock-dev#541 review: every string _format_temp can emit fits the slot."""
 
     def test_band_edges_fit_slot(self):
         from PIL import Image, ImageDraw
@@ -1129,7 +1129,7 @@ class TestTempSlotDomain:
 
 
 class TestRenderModeSignal:
-    """dev#531: the status file must say WHICH render tier painted the frame.
+    """litclock-dev#531: the status file must say WHICH render tier painted the frame.
     The fallback chain is invisible to the viewer, so this field is the only
     evidence distinguishing a healthy runtime-render fleet from one silently
     falling back — it gates the images-retirement decision."""
@@ -1156,7 +1156,7 @@ class TestRenderModeSignal:
     def test_legacy_meta_without_field_is_unknown_not_a_claim(self, monkeypatch, tmp_path):
         """A meta dict lacking the field means UNKNOWN — not runtime (a false
         all-clear) and not time-only (a false claim that no quote painted;
-        dev#543 review F4). Only quote_meta=None is genuinely time-only."""
+        litclock-dev#543 review F4). Only quote_meta=None is genuinely time-only."""
         meta = {"quote": "q", "author": "a", "title": "t", "image_path": "/x.png", "picked_at": 1.0}
         assert self._write_and_read(monkeypatch, tmp_path, meta)["render_mode"] is None
 

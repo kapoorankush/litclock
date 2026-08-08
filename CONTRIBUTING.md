@@ -356,7 +356,7 @@ scrape / gather → prepare review → manual review → merge → clean → det
 | 9 | `detect_nsfw.py` | Flag NSFW content via keywords and optional LLM | See below |
 | 10 | `review_nsfw.py` | Interactive human review of NSFW flags, then merge decisions | See below |
 | 11 | `validate_time_parser.py` | Validate every time phrase parses to its expected time | None |
-| 12 | `generate_images.py` | DEPRECATED (dev#540): legacy fallback with whole-word bolding — diverges from the exact-span contract; refuses to run | None |
+| 12 | `generate_images.py` | DEPRECATED (litclock-dev#540): legacy fallback with whole-word bolding — diverges from the exact-span contract; refuses to run | None |
 
 `time_parser.py` is a library module used by other scripts — not invoked directly.
 `quote_to_image.php` is the primary image generator; run it from the `image-gen/` directory. (`generate_images.py` is deprecated — see the table.)
@@ -394,7 +394,7 @@ See issue #211 for the original design and issue #299 for the manifest + CI inte
 ### How bolding works — the timestring column IS the bold spec
 
 The renderer bolds **exactly** the case-insensitive match of a row's
-`timestring` column inside its quote — nothing more, nothing less (dev#540,
+`timestring` column inside its quote — nothing more, nothing less (litclock-dev#540,
 2026-07). There are no renderer heuristics: no whole-word extension, no
 punctuation absorption, no word-boundary detection.
 
