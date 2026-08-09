@@ -237,7 +237,9 @@ def _compose_masthead(image, draw, date_text: str, temp_high: str | None, temp_l
 # one. The rendered frame is persisted to tmpfs (best-effort, atomic) so
 # support bundles and the status file can reference what was painted.
 RUNTIME_RENDER_DIR = os.environ.get("LITCLOCK_RUNTIME_RENDER_DIR", "/run/litclock")
-CORPUS_CSV = os.path.join(PROJECT_ROOT, "image-gen", "litclock_annotated.csv")
+# NOTE: no CORPUS_CSV constant here — corpus path resolution lives in
+# quote_corpus (env-aware, litclock-dev#594 review). A local constant was a dead knob
+# that tests patched to no effect (litclock-dev#601).
 # The flag alone is not enough: this device's freetype-py wheel must first
 # be PROVEN to reproduce GD metrics (tools/validate_measurement.py check
 # --stamp writes this marker only on a 100% pass). Guards against enabling
