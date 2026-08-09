@@ -1013,3 +1013,94 @@ class TestDiffWithManifest:
         assert "matches current CSV" in out
         assert "MISMATCH" not in out
         assert "per-row content-hash mismatch" not in out
+
+
+class TestSweepOrphans:
+    """litclock-dev#584 review: `_prepare_for_regen` wipes only DIRTY buckets, but a
+    GENERATOR change can renumber files in a bucket whose CSV rows never
+    changed — litclock-dev#584 renumbers midnight from `quote_0000_1..72` to `0..71`,
+    and `0000` is not dirty unless a midnight row is edited in the same batch.
+    A full regen overwrites in place and never deletes, so the old top-index
+    file survives.
+
+    That orphan is not inert: release_images.sh only WARNS about unmanifested
+    PNGs so it ships, literary_clock globs the bucket so it can be selected,
+    and quote_corpus returns None for it so the status file loses its
+    quote/author/title.
+    """
+
+    def _tree(self, tmp_path, monkeypatch, manifest_files):
+        import json
+
+        images = tmp_path / "images"
+        metadata = images / "metadata"
+        metadata.mkdir(parents=True)
+        monkeypatch.setattr(corpus_edit, "IMAGES_DIR", images)
+        monkeypatch.setattr(corpus_edit, "METADATA_DIR", metadata)
+        monkeypatch.setattr(corpus_edit, "MANIFEST_PATH", images / "manifest.json")
+        monkeypatch.setattr(corpus_edit, "REPO_ROOT", tmp_path)
+        (images / "manifest.json").write_text(json.dumps({"files": manifest_files}))
+        return images, metadata
+
+    def test_removes_a_renumbered_orphan_and_its_credits_sidecar(self, tmp_path, monkeypatch):
+        images, metadata = self._tree(tmp_path, monkeypatch, {"quote_0000_0.png": "h0"})
+        (images / "quote_0000_0.png").write_bytes(b"keep")
+        (metadata / "quote_0000_0_credits.png").write_bytes(b"keep")
+        (images / "quote_0000_72.png").write_bytes(b"orphan")           # the litclock-dev#584 leftover
+        (metadata / "quote_0000_72_credits.png").write_bytes(b"orphan")
+
+        removed = corpus_edit._sweep_orphans()
+
+        assert {p.name for p in removed} == {"quote_0000_72.png", "quote_0000_72_credits.png"}
+        assert (images / "quote_0000_0.png").exists()
+        assert (metadata / "quote_0000_0_credits.png").exists()
+        assert not (images / "quote_0000_72.png").exists()
+        assert not (metadata / "quote_0000_72_credits.png").exists()
+
+    def test_nsfw_suffixed_files_are_matched_by_their_manifest_key(self):
+        """The manifest keys the quote PNG; the credits sidecar shares its stem
+        with `_credits` appended. An `_nsfw` file must not be mistaken for an
+        orphan just because of the suffix."""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            images = tmp / "images"
+            metadata = images / "metadata"
+            metadata.mkdir(parents=True)
+            (images / "manifest.json").write_text(json.dumps({"files": {"quote_0230_5_nsfw.png": "h"}}))
+            (images / "quote_0230_5_nsfw.png").write_bytes(b"keep")
+            (metadata / "quote_0230_5_nsfw_credits.png").write_bytes(b"keep")
+            orig = (corpus_edit.IMAGES_DIR, corpus_edit.METADATA_DIR, corpus_edit.MANIFEST_PATH, corpus_edit.REPO_ROOT)
+            corpus_edit.IMAGES_DIR, corpus_edit.METADATA_DIR = images, metadata
+            corpus_edit.MANIFEST_PATH, corpus_edit.REPO_ROOT = images / "manifest.json", tmp
+            try:
+                assert corpus_edit._sweep_orphans() == []
+                assert (images / "quote_0230_5_nsfw.png").exists()
+                assert (metadata / "quote_0230_5_nsfw_credits.png").exists()
+            finally:
+                (corpus_edit.IMAGES_DIR, corpus_edit.METADATA_DIR,
+                 corpus_edit.MANIFEST_PATH, corpus_edit.REPO_ROOT) = orig
+
+    def test_an_empty_or_missing_manifest_deletes_NOTHING(self, tmp_path, monkeypatch):
+        """The safety property. If the manifest is absent or has no files, the
+        sweep must be a no-op rather than treating every PNG as an orphan and
+        emptying images/."""
+        images, metadata = self._tree(tmp_path, monkeypatch, {})
+        (images / "quote_0000_0.png").write_bytes(b"precious")
+        (metadata / "quote_0000_0_credits.png").write_bytes(b"precious")
+
+        assert corpus_edit._sweep_orphans() == []
+        assert (images / "quote_0000_0.png").exists()
+
+        (images / "manifest.json").unlink()
+        assert corpus_edit._sweep_orphans() == []
+        assert (images / "quote_0000_0.png").exists()
+
+    def test_a_clean_tree_is_a_no_op(self, tmp_path, monkeypatch):
+        images, metadata = self._tree(tmp_path, monkeypatch, {"quote_0000_0.png": "h"})
+        (images / "quote_0000_0.png").write_bytes(b"x")
+        (metadata / "quote_0000_0_credits.png").write_bytes(b"x")
+        assert corpus_edit._sweep_orphans() == []

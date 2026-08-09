@@ -8,7 +8,14 @@ error_reporting(E_ALL);
 ini_set("display_errors", 1);
 
 $imagenumber = 0;
-$previoustime = 0;
+// null, NOT 0 (litclock-dev#584). $timeKey is a STRING like "0000", and PHP compares a
+// numeric string to an int NUMERICALLY: `"0000" == 0` is true. Seeding with an
+// int therefore made the very first CSV row look like a repeat of the previous
+// bucket, firing $imagenumber++ so midnight was written as quote_0000_1..72
+// instead of 0..71. Only "0000" collides with 0, so midnight was the sole
+// affected bucket -- and src/quote_corpus.py indexes 0-based, so every midnight
+// image was attributed to the NEXT row in the CSV.
+$previoustime = null;
 
 // pad naar font file
 putenv('GDFONTPATH=' . realpath(dirname(__FILE__) . '/../fonts'));
@@ -76,7 +83,7 @@ if (($handle = fopen("litclock_annotated.csv", "r")) !== FALSE) {
 
         // Determine image number before generating
         $timeKey = substr($time, 0, 2).substr($time, 3, 2);
-        if ($timeKey == $previoustime) {
+        if ($timeKey === $previoustime) {  // strict: loose == coerces numeric strings (litclock-dev#584)
             $imagenumber++;
         } else {
             $imagenumber = 0;
