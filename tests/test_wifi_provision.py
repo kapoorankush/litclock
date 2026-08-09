@@ -262,18 +262,31 @@ class TestConnectToWifiHidden:
     otherwise cannot, but not one to impose on the ordinary path.
     """
 
-    def _patch(self, monkeypatch, returncode=0, stderr=""):
+    def _patch(self, monkeypatch, returncode=0, stderr="", connected=True):
+        """``connected`` drives is_wifi_connected: True short-circuits the
+        post-connect IP wait (success paths); False is required by the
+        timeout-delete tests, because the rescue check (litclock-dev#600 review) treats
+        a live connection after the bound as success, not as a cleanup case."""
         calls: list[list[str]] = []
+        timeouts: list = []
 
-        def fake_run(args, check=True, sudo=False):
+        def fake_run(args, check=True, sudo=False, timeout=None):
             calls.append(list(args))
+            timeouts.append(timeout)
+            # The connect call must carry the litclock-dev#598 activation bound
+            # (hardware-measured ~107s hang on exists-but-hidden SSIDs).
+            if "connect" in args:
+                assert timeout == 30, "connect must be bounded (litclock-dev#598)"
             return SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
 
+        self.timeouts = timeouts
+
         monkeypatch.setattr(wifi_provision, "_run_nmcli", fake_run)
-        # Short-circuit the post-connect IP wait so the test doesn't sleep.
-        monkeypatch.setattr(wifi_provision, "is_wifi_connected", lambda: True)
+        monkeypatch.setattr(wifi_provision, "is_wifi_connected", lambda: connected)
         monkeypatch.setattr(wifi_provision, "get_wifi_ssid", lambda: "HiddenNet")
         monkeypatch.setattr(wifi_provision, "_clear_wifi_watchdog_counter", lambda: None)
+        # Both the rescue window and the IP wait poll with 1s sleeps.
+        monkeypatch.setattr(wifi_provision.time, "sleep", lambda _s: None)
         return calls
 
     def test_hidden_true_appends_hidden_yes(self, monkeypatch):
@@ -297,15 +310,121 @@ class TestConnectToWifiHidden:
         connect = next(c for c in calls if "connect" in c)
         assert "hidden" not in connect
 
-    def test_not_found_on_typed_ssid_blames_the_spelling(self, monkeypatch):
-        """A hand-typed name nmcli can't find is nearly always a typo or a
-        case mismatch. The generic "not found" sends the user hunting for a
-        fault that isn't there; say what to check instead."""
+    def test_not_found_on_typed_ssid_leads_with_hidden_causes(self, monkeypatch):
+        """litclock-dev#598 (hardware-established): a typed name nmcli can't
+        find is often NOT a typo — a hidden 5GHz-only network is invisible to
+        the 2.4GHz radio, and a hidden 2.4GHz one can be until it enters the
+        scan cache. Lead with those causes; keep the spelling hint, but last."""
         self._patch(monkeypatch, returncode=1, stderr="Error: No network with SSID 'Hiddennet' found.")
         ok, err = wifi_provision.connect_to_wifi("Hiddennet", "pw", hidden=True)
         assert ok is False
-        assert "case-sensitive" in err
         assert "Hiddennet" in err
+        assert "2.4GHz" in err  # the likely causes lead
+        assert "case-sensitive" in err  # spelling hint retained
+        assert err.index("2.4GHz") < err.index("case-sensitive")
+
+    def test_connect_timeout_returns_honest_copy_and_deletes_profile(self, monkeypatch):
+        """litclock-dev#598: the bounded connect (synthetic returncode 124)
+        must (a) tell the user the network didn't answer — not blame their
+        spelling — and (b) delete the half-created profile: the kill only
+        reaches the sudo wrapper and NetworkManager's activation job keeps
+        running, so this delete is the one thing that aborts it AND drops
+        the armed profile (the litclock-dev#595 class)."""
+        calls = self._patch(
+            monkeypatch, returncode=wifi_provision.NMCLI_TIMEOUT_RC, stderr="nmcli timed out", connected=False
+        )
+        ok, err = wifi_provision.connect_to_wifi("HiddenNet", "pw", hidden=True)
+        assert ok is False
+        assert "didn't answer in time" in err
+        assert "case-sensitive" not in err  # spelling is not the story here
+        delete_idx = [i for i, c in enumerate(calls) if "delete" in c]
+        assert delete_idx, "timeout must trigger the profile delete"
+        delete = calls[delete_idx[0]]
+        # Explicit "id" selector — bare `delete <ssid>` lets nmcli spec-guess,
+        # and an SSID named "id"/"uuid"/"path" would break the cleanup.
+        assert delete[delete.index("delete") + 1 :] == ["id", "HiddenNet"]
+        # The delete itself must stay bounded — an unbounded delete against
+        # the same wedged NetworkManager would recreate the very hang this
+        # timeout exists to prevent, on the cleanup path.
+        assert self.timeouts[delete_idx[0]] == 10
+
+    def test_connect_timeout_on_scanned_network_also_cleans_up(self, monkeypatch):
+        """The rc-124 branch fires before the hidden/typed split — a scanned
+        pick that times out needs the same honest copy and the same profile
+        cleanup, and must keep needing them if the branch ever moves."""
+        calls = self._patch(
+            monkeypatch, returncode=wifi_provision.NMCLI_TIMEOUT_RC, stderr="nmcli timed out", connected=False
+        )
+        ok, err = wifi_provision.connect_to_wifi("HomeWiFi", "pw")
+        assert ok is False
+        assert "didn't answer in time" in err
+        assert any("delete" in c and "HomeWiFi" in c for c in calls)
+
+    def test_connect_timeout_rescues_a_join_that_landed_late(self, monkeypatch):
+        """litclock-dev#600 review: the kill never stops NM's activation, so a slow-but-
+        genuine join (mesh/band-steering DHCP takes 30-45s) can land AFTER
+        the bound. Deleting then would tear down a working connection and
+        every retry would collide identically — the network becomes
+        permanently unprovisionable. A landed join is a success, and the
+        half-created-profile delete must NOT run."""
+        calls = self._patch(
+            monkeypatch, returncode=wifi_provision.NMCLI_TIMEOUT_RC, stderr="nmcli timed out", connected=True
+        )
+        ok, err = wifi_provision.connect_to_wifi("HiddenNet", "pw", hidden=True)
+        assert (ok, err) == (True, None)
+        assert not any("delete" in c for c in calls), "rescued join must not delete the live profile"
+
+    def test_connect_timeout_rescue_requires_the_target_ssid(self, monkeypatch):
+        """Connected-to-something isn't rescued — only the SSID this attempt
+        targeted. NM autoconnecting to a leftover profile (the litclock-dev#595 class)
+        must still be treated as a failed attempt with cleanup."""
+        self._patch(monkeypatch, returncode=wifi_provision.NMCLI_TIMEOUT_RC, stderr="nmcli timed out", connected=True)
+        # get_wifi_ssid (patched in _patch) reports "HiddenNet" — attempt a
+        # different network, so the match fails and the timeout path holds.
+        ok, err = wifi_provision.connect_to_wifi("OtherNet", "pw", hidden=True)
+        assert ok is False
+        assert "didn't answer in time" in err
+
+    def test_connect_timeout_logs_when_cleanup_delete_fails(self, monkeypatch, caplog):
+        """The delete is the only thing standing between a timeout and the
+        litclock-dev#595 armed-profile class — its failure must not be
+        silent (this repo has shipped that exact swallow before)."""
+        calls: list[list[str]] = []
+
+        def fake_run(args, check=True, sudo=False, timeout=None):
+            calls.append(list(args))
+            # Connect times out; the cleanup delete then fails too.
+            return SimpleNamespace(returncode=wifi_provision.NMCLI_TIMEOUT_RC, stdout="", stderr="nmcli timed out")
+
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", fake_run)
+        monkeypatch.setattr(wifi_provision, "is_wifi_connected", lambda: False)  # no rescue
+        monkeypatch.setattr(wifi_provision.time, "sleep", lambda _s: None)
+        with caplog.at_level("ERROR"):
+            ok, err = wifi_provision.connect_to_wifi("HiddenNet", "pw", hidden=True)
+        assert ok is False
+        assert "Could not delete half-created profile 'HiddenNet'" in caplog.text
+        assert "litclock-dev#595" in caplog.text
+
+    @pytest.mark.parametrize(("flag", "expected"), [([], 30), (["--timeout", "0"], None), (["--timeout", "90"], 90)])
+    def test_cli_connect_timeout_flag(self, monkeypatch, capsys, flag, expected):
+        """litclock-dev#600 review: the CLI is also the manual/SSH recovery path, where
+        the setup flow's 30s bound + delete-on-timeout can destroy the very
+        profile an operator is relying on. --timeout 0 must map to an
+        unbounded connect (None); the default stays the setup bound."""
+        seen = {}
+
+        def fake_connect(ssid, password, hidden=False, connect_timeout=30):
+            seen["timeout"] = connect_timeout
+            return True, None
+
+        monkeypatch.setattr(wifi_provision, "connect_to_wifi", fake_connect)
+        monkeypatch.setattr(
+            wifi_provision.sys, "argv", ["wifi_provision.py", "connect", "--ssid", "Net", "--password", "pw", *flag]
+        )
+        with pytest.raises(SystemExit) as exc:
+            wifi_provision.main()
+        assert exc.value.code == 0
+        assert seen["timeout"] == expected
 
     def test_not_found_on_scanned_ssid_keeps_the_plain_message(self, monkeypatch):
         """The scanned path has no spelling to doubt — the user picked from a
@@ -355,10 +474,55 @@ class TestNmcliSecretRedaction:
 
     def test_the_debug_line_itself_is_redacted(self, monkeypatch, caplog):
         """The unit above is only useful if _run_nmcli actually calls it."""
-        monkeypatch.setattr(
-            subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr="")
-        )
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""))
         with caplog.at_level("DEBUG"):
             wifi_provision._run_nmcli(["device", "wifi", "connect", "Home", "password", "s3cret"], sudo=True)
         assert "s3cret" not in caplog.text
         assert "***" in caplog.text
+
+
+class TestRunNmcliTimeout:
+    """The real subprocess.TimeoutExpired handler in _run_nmcli. Every
+    connect_to_wifi test mocks _run_nmcli wholesale, so without these the
+    actual except-path has zero coverage — a regression there (exception
+    escaping, wrong sentinel, lost stderr contract) would crash on hardware
+    while the whole suite stayed green (litclock-dev#598)."""
+
+    @staticmethod
+    def _raise_timeout(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    def test_timeout_becomes_synthetic_completed_process(self, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", self._raise_timeout)
+        result = wifi_provision._run_nmcli(
+            ["device", "wifi", "connect", "Net", "password", "pw"], check=False, timeout=30
+        )
+        assert result.returncode == wifi_provision.NMCLI_TIMEOUT_RC
+        assert result.stderr == "nmcli timed out"  # connect_to_wifi's contract
+        assert result.stdout == ""
+
+    def test_timeout_error_line_is_redacted(self, monkeypatch, caplog):
+        """The timeout log line is ERROR-level — unlike the DEBUG line it
+        reaches journald at the default WARNING log level, so a future edit
+        dropping _redact_nmcli here would persist the PSK to disk (litclock-dev#580)."""
+        monkeypatch.setattr(subprocess, "run", self._raise_timeout)
+        with caplog.at_level("ERROR"):
+            wifi_provision._run_nmcli(
+                ["device", "wifi", "connect", "Home", "password", "s3cret"], sudo=True, timeout=30
+            )
+        assert "s3cret" not in caplog.text
+        assert "***" in caplog.text
+
+    def test_timeout_preserves_partial_output_in_the_log(self, monkeypatch, caplog):
+        """Whatever nmcli wrote before the kill is the only evidence of WHY
+        the activation stalled (slow DHCP vs hidden 5GHz vs wedged NM) —
+        the handler must not discard it. TimeoutExpired carries the partial
+        output as bytes even under text=True."""
+
+        def raise_with_output(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"), output=b"Device activation was stalled")
+
+        monkeypatch.setattr(subprocess, "run", raise_with_output)
+        with caplog.at_level("ERROR"):
+            wifi_provision._run_nmcli(["device", "wifi", "connect", "Net", "password", "pw"], timeout=30)
+        assert "Device activation was stalled" in caplog.text

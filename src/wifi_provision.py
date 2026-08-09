@@ -40,6 +40,12 @@ DNSMASQ_CAPTIVE_CONF = "/etc/NetworkManager/dnsmasq-shared.d/captive-portal.conf
 
 _NMCLI_SECRET_KEYS = frozenset({"password", "wifi-sec.psk", "802-11-wireless-security.psk"})
 
+# Synthetic returncode _run_nmcli substitutes when its timeout= expires,
+# mirroring coreutils timeout(1)'s convention. Safe sentinel: nmcli's own
+# documented exit codes stay in single digits, and sudo relays the child's
+# status, so no genuine nmcli failure can collide with it.
+NMCLI_TIMEOUT_RC = 124
+
 
 def _redact_nmcli(cmd):
     """Replace the token after any secret-bearing nmcli key with ***.
@@ -58,11 +64,33 @@ def _redact_nmcli(cmd):
     return out
 
 
-def _run_nmcli(args, check=True, sudo=False):
-    """Run an nmcli command and return the result."""
+def _run_nmcli(args, check=True, sudo=False, timeout=None):
+    """Run an nmcli command and return the result.
+
+    ``timeout`` (seconds, None = unbounded) exists for the connect path
+    (litclock-dev#598): on an exists-but-hidden SSID this NM version can
+    block ~107s in activation — measured on hardware — while the hotspot
+    is already torn down and the user's phone dangles with no feedback.
+    On expiry the caller gets a synthetic result (returncode 124, stderr
+    "nmcli timed out") instead of an exception, so every existing
+    error-handling path keeps working."""
     cmd = (["sudo"] if sudo else []) + ["nmcli"] + args
     logging.debug(f"Running: {' '.join(_redact_nmcli(cmd))}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        # Keep whatever nmcli wrote before the kill — it's the only record of
+        # what NM was doing (slow DHCP vs hidden 5GHz vs wedged daemon) and
+        # this ERROR line is the only journald trace at the default log level.
+        # TimeoutExpired output is bytes even under text=True (CPython quirk),
+        # but don't bet on that across versions — normalize either way.
+        parts = [p for p in (exc.stdout, exc.stderr) if p]
+        partial = " ".join(p.decode("utf-8", "replace") if isinstance(p, bytes) else p for p in parts).strip()
+        logging.error(
+            f"nmcli timed out after {timeout}s: {' '.join(_redact_nmcli(cmd))}"
+            + (f" — output before kill: {partial}" if partial else "")
+        )
+        return subprocess.CompletedProcess(cmd, returncode=NMCLI_TIMEOUT_RC, stdout="", stderr="nmcli timed out")
     if check and result.returncode != 0:
         logging.error(f"nmcli failed: {result.stderr.strip()}")
     return result
@@ -424,7 +452,7 @@ def scan_wifi_networks():
     return networks
 
 
-def connect_to_wifi(ssid, password, hidden=False):
+def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
     """
     Connect to a WiFi network.
 
@@ -437,6 +465,10 @@ def connect_to_wifi(ssid, password, hidden=False):
             the SSID in probe requests, which is a fair trade to reach a
             network you otherwise cannot, but not something to impose on the
             ordinary visible-network path.
+        connect_timeout: seconds before the nmcli connect is abandoned and
+            the half-created profile deleted (litclock-dev#598). None =
+            unbounded — the CLI's manual/SSH path passes it via --timeout 0,
+            where "return the hotspot to the user" doesn't apply.
 
     Returns:
         (success: bool, error_message: str or None)
@@ -457,20 +489,74 @@ def connect_to_wifi(ssid, password, hidden=False):
     if hidden:
         args += ["hidden", "yes"]
 
-    result = _run_nmcli(args, check=False, sudo=True)
+    # litclock-dev#598: bound the connect. Hardware-measured: an
+    # exists-but-hidden SSID blocks ~107s inside NM activation before
+    # failing — the whole time with the hotspot torn down (single radio)
+    # and the user's phone off the setup network with zero feedback. 30s
+    # is generous for a genuine slow hidden association (the successful
+    # hidden join measured ~3s) and returns the hotspot to the user while
+    # they still have context.
+    result = _run_nmcli(args, check=False, sudo=True, timeout=connect_timeout)
 
     if result.returncode != 0:
         error = result.stderr.strip()
+        if result.returncode == NMCLI_TIMEOUT_RC:
+            # The timeout SIGKILLed the sudo wrapper — sudo can't relay
+            # SIGKILL, so nmcli survives briefly as an orphan, and either way
+            # NetworkManager's activation job keeps running: nmcli is only a
+            # D-Bus client (litclock-dev#600 review).
+            #
+            # Rescue check first: BECAUSE the activation keeps running, a
+            # slow-but-genuine join (mesh/band-steering DHCP legitimately
+            # takes 30-45s; NM's own ipv4.dhcp-timeout default is 45s) can
+            # land moments after the bound. Deleting then would tear down a
+            # working connection — and every retry would collide the same
+            # way, making that network permanently unprovisionable. Give the
+            # in-flight activation a short grace window; landing here counts
+            # as success. 15s + the 30s bound covers NM's 45s DHCP tail.
+            for _ in range(15):
+                if is_wifi_connected() and get_wifi_ssid() == ssid:
+                    logging.info(f"Join to '{ssid}' completed after the {connect_timeout}s bound — rescued")
+                    _clear_wifi_watchdog_counter()
+                    return True, None
+                time.sleep(1)
+            # No rescue: THIS delete is what actually aborts the in-flight
+            # activation and drops the half-created profile; without it the
+            # profile lingers with autoconnect=yes and a possibly-wrong
+            # password (the litclock-dev#595 failure class, made worse by a
+            # kill). Explicit "id" selector — bare `delete <ssid>` makes
+            # nmcli spec-guess, and an SSID named "id"/"uuid"/"path" would
+            # break the cleanup. The result is checked because a silent
+            # delete failure leaves BOTH the armed profile and a live
+            # activation racing the hotspot restore for the single radio.
+            cleanup = _run_nmcli(["connection", "delete", "id", ssid], check=False, sudo=True, timeout=10)
+            if cleanup.returncode != 0:
+                logging.error(
+                    f"Could not delete half-created profile '{ssid}' "
+                    f"(rc={cleanup.returncode}): it may keep autoconnecting "
+                    "with an unverified password (litclock-dev#595) and its "
+                    "activation may still be racing the hotspot restore. "
+                    "See journalctl -u NetworkManager."
+                )
+            return False, (
+                f"Couldn't reach '{ssid}' — the network didn't answer in time. "
+                "Check that it's a 2.4GHz network and in range, then try again."
+            )
         # Parse common error messages for user-friendly messages
         if "Secrets were required" in error or "password" in error.lower():
             return False, "Incorrect WiFi password"
         if "No network with SSID" in error:
-            # A hand-typed name that nmcli can't find is nearly always a typo
-            # or a case mismatch, not an absent network — say so, because the
-            # generic "not found" sends the user looking for a fault that
-            # isn't there.
+            # litclock-dev#598 (hardware-established): for a TYPED name this
+            # is usually NOT a typo — a hidden 5GHz-only network is invisible
+            # to the Zero 2 W's 2.4GHz radio and fails exactly here, and a
+            # hidden 2.4GHz one can too until it enters the scan cache. Lead
+            # with the likely causes; keep the spelling hint last.
             if hidden:
-                return False, f"Couldn't find '{ssid}'. Check the spelling - network names are case-sensitive."
+                return False, (
+                    f"Couldn't find '{ssid}'. If it's a hidden network, make sure "
+                    "it's 2.4GHz and in range, then try again. Also double-check "
+                    "the exact spelling — network names are case-sensitive."
+                )
             return False, f"Network '{ssid}' not found"
         return False, f"Connection failed: {error}"
 
@@ -559,6 +645,15 @@ def main():
         action="store_true",
         help="Probe actively for the SSID instead of waiting for a beacon (litclock-dev#554)",
     )
+    connect_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=30,
+        help="Seconds before the join is abandoned AND its half-created "
+        "profile deleted (litclock-dev#598 setup-flow semantics). "
+        "0 = wait indefinitely and never auto-delete — use for manual/SSH "
+        "recovery on slow networks.",
+    )
 
     # teardown command
     subparsers.add_parser("teardown", help="Tear down hotspot")
@@ -581,7 +676,12 @@ def main():
         print(json.dumps(networks, indent=2))
 
     elif args.command == "connect":
-        success, error = connect_to_wifi(args.ssid, args.password, hidden=args.hidden)
+        success, error = connect_to_wifi(
+            args.ssid,
+            args.password,
+            hidden=args.hidden,
+            connect_timeout=args.timeout or None,  # 0 → unbounded
+        )
         if success:
             print(f"Connected to {args.ssid}")
             sys.exit(0)
