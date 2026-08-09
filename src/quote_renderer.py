@@ -71,25 +71,13 @@ CREDITS_MAX_WIDTH = 500
 LINE_HEIGHT_RATIO = 1.618
 DASH = "—"
 
-# PHP defaults the renderer must mirror exactly:
-# trim() strips " \t\n\r\0\x0B"; preg_replace('/\s+/') without /u is the
-# ASCII class [ \t\n\x0B\f\r] (Python's \s would be Unicode-wide).
-PHP_TRIM_CHARS = " \t\n\r\0\x0b"
-_PHP_WS_RE = re.compile(r"[ \t\n\x0b\f\r]+")
-
-# The escape-sequence cleanup chain from quote_to_image.php, in order.
-# Literal backslash counts (4/2/1 before n, 5/3/1 before ") are built
-# programmatically — they were verified by eval'ing the PHP source literals,
-# and the PHP comments themselves miscount one of them.
-_BS = "\\"
-_ESCAPE_CHAIN = (
-    (_BS * 4 + "n", " "),
-    (_BS * 2 + "n", " "),
-    (_BS + "n", " "),
-    (_BS * 5 + '"', '"'),
-    (_BS * 3 + '"', '"'),
-    (_BS + '"', '"'),
-)
+# PHP text-pipeline defaults (trim chars, escape chain, preprocess_quote)
+# live in quote_corpus since litclock-dev#590 — ONE corpus walk, ONE text
+# pipeline for the renderer and the PWA. preprocess_quote is re-exported
+# for its external binders (image-gen/corpus_edit.py, tests); _BS and
+# _ESCAPE_CHAIN are imported for guard_corpus_row's own use below.
+import quote_corpus  # noqa: E402
+from quote_corpus import _BS, _ESCAPE_CHAIN, PHP_TRIM_CHARS, preprocess_quote  # noqa: E402, F401
 
 # \p{L}\p{N} equivalent for the corpus-quality mid-word probe. [^\W_] = word
 # chars minus underscore. Python \w and PCRE \p{L}\p{N} agree on the EN
@@ -146,14 +134,6 @@ def _width(name: str, ptsize: int, seg: bytes) -> int:
     means a bold-span offset cut a multibyte char — a real bug; let it
     raise (stristr alignment guarantees char-boundary offsets)."""
     return gd_text_width(_font_path(name), ptsize, seg.decode("utf-8"))
-
-
-def preprocess_quote(raw: str) -> str:
-    """The production escape collapse: quote_to_image.php's six-replace
-    chain, then ASCII whitespace collapse, then PHP trim."""
-    for src, dst in _ESCAPE_CHAIN:
-        raw = raw.replace(src, dst)
-    return _PHP_WS_RE.sub(" ", raw).strip(PHP_TRIM_CHARS)
 
 
 def guard_corpus_row(raw_quote: str, warn: Callable[[str], None] | None = None) -> None:
@@ -448,13 +428,42 @@ def iter_corpus(
             )
 
 
-def rows_for_time(csv_path: str | os.PathLike, hhmm: str) -> list[CorpusRow]:
+def rows_for_time(csv_path: str | os.PathLike | None, hhmm: str) -> list[CorpusRow]:
     """All corpus rows for one HHMM bucket, in file order (the runtime
-    selection pool — mirrors the clock's PNG glob semantics). strict=False:
+    selection pool — mirrors the clock's PNG glob semantics).
+    ``csv_path=None`` means quote_corpus's default corpus, which honors
+    ``LITCLOCK_CORPUS_CSV`` — production passes None so the renderer and
+    the PWA lookup can never read different corpora.
+
+    litclock-dev#590: served from ``quote_corpus``'s mtime-cached index
+    instead of a full ``iter_corpus`` walk — the walk re-parsed and
+    ``preprocess_quote``-d all ~4,800 rows per fresh process (~0.76s on
+    the Pi) to return 2-3, and it was the SECOND full-CSV walk in the
+    codebase. Text semantics are identical by construction (the index
+    stores raw text; ``preprocess_quote`` is applied here, to the bucket
+    only) and pinned by the iter_corpus parity test. No strict guards:
     at runtime the Python renderer IS the renderer, so PHP-parity guards
     are a CI concern, and one odd row elsewhere in the CSV must not take
-    down selection for this bucket."""
-    return [r for r in iter_corpus(csv_path, strict=False) if r.hhmm == hhmm]
+    down selection for this bucket. Known wart (dormant on the shipped
+    contiguous corpus): a non-contiguous bucket key resets the counter,
+    so this returns BOTH duplicate-basename rows while PHP kept only the
+    later file — same minute either way, never a wrong-minute frame."""
+
+    return [
+        CorpusRow(
+            ordinal=e["ordinal"],
+            time=e["time"],
+            hhmm=hhmm,
+            image_number=e["idx"],
+            is_nsfw=e["is_nsfw"],
+            basename=f"quote_{hhmm}_{e['idx']}{'_nsfw' if e['is_nsfw'] else ''}",
+            timestring=e["timestring"],
+            quote=preprocess_quote(e["quote_raw"]),
+            title=e["title"],
+            author=e["author"],
+        )
+        for e in quote_corpus.bucket_entries(hhmm, csv_path)
+    ]
 
 
 def render_row(row: CorpusRow) -> tuple[Image.Image, Image.Image, int, Layout]:
@@ -470,5 +479,9 @@ def render_row(row: CorpusRow) -> tuple[Image.Image, Image.Image, int, Layout]:
 
 
 def reset_caches() -> None:
-    """Test hook — clear PIL font cache (gd_measure has its own)."""
+    """Test hook — clear the PIL font cache AND quote_corpus's index cache
+    (rows_for_time depends on it since litclock-dev#590; without this, a
+    test rewriting the same CSV path within one mtime tick could serve a
+    stale index). gd_measure has its own reset_caches."""
     _pil_font.cache_clear()
+    quote_corpus.reset_cache()

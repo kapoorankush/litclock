@@ -904,8 +904,13 @@ class TestMainRuntimeWiring:
             literary_clock,
             "get_current_quote",
             lambda now=None, allow_nsfw=False: {
-                "quote": "q", "author": "a", "title": "t", "time": "00:00",
-                "image_path": png, "picked_at": 0.0, "render_mode": "image",
+                "quote": "q",
+                "author": "a",
+                "title": "t",
+                "time": "00:00",
+                "image_path": png,
+                "picked_at": 0.0,
+                "render_mode": "image",
             },
         )
         _image, quote_meta, _now = literary_clock.main()
@@ -919,8 +924,13 @@ class TestMainRuntimeWiring:
             literary_clock,
             "get_current_quote",
             lambda now=None, allow_nsfw=False: {
-                "quote": "q", "author": "a", "title": "t", "time": "00:00",
-                "image_path": png, "picked_at": 0.0, "render_mode": "image",
+                "quote": "q",
+                "author": "a",
+                "title": "t",
+                "time": "00:00",
+                "image_path": png,
+                "picked_at": 0.0,
+                "render_mode": "image",
             },
         )
         _image, quote_meta, _now = literary_clock.main()
@@ -965,8 +975,20 @@ class TestMastheadGeometry:
         probe = ImageDraw.Draw(Image.new("1", (4, 4)))
         f = literary_clock._masthead_metrics()["date_font"]
         days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        months = ["January", "February", "March", "April", "May", "June",
-                  "July", "August", "September", "October", "November", "December"]
+        months = [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ]
         candidates = [f"{d}, {m} {n:02d}" for d in days for m in months for n in (4, 9, 30, 28)]
         widest = sorted(candidates, key=lambda s: probe.textbbox((0, 0), s, font=f)[2])[-6:]
         deepest = [f"{d}, {m} 30" for d in days[:1] for m in months]  # descender set
@@ -980,9 +1002,17 @@ class TestMastheadGeometry:
             assert right < 695, f"{date_text} right edge {right} too close to QR notch (701)"
 
     def test_temp_matrix_clearances_and_line_separation(self):
-        temps = [("9°F", "5°F"), ("82°F", "64°F"), ("100°F", "82°F"), ("110°F", "99°F"),
-                 ("-8°F", "-22°F"), ("-40°F", "-44°F"), ("38°C", "27°C"), ("-12°C", "-22°C"),
-                 ("-40°C", "-44°C")]
+        temps = [
+            ("9°F", "5°F"),
+            ("82°F", "64°F"),
+            ("100°F", "82°F"),
+            ("110°F", "99°F"),
+            ("-8°F", "-22°F"),
+            ("-40°F", "-44°F"),
+            ("38°C", "27°C"),
+            ("-12°C", "-22°C"),
+            ("-40°C", "-44°C"),
+        ]
         for hi, lo in temps:
             img = self._strip(hi=hi, lo=lo)
             # nothing in the clearance band left of the vertical rule
@@ -1141,13 +1171,25 @@ class TestRenderModeSignal:
         return json.loads(target.read_text())
 
     def test_runtime_mode_recorded(self, monkeypatch, tmp_path):
-        meta = {"quote": "q", "author": "a", "title": "t", "image_path": "/run/litclock/current-quote.png",
-                "picked_at": 1.0, "render_mode": "runtime"}
+        meta = {
+            "quote": "q",
+            "author": "a",
+            "title": "t",
+            "image_path": "/run/litclock/current-quote.png",
+            "picked_at": 1.0,
+            "render_mode": "runtime",
+        }
         assert self._write_and_read(monkeypatch, tmp_path, meta)["render_mode"] == "runtime"
 
     def test_image_fallback_mode_recorded(self, monkeypatch, tmp_path):
-        meta = {"quote": "q", "author": "a", "title": "t", "image_path": "/x/quote_1200_0_credits.png",
-                "picked_at": 1.0, "render_mode": "image"}
+        meta = {
+            "quote": "q",
+            "author": "a",
+            "title": "t",
+            "image_path": "/x/quote_1200_0_credits.png",
+            "picked_at": 1.0,
+            "render_mode": "image",
+        }
         assert self._write_and_read(monkeypatch, tmp_path, meta)["render_mode"] == "image"
 
     def test_no_quote_is_time_only(self, monkeypatch, tmp_path):
@@ -1167,3 +1209,23 @@ class TestRenderModeSignal:
         monkeypatch.setattr(literary_clock, "PROJECT_ROOT", str(tmp_path))
         meta = literary_clock.get_current_quote(now=datetime(2026, 1, 1, 12, 0))
         assert meta is not None and meta["render_mode"] == "image"
+
+
+def test_png_tier_survives_corrupt_corpus_lookup(monkeypatch, tmp_path):
+    """litclock-dev#594 review: a corrupt CSV throws inside quote_corpus; the PNG tier
+    must degrade to empty metadata (right image, no PWA text) instead of
+    letting the exception kill the per-minute process — 'one bad row must
+    degrade one minute, never crash-loop the timer.'"""
+    png_dir = tmp_path / "images" / "metadata"
+    png_dir.mkdir(parents=True)
+    (png_dir / "quote_1200_0_credits.png").write_bytes(b"png")
+    monkeypatch.setattr(literary_clock, "PROJECT_ROOT", str(tmp_path))
+
+    def _torn(_f):
+        raise UnicodeDecodeError("utf-8", b"", 0, 1, "torn mid-write")
+
+    monkeypatch.setattr(literary_clock.quote_corpus, "lookup_by_filename", _torn)
+    meta = literary_clock.get_current_quote(now=datetime(2026, 8, 8, 12, 0))
+    assert meta is not None
+    assert meta["quote"] == ""  # degraded, not dead
+    assert meta["image_path"].endswith("quote_1200_0_credits.png")

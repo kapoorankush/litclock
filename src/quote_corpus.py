@@ -1,13 +1,41 @@
-"""Lazy in-memory index of the quote corpus for runtime lookups.
+"""Lazy in-memory index of the quote corpus — the ONE runtime corpus walk.
 
 The PHP image generator (`image-gen/quote_to_image.php`) bakes quote text +
 attribution into the PNGs and names them ``quote_{HHMM}_{idx}_credits.png``
 where ``idx`` is the per-time-bucket position in the source CSV. This
 module gives us the inverse — given an image filename, return
 ``{quote, author, title, time}`` so the PWA hero card can render the quote
-in HTML rather than read text out of a baked PNG.
+in HTML rather than read text out of a baked PNG — and, since litclock-dev#590,
+the forward direction too: ``bucket_entries()`` feeds the runtime
+renderer's per-minute row selection (``quote_renderer.rows_for_time``).
 
-Loaded once at first lookup; ~5000 rows, well under 1MB resident.
+Both directions share one walk, one cache, and ONE text pipeline
+(``preprocess_quote``): the eng review of litclock-dev#590 found the previous
+split — ``preprocess_quote`` on the e-ink path vs a local outer-quote
+strip here — showed different text on the glass than in the PWA for 135
+of 4,808 rows. The renderer's semantics won (decision D4): what the PWA
+shows now matches the panel byte-for-byte.
+
+Row-walk semantics mirror the PHP main loop exactly (and therefore
+``quote_renderer.iter_corpus``): rows with <5 fields are skipped, the
+bucket key is ``time[:2]+time[3:5]`` with NO shape validation, and
+``idx`` resets on key change / increments on repeat. NSFW rows count
+toward the same counter. Quote text stays RAW in the index and is
+``preprocess_quote``-d at access time — eagerly transforming all ~4,800
+rows would cost ~0.4s per fresh process to serve the 2-3 rows a lookup
+actually touches.
+
+Loaded once at first lookup; ~4MB resident per index (measured), so the
+lru_cache's 4 slots bound a hypothetical long-lived importer at ~16MB.
+Today there is NO long-lived consumer — the control_server reads the
+status file literary_clock publishes, and the only importer is the
+fresh per-minute clock process, whose cache dies with it. The cache key
+still includes the CSV's (realpath, mtime, size) so any future
+long-lived adopter inherits ``corpus_edit ship`` auto-invalidation for
+free. Residual (documented, accepted): a stat-then-open race or an
+mtime-and-size-preserving in-place rewrite can serve a stale index to
+such an adopter until the next key change; the per-minute process is
+immune (fresh cache each run).
 """
 
 from __future__ import annotations
@@ -31,100 +59,191 @@ _CORPUS_PATH = Path(
 #   quote_{HHMM}_{idx}_credits.png               (metadata variant)
 #   quote_{HHMM}_{idx}_nsfw.png                  (NSFW image)
 #   quote_{HHMM}_{idx}_nsfw_credits.png          (NSFW metadata variant)
-_FILENAME_RE = re.compile(r"^quote_(?P<hhmm>\d{4})_(?P<idx>\d+)(?:_nsfw)?(?:_credits)?\.png$")
+_FILENAME_RE = re.compile(r"^quote_(?P<hhmm>\d{4})_(?P<idx>\d+)(?P<nsfw>_nsfw)?(?:_credits)?\.png$")
 
 
-def _strip_outer_quotes(value: str) -> str:
-    """Mirror PHP's quote handling for the runtime case. CSV fields wrapped
-    in `""` get unwrapped; doubled `""` inside the quoted field collapse
-    to single `"` per CSV convention. Python's csv module already handles
-    the inner unescaping; this exists for the rare case where a row was
-    written without proper csv quoting."""
-    value = value.strip()
-    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
-        value = value[1:-1]
-    return value.replace('""', '"').strip()
+# PHP defaults the text pipeline must mirror exactly (moved here from
+# quote_renderer in litclock-dev#590 so the corpus walk and its text semantics
+# live in ONE module; quote_renderer re-exports them):
+# trim() strips " \t\n\r\0\x0B"; preg_replace('/\s+/') without /u is the
+# ASCII class [ \t\n\x0B\f\r] (Python's \s would be Unicode-wide).
+PHP_TRIM_CHARS = " \t\n\r\0\x0b"
+_PHP_WS_RE = re.compile(r"[ \t\n\x0b\f\r]+")
+
+# The escape-sequence cleanup chain from quote_to_image.php, in order.
+# Literal backslash counts (4/2/1 before n, 5/3/1 before ") are built
+# programmatically — they were verified by eval'ing the PHP source literals,
+# and the PHP comments themselves miscount one of them.
+_BS = "\\"
+_ESCAPE_CHAIN = (
+    (_BS * 4 + "n", " "),
+    (_BS * 2 + "n", " "),
+    (_BS + "n", " "),
+    (_BS * 5 + '"', '"'),
+    (_BS * 3 + '"', '"'),
+    (_BS + '"', '"'),
+)
+
+
+def preprocess_quote(raw: str) -> str:
+    """The production escape collapse: quote_to_image.php's six-replace
+    chain, then ASCII whitespace collapse, then PHP trim."""
+    for src, dst in _ESCAPE_CHAIN:
+        raw = raw.replace(src, dst)
+    return _PHP_WS_RE.sub(" ", raw).strip(PHP_TRIM_CHARS)
 
 
 @lru_cache(maxsize=4)
-def _index_for_mtime(mtime_ns: int) -> dict[tuple[str, int], dict[str, str]]:
-    """Build an index keyed by ``(HHMM, idx) → metadata``.
+def _index_for(path_str: str, mtime_ns: int, size: int) -> dict[str, list[dict]]:
+    """Build the corpus index: ``HHMM → [entry, ...]`` in bucket order.
 
     Mirrors PHP's per-time-bucket counter in `quote_to_image.php`: the
     `imagenumber` resets to 0 when the time field changes and increments
-    otherwise. NSFW rows count toward the same counter (they get a
+    otherwise. Each entry carries its filename ``idx`` explicitly — for a
+    key that reappears NON-contiguously the counter resets mid-bucket
+    (PHP would overwrite the earlier file), so list position alone would
+    lie. Contiguous on the shipped corpus; the walk mirrors the namer
+    regardless. NSFW rows count toward the same counter (they get a
     `_nsfw` suffix in the filename but share the bucket index).
 
-    Caching is keyed by the CSV's mtime_ns, not by argument identity, so
-    a `corpus_edit ship` (which rewrites the CSV) auto-invalidates the
+    Each entry keeps ``quote_raw`` untransformed — callers apply
+    ``preprocess_quote`` to the rows they actually use (see module
+    docstring for why). ``ordinal`` is the 1-based renderable-row number,
+    matching ``quote_renderer.iter_corpus``.
+
+    Caching is keyed by (path, mtime_ns), not argument identity, so a
+    `corpus_edit ship` (which rewrites the CSV) auto-invalidates the
     cache without restarting control_server (adversarial /review on M2
     caught this — long-running control_server would serve stale
     attribution after a corpus edit until restart). lru_cache(maxsize=4)
-    keeps the last few mtimes so a brief mtime flap doesn't thrash the
-    parser.
+    keeps the last few (path, mtime) pairs so a brief mtime flap doesn't
+    thrash the parser; the path in the key also lets tests point at tmp
+    corpora without evicting the production index.
     """
-    index: dict[tuple[str, int], dict[str, str]] = {}
-    if not _CORPUS_PATH.exists():
+    index: dict[str, list[dict]] = {}
+    path = Path(path_str)
+    if not path.exists():
         return index
 
     previous_hhmm: str | None = None
     image_number = 0
+    ordinal = 0
 
-    with _CORPUS_PATH.open(newline="", encoding="utf-8") as f:
+    with path.open(newline="", encoding="utf-8") as f:
         reader = csv.reader(f, delimiter="|")
         for row in reader:
             if len(row) < 5:
                 continue
+            ordinal += 1
             time_str = row[0]
-            # Expect "HH:MM"; defensive against malformed rows.
-            if len(time_str) != 5 or time_str[2] != ":":
-                continue
-            hhmm = time_str[:2] + time_str[3:]
+            # PHP substr semantics: derive the key with NO shape check.
+            # (The pre-litclock-dev#590 index skipped malformed times, silently
+            # desyncing idx from the PHP filename counter for every later
+            # row in that bucket. Dormant on the shipped corpus — every
+            # row is well-formed — but the walk must mirror the namer.
+            # Known residual: PHP substr slices BYTES, Python slices code
+            # points, so a multibyte time field would diverge — dormant,
+            # pre-existing, and identical in iter_corpus, so the two
+            # Python walks can never disagree with each other over it.)
+            hhmm = time_str[:2] + time_str[3:5]
             if hhmm == previous_hhmm:
                 image_number += 1
             else:
                 image_number = 0
                 previous_hhmm = hhmm
-
-            index[(hhmm, image_number)] = {
-                "time": time_str,
-                "timestring": row[1].strip(),
-                "quote": _strip_outer_quotes(row[2]),
-                "title": row[3].strip(),
-                "author": row[4].strip(),
-            }
+            index.setdefault(hhmm, []).append(
+                {
+                    "ordinal": ordinal,
+                    "idx": image_number,
+                    "time": time_str,
+                    "timestring": row[1].strip(PHP_TRIM_CHARS),
+                    "quote_raw": row[2],
+                    "title": row[3].strip(PHP_TRIM_CHARS),
+                    "author": row[4].strip(PHP_TRIM_CHARS),
+                    "is_nsfw": len(row) > 5 and row[5].strip(PHP_TRIM_CHARS).upper() == "YES",
+                }
+            )
     return index
 
 
-def _current_mtime_ns() -> int:
-    """Return the corpus CSV's mtime in nanoseconds, or 0 if it doesn't
-    exist. Used as the lru_cache key so the index auto-invalidates on
-    corpus edit. Per-call stat is microseconds — much cheaper than CSV
-    re-parse (~100-300ms on Pi Zero)."""
+def _current_stat(path: Path) -> tuple[int, int]:
+    """Return the CSV's (mtime_ns, size), or (0, 0) if it doesn't exist.
+    Both join the lru_cache key so the index auto-invalidates on corpus
+    edit — size catches the mtime-granularity edge where a rewrite lands
+    in the same timestamp tick. Per-call stat is microseconds — much
+    cheaper than CSV re-parse (~100-300ms on Pi Zero)."""
     try:
-        return _CORPUS_PATH.stat().st_mtime_ns
+        st = path.stat()
+        return st.st_mtime_ns, st.st_size
     except OSError:
-        return 0
+        return 0, 0
 
 
-def _index() -> dict[tuple[str, int], dict[str, str]]:
-    return _index_for_mtime(_current_mtime_ns())
+def _index(csv_path: str | os.PathLike | None = None) -> dict[str, list[dict]]:
+    path = _CORPUS_PATH if csv_path is None else Path(csv_path)
+    # realpath: symlinked installs and env-var overrides must key ONE
+    # cache entry per underlying file, not one per spelling of its path.
+    path = Path(os.path.realpath(path))
+    mtime_ns, size = _current_stat(path)
+    return _index_for(str(path), mtime_ns, size)
+
+
+def bucket_entries(hhmm: str, csv_path: str | os.PathLike | None = None) -> tuple[dict, ...]:
+    """All corpus entries for one HHMM bucket, in file order (the runtime
+    selection pool — ``quote_renderer.rows_for_time`` builds its
+    ``CorpusRow`` objects from this). Entries carry ``quote_raw``; apply
+    ``preprocess_quote`` to the rows actually used. ``csv_path=None``
+    means the production corpus.
+
+    Returns a tuple so callers cannot reorder/extend the cached bucket;
+    the entry dicts themselves are still the SHARED cached objects —
+    treat them as immutable (mutating one poisons every later caller in
+    this process until the cache key changes)."""
+    return tuple(_index(csv_path).get(hhmm, []))
 
 
 def lookup_by_filename(filename: str) -> dict[str, str] | None:
     """Look up quote metadata by image filename. Returns ``None`` if not
-    found (corpus missing, malformed name, or out-of-range idx)."""
+    found (corpus missing, malformed name, or out-of-range idx).
+
+    ``quote`` is the SAME text the runtime renderer draws
+    (``preprocess_quote`` — litclock-dev#590 unified the pipelines; the old
+    outer-quote strip showed different text in the PWA than on the glass
+    for 135 rows). Matching idx entries resolve last-wins, mirroring PHP
+    overwriting the earlier file when a bucket key reappears after a
+    counter reset (impossible on a contiguous corpus, exact anyway).
+
+    Basename identity is (hhmm, idx, nsfw-suffix) — all three, exactly as
+    the PHP namer writes files. The nsfw check (litclock-dev#594 review, Codex +
+    security convergence) guards the corpus/images desync window: without
+    it, a tame filename could resolve to a row that is NSFW at that idx in
+    a NEWER corpus, publishing mature text to a filtered device's PWA.
+    Mismatch returns None — same refuse-on-desync posture as
+    ``_write_status_file``; the PWA shows the stale banner instead."""
     name = os.path.basename(filename)
     m = _FILENAME_RE.match(name)
     if not m:
         return None
     hhmm = m.group("hhmm")
     idx = int(m.group("idx"))
-    return _index().get((hhmm, idx))
+    filename_is_nsfw = m.group("nsfw") is not None
+    entry = None
+    for e in _index().get(hhmm, []):
+        if e["idx"] == idx:
+            entry = e
+    if entry is None or entry["is_nsfw"] != filename_is_nsfw:
+        return None
+    return {
+        "time": entry["time"],
+        "timestring": entry["timestring"],
+        "quote": preprocess_quote(entry["quote_raw"]),
+        "title": entry["title"],
+        "author": entry["author"],
+    }
 
 
 def reset_cache() -> None:
     """Test hook — clears the lru_cache so each test sees a fresh index.
     Without this, tests that monkeypatch the corpus path will see the
     stale index from the first call."""
-    _index_for_mtime.cache_clear()
+    _index_for.cache_clear()

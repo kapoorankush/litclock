@@ -10,6 +10,7 @@ gate lives in tools/render_invariants.py + CI, not here.
 from __future__ import annotations
 
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -314,3 +315,49 @@ def test_layout_ops_bold_is_exact_span():
         lay = qr.layout_pass(qb.split(b" "), 20, idx, idx + len(ts.encode()))
         bold_bytes = b"".join(sb for _, _, sb, bold in lay.ops if bold)
         assert bold_bytes == ts.encode(), (quote, bold_bytes)
+
+class TestRowsForTimeParity:
+    """litclock-dev#590: rows_for_time is served from quote_corpus's index, not
+    its own iter_corpus walk. These pin that the rewiring changed the COST
+    and nothing else."""
+
+    def test_full_corpus_parity_with_iter_corpus(self):
+        """Every one of the 1,440 buckets: rows_for_time == the iter_corpus
+        filter it replaced, field-for-field (CorpusRow dataclass eq)."""
+        csv_path = Path(__file__).resolve().parents[1] / "image-gen" / "litclock_annotated.csv"
+        if not csv_path.exists():
+            pytest.skip("bundled corpus CSV not present in this checkout")
+        by_bucket: dict[str, list[qr.CorpusRow]] = {}
+        for row in qr.iter_corpus(csv_path, strict=False):
+            by_bucket.setdefault(row.hhmm, []).append(row)
+        assert len(by_bucket) == 1440  # every minute of the day covered
+        for hhmm, expected in by_bucket.items():
+            assert qr.rows_for_time(csv_path, hhmm) == expected, hhmm
+
+    def test_parity_on_hostile_synthetic_corpus(self, tmp_path):
+        """Parity must hold on the shapes that are dormant in the shipped
+        corpus: short rows (skipped), malformed times (no colon), NSFW
+        counter sharing, escape sequences, and a non-contiguous bucket key
+        (counter reset)."""
+        csv_path = tmp_path / "hostile.csv"
+        csv_path.write_text(
+            "00:00|midnight|first|T|A|NO\n"
+            "short|row\n"  # <5 fields: skipped, no ordinal
+            "00:00|midnight|second \\n escaped|T|A|YES\n"
+            "0001x|one|malformed time|T|A|NO\n"
+            "00:02|two|other bucket|T|A|NO\n"
+            "00:00|midnight|counter resets here|T|A|NO\n",
+            encoding="utf-8",
+        )
+        buckets = {r.hhmm for r in qr.iter_corpus(csv_path, strict=False)}
+        for hhmm in sorted(buckets):
+            expected = [r for r in qr.iter_corpus(csv_path, strict=False) if r.hhmm == hhmm]
+            assert qr.rows_for_time(csv_path, hhmm) == expected, hhmm
+
+    def test_rows_for_time_misses_return_empty(self, tmp_path):
+        """Empty bucket and missing file both yield [] (the PNG-glob-miss
+        contract get_current_quote_runtime depends on)."""
+        csv_path = tmp_path / "tiny.csv"
+        csv_path.write_text("00:00|midnight|only row|T|A|NO\n", encoding="utf-8")
+        assert qr.rows_for_time(csv_path, "1234") == []
+        assert qr.rows_for_time(tmp_path / "absent.csv", "0000") == []

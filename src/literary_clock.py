@@ -494,7 +494,11 @@ def get_current_quote_runtime(
         logging.warning(f"runtime render enabled but renderer unavailable ({e}); using images")
         return None
     try:
-        rows = quote_renderer.rows_for_time(CORPUS_CSV, now.strftime("%H%M"))
+        # csv_path=None: quote_corpus's env-aware default, so the renderer
+        # and lookup_by_filename can never read different corpora (litclock-dev#594
+        # review — CORPUS_CSV ignored LITCLOCK_CORPUS_CSV and its spelling
+        # keyed a second cache entry for the same file).
+        rows = quote_renderer.rows_for_time(None, now.strftime("%H%M"))
     except Exception as e:
         logging.error(f"runtime render: corpus read failed: {e}")
         return None
@@ -556,7 +560,17 @@ def get_current_quote(
     if not quotes:
         return None
     chosen = quotes[randrange(len(quotes))]
-    meta = quote_corpus.lookup_by_filename(chosen) or {}
+    # litclock-dev#594 review: since quote_corpus became the ONE corpus walk, a
+    # torn/corrupt CSV throws in BOTH render tiers — runtime already
+    # returns None for it, and an unguarded raise here would kill the PNG
+    # tier too, stalling the panel every minute until the file heals. The
+    # PNG needs no CSV to paint: degrade to empty meta (right image, no
+    # PWA metadata; _write_status_file skips the empty case by design).
+    try:
+        meta = quote_corpus.lookup_by_filename(chosen) or {}
+    except Exception as e:
+        logging.error(f"corpus lookup failed for {os.path.basename(chosen)}: {e}; painting PNG without metadata")
+        meta = {}
     return {
         "quote": meta.get("quote", ""),
         "author": meta.get("author", ""),
