@@ -19,7 +19,8 @@ A/B pass on the owner clock, calibrated blind machine judge clean):
     the two-line balance loop and the single-line ``left``-based x.
 
 Deliberate divergences from the PHP (each fails loud instead of rendering
-garbage; the render-invariants CI job proves the corpus never hits them):
+garbage; the development repo's render-invariants CI proves the corpus
+never hits them):
   - a credits line that cannot be two-line balanced raises
     ``CreditsBalanceError`` (PHP reads an unset array key and paints a bare
     dash);
@@ -94,8 +95,8 @@ class RenderError(Exception):
     """Quote cannot be rendered. ``reason`` mirrors the PHP counters:
     'nostring' (timestring not found) or 'nofit' (font range exhausted).
 
-    STAGE-2 CONTRACT: the invariant CI proves these absent on the shipped
-    corpus, but user-edited corpora bypass that gate — the on-device caller
+    STAGE-2 CONTRACT: the development repo's invariant CI proves these
+    absent on the shipped corpus, but user-edited corpora bypass that gate — the on-device caller
     must catch RenderError/CreditsBalanceError per render and fall back
     (render -> last-good image -> numeral clock), never crash-loop the
     per-minute timer on one bad row."""
@@ -108,7 +109,7 @@ class RenderError(Exception):
 class CreditsBalanceError(Exception):
     """Two-line credits balance loop produced no split (PHP would render a
     bare dash from an unset array key). Never happens on the shipped corpus
-    — enforced by the render-invariants CI job."""
+    — enforced by the development repo's render-invariants CI."""
 
 
 class CorpusGuardError(Exception):
@@ -228,7 +229,8 @@ class Layout:
 def layout_pass(words: list[bytes], font_size: int, ts_start: int, ts_end: int) -> Layout | None:
     """Single source of truth for the fitText layout algorithm (the Stage-0
     spike kept two implementations cross-checked at render time; the port
-    keeps one, and the invariant CI diffs it against the PHP probe).
+    keeps one; the development repo's invariant CI diffs it against the
+    PHP probe).
     Returns None when any word exceeds the drawable width — fitText's
     stop-enlarging signal."""
     x, y = MARGIN, MARGIN + font_size
