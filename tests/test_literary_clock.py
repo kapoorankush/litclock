@@ -39,6 +39,7 @@ pytestmark = pytest.mark.skipif(not _HAS_DEPS, reason="literary_clock deps (PIL 
 
 if _HAS_DEPS:
     import literary_clock  # noqa: E402
+    import quote_corpus  # noqa: E402
 
 
 # ---------- get_current_quote() — pure function (A7) ----------
@@ -719,7 +720,13 @@ class TestRuntimeRender:
             "00:00|midnight|Still midnight there, the clocks all agreed.|T2|A2|yes\n",
             encoding="utf-8",
         )
-        monkeypatch.setattr(literary_clock, "CORPUS_CSV", str(csv_path))
+        # litclock-dev#601: the runtime path resolves the corpus through quote_corpus's
+        # own default (literary_clock passes csv_path=None — a litclock-dev#594 review
+        # decision), so THAT is the knob to redirect. Patching the old
+        # literary_clock.CORPUS_CSV was a silent no-op that fed these tests
+        # the real corpus — unseen locally because this class only runs
+        # where freetype-py exists (CI).
+        monkeypatch.setattr(quote_corpus, "_CORPUS_PATH", csv_path)
         monkeypatch.setattr(literary_clock, "RUNTIME_RENDER_DIR", str(tmp_path))
 
     def test_runtime_quote_none_on_missing_renderer(self, monkeypatch, tmp_path) -> None:
@@ -841,7 +848,9 @@ class TestMainRuntimeWiring:
         import freetype
 
         marker.write_text(f"freetype={'.'.join(map(str, freetype.version()))}\n")
-        monkeypatch.setattr(literary_clock, "CORPUS_CSV", str(csv_path))
+        # litclock-dev#601: redirect quote_corpus's default — the knob the runtime path
+        # actually reads (literary_clock.CORPUS_CSV was a dead no-op here).
+        monkeypatch.setattr(quote_corpus, "_CORPUS_PATH", csv_path)
         monkeypatch.setattr(literary_clock, "RUNTIME_RENDER_DIR", str(tmp_path))
         monkeypatch.setattr(literary_clock, "RUNTIME_VALIDATED_MARKER", str(marker))
         monkeypatch.setenv("LITCLOCK_RUNTIME_RENDER", "true")
