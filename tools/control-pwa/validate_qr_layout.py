@@ -47,7 +47,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # litclock-dev#538: masthead geometry comes from the PRODUCTION module — this tool
-# carried a drifting third copy of the strip layout twice (pre-#530 QR,
+# carried a drifting third copy of the strip layout twice (pre-litclock-dev#530 QR,
 # pre-#538 masthead); importing kills that failure class.
 sys.path.insert(0, str(REPO_ROOT / "src"))
 import literary_clock as _lc  # noqa: E402

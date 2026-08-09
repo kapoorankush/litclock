@@ -427,7 +427,7 @@ def _runtime_frame_ok(frame) -> str | None:
 
     Catches the "rendered but garbage" class that raises nothing: wrong
     canvas, an all-white frame, or ink inside the settings-QR quiet-zone
-    notch (which _composite_settings_qr would silently erase — #530).
+    notch (which _composite_settings_qr would silently erase — litclock-dev#530).
     Ink = pixel < 128, matching both GD's AA rounding and the dither=NONE
     conversion this frame is about to get. Subtle wrongness (bad break,
     off-by-one font size) is NOT detectable here — that correctness is

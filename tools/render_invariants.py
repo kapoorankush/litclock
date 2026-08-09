@@ -11,7 +11,7 @@ Two subcommands:
       I1  coverage: every CSV row renders — no NOSTRING, no NOFIT, no
           exception of any kind, rendered count == corpus row count;
       I2  fit sanity: font size >= 18 and paragraph height < HEIGHT-100;
-      I3  #530 QR-notch clearance: the credits image has NO ink inside the
+      I3  litclock-dev#530 QR-notch clearance: the credits image has NO ink inside the
           settings-QR quiet-zone notch region (image rows 0..6 at x >= 701;
           the panel composite white-outs that corner, so ink there would be
           silently erased);
@@ -47,7 +47,7 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "src"))
 
-# #530 settings-QR quiet-zone notch geometry, in QUOTE-IMAGE coordinates —
+# litclock-dev#530 settings-QR quiet-zone notch geometry, in QUOTE-IMAGE coordinates —
 # derived from literary_clock's own constants (src/ is on sys.path above)
 # so the gate can never drift from the composite that does the erasing.
 import literary_clock as _lc  # noqa: E402
@@ -64,7 +64,7 @@ NOTCH_ROWS = _lc.QR_NOTCH_BOTTOM - _lc.QUOTE_AREA_Y + 1  # panel rows 80..86 == 
 # to match; Floyd-Steinberg dithering would stochastically blacken fringes.
 # Full-corpus fact (2026-07-25): sub-128 ink starts at image row 4 in BOTH
 # engines (GD and PIL agree row-for-row on the extreme quotes; verified on
-# quote_2300_5 fs85 et al.) — the #530 comment's "worst corpus ink starts
+# quote_2300_5 fs85 et al.) — the litclock-dev#530 comment's "worst corpus ink starts
 # at 87" aside is stale, but the notch region itself (x>=701) is ink-free
 # across all 4,809 renders, which is what the quiet zone actually needs.
 INK_THRESHOLD = 128
@@ -130,7 +130,7 @@ def cmd_check(args: argparse.Namespace) -> int:
                 f"{layout.paragraph_height} >= {qr.HEIGHT - 100} — no room for credits"
             )
 
-        # I3 — #530 QR-notch clearance on the SHIPPED variant (credits):
+        # I3 — litclock-dev#530 QR-notch clearance on the SHIPPED variant (credits):
         # no ink where the panel notch would erase it. Global first-ink-row
         # is recorded for the report but only the notch region gates.
         entry["first_ink_row"] = _first_ink_row(credits_img)
@@ -138,7 +138,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         if notch_ink is not None:
             failures.append(
                 f"I3 row {row.ordinal} ({row.basename}): ink at image row {notch_ink}, "
-                f"x>={NOTCH_X0} — inside the settings-QR quiet-zone notch (#530), would be erased"
+                f"x>={NOTCH_X0} — inside the settings-QR quiet-zone notch (litclock-dev#530), would be erased"
             )
 
         # I4 — credits/quote ink collision

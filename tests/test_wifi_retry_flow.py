@@ -1612,7 +1612,7 @@ class TestManualSsidEntry:
         """litclock-dev#397's guard filters the hotspot from the dropdown. The free-text
         field is a second entry point straight past that filter, so the
         rejection has to sit after the manual value is resolved, not before
-        ([[learning-filter-all-entry-points]])."""
+        (a lesson learned the hard way: filter at EVERY entry point, not just one)."""
         calls = []
         response = self._post(
             monkeypatch,

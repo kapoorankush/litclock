@@ -1408,7 +1408,7 @@ class TestSupportLogsEndpointMore:
 
 
 class TestRenderModeInSupportPayload:
-    """litclock-dev#531/#543 review: the render tier must be VISIBLE in the support
+    """litclock-dev#531/litclock-dev#543 review: the render tier must be VISIBLE in the support
     bundle, not merely present in the values dict. build_copy_payload prints
     an explicit field list, so a new key is invisible until printed — and an
     invisible render_mode defeats the whole point of collecting it."""

@@ -207,11 +207,11 @@ function TurnQuoteIntoImage($time, $quote, $timestring, $title, $author, $imagen
     $ts_char_end   = $ts_char_start + strlen($timestring);
 
     // Bold EXACTLY the matched timestring span (litclock-dev#540, 2026-07-26).
-    // The #503/#504 boundary-extension cases (mid-word whole-word bolding,
+    // The litclock-dev#503/litclock-dev#504 boundary-extension cases (mid-word whole-word bolding,
     // trailing-punctuation bolding, hyphen-join guard) were REMOVED: the CSV
     // timestring column is the bold spec, so bolding errors are corpus data
     // fixes, not renderer heuristics — essential once contributors maintain
-    // per-language corpora (#19/#532). Punctuation INSIDE the timestring
+    // per-language corpora (#19/litclock-dev#532). Punctuation INSIDE the timestring
     // stays bold (it is part of the matched string); punctuation outside the
     // span never is. A match whose edge lands mid-word renders a half-bold
     // word — that is a data bug; corpus_edit's validator flags such rows.

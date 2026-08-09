@@ -211,7 +211,7 @@ a direct guard:
   shared `DIAG_SUBPROC_TIMEOUT_S`, so a bump for one slow-under-load call
   doesn't loosen the cheap kernel calls. The seeds are behaviour-preserving
   (all == the shared base) until tuned from real Pi Zero 2W data — run
-  `scripts/diag-subprocess-timing.py` on authorclock + the test Pi under each
+  a subprocess-timing probe on real hardware under each
   load condition (idle / paint contention / memory pressure / degraded SD /
   wedged WiFi) and size each budget at the worst-case p99 + headroom. The
   call-site wiring is pinned by `TestFastReaderTimeoutContract`'s
