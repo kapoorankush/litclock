@@ -53,7 +53,7 @@
 #
 # #387 entries (020-completion, makes dropping 010 safe):
 #   * `/usr/bin/timedatectl set-ntp true` — first-boot.sh (User=pi in
-#     litclock-firstboot.service) + install.sh enable NTP during provisioning.
+#     litclock-firstboot.service) enables NTP during provisioning.
 #     Fixed argv (`set-ntp true` is the only form invoked). Before #387 this
 #     worked ONLY via 010's blanket grant; without it a fresh clock could never
 #     sync time once 010 drops. Surfaced by the #387 security /review.
@@ -67,7 +67,7 @@
 #     via 010_pi-nopasswd's blanket grant and would have broken when 010 drops.
 #
 # Validate any change with:  visudo -c -f sudoers/020_litclock-control
-# Install via: scripts/install.sh, scripts/update.sh, or the pi-gen image
-# build (pi-gen/stage3/02-configure-system/00-run.sh).
+# Install via: scripts/update.sh or the pi-gen image build
+# (pi-gen/stage3/02-configure-system/00-run.sh).
 
 pi ALL=(ALL) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl reboot --no-block, /usr/bin/systemctl poweroff, /usr/bin/systemctl poweroff --no-block, /usr/bin/systemctl restart litclock.service, /usr/bin/systemctl restart litclock.timer, /usr/bin/systemctl start litclock.service, /usr/bin/systemctl start --no-block litclock.service, /usr/bin/systemctl start --no-block litclock-update.service, /usr/bin/systemctl start --no-block litclock-wifi-reset.service, /usr/bin/systemctl start --no-block litclock-prepare-for-gift.service, /usr/bin/systemctl start --no-block litclock-reset.service, /usr/bin/systemctl stop litclock.timer litclock.service, /usr/bin/touch /etc/litclock/.handoff-complete, /usr/bin/timedatectl set-timezone UTC, /usr/bin/timedatectl set-ntp true, /usr/local/lib/litclock/litclock-set-timezone

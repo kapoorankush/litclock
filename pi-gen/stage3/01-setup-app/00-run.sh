@@ -48,7 +48,7 @@ python3 -m venv --system-site-packages venv
 # for apt-provisioned names is requirements-apt.txt (#214).
 EXCLUDE_RE=$(grep -vE '^[[:space:]]*(#|$)' requirements-apt.txt | sed 's/\./\\./g' | paste -sd'|')
 grep -vE "^(${EXCLUDE_RE})==" requirements.txt > /tmp/requirements-pigen.txt
-# --upgrade mirrors update.sh / install.sh (#321). Image build is a fresh
+# --upgrade mirrors update.sh (#321). Image build is a fresh
 # venv so this is a no-op here, but parity matters: anyone reading these
 # three install paths should see the same pip posture. Eager strategy
 # intentionally NOT used — see update.sh comment for the rationale.

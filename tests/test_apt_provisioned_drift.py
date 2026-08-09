@@ -6,7 +6,6 @@ the venv (they'd compile from sdist on a gcc-less image, failing).
 
 Three scripts filter their requirements.txt through this file:
   - pi-gen/stage3/01-setup-app/00-run.sh  (image build)
-  - scripts/install.sh                    (DIY install)
   - scripts/update.sh                     (in-place update)
 
 This test catches the drift scenarios we care about:

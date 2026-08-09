@@ -8,7 +8,7 @@
 # first-boot hotspot teardown — during setup, litclock.service isn't
 # running yet and there's nothing to repaint.
 #
-# Install: scripts/install.sh, scripts/update.sh (Phase 5c), and
+# Install: scripts/update.sh (Phase 5c) and
 # pi-gen/stage3/03-install-services/00-run.sh copy this file to
 # /etc/NetworkManager/dispatcher.d/99-litclock-ip-change with mode
 # 0755 root:root. Do not edit the installed copy — edit the source in

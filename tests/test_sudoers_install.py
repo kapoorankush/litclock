@@ -8,8 +8,8 @@ mode. These tests guard:
   1. The file parses cleanly under `visudo -c -f`.
   2. The exact M4 commands are present (regression guard against
      someone tightening the allowlist below what control_server invokes).
-  3. install.sh, update.sh, and pi-gen all install the file via the
-     validate-then-install pattern.
+  3. update.sh and pi-gen both install the file via the validate-then-install
+     pattern. (install.sh was retired in litclock-dev#547.)
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SUDOERS_FILE = REPO_ROOT / "sudoers" / "020_litclock-control"
-INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 UPDATE_SH = REPO_ROOT / "scripts" / "update.sh"
 PI_GEN_CONFIGURE = REPO_ROOT / "pi-gen" / "stage3" / "02-configure-system" / "00-run.sh"
 
@@ -87,29 +86,6 @@ class TestSudoersFile:
 # ─── Install paths ──────────────────────────────────────────────────────────
 
 
-class TestInstallScriptInstallsSudoers:
-    """install.sh must install the sudoers drop with validate-then-install."""
-
-    @pytest.fixture(scope="class")
-    def script(self):
-        return INSTALL_SH.read_text()
-
-    def test_validates_before_install(self, script):
-        # The validate (visudo -c -f) must appear before the install/cp,
-        # so we never land a broken file in /etc/sudoers.d/.
-        validate_pos = script.find("visudo -c -f")
-        install_pos = script.find("install -m 0440")
-        assert validate_pos != -1, "install.sh must run `visudo -c -f` on the sudoers source"
-        assert install_pos != -1, "install.sh must `install -m 0440` the sudoers drop"
-        assert validate_pos < install_pos, (
-            "install.sh must validate BEFORE installing — otherwise a broken "
-            "file lands in /etc/sudoers.d/ before visudo catches it"
-        )
-
-    def test_references_sudoers_file_by_name(self, script):
-        assert "020_litclock-control" in script
-
-
 class TestUpdateScriptSyncsSudoers:
     """update.sh must sync sudoers drops on every run, idempotently."""
 
@@ -128,6 +104,14 @@ class TestUpdateScriptSyncsSudoers:
         body = loop_match.group(1)
         assert "visudo -c -f" in body, "update.sh sudoers loop must validate via visudo"
         assert "install -m 0440" in body, "update.sh sudoers loop must use `install -m 0440`"
+        # ORDER, not just presence. litclock-dev#547 review: the deleted install.sh test
+        # was the repo's only instance comparing positions, so this one would
+        # have stayed green if the loop were reordered to install-then-validate,
+        # landing a broken file in /etc/sudoers.d/ before visudo ever ran.
+        assert body.index("visudo -c -f") < body.index("install -m 0440"), (
+            "update.sh must validate BEFORE installing — otherwise a broken file "
+            "lands in /etc/sudoers.d/ before visudo catches it"
+        )
 
     def test_idempotent_diff_check(self, script):
         # Idempotent: skip re-install when source matches installed copy.

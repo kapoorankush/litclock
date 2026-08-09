@@ -112,12 +112,12 @@ class TestPort80Deploy:
         conf = self._read(self._CONF)
         assert "net.ipv4.ip_unprivileged_port_start = 80" in conf
 
-    def test_installed_by_all_three_paths(self):
-        # pi-gen (fresh flash), install.sh (manual), update.sh (OTA) must each
-        # drop the file into /etc/sysctl.d, or an upgrader can't bind 80.
+    def test_installed_by_both_paths(self):
+        # pi-gen (fresh flash) and update.sh (OTA) must each drop the file into
+        # /etc/sysctl.d, or an upgrader can't bind 80. install.sh was a third
+        # path until litclock-dev#547 retired it.
         name = "30-litclock-unprivileged-ports.conf"
         assert name in self._read("pi-gen/stage3/02-configure-system/00-run.sh")
-        assert name in self._read("scripts/install.sh")
         assert name in self._read("scripts/update.sh")
 
     def test_update_applies_sysctl_live(self):

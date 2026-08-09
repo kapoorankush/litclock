@@ -16,8 +16,9 @@ These tests guard:
      teardown and queues litclock.service before the clock is ready).
   3. The interface filter (`wlan0`) is present (regression guard —
      dispatcher should only fire for the WiFi adapter).
-  4. install.sh, update.sh, and pi-gen all install the file with the
-     correct mode + ownership.
+  4. update.sh and pi-gen both install the file with the correct mode +
+     ownership. (install.sh was retired in litclock-dev#547 — the flashed image is
+     the only supported install path.)
 """
 
 from __future__ import annotations
@@ -31,7 +32,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DISPATCHER = REPO_ROOT / "scripts" / "nm-dispatcher" / "99-litclock-ip-change"
-INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 UPDATE_SH = REPO_ROOT / "scripts" / "update.sh"
 PI_GEN_SERVICES = REPO_ROOT / "pi-gen" / "stage3" / "03-install-services" / "00-run.sh"
 
@@ -128,27 +128,10 @@ class TestDispatcherFile:
 
 class TestInstallPaths:
     """The dispatcher must be installed by every code path that provisions
-    a LitClock: first-flash via pi-gen, post-flash setup via install.sh,
-    and in-place upgrade via update.sh. Missing any one of these silently
-    leaves the #309 UX bug in place on that install path."""
+    a LitClock: first-flash via pi-gen and in-place upgrade via update.sh.
+    Missing either silently leaves the #309 UX bug in place on that path.
 
-    def test_install_sh_copies_dispatcher(self):
-        body = INSTALL_SH.read_text()
-        assert "nm-dispatcher/99-litclock-ip-change" in body, "install.sh must install the NM dispatcher (#309)"
-        assert "/etc/NetworkManager/dispatcher.d" in body, "install.sh must target the NM dispatcher directory"
-
-    def test_install_sh_uses_correct_mode(self):
-        # NM silently skips dispatcher scripts that aren't 0755 root:root.
-        body = INSTALL_SH.read_text()
-        # Look for the install line specifically (not just any 0755 in the file).
-        lines = body.splitlines()
-        nm_lines = [line for line in lines if "nm-dispatcher" in line or "NetworkManager/dispatcher" in line]
-        # At least one of the install commands targeting the dispatcher must
-        # specify mode 0755 and root:root ownership.
-        joined = "\n".join(nm_lines + body.split("# #309")[1].splitlines()[:20])
-        assert "0755" in joined and "root" in joined, (
-            "install.sh dispatcher install must use mode 0755 root:root (NM silently rejects anything else)"
-        )
+    install.sh was a third path until litclock-dev#547 retired it."""
 
     def test_update_sh_syncs_dispatcher(self):
         body = UPDATE_SH.read_text()
@@ -208,9 +191,9 @@ class TestPrivilegeHardening387:
         )
 
     def test_install_paths_ship_root_owned_helpers(self):
-        # All three provisioning paths must install both helpers root-owned to
+        # Both provisioning paths must install the helpers root-owned to
         # /usr/local/lib/litclock so pi cannot rewrite what runs as root.
-        for src, name in ((INSTALL_SH, "install.sh"), (UPDATE_SH, "update.sh"), (PI_GEN_SERVICES, "pi-gen")):
+        for src, name in ((UPDATE_SH, "update.sh"), (PI_GEN_SERVICES, "pi-gen")):
             body = src.read_text()
             assert "/usr/local/lib/litclock" in body, f"{name} must install the #387 helpers dir"
             assert "litclock-set-timezone" in body, f"{name} must install the tz-wrapper root-owned"

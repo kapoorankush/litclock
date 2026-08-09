@@ -202,15 +202,20 @@ class TestJqAptDependency:
     jq wasn't in the project's apt deps. Without it, the PWA's phase
     reading-list never animates because the status file is never written.
 
-    These tests pin jq in all three install paths (DIY install, image
-    build, in-place update) so the regression can't sneak back in.
+    These tests pin jq in both surviving install paths (image build,
+    in-place update) so the regression can't sneak back in. install.sh was a
+    third path until litclock-dev#547 retired it; the invariant is unchanged, only the
+    number of places it has to hold.
     """
 
-    def test_install_sh_includes_jq(self):
-        path = REPO_ROOT / "scripts" / "install.sh"
-        body = path.read_text()
-        assert " jq" in body, (
-            "scripts/install.sh must apt-install jq (M5 status-file helper requires it for atomic JSON writes)"
+    def test_pi_gen_packages_list_includes_jq(self):
+        """The apt package list the image is built from. Separate from the
+        chroot script check below: 00-packages is what pi-gen installs, and a
+        jq that is only in the chroot script would not reach the image."""
+        path = REPO_ROOT / "pi-gen" / "stage3" / "00-install-deps" / "00-packages"
+        packages = {ln.strip() for ln in path.read_text().splitlines() if ln.strip() and not ln.startswith("#")}
+        assert "jq" in packages, (
+            "pi-gen 00-packages must include jq (M5 status-file helper requires it for atomic JSON writes)"
         )
 
     def test_pi_gen_image_build_includes_jq(self):

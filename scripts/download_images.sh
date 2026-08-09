@@ -7,7 +7,6 @@
 # marker (images/.installed-version) matches the pinned version, it is a no-op.
 #
 # Called by:
-#   scripts/install.sh        (DIY install flow, right after clone)
 #   scripts/update.sh         (Phase 2c, after git pull)
 #   .github/workflows/build-image.yml  (bakes into pi-gen OS image)
 #
