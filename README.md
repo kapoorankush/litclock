@@ -149,20 +149,20 @@ Arthur's guide covers the case assembly beautifully, and our **[Hardware Assembl
 
 ### 4. Power on — two-minute setup
 
-1. Power on. Within a minute the display shows a **"LitClock-Setup"** hotspot with its password and a QR code.
-2. Join the hotspot from your phone — the setup page opens automatically (or browse to the address shown on the display).
-   > **iPhone note:** current iOS (26.x) often doesn't open the sign-in page on its own — [a known iOS change](https://developer.apple.com/forums/thread/805035) affecting local setup hotspots like this one, not something the clock can fix. If nothing pops up within a minute, just open Safari: the setup page appears immediately. Android opens it automatically.
+1. Power on. Within a minute the display shows a WiFi network named **"LitClock-Setup"** with its password and a QR code.
+2. Join it from your phone's WiFi list — the setup page opens automatically (or browse to the address shown on the display).
+   > **iPhone note:** current iOS (26.x) often doesn't open the sign-in page on its own — [a known iOS change](https://developer.apple.com/forums/thread/805035) affecting local setup networks like this one, not something the clock can fix. If nothing pops up within a minute, just open Safari: the setup page appears immediately. Android opens it automatically.
 3. Pick your home WiFi and enter its password. **That's the whole form** — location, timezone, and temperature units auto-detect once the clock is online.
 4. The display shows "Ready to read." with a QR code to the clock's control app. Scan it, tap **"Done — Start the Clock"** (or just wait — it starts on its own), and add the app to your home screen.
 
 <table>
   <tr>
-    <td align="center"><b>1.</b> The clock shows its setup hotspot + QR</td>
+    <td align="center"><b>1.</b> The clock shows LitClock-Setup + QR</td>
     <td align="center"><b>2.</b> Your phone joins; the portal opens — pick your WiFi</td>
   </tr>
   <tr>
-    <td align="center"><img src="docs/images/setup-1-hotspot.png" alt="E-ink WiFi Setup screen with hotspot name, password, and QR code" width="420"></td>
-    <td align="center"><img src="docs/images/setup-2-portal.png" alt="Hotspot portal: WiFi network picker, password field, Complete Setup button" width="200"></td>
+    <td align="center"><img src="docs/images/setup-1-setup-wifi.png" alt="E-ink WiFi Setup screen showing the clock's WiFi name, password, and a QR code" width="420"></td>
+    <td align="center"><img src="docs/images/setup-2-portal.png" alt="Setup portal on a phone: WiFi network picker showing the Choose your WiFi network placeholder, password field, Complete Setup button" width="200"></td>
   </tr>
   <tr>
     <td align="center"><b>3.</b> The clock joins your WiFi and auto-detects your location</td>
@@ -300,7 +300,7 @@ The clock keeps working on whatever SHA it's pinned to; manual updates via the a
 
 Most resets don't need a shell — use the control app's **System** tab:
 
-- **Reset WiFi** — forget saved networks and return to the setup hotspot (your settings — location, weather, gift mode — are kept)
+- **Reset WiFi** — forget saved networks and return to the LitClock-Setup network (your settings — location, weather, gift mode — are kept)
 - **Factory reset** — wipe all settings and start over from the first-boot experience
 - **Prepare for Gifting** — wipe WiFi, write a welcome message for the recipient, and power off ready to box up
 
@@ -328,7 +328,7 @@ Flags:
 - **View service logs**: `journalctl -u litclock.service --since today`
 - **Force weather update**: `rm /run/litclock/weather-cache-*.json` (the cache lives in tmpfs and rebuilds on the next minute tick)
 - **WiFi disconnects (Pi Zero)**: see [WiFi stability](#wifi-stability-pi-zero-w--zero-2-w), or check `dmesg | grep brcmfmac` for errors
-- **Setup page doesn't open on iPhone**: a known iOS 26 behavior with offline setup hotspots (not fixable clock-side). Open Safari while joined to `LitClock-Setup` — the page loads right away, or go to the address shown on the display.
+- **Setup page doesn't open on iPhone**: a known iOS 26 behavior with offline setup networks (not fixable clock-side). Open Safari while joined to `LitClock-Setup` — the page loads right away, or go to the address shown on the display.
 - **WiFi fails during setup**: The setup page shows an error banner and lets you fix the password and resubmit. If it keeps failing, restart the Pi closer to your router.
 - **Start setup over**: app → System → Factory reset, or `sudo ./scripts/reset-setup.sh && sudo reboot` from a shell
 - **Clock stuck, or you need a shell**: SSH ships **off**. See **[Recovering a LitClock](docs/recovery.md)** for getting a shell via the console, enabling SSH from the SD card, resetting to first-boot, and the read-only Diagnostics tab.
@@ -343,7 +343,7 @@ LitClock is designed to be gifted to someone who will never open a terminal:
 2. Print the **[quick-start booklet](docs/manual/)** and enclose it — one folded sheet covers everything the recipient needs
 3. The recipient plugs it in and gets the same two-minute setup you did, on their own WiFi
 
-To produce several clocks, see **[SD Card Cloning](docs/sd-card-cloning.md)** for duplicating pre-configured cards. (If *you* received a pre-configured card: just insert it and power on — setup starts at the hotspot step.)
+To produce several clocks, see **[SD Card Cloning](docs/sd-card-cloning.md)** for duplicating pre-configured cards. (If *you* received a pre-configured card: just insert it and power on — setup starts at the LitClock-Setup step.)
 
 ## Under the hood
 
@@ -356,7 +356,7 @@ LitClock is an appliance, not an SSH-first developer tool. If you are a non-tech
 On boot, the clock goes through this sequence:
 
 1. **Splash screen** — "LitClock / Starting..." shown on the e-ink display
-2. **First-boot setup** (first time only) — the Pi creates the "LitClock-Setup" hotspot and shows joining instructions on the e-ink. After you submit your WiFi, it connects, auto-detects location/timezone/units by IP geolocation, and shows the "Ready to read." handoff screen with a QR code to the control app.
+2. **First-boot setup** (first time only) — the Pi broadcasts a WiFi network named "LitClock-Setup" and shows joining instructions on the e-ink. After you submit your WiFi, it connects, auto-detects location/timezone/units by IP geolocation, and shows the "Ready to read." handoff screen with a QR code to the control app.
 3. **Clock timer** — updates the display at the top of every minute with a new literary quote
 4. **Control app** — served continuously on your LAN at `http://litclock.local`
 

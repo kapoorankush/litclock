@@ -1,4 +1,4 @@
-"""POST /api/system/* — destructive system actions (#245 M4, #280).
+"""POST /api/system/* — destructive system actions (litclock-dev#245 M4, litclock-dev#280).
 
 Routes:
 
@@ -17,14 +17,14 @@ Routes:
                                        litclock-prepare-for-gift.service`,
                                        which invokes reset-setup.sh
                                        --gift-mode (wipes WiFi, paints
-                                       welcome splash, powers off). #280.
+                                       welcome splash, powers off). litclock-dev#280.
 
 All POST routes share a per-IP token-bucket rate limiter
 (5/min, see ``rate_limit.py``) — the cap on the destructive endpoints
 can't be bypassed by spamming the cheap issuance endpoint.
 
 Error responses use the project-wide envelope from
-``control_server.errors`` (locked by issue #254):
+``control_server.errors`` (locked by issue litclock-dev#254):
 ``{"ok": false, "error": {"code": <slug>, "message": <human-readable>,
 [extras]}}``, with ``retry_after_s`` extra on 429s.
 """
@@ -53,11 +53,11 @@ bp = Blueprint("system", __name__)
 SYSTEMCTL: Final[str] = "/usr/bin/systemctl"
 SYSTEMCTL_TIMEOUT_S: Final[int] = 5
 
-# #396 — gift-flow system-timezone reset. Absolute path so the scoped
+# litclock-dev#396 — gift-flow system-timezone reset. Absolute path so the scoped
 # sudoers entry (sudoers/020_litclock-control: `timedatectl set-timezone UTC`)
 # matches verbatim. Today the call also works via the broad 010_pi-nopasswd
 # grant; the scoped entry becomes load-bearing once that grant is dropped
-# (#387, not yet shipped). UTC is the neutral default; the recipient's
+# (litclock-dev#387, not yet shipped). UTC is the neutral default; the recipient's
 # first-boot IP-geo overwrites it.
 TIMEDATECTL: Final[str] = "/usr/bin/timedatectl"
 # Own timeout (not SYSTEMCTL_TIMEOUT_S): `timedatectl set-timezone` talks to
@@ -66,7 +66,7 @@ TIMEDATECTL: Final[str] = "/usr/bin/timedatectl"
 # self-healing rather than load-bearing.
 TIMEDATECTL_TIMEOUT_S: Final[int] = 5
 
-# #362 — separate, longer timeout for the pre-shutdown stop call. The
+# litclock-dev#362 — separate, longer timeout for the pre-shutdown stop call. The
 # litclock.service unit declares TimeoutStopSec=10s; on Pi Zero-class
 # hardware add sudo + D-Bus + transaction-scheduling overhead and a tight
 # 12s budget runs out at the worst possible moment (a wedged render).
@@ -74,17 +74,17 @@ TIMEDATECTL_TIMEOUT_S: Final[int] = 5
 # the "TimeoutStopSec + safety margin" pattern.
 SYSTEMCTL_STOP_TIMEOUT_S: Final[int] = 15
 
-# #362 — units we must stop synchronously BEFORE invoking a destructive
+# litclock-dev#362 — units we must stop synchronously BEFORE invoking a destructive
 # systemctl action (reboot / poweroff). Stopping the timer prevents future
 # minute-tick firings; stopping the service cancels any timer-queued start
 # job that hasn't executed yet AND stops an in-flight render. Together
-# these close the timer-queued-job race documented in issue #362: a
+# these close the timer-queued-job race documented in issue litclock-dev#362: a
 # literary quote repainting over the "Powered Off" splash because a
 # timer-queued litclock.service start landed AFTER our shutdown unit's
 # ExecStop ran.
 _PRE_SHUTDOWN_STOP_UNITS: Final[tuple[str, ...]] = ("litclock.timer", "litclock.service")
 
-# #362 D7 — process-local "shutdown is about to happen" flag. Set just
+# litclock-dev#362 D7 — process-local "shutdown is about to happen" flag. Set just
 # before the pre-stop runs in _execute_action; read by in-process ad-hoc
 # worker threads (settings.py's deferred `systemctl start litclock.service`
 # poll thread) so they abort instead of re-firing a render past our
@@ -96,7 +96,7 @@ _SHUTDOWN_IMMINENT_LOCK = threading.Lock()
 
 
 def _mark_shutdown_imminent() -> None:
-    """#362 D7 — signal to in-process ad-hoc workers that a shutdown
+    """litclock-dev#362 D7 — signal to in-process ad-hoc workers that a shutdown
     transaction is starting.
 
     Once set, downstream callers (notably ``settings.py``'s
@@ -117,7 +117,7 @@ def _mark_shutdown_imminent() -> None:
 
 
 def is_shutdown_imminent() -> bool:
-    """#362 D7 — read-only API for ad-hoc worker threads.
+    """litclock-dev#362 D7 — read-only API for ad-hoc worker threads.
 
     Used by ``control_server.routes.settings._fire_ad_hoc_tick_blocking``
     to skip its deferred ``systemctl start litclock.service`` call once a
@@ -128,9 +128,9 @@ def is_shutdown_imminent() -> bool:
 
 
 def _stop_clock_units_for_shutdown() -> None:
-    """Stop litclock.timer + litclock.service synchronously, best-effort (#362).
+    """Stop litclock.timer + litclock.service synchronously, best-effort (litclock-dev#362).
 
-    Closes the #362 race: ``litclock.timer`` fires every minute and enqueues
+    Closes the litclock-dev#362 race: ``litclock.timer`` fires every minute and enqueues
     a ``litclock.service`` start job. If shutdown lands between enqueue and
     execution, the queued render paints over the "Powered Off" splash —
     visibly wrong for a user who just tapped Power off / Restart.
@@ -185,7 +185,7 @@ def _stop_clock_units_for_shutdown() -> None:
             stderr,
         )
     except OSError as exc:
-        # #362 codex final-pass Finding 1: covers FileNotFoundError (sudo
+        # litclock-dev#362 codex final-pass Finding 1: covers FileNotFoundError (sudo
         # binary missing), fork failures (process-table pressure), and
         # any other OS-level exec failure that subprocess.run can raise.
         # Without this catch, the exception propagates out of the caller
@@ -203,7 +203,7 @@ def _stop_clock_units_for_shutdown() -> None:
 
 @contextmanager
 def shutdown_imminent_check():
-    """Atomic check+act helper for in-process consumers (#362 D7 codex
+    """Atomic check+act helper for in-process consumers (litclock-dev#362 D7 codex
     post-review TOCTOU fix).
 
     Holds ``_SHUTDOWN_IMMINENT_LOCK`` for the duration of the with-block so
@@ -230,7 +230,7 @@ def shutdown_imminent_check():
 
 def _mark_shutdown_imminent_and_stop_units() -> None:
     """Atomically set ``_SHUTDOWN_IMMINENT`` AND run the pre-stop, under a
-    single lock acquisition (#362 D7 codex post-review TOCTOU fix).
+    single lock acquisition (litclock-dev#362 D7 codex post-review TOCTOU fix).
 
     A naive ``_mark_shutdown_imminent()`` + ``_stop_clock_units_for_shutdown()``
     call pair has a race window between the two: a concurrent ad-hoc tick
@@ -249,7 +249,7 @@ def _mark_shutdown_imminent_and_stop_units() -> None:
 def _rollback_failed_shutdown_attempt() -> None:
     """After a destructive ``systemctl`` call fails, restore the clock and
     clear ``_SHUTDOWN_IMMINENT`` so future settings ad-hoc ticks resume
-    firing normally (#362 D9 + codex post-review Findings 2/3/4).
+    firing normally (litclock-dev#362 D9 + codex post-review Findings 2/3/4).
 
     Pre-stop already stopped ``litclock.timer`` + ``.service``. If the
     destructive call returned non-zero (sudoers mismatch, unit missing,
@@ -307,19 +307,19 @@ def _rollback_failed_shutdown_attempt() -> None:
         _SHUTDOWN_IMMINENT = False
 
 
-# #280: prepare-for-gift unit + message-file location. The endpoint writes
+# litclock-dev#280: prepare-for-gift unit + message-file location. The endpoint writes
 # the gifter's welcome text to GIFT_MESSAGE_PATH before invoking systemctl
 # start on the unit; the unit's ExecStart passes that path to reset-setup.sh
 # --gift-mode --message-file. /run/litclock/ is pi-owned tmpfs (cleared on
 # reboot — fine, the welcome message is short-lived by design).
 PREPARE_FOR_GIFT_UNIT: Final[str] = "litclock-prepare-for-gift.service"
-# Issue #510 — Factory reset. Full-wipe sibling of wifi-reset: the unit runs
+# Issue litclock-dev#510 — Factory reset. Full-wipe sibling of wifi-reset: the unit runs
 # reset-setup.sh --wipe-wifi --reboot --yes (root-owned copy) to wipe config +
 # WiFi and reboot into first-boot setup. No message file (unlike gift), so the
 # route is the simpler wifi-reset shape.
 RESET_UNIT: Final[str] = "litclock-reset.service"
 GIFT_MESSAGE_PATH: Final[str] = "/run/litclock/gift-message"
-# Same ceiling as M3's GIFT_MODE_MESSAGE_MAX_LEN (#319 dropped 280→80 once
+# Same ceiling as M3's GIFT_MODE_MESSAGE_MAX_LEN (litclock-dev#319 dropped 280→80 once
 # the e-ink renderer started word-wrapping). Enforced at the endpoint so
 # an attacker can't get the privileged shell script to write more than
 # this even if the script's own ceiling is bypassed somehow.
@@ -333,7 +333,7 @@ def _gift_unit_loadable() -> bool:
     Returns True only for ``LoadState=loaded``. Used to bail BEFORE
     prepare_for_gift's destructive location clear: that clear is irreversible
     (it wipes the owner's coordinates) and runs before the point of no return,
-    so a missing/masked unit (#327 install gap) must be caught first or the
+    so a missing/masked unit (litclock-dev#327 install gap) must be caught first or the
     owner loses their location for a gift that can't start. ``systemctl show``
     is read-only and needs no sudo (mirrors update_state.update_is_busy's
     is-active probe). Any probe error → False (fail safe: if we can't confirm
@@ -360,7 +360,7 @@ def _gift_reset_argv() -> list[str]:
 
 
 def _gift_reset_timezone_to_utc() -> None:
-    """Best-effort: reset the system timezone to UTC during gift prep (#396).
+    """Best-effort: reset the system timezone to UTC during gift prep (litclock-dev#396).
 
     Called from prepare_for_gift immediately BEFORE the teardown unit dispatch
     (and after message staging — see the call site for why ordering matters): the
@@ -468,11 +468,11 @@ def _execute_action(action: str) -> tuple[object, int]:
         return envelope_for_consume_outcome(result.outcome)
     expiry = result.expiry
 
-    # #362 D8 — refuse cleanly if an auto-update is mid-flight. update.sh's
+    # litclock-dev#362 D8 — refuse cleanly if an auto-update is mid-flight. update.sh's
     # Phase 7 fires `systemctl start litclock.service` + `systemctl start
     # litclock.timer` after the new code is in place; if we pre-stop both
     # units while update.sh is between Phase 3 and Phase 7, the in-flight
-    # update can race a fresh start past our pre-stop and re-open the #362
+    # update can race a fresh start past our pre-stop and re-open the litclock-dev#362
     # race. Mirror the existing /api/wifi/reset and /api/system/prepare-for-
     # gift gate so the user gets a friendly 409 + retry guidance instead of
     # a quietly-broken splash. Pre-side-effect failure — restore the token
@@ -486,7 +486,7 @@ def _execute_action(action: str) -> tuple[object, int]:
             409,
         )
 
-    # #362 D7 + D1 (codex post-review TOCTOU fix) — atomically set the
+    # litclock-dev#362 D7 + D1 (codex post-review TOCTOU fix) — atomically set the
     # shutdown-imminent flag AND run the pre-stop, under a single lock
     # acquisition. A naive mark-then-stop pair has a race window: a
     # concurrent settings.py ad-hoc tick that acquired the lock between
@@ -511,9 +511,9 @@ def _execute_action(action: str) -> tuple[object, int]:
         # share with whoever's poking the LAN.
         stderr = getattr(exc, "stderr", b"") or b""
         current_app.logger.error("systemctl %s failed: %s", action, stderr.decode(errors="replace").strip())
-        # Issue #328 — pre-side-effect failure: systemctl returned non-zero
+        # Issue litclock-dev#328 — pre-side-effect failure: systemctl returned non-zero
         # before dispatching the unit (typical case: unit not found, sudoers
-        # misconfigured, unit masked — the M5/M8 #327 missing-unit case is
+        # misconfigured, unit masked — the M5/M8 litclock-dev#327 missing-unit case is
         # the live motivation). Restore the token at its original expiry so
         # the open page can retry without minting a new one; otherwise the
         # second tap surfaces a misleading "token already used" 401 that
@@ -533,7 +533,7 @@ def _execute_action(action: str) -> tuple[object, int]:
         # specific pre-dispatch stderr patterns or removed for that action.
         _store().restore(action, token, expiry)
 
-        # #362 D9 + codex post-review Findings 2/3 — rollback restart-timer
+        # litclock-dev#362 D9 + codex post-review Findings 2/3 — rollback restart-timer
         # AND clear _SHUTDOWN_IMMINENT. The helper inspects returncode (not
         # just exceptions, since check=False) so a sudoers-rejected rollback
         # logs a warning instead of failing silently. See helper docstring
@@ -548,14 +548,14 @@ def _execute_action(action: str) -> tuple[object, int]:
     except subprocess.TimeoutExpired as exc:
         stderr = getattr(exc, "stderr", b"") or b""
         current_app.logger.error("systemctl %s timed out: %s", action, stderr.decode(errors="replace").strip())
-        # Issue #328 — DON'T restore on timeout. systemctl --no-block
+        # Issue litclock-dev#328 — DON'T restore on timeout. systemctl --no-block
         # returns immediately on success; a timeout here means the call
         # may have dispatched (and we just didn't get the response in
         # time) or it may not have. Paranoid: keep the token consumed so
         # a retry can't double-fire reboot/poweroff/etc. Rare in practice;
         # the user reloads to mint a new token.
         #
-        # #362 D9 + codex post-review Finding 4 — DO rollback restart-timer
+        # litclock-dev#362 D9 + codex post-review Finding 4 — DO rollback restart-timer
         # AND clear _SHUTDOWN_IMMINENT on timeout. Codex caught: a timeout
         # doesn't prove the destructive dispatched; it can also be sudo /
         # D-Bus / systemd wedging BEFORE dispatch, in which case the box
@@ -572,7 +572,7 @@ def _execute_action(action: str) -> tuple[object, int]:
             500,
         )
     except OSError as exc:
-        # #362 codex final-pass Finding 1 (symmetric with the pre-stop
+        # litclock-dev#362 codex final-pass Finding 1 (symmetric with the pre-stop
         # helper's OSError catch above). Covers FileNotFoundError + fork
         # failures + permission errors at exec time. Pre-stop already
         # fired (or its own OSError was caught and proceeded), so the
@@ -602,8 +602,8 @@ def _execute_action(action: str) -> tuple[object, int]:
 
 @bp.route("/system")
 def system_tab() -> str:
-    """GET /system — System tab page (Story 2.1 + #245 M5 Reset-WiFi card
-    + #317 item 7 Prepare-for-Gifting move).
+    """GET /system — System tab page (Story 2.1 + litclock-dev#245 M5 Reset-WiFi card
+    + litclock-dev#317 item 7 Prepare-for-Gifting move).
 
     Renders four action cards (Restart, Power off, Reset WiFi, Prepare for
     Gifting) per DESIGN.md "Cards" spec. Each card carries a server-issued
@@ -619,7 +619,7 @@ def system_tab() -> str:
     update_apply token is minted on /updates and shouldn't burn a slot here.
 
     Also passes a fresh CSRF token + the current ``GIFT_MODE_MESSAGE`` draft
-    so the Prepare-for-Gifting card can pre-fill its textarea (#317 item 7).
+    so the Prepare-for-Gifting card can pre-fill its textarea (litclock-dev#317 item 7).
     Accepts ``?saved=gift`` so the success banner renders after the PRG
     redirect from settings_post (which still owns the section=gift writer).
     """
@@ -641,7 +641,7 @@ def _render_system_tab(
     section=gift failure path in routes.settings.settings_post — the
     failure path must re-render the System tab (where the card lives)
     with per-field errors, otherwise validation feedback would land on a
-    page that no longer shows the gift form (#317 item 7).
+    page that no longer shows the gift form (litclock-dev#317 item 7).
 
     ``submitted_gift_message`` overrides the env.sh-loaded draft so the
     user's rejected input survives the re-render — without it, an
@@ -678,7 +678,7 @@ def _render_system_tab(
 
 # Actions whose UI lives on the System tab. update_apply lives on /updates,
 # so it's scoped out here — VALID_ACTIONS additions don't silently burn a
-# System-tab token slot. #317 item 7 moved prepare_for_gift here.
+# System-tab token slot. litclock-dev#317 item 7 moved prepare_for_gift here.
 _SYSTEM_TAB_ACTIONS: Final[tuple[str, ...]] = (
     "reboot",
     "poweroff",
@@ -730,7 +730,7 @@ def poweroff() -> tuple[object, int]:
 
 @bp.route("/api/system/prepare-for-gift", methods=["POST"])
 def prepare_for_gift() -> tuple[object, int]:
-    """Trigger the Prepare-for-Gifting flow (#280).
+    """Trigger the Prepare-for-Gifting flow (litclock-dev#280).
 
     1. Rate-limit (shared 5/min bucket).
     2. Consume confirm token (action='prepare_for_gift', single-use, 300s).
@@ -767,7 +767,7 @@ def prepare_for_gift() -> tuple[object, int]:
         return envelope_for_consume_outcome(result.outcome)
     expiry = result.expiry
 
-    # #316 /review CRITICAL fix — update-busy pre-check (parity with
+    # litclock-dev#316 /review CRITICAL fix — update-busy pre-check (parity with
     # /api/wifi/reset). The litclock-prepare-for-gift.service unit
     # declares Conflicts=litclock-update.service, which is bidirectional:
     # if the weekly update timer fires mid-prepare, systemd SIGTERMs the
@@ -777,7 +777,7 @@ def prepare_for_gift() -> tuple[object, int]:
     # instead of an opaque post-hoc systemd refusal.
 
     if update_state.update_is_busy():
-        # Issue #328 — pre-side-effect failure path: no message file written,
+        # Issue litclock-dev#328 — pre-side-effect failure path: no message file written,
         # no systemctl dispatched. Restore the token so the user's retry
         # after the update finishes works with the same open page.
         _store().restore("prepare_for_gift", token, expiry)
@@ -798,7 +798,7 @@ def prepare_for_gift() -> tuple[object, int]:
     elif request.form.get("message") is not None:
         message = request.form.get("message", "")
 
-    # #316 /review CRITICAL fix — content validation parity with the
+    # litclock-dev#316 /review CRITICAL fix — content validation parity with the
     # persisted-draft path. POST /settings (gift section) routes through
     # config.validate_setting → _validate_gift_mode_message, which rejects
     # backticks, `$`, newlines, NUL, and overlength. This API path was
@@ -810,7 +810,7 @@ def prepare_for_gift() -> tuple[object, int]:
     # the control_server boot path light; this endpoint is rarely hit.
     ok, validation_error = validate_setting("GIFT_MODE_MESSAGE", message)
     if not ok:
-        # Issue #328 — pre-side-effect failure: validator rejected the
+        # Issue litclock-dev#328 — pre-side-effect failure: validator rejected the
         # message before any file was staged or systemctl dispatched.
         # Restore the token so the user can fix the message and retry
         # with the same open page (otherwise the next attempt 401s with
@@ -823,9 +823,9 @@ def prepare_for_gift() -> tuple[object, int]:
             400,
         )
 
-    # #393/#327 — pre-flight the teardown unit BEFORE the destructive location
+    # litclock-dev#393/litclock-dev#327 — pre-flight the teardown unit BEFORE the destructive location
     # clear below. The clear is irreversible and runs before the point of no
-    # return; if the unit turns out to be missing/masked (the #327 install-gap
+    # return; if the unit turns out to be missing/masked (the litclock-dev#327 install-gap
     # case) we'd have wiped the owner's location for a gift that can never start.
     # A read-only LoadState probe lets us bail here with ZERO side effects (token
     # restored for a clean retry once the unit is installed). The narrow TOCTOU
@@ -843,7 +843,7 @@ def prepare_for_gift() -> tuple[object, int]:
             500,
         )
 
-    # #393 — clear the gifter's location from env.sh SYNCHRONOUSLY, here, before
+    # litclock-dev#393 — clear the gifter's location from env.sh SYNCHRONOUSLY, here, before
     # the point of no return. The teardown unit (reset-setup.sh --gift-mode)
     # stops litclock-control.service in its first step, so once it's dispatched
     # the PWA has no server to report back to. A glued-in (cased) Pi gives the
@@ -893,7 +893,7 @@ def prepare_for_gift() -> tuple[object, int]:
 
     # Atomic write into the pi-owned tmpfs so a partial write can't leak a
     # half-written message into the script. Use NamedTemporaryFile so
-    # concurrent requests don't race on a shared tmp_path (#316 /review):
+    # concurrent requests don't race on a shared tmp_path (litclock-dev#316 /review):
     # without a unique inode, thread B's `open(...,'w')` truncates thread
     # A's pending bytes, then both os.replace calls happen and one of them
     # raises ENOENT. O_NOFOLLOW on the tmp file too — defense against a
@@ -929,7 +929,7 @@ def prepare_for_gift() -> tuple[object, int]:
                 os.unlink(tmp_path)
             except OSError:
                 pass
-        # Issue #328 — pre-side-effect failure: the OSError happened before
+        # Issue litclock-dev#328 — pre-side-effect failure: the OSError happened before
         # the message landed at GIFT_MESSAGE_PATH (the os.replace either
         # never ran or itself failed atomically), so no systemctl was
         # dispatched. Restore the token so the user can retry without
@@ -941,7 +941,7 @@ def prepare_for_gift() -> tuple[object, int]:
             500,
         )
 
-    # #396 — reset the system tz to UTC, synchronously, so the gifter's tz
+    # litclock-dev#396 — reset the system tz to UTC, synchronously, so the gifter's tz
     # doesn't linger in /etc/localtime. Placed HERE (after staging, immediately
     # before dispatch) on purpose: an earlier placement would mutate /etc/localtime
     # before the staging step, so a staging failure (which aborts the gift and
@@ -968,14 +968,14 @@ def prepare_for_gift() -> tuple[object, int]:
             PREPARE_FOR_GIFT_UNIT,
             stderr.decode(errors="replace").strip(),
         )
-        # Issue #328 — restoring is SAFE despite the message file being
+        # Issue litclock-dev#328 — restoring is SAFE despite the message file being
         # already staged at GIFT_MESSAGE_PATH: the staging path lives in
         # /run/litclock (tmpfs — cleared on reboot, so it can't accumulate
         # across boots) and the systemd unit ExecStart reads the file only
         # when it actually fires. A retry overwrites the staging file
         # atomically via os.replace (idempotent re-stage). So the failure
         # mode is purely "user sees real error, fixes, retries cleanly."
-        # The #327-style missing-unit / masked-unit case (pi-gen install
+        # The litclock-dev#327-style missing-unit / masked-unit case (pi-gen install
         # gap that dropped litclock-prepare-for-gift.service) is the live
         # motivation here.
         #
@@ -992,9 +992,9 @@ def prepare_for_gift() -> tuple[object, int]:
         # unit's ExecStart, this restore must be narrowed to specific
         # pre-dispatch stderr patterns or removed.
         _store().restore("prepare_for_gift", token, expiry)
-        # #342 I9 — unlink the staged message file ONLY when the systemctl
+        # litclock-dev#342 I9 — unlink the staged message file ONLY when the systemctl
         # returncode proves the unit did not dispatch. Per systemctl(1):
-        #   4 = unit not found (the #327 install-gap motivation)
+        #   4 = unit not found (the litclock-dev#327 install-gap motivation)
         #   5 = unit not loaded / masked
         # Other non-zero codes (1=catch-all, etc.) can occur when systemd
         # accepted the request but a downstream signal (dbus reply glitch,
@@ -1010,7 +1010,7 @@ def prepare_for_gift() -> tuple[object, int]:
                 os.unlink(GIFT_MESSAGE_PATH)
             except OSError:
                 pass
-        # #393/#396 — when the unit definitively didn't start (4/5, a TOCTOU after
+        # litclock-dev#393/litclock-dev#396 — when the unit definitively didn't start (4/5, a TOCTOU after
         # the LoadState pre-flight passed), the location clear AND the tz reset to
         # UTC already ran, so be honest that both were reset rather than implying
         # the device is untouched. Other returncodes (dbus glitch) may mean the
@@ -1032,7 +1032,7 @@ def prepare_for_gift() -> tuple[object, int]:
             PREPARE_FOR_GIFT_UNIT,
             stderr.decode(errors="replace").strip(),
         )
-        # Issue #328 — DON'T restore on timeout. systemctl start --no-block
+        # Issue litclock-dev#328 — DON'T restore on timeout. systemctl start --no-block
         # returns immediately on success; a timeout means the unit may
         # have actually dispatched (and we just missed the response).
         # Paranoid: keep the token consumed so we don't double-trigger
@@ -1059,7 +1059,7 @@ def prepare_for_gift() -> tuple[object, int]:
 
 @bp.route("/api/system/reset", methods=["POST"])
 def reset() -> tuple[object, int]:
-    """Trigger the Factory reset flow (#510) — full-wipe sibling of /api/wifi/reset.
+    """Trigger the Factory reset flow (litclock-dev#510) — full-wipe sibling of /api/wifi/reset.
 
     Order (identical gates to wifi_reset / prepare_for_gift):
     1. Rate-limit (shared 5/min bucket).
@@ -1092,7 +1092,7 @@ def reset() -> tuple[object, int]:
     expiry = result.expiry
 
     if update_state.update_is_busy():
-        # Issue #328 pattern — pre-side-effect failure: no systemctl dispatched.
+        # Issue litclock-dev#328 pattern — pre-side-effect failure: no systemctl dispatched.
         # Restore the token so retry after the update finishes works on the same page.
         _store().restore("factory_reset", token, expiry)
         return envelope(
@@ -1115,7 +1115,7 @@ def reset() -> tuple[object, int]:
             RESET_UNIT,
             stderr.decode(errors="replace").strip(),
         )
-        # Restore the token so retry surfaces the real error (the #327 masked/missing
+        # Restore the token so retry surfaces the real error (the litclock-dev#327 masked/missing
         # unit case). Safe against double-fire: reset-setup.sh --wipe-wifi --reboot is
         # idempotent (env.sh rewrite to defaults, WiFi delete by UUID, marker removal
         # all no-op on a second run) — mirrors the wifi-reset restore rationale. If a
@@ -1133,7 +1133,7 @@ def reset() -> tuple[object, int]:
             RESET_UNIT,
             stderr.decode(errors="replace").strip(),
         )
-        # Issue #328 — DON'T restore on timeout: systemctl --no-block returns at once
+        # Issue litclock-dev#328 — DON'T restore on timeout: systemctl --no-block returns at once
         # on success, so a timeout means the unit may have dispatched. Keep the token
         # consumed to avoid double-firing the wipe.
         return envelope(
@@ -1148,7 +1148,7 @@ def reset() -> tuple[object, int]:
                 "ok": True,
                 "message": (
                     "Factory reset started. The clock will wipe its settings and reboot "
-                    "into setup — connect your phone to the LitClock-Setup hotspot."
+                    "into setup — join LitClock-Setup from your phone's WiFi list."
                 ),
             }
         ),

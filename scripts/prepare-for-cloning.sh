@@ -26,7 +26,7 @@ fi
 INSTALL_DIR="/home/pi/litclock"
 CONFIG_DIR="/etc/litclock"
 
-# Source shared state-file helpers for atomic_write_env_sh (#274) — the
+# Source shared state-file helpers for atomic_write_env_sh (litclock-dev#274) — the
 # env.sh writer-lock that interoperates with src/config.py's fcntl.flock
 # on the sidecar. state.sh ships in the same release as this script, so
 # a missing file means a broken install — hard-fail rather than silently
@@ -61,7 +61,7 @@ echo -e "${GREEN}done${NC}"
 
 # Step 2: Clear env.sh credentials.
 #
-# #274: stop litclock-control.service before the rewrite so the PWA can't
+# litclock-dev#274: stop litclock-control.service before the rewrite so the PWA can't
 # land a Settings save concurrent with our overwrite. Best-effort (`|| true`)
 # under the `set -e` at line 12 — a missing/stopped service must not abort
 # the prep flow. Then write defaults via atomic_write_env_sh which holds the
@@ -74,7 +74,7 @@ echo -e "${GREEN}done${NC}"
 
 echo -n "Clearing configuration (env.sh)... "
 if [[ -f "$INSTALL_DIR/env.sh" ]]; then
-    # #337 A3: defensive MODE + IP_COUNTRY defaults so a cloned image's
+    # litclock-dev#337 A3: defensive MODE + IP_COUNTRY defaults so a cloned image's
     # first boot lands on MODE=auto (on-boot reresolve will populate the
     # rest). Without these, a cloned env.sh would inherit whatever MODE
     # the cloner had — could be "specific" with stale coords for a
@@ -178,7 +178,7 @@ echo "4. Write clones to new SD cards"
 echo ""
 echo "When a cloned card boots, it will:"
 echo "- Show 'Welcome!' on the e-ink display"
-echo "- Create WiFi hotspot if needed"
+echo "- Bring up the LitClock-Setup WiFi network if needed"
 echo "- Display QR code for phone setup"
 echo ""
 echo -e "Tip: To reconfigure without a full clone reset, use ${YELLOW}scripts/reset-setup.sh${NC} instead."

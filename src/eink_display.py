@@ -41,6 +41,44 @@ FONT_PATH_BOLD = os.path.join(PROJECT_ROOT, "fonts", "Literata72pt-Black.ttf")
 HOTSPOT_INFO_LINE_HEIGHT = 28
 HOTSPOT_INFO_BOTTOM_PADDING = 20
 
+# QR block geometry for the setup splash. Module level for the same reason
+# as the two above, plus one specific to the QR: a test that re-hardcodes
+# these ends up asserting a blank region of the panel and keeps passing
+# after the QR moves, which is exactly the regression a quiet-zone guard
+# exists to catch.
+SETUP_QR_X = 40
+SETUP_QR_Y = 80
+SETUP_QR_SIZE = 220
+
+# ISO 18004 wants 4 modules of blank around the symbol. generate_qr_image
+# bakes 2 of them in via border=2, so the panel has to supply the other 2.
+# Module size falls out of the QR version, which falls out of how long the
+# credentials are — and the WORST case is the SHORTEST payload, because
+# fewer modules across a fixed 220px block makes each one bigger. Empty
+# ssid and password give 25 modules (29 with border) at 7.59px each, so
+# 2 modules is 15.2px. 16 covers every credential length we can generate.
+#
+# Do not replace this with a measured margin taken from one set of
+# credentials: dev#... cb9d9781 already made the settings QR's quiet zone
+# structural for this reason, and a point-in-time number reintroduces the
+# bug it fixed.
+SETUP_QR_QUIET_ZONE_PX = 16
+
+# The framing line sits in the band under the QR, clear of its quiet zone.
+# Derived, not measured, so moving or resizing the QR moves it too.
+SETUP_FRAMING_Y = SETUP_QR_Y + SETUP_QR_SIZE + SETUP_QR_QUIET_ZONE_PX
+
+
+def instruction_block_top(line_count: int) -> int:
+    """Y of the TOPMOST instruction line for a block of ``line_count`` lines.
+
+    The block stacks bottom-up from the panel edge, so adding a line moves
+    this value UP, toward the framing line and the QR. Shared with the tests
+    so the clearance assertion cannot drift away from what the renderer
+    actually does.
+    """
+    return DISPLAY_SIZE[1] - HOTSPOT_INFO_BOTTOM_PADDING - line_count * HOTSPOT_INFO_LINE_HEIGHT
+
 
 def get_display():
     """Get the e-paper display object. Returns None if not available."""
@@ -133,7 +171,7 @@ def create_qr_display_image(url: str, title: str = None, caption: str = None, qr
     return image
 
 
-# Gift-mode title layout (#319). Two lines max so a personalized welcome
+# Gift-mode title layout (litclock-dev#319). Two lines max so a personalized welcome
 # can read naturally across the 800×480 canvas without falling off either
 # edge; a 1-line single-word title still centers fine because the wrapper
 # returns it unchanged. Horizontal margin keeps the wrapped text away from
@@ -146,7 +184,7 @@ MAX_TITLE_LINES = 2
 TITLE_LINE_SPACING = 4
 ELLIPSIS = "…"
 
-# Auto-fit ladder for the welcome/status title (gift-message #280 truncation
+# Auto-fit ladder for the welcome/status title (gift-message litclock-dev#280 truncation
 # fix). A personalized gift message must SHRINK to fit, never lose its tail to
 # an ellipsis — silently cutting "…a good time to read!" off someone's present
 # is the one place truncation is unacceptable. Each tier is (font_size,
@@ -295,10 +333,10 @@ def create_status_image(title: str, message: str = None, submessage: str = None)
         message_font = ImageFont.load_default()
         small_font = ImageFont.load_default()
 
-    # #319 + #280 gift-message fix: word-wrap the title at the TITLE_SIDE_MARGIN
+    # litclock-dev#319 + litclock-dev#280 gift-message fix: word-wrap the title at the TITLE_SIDE_MARGIN
     # gutter, AUTO-FITTING the font so a long personalized welcome shrinks to
     # fit instead of losing its tail to an ellipsis. Old code centered a
-    # single-line draw.text (clipped both edges); the #319 wrap fixed the
+    # single-line draw.text (clipped both edges); the litclock-dev#319 wrap fixed the
     # clipping but capped at 48pt/2 lines and ellipsis-truncated anything
     # longer ("May it always be a good ti…" on a real gift). _fit_title returns
     # both the wrapped lines and the font size it settled on; short greetings
@@ -338,7 +376,7 @@ def create_status_image(title: str, message: str = None, submessage: str = None)
 
     # Draw message if provided — gap below the title scales with how many
     # lines the title occupied so a 2-line gift welcome doesn't crash into
-    # the steps list (#319 follow-up to the wrap fix).
+    # the steps list (litclock-dev#319 follow-up to the wrap fix).
     if message:
         message_y = title_y + title_block_height + 30
         bbox = draw.textbbox((0, 0), message, font=message_font)
@@ -382,6 +420,99 @@ def display_image(image: Image.Image, epd=None):
 
 
 HOTSPOT_RETRY_WIFI_PASSWORD = "wifi_password"
+
+
+# ── Setup-splash copy ────────────────────────────────────────────────
+#
+# Module-level so it is assertable without inspecting pixels. This is the
+# highest-stakes copy in the product: it is the recipient's first contact,
+# on a device with no keyboard, where the panel is the only instruction
+# surface. Getting it wrong doesn't degrade setup, it blocks it.
+#
+# Both labels name LitClock's own WiFi, because the reader has to separate
+# it from their own. The retry screen shows these values directly above a
+# form asking for the user's home network and password, so an unqualified
+# "Network:" / "Password:" is ambiguous exactly where it costs most.
+#
+# NOT "Hotspot" (litclock-dev#555): the one place a phone owner has already
+# met that word is iOS Settings > Personal Hotspot, or Android's "Hotspot &
+# tethering" — a thing THEY switch on to share THEIR connection. That is
+# close to the opposite of what this screen means, so it sends them hunting
+# through their own settings instead of their WiFi list.
+#
+# "Clock's Password:" (the litclock-dev#555 wording) turned out to be the worse of
+# the two. Read plainly it means "the password belonging to the clock" — a
+# credential to keep, like a device PIN. Two independent non-technical
+# readers walked this panel and both STORED it (one wrote it on an envelope
+# "so nobody messes with my clock"); neither connected it to joining
+# anything, because nothing on the panel said to type it. Naming the network
+# it belongs to is what makes it an input rather than a possession.
+#
+# Both labels keep the word "WiFi": the printed booklet the recipient is
+# holding calls it "the clock's own Wi-Fi", and the panel and the booklet
+# are the only two artifacts in their hands during setup. "network" and
+# "password" are then the nouns that say which of the two is meant.
+#
+# Measured, not assumed — at Literata72pt-Black 22 these render 285px and
+# 298px against the 510px budget (the panel is 800px wide and the label
+# column starts at x=290, right of the 220px QR), so the fixed-position
+# layout cannot have moved.
+SETUP_LABEL_NETWORK = "LitClock's WiFi network:"
+SETUP_LABEL_PASSWORD = "LitClock's WiFi password:"
+
+# The concept the whole flow rests on and that nothing on the panel supplied.
+# Neither reader knew a device can broadcast its own network — "I didn't buy
+# the clock a WiFi." One sentence, rendered at SETUP_FRAMING_Y in the band
+# under the QR, as the lead-in to the numbered steps. First run only: by the
+# time the retry screen appears the reader has joined this network once, so
+# the concept has landed and the headline is carrying different news.
+SETUP_FRAMING_LINE = "The clock makes its own WiFi for setup."
+
+
+def setup_instruction_lines(ip: str, is_retry: bool = False) -> list[str]:
+    """Bottom instruction block for the setup splash.
+
+    dnsmasq's wildcard on the setup network resolves every hostname to `ip`,
+    and nftables redirects 80->8080, so SETUP_HOSTNAME lands on the real
+    setup form without a port number. The raw gateway IP is printed
+    alongside the hostname as an absolute fallback.
+
+    Rules for this block, all learned from watching non-technical readers:
+
+    - No OS-specific gestures. The old step 3 said "Swipe down (top-right) -
+      tap WiFi", which is iOS Control Centre; an Android reader either finds
+      nothing there or lands somewhere unrelated. Name the destination
+      ("in your WiFi settings") and let them find it their own way.
+    - No punctuation that could be mistaken for something to type. The old
+      fallback separated two addresses with " | ". A pipe sitting between two
+      URL-shaped strings does not read as "or" to someone who has never seen
+      one; it reads as part of the address, and they type it. The separator
+      is now the word "or".
+    - Addresses carry an explicit http:// scheme. ".setup" is not a public
+      TLD, so a bare "litclock.setup" is not confidently a hostname to a
+      phone browser: Chrome's omnibox ranks a Google search above it, that
+      is the biggest tap target, and the search then SUCCEEDS over cellular
+      and returns junk. A scheme makes it a navigation instead of a guess.
+    - The page is not named. The panel used to quote its title, "LitClock
+      Setup", three lines under the network name "LitClock-Setup" — two
+      near-identical strings for different things. One reader went hunting
+      their WiFi list for the page title. The reader needs to know a page
+      should appear, not what it is called.
+    - No "~". Read aloud by a non-technical reader the tilde is a stray mark,
+      and on an e-ink panel a stray mark is entirely plausible.
+    """
+    if is_retry:
+        return [
+            "1. Rescan the QR code to rejoin LitClock-Setup",
+            "2. Select your internet WiFi network, type your WiFi password",
+            f"3. No page? Open a browser: http://{SETUP_HOSTNAME} or http://{ip}",
+        ]
+    return [
+        "1. Scan the QR code to join LitClock-Setup",
+        "2. Wait about 20 seconds for a setup page",
+        "3. No page? Join LitClock-Setup in your WiFi settings",
+        f"4. Then open a browser: http://{SETUP_HOSTNAME} or http://{ip}",
+    ]
 
 
 def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason: str = None) -> Image.Image:
@@ -437,68 +568,78 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
     title = "Couldn't Join Your WiFi" if is_retry else "WiFi Setup"
     bbox = draw.textbbox((0, 0), title, font=title_font)
     title_width = bbox[2] - bbox[0]
-    draw.text(((DISPLAY_SIZE[0] - title_width) // 2, 20), title, font=title_font, fill=0)
+    draw.text(((DISPLAY_SIZE[0] - title_width) // 2, 12), title, font=title_font, fill=0)
+
+    # Framing line placement is NOT free space. Directly under the title it
+    # left a 2px gap to the title's descenders and, being centred on an 800px
+    # panel, its left end reached x=237 — 23px INSIDE the QR's 220px block,
+    # putting 17 ink pixels in the quiet zone at the top-right corner. A
+    # quiet zone with ink in it is a scan-reliability bug, not a cosmetic
+    # one: if the QR will not scan, setup cannot start at all.
+    #
+    # It sits instead in the band under the QR, at SETUP_QR_Y + SETUP_QR_SIZE
+    # + SETUP_QR_QUIET_ZONE_PX — derived from the QR's own geometry rather
+    # than measured once, so moving or resizing the QR moves it too. It reads
+    # as the lead-in to the numbered steps it introduces.
+    if not is_retry:
+        fb = draw.textbbox((0, 0), SETUP_FRAMING_LINE, font=small_font)
+        draw.text(
+            ((DISPLAY_SIZE[0] - (fb[2] - fb[0])) // 2, SETUP_FRAMING_Y),
+            SETUP_FRAMING_LINE,
+            font=small_font,
+            fill=0,
+        )
 
     # WiFi QR code (standard format that phones auto-recognize). Same QR in
     # the retry state — the hotspot credentials are unchanged, only the
     # user-facing instructions differ.
     wifi_qr_data = f"WIFI:T:WPA;S:{ssid};P:{password};;"
-    qr_size = 220
+    qr_size = SETUP_QR_SIZE
     qr_image = generate_qr_image(wifi_qr_data)
     qr_image = qr_image.resize((qr_size, qr_size), Image.Resampling.NEAREST)
 
     # Place QR on left side
-    qr_x = 40
-    qr_y = 80
+    qr_x = SETUP_QR_X
+    qr_y = SETUP_QR_Y
     image.paste(qr_image, (qr_x, qr_y))
 
     # Text info on right side
     text_x = qr_x + qr_size + 30
     text_y = qr_y + 10
 
-    # Labels explicitly prefixed with "Hotspot" so a user reading the retry
-    # screen doesn't confuse these values (which join the Pi's temporary
-    # hotspot) with their WiFi network/password (which is what the
-    # setup form is actually asking for). Consistent "Hotspot X:" framing
-    # across both fields reinforces the disambiguation.
-    draw.text((text_x, text_y), "Hotspot Network:", font=label_font, fill=0)
+    draw.text((text_x, text_y), SETUP_LABEL_NETWORK, font=label_font, fill=0)
     draw.text((text_x, text_y + 30), ssid, font=value_font, fill=0)
 
-    draw.text((text_x, text_y + 80), "Hotspot Password:", font=label_font, fill=0)
+    draw.text((text_x, text_y + 80), SETUP_LABEL_PASSWORD, font=label_font, fill=0)
     draw.text((text_x, text_y + 110), password, font=value_font, fill=0)
 
-    # Bottom instruction block. dnsmasq's wildcard on the hotspot resolves
-    # every hostname to `ip`, and nftables redirects 80→8080, so
-    # SETUP_HOSTNAME lands on the real setup form without a port number.
-    # The raw gateway IP is printed alongside as an absolute-fallback URL.
-    if is_retry:
-        lines = [
-            "1. Rescan QR - rejoin the hotspot",
-            "2. Pick your WiFi network, enter its password",
-            f"   Or open browser: {SETUP_HOSTNAME}  |  {ip}",
-        ]
-    else:
-        lines = [
-            "1. Scan QR - join LitClock-Setup",
-            '2. Wait ~20s for "LitClock Setup" popup',
-            "3. No popup? Swipe down (top-right) - tap WiFi",
-            f"   Or open browser: {SETUP_HOSTNAME}  |  {ip}",
-        ]
+    lines = setup_instruction_lines(ip, is_retry=is_retry)
 
     # Stack the lines bottom-up so both 3-line and 4-line layouts sit flush
     # with the bottom edge at a consistent padding.
-    for i, line in enumerate(reversed(lines)):
-        bbox = draw.textbbox((0, 0), line, font=small_font)
-        line_x = (DISPLAY_SIZE[0] - (bbox[2] - bbox[0])) // 2
-        line_y = (
-            DISPLAY_SIZE[1] - HOTSPOT_INFO_BOTTOM_PADDING - (i * HOTSPOT_INFO_LINE_HEIGHT) - HOTSPOT_INFO_LINE_HEIGHT
-        )
-        draw.text((line_x, line_y), line, font=small_font, fill=0)
+    #
+    # The BLOCK is centred; the lines inside it are left-aligned to a shared
+    # x, so the step numbers stack in a column. Centring each line
+    # individually gave every line a different left edge, and a reader with
+    # presbyopic eyes at arm's length loses their place descending a ragged
+    # list. Costs nothing and changes no copy.
+    #
+    # Clamped at 0: block_x is (panel - widest line) // 2 and goes NEGATIVE
+    # if any line outgrows the panel, which clips the left edge silently —
+    # losing the leading "4." and the trailing digits of an address the
+    # reader is being asked to type. `ip` reaches here from a JSON parse in
+    # first-boot.sh, so it is not a constant from this function's point of
+    # view. Clamping degrades to a right-clip instead of clipping both ends.
+    widest = max(draw.textbbox((0, 0), ln, font=small_font)[2] for ln in lines)
+    block_x = max(0, (DISPLAY_SIZE[0] - widest) // 2)
+    top = instruction_block_top(len(lines))
+    for i, line in enumerate(lines):
+        draw.text((block_x, top + i * HOTSPOT_INFO_LINE_HEIGHT), line, font=small_font, fill=0)
 
     return image
 
 
-# Handoff splash layout (EPIC #383 PR2, #388). Settings summary block on the
+# Handoff splash layout (EPIC litclock-dev#383 PR2, litclock-dev#388). Settings summary block on the
 # left, PWA QR top-right. Column where the dotted-leader values start.
 HANDOFF_LEFT_MARGIN = 50
 HANDOFF_VALUE_COLUMN = 330
@@ -507,7 +648,7 @@ HANDOFF_ROW_HEIGHT = 34
 # call to action lives on its own line below the summary block).
 HANDOFF_NOT_DETECTED = "Not detected"
 
-# SSID caveat layout (#399). Painted right-column under the URL text.
+# SSID caveat layout (litclock-dev#399). Painted right-column under the URL text.
 # Max lines: two is the budget — wider would push past the bottom-status
 # line; less and a 24-char realistic SSID would truncate too aggressively.
 HANDOFF_SSID_MAX_LINES = 2
@@ -585,7 +726,7 @@ def _draw_dotted_row(draw, y, label, value, font):
 
 
 def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
-    """Render the post-WiFi handoff splash (EPIC #383 PR2, #388).
+    """Render the post-WiFi handoff splash (EPIC litclock-dev#383 PR2, litclock-dev#388).
 
     Painted by control_server on the first launch since setup, in the gap
     between "WiFi connected + location auto-detected" and "quotes start." Shows
@@ -594,7 +735,7 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
     ``settings`` is ``handoff.handoff_context`` output; the relevant keys are
     ``has_location`` (success vs failure variant), ``location_name``,
     ``timezone``, ``units_label``, ``mature_enabled``. ``connected_ssid``
-    (#399) is optional — when present, the splash paints a "phone must
+    (litclock-dev#399) is optional — when present, the splash paints a "phone must
     be on this WiFi" caveat under the QR so a phone on cellular / a
     different network doesn't silently fail the scan (the QR encodes a
     LAN-only IP). When empty, the caveat is suppressed rather than
@@ -636,7 +777,7 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
     url_y = qr_y + qr_size + 6
     draw.text((qr_x + (qr_size - url_w) // 2, url_y), url_text, font=small_font, fill=0)
 
-    # Cross-network caveat (#399). The QR encodes a LAN-only IP, so a phone
+    # Cross-network caveat (litclock-dev#399). The QR encodes a LAN-only IP, so a phone
     # on cellular or a different WiFi gets a silent dead link. Surface the
     # SSID the clock is on so the user knows where to put their phone first.
     # Right-column under the URL text. Suppressed when connected_ssid is
@@ -811,7 +952,7 @@ def main():
     clear_parser = subparsers.add_parser("clear", help="Clear display (white screen)")
     clear_parser.add_argument("--save", "-s", help="Save to file instead of displaying")
 
-    # Handoff-splash command (#388). Invoked as a SHORT-LIVED subprocess by the
+    # Handoff-splash command (litclock-dev#388). Invoked as a SHORT-LIVED subprocess by the
     # long-lived control_server so it never holds the e-ink GPIO — module_exit /
     # gpiozero-close does NOT free lgpio line claims; only process exit does, so a
     # long-lived in-process painter would leave litclock.service stuck on

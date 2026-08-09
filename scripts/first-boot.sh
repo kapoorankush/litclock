@@ -106,8 +106,13 @@ update_issue_hotspot() {
 
     # Pad values to fixed width so the box border aligns
     local line_ssid line_pass line_ip
-    line_ssid=$(printf "  SSID:      %-23s" "$ssid")
-    line_pass=$(printf "  Password:  %-23s" "$password")
+    # Wording tracks the e-ink panel deliberately: a reader who plugs in a
+    # monitor is looking at the same two credentials the panel shows, and
+    # "Clock's Password:" is the exact string non-technical readers stored
+    # instead of typing. Field widths keep each line at the 43 chars it
+    # already rendered, so this changes no alignment.
+    line_ssid=$(printf "  LitClock's WiFi network: %-16s" "$ssid")
+    line_pass=$(printf "  LitClock's WiFi password: %-15s" "$password")
     line_ip=$(printf "  Setup URL: %-23s" "http://${ip}:8080")
 
     sudo tee /etc/issue > /dev/null << ISSUEEOF
@@ -507,7 +512,7 @@ ENVEOF
             fi
             if [[ $attempt -lt $HOTSPOT_MAX_RETRIES ]]; then
                 log "Hotspot attempt $attempt/$HOTSPOT_MAX_RETRIES failed, retrying..."
-                display_message "Hotspot Failed" "Retrying... ($attempt/$HOTSPOT_MAX_RETRIES)" "Please wait"
+                display_message "Setup WiFi Failed" "Retrying... ($attempt/$HOTSPOT_MAX_RETRIES)" "Please wait"
 
                 # Escalate recovery as attempts progress:
                 #   attempt 1 failed → restart NetworkManager before retry 2

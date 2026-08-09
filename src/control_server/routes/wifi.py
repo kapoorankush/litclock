@@ -1,4 +1,4 @@
-"""POST /api/wifi/reset — drop the user back into firstboot AP-mode (#245 M5).
+"""POST /api/wifi/reset — drop the user back into firstboot AP-mode (litclock-dev#245 M5).
 
 Per locked D11: dispatches via ``sudo systemctl start --no-block
 litclock-wifi-reset.service``. The unit's ``Conflicts=litclock-update.service``
@@ -89,8 +89,8 @@ def reset() -> tuple[object, int]:
     4. Dispatch via `sudo systemctl start --no-block`.
 
     On success: 200 with a "switching to setup mode" message so the PWA
-    can render handoff copy ("Connect your phone to LitClock-Setup
-    hotspot") before its LAN connection drops in ~2s.
+    can render handoff copy ("Join LitClock-Setup from your phone's WiFi
+    list") before its LAN connection drops in ~2s.
     """
     rate_limit_response = _check_rate_limit()
     if rate_limit_response is not None:
@@ -109,9 +109,9 @@ def reset() -> tuple[object, int]:
     expiry = result.expiry
 
     if update_state.update_is_busy():
-        # Issue #328 — pre-side-effect failure: no systemctl dispatched.
+        # Issue litclock-dev#328 — pre-side-effect failure: no systemctl dispatched.
         # Restore the token so the user can retry once the update finishes
-        # without re-opening the page (this was the live #327-adjacent case
+        # without re-opening the page (this was the live litclock-dev#327-adjacent case
         # caught in M8 hardware QA when masked units made the destructive
         # endpoint look "expired" instead of showing the real error).
         _store().restore("wifi_reset", token, expiry)
@@ -135,9 +135,9 @@ def reset() -> tuple[object, int]:
             RESET_UNIT,
             stderr.decode(errors="replace").strip(),
         )
-        # Issue #328 — pre-side-effect failure: systemctl returned non-zero
+        # Issue litclock-dev#328 — pre-side-effect failure: systemctl returned non-zero
         # BEFORE the wifi-reset unit started (typical case: unit masked or
-        # missing, which is the exact M8 hardware-QA #327 scenario this
+        # missing, which is the exact M8 hardware-QA litclock-dev#327 scenario this
         # entire restore-on-failure expansion was filed to address).
         # Restore the token so retry surfaces the real error.
         #
@@ -166,7 +166,7 @@ def reset() -> tuple[object, int]:
             RESET_UNIT,
             stderr.decode(errors="replace").strip(),
         )
-        # Issue #328 — DON'T restore on timeout. systemctl --no-block
+        # Issue litclock-dev#328 — DON'T restore on timeout. systemctl --no-block
         # returns immediately on success; a timeout means the unit may
         # actually have dispatched. Paranoid: keep the token consumed
         # so we don't double-fire the WiFi wipe.
@@ -180,7 +180,7 @@ def reset() -> tuple[object, int]:
         jsonify(
             {
                 "ok": True,
-                "message": ("Switching to setup mode... Connect your phone to the LitClock-Setup hotspot."),
+                "message": ("Switching to setup mode... Join LitClock-Setup from your phone's WiFi list."),
             }
         ),
         200,

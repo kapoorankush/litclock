@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Web-based Setup Server for LitClock — WiFi-only provisioning (EPIC #383).
+Web-based Setup Server for LitClock — WiFi-only provisioning (EPIC litclock-dev#383).
 
 The hotspot form collects only WiFi credentials. After WiFi connects,
 ``_resolve_location_from_ip`` auto-populates ``WEATHER_LATITUDE``,
@@ -106,9 +106,9 @@ _SCAN_CACHE_LOCK = threading.Lock()
 
 # Registry of background daemon threads this module spawns (WiFi connect /
 # teardown, location-resolve, delayed SIGTERM). Production never reaps these —
-# they're daemons that die at process exit. It exists SOLELY so the #355
+# they're daemons that die at process exit. It exists SOLELY so the litclock-dev#355
 # test-isolation helper :func:`reset_state` can JOIN them between tests
-# (#478): the old flag-only drain let a prior test's thread outlive its case
+# (litclock-dev#478): the old flag-only drain let a prior test's thread outlive its case
 # and fire its (now next-test-monkeypatched) os.kill / retry function, polluting
 # the next test's counters. Tracking + joining makes isolation deterministic.
 _BG_THREADS: list[threading.Thread] = []
@@ -158,7 +158,7 @@ MAX_POST_BODY = 32 * 1024
 def reset_state(wait_for_inflight: float = 2.0) -> None:
     """Reset all module-level connect-flow state to defaults.
 
-    Test-isolation helper (#355). The WiFi connect handler spawns a daemon
+    Test-isolation helper (litclock-dev#355). The WiFi connect handler spawns a daemon
     thread that writes ``WIFI_CONNECT_ERROR`` and ``WIFI_CONNECT_IN_FLIGHT``
     asynchronously; without an explicit reset between tests, late writes
     from a prior test's thread leak into the next test's assertions and
@@ -181,7 +181,7 @@ def reset_state(wait_for_inflight: float = 2.0) -> None:
     while WIFI_CONNECT_IN_FLIGHT and time.monotonic() < deadline:
         time.sleep(0.01)
 
-    # #478 — the flag-drain above only covers threads that set
+    # litclock-dev#478 — the flag-drain above only covers threads that set
     # WIFI_CONNECT_IN_FLIGHT (the connect thread). _delayed (SIGTERM timer) and
     # _resolve_and_signal don't touch it, so join EVERY tracked background
     # thread against the SAME deadline. This is what actually stops a prior
@@ -234,7 +234,7 @@ def _schedule_self_terminate(delay: float = 0.0) -> None:
     the no-WiFi-form-data branch where ``do_POST`` returns immediately
     after spawning the timer).
 
-    Sequencing invariant (#364):
+    Sequencing invariant (litclock-dev#364):
 
     Callers that interact with ``reset_state()``'s drain barrier (today
     only ``_connect_and_teardown``'s success path) MUST invoke this
@@ -255,7 +255,7 @@ def _schedule_self_terminate(delay: float = 0.0) -> None:
         def _delayed():
             # Cancellable wait: in production the event is never set, so this is
             # exactly ``time.sleep(delay)`` then SIGTERM. In tests, reset_state
-            # sets _BG_CANCEL so we return WITHOUT killing the runner (#478).
+            # sets _BG_CANCEL so we return WITHOUT killing the runner (litclock-dev#478).
             if _BG_CANCEL.wait(delay):
                 return
             os.kill(os.getpid(), signal.SIGTERM)
@@ -458,7 +458,7 @@ def _build_setup_html():
     Branches on three pieces of module state:
 
     - ``PROVISIONING_MODE`` — gates the entire WiFi-picker section AND
-      picks the page subtitle (#398). In provisioning the subtitle
+      picks the page subtitle (litclock-dev#398). In provisioning the subtitle
       orients the user on joining their own WiFi; in the pre-connected
       path (boot with WiFi already configured via ethernet/wpa_supplicant)
       the form is essentially a confirmation button and the subtitle
@@ -498,9 +498,9 @@ def _build_setup_html():
             ' padding:12px 16px; margin-bottom:16px; color:#991b1b;">'
             f"<strong>Couldn&rsquo;t join your WiFi:</strong> {safe_error}<br>"
             "Double-check your <strong>WiFi password</strong> and try "
-            "again (not the hotspot password shown on the clock). If this "
-            "page doesn&rsquo;t reload, rescan the QR code on the display "
-            "&mdash; the hotspot has restarted.</div>"
+            "again &mdash; not the password shown on the clock&rsquo;s screen. "
+            "If this page doesn&rsquo;t reload, rescan the QR code on the "
+            "display &mdash; the clock&rsquo;s own network has restarted.</div>"
         )
 
     # Subtitle copy depends on three states:
@@ -551,7 +551,7 @@ def _build_setup_html():
                 <p class="help-text" style="margin:0 0 14px 0; font-size:13px; color:#555;">
                     Pick the WiFi your phone normally uses &mdash; at home, the
                     office, wherever the clock will live. Not the {hotspot_name}
-                    hotspot you joined to see this page.
+                    network you joined to see this page.
                 </p>
 
                 <label>Pick your WiFi network</label>
@@ -596,7 +596,7 @@ def _build_setup_html():
                     placeholder="Enter your WiFi password" autocomplete="off" autofocus>
                 <p class="help-text">
                     Use the password for the WiFi you just picked above &mdash; not the
-                    hotspot password shown on the clock. Leave blank for open networks.
+                    password shown on the clock&rsquo;s screen. Leave blank for open networks.
                 </p>
             </div>
 """
@@ -991,7 +991,7 @@ HTML_ERROR = """<!DOCTYPE html>
 
 # ── Re-exports ─────────────────────────────────────────────────────────────
 #
-# #337 A4 — _IP_GEO_RETRY_DELAYS re-export.
+# litclock-dev#337 A4 — _IP_GEO_RETRY_DELAYS re-export.
 # Re-exported from location_resolver so existing tests that read
 # ``setup_server._IP_GEO_RETRY_DELAYS`` continue to see the canonical value.
 # Functionally identical to ``location_resolver._IP_GEO_RETRY_DELAYS``. Bound
@@ -1003,7 +1003,7 @@ import location_resolver as _location_resolver_mod  # noqa: E402
 
 _IP_GEO_RETRY_DELAYS = _location_resolver_mod._IP_GEO_RETRY_DELAYS
 
-# #414 maintainability item #5 — set_system_timezone re-export.
+# litclock-dev#414 maintainability item #5 — set_system_timezone re-export.
 # Canonical implementation moved to ``geocoding.set_system_timezone`` so the
 # resolver + control_server routes can import it without dragging
 # setup_server's captive-portal/http.server imports. This re-export keeps
@@ -1015,7 +1015,7 @@ from geocoding import set_system_timezone  # noqa: E402,F401
 
 
 def _update_env_location(lat, lon, *, location_name=None, units=None, timezone=None, **kwargs):
-    """Backwards-compat shim for the legacy 5-kwarg writer (#337 A4).
+    """Backwards-compat shim for the legacy 5-kwarg writer (litclock-dev#337 A4).
 
     The canonical implementation now lives in ``location_resolver.update_env_location``;
     this shim exists because (a) existing tests monkeypatch this name to capture
@@ -1024,11 +1024,11 @@ def _update_env_location(lat, lon, *, location_name=None, units=None, timezone=N
     directly so they can use the new ``mode`` / ``ip_country`` kwargs without
     going through the shim.
 
-    Extra kwargs (``mode``, ``ip_country``) introduced by #337 A1/A6.1 are
+    Extra kwargs (``mode``, ``ip_country``) introduced by litclock-dev#337 A1/A6.1 are
     forwarded transparently via ``**kwargs`` so this shim doesn't need a
     signature change every time the canonical writer grows a kwarg.
 
-    **env_file forwarding (#337 /review P0 fix):** the legacy first-boot caller
+    **env_file forwarding (litclock-dev#337 /review P0 fix):** the legacy first-boot caller
     has no ENV_FILE param and relies on the module-level constant — fine,
     because first-boot's ``setup_server.main()`` sets it. The new contexts
     (PWA sync-quick + on-boot oneshot) DO have ENV_FILE but reach this shim
@@ -1054,7 +1054,7 @@ def _update_env_location(lat, lon, *, location_name=None, units=None, timezone=N
 
 
 def _resolve_location_from_ip():
-    """Backwards-compat shim for the first-boot post-WiFi caller (#337 A4).
+    """Backwards-compat shim for the first-boot post-WiFi caller (litclock-dev#337 A4).
 
     Delegates to ``location_resolver.resolve_location_from_ip`` with the full
     retry budget. The on-boot reresolve oneshot calls the canonical function
@@ -1078,7 +1078,7 @@ def signal_completion() -> bool:
     to proceed to SIGTERM — without the signal file, firstboot.sh's wait loop
     would never observe completion.
 
-    Why bool-return instead of raising (#364 codex post-review fix): the two
+    Why bool-return instead of raising (litclock-dev#364 codex post-review fix): the two
     call sites in do_POST have load-bearing ordering invariants that a raise
     breaks:
 
@@ -1120,7 +1120,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
             # without an explicit flush, captive-portal probe access logs sit
             # in the buffer until the server process exits and may be lost on
             # SIGTERM. We need these logs visible in real time to debug iOS
-            # CNA popup behavior. (issue #178)
+            # CNA popup behavior. (issue litclock-dev#178)
             print(f"HTTP: {fmt % args}", flush=True)
         # Suppress in normal mode
 
@@ -1192,7 +1192,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                stopped promoting 200-HTML served under an Apple hostname to
                the CNA sheet); the sheet's WebView / manual browsers get the
                ~1 KB JS-free bridge (see _CNA_BRIDGE_HTML) because large or
-               JS-heavy responses bury the portal in Control Center (#175).
+               JS-heavy responses bury the portal in Control Center (litclock-dev#175).
         - Android: Fetches /generate_204, expects HTTP 204.
                    A 302 redirect triggers the "Sign in to network" notification.
         - Windows: Fetches /connecttest.txt, expects "Microsoft Connect Test".
@@ -1203,7 +1203,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         302 redirect to the real setup form.
         """
 
-        # #483 diagnostic: the base access log (log_message) records only the
+        # litclock-dev#483 diagnostic: the base access log (log_message) records only the
         # request line + status — NOT the Host header or User-Agent. Those are
         # exactly what a "portal didn't auto-open" repro needs: which host iOS
         # probed (is it one we recognize?), which UA/iOS version, and what we
@@ -1331,7 +1331,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
             # Apple detection probes from hosts/paths outside the known
             # sets get the DNS-free /cna redirect — a litclock.setup
             # Location would hand the exact DNS-dependent shape iOS 26
-            # distrusts back to the one client the #526 fix targets.
+            # distrusts back to the one client the litclock-dev#526 fix targets.
             if self._is_cna_detection_probe():
                 self._redirect_cna_probe()
             else:
@@ -1362,7 +1362,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         post_data = self.rfile.read(content_length).decode()
         params = urllib.parse.parse_qs(post_data)
 
-        # EPIC #383: the hotspot form collects WiFi credentials only.
+        # EPIC litclock-dev#383: the hotspot form collects WiFi credentials only.
         # Location, timezone, and units are auto-populated post-WiFi by
         # _resolve_location_from_ip() from ip-api.com; ALLOW_NSFW_QUOTES
         # stays at the env.sh.sample default until the user toggles it in
@@ -1567,7 +1567,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                         pass
                     return  # Keep server alive
                 finally:
-                    # Sequencing invariant — issue #364.
+                    # Sequencing invariant — issue litclock-dev#364.
                     # Queue SIGTERM BEFORE clearing IN_FLIGHT so reset_state()'s drain
                     # barrier (which polls IN_FLIGHT and exits on False) cannot return
                     # claiming "thread quiescent" while a SIGTERM is still pending in
@@ -1706,7 +1706,7 @@ def _restore_hotspot(create_hotspot_fn):
 
 
 def _show_connecting_splash(ssid):
-    """Best-effort 'Connecting to {SSID}…' splash (EPIC #383 PR2, design P2.C).
+    """Best-effort 'Connecting to {SSID}…' splash (EPIC litclock-dev#383 PR2, design P2.C).
 
     Bridges the ~30s gap between hotspot teardown and the control_server handoff
     splash so the e-ink isn't stuck on the stale hotspot QR while WiFi connects

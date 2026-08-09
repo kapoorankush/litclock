@@ -172,7 +172,7 @@ if [[ "$WIPE_WIFI" == "true" ]]; then
 fi
 echo ""
 if [[ "$WIPE_WIFI" == "true" ]]; then
-    echo -e "${YELLOW}WiFi WILL be wiped — next boot will create the hotspot.${NC}"
+    echo -e "${YELLOW}WiFi WILL be wiped — next boot will bring up the LitClock-Setup network.${NC}"
 else
     echo -e "${GREEN}WiFi credentials will be preserved.${NC}"
     echo -e "Pass ${YELLOW}--wipe-wifi${NC} for a full fresh-flash simulation."
