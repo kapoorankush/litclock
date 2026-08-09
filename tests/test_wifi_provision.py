@@ -251,3 +251,114 @@ class TestTeardownCaptivePortal:
         assert sum(1 for c in calls if "delete" in c and "table" in c) == 2
         assert "survived teardown" in caplog.text
         assert "unreachable" in caplog.text
+
+
+class TestConnectToWifiHidden:
+    """litclock-dev#554: a hidden network never appears in a scan, so setup
+    grew a free-text SSID field. Reaching such a network needs
+    `hidden yes` — nmcli otherwise waits for a beacon the AP never sends.
+    It stays OFF for scanned networks: it makes the device broadcast the
+    SSID in probe requests, which is a fair trade to reach a network you
+    otherwise cannot, but not one to impose on the ordinary path.
+    """
+
+    def _patch(self, monkeypatch, returncode=0, stderr=""):
+        calls: list[list[str]] = []
+
+        def fake_run(args, check=True, sudo=False):
+            calls.append(list(args))
+            return SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
+
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", fake_run)
+        # Short-circuit the post-connect IP wait so the test doesn't sleep.
+        monkeypatch.setattr(wifi_provision, "is_wifi_connected", lambda: True)
+        monkeypatch.setattr(wifi_provision, "get_wifi_ssid", lambda: "HiddenNet")
+        monkeypatch.setattr(wifi_provision, "_clear_wifi_watchdog_counter", lambda: None)
+        return calls
+
+    def test_hidden_true_appends_hidden_yes(self, monkeypatch):
+        calls = self._patch(monkeypatch)
+        ok, err = wifi_provision.connect_to_wifi("HiddenNet", "pw", hidden=True)
+        assert (ok, err) == (True, None)
+        connect = next(c for c in calls if "connect" in c)
+        # Adjacent pair, not just both present — nmcli parses `hidden` and its
+        # value positionally, so a split would change what it means.
+        assert connect[connect.index("hidden") + 1] == "yes"
+
+    def test_hidden_defaults_off_for_scanned_networks(self, monkeypatch):
+        calls = self._patch(monkeypatch)
+        wifi_provision.connect_to_wifi("HomeWiFi", "pw")
+        connect = next(c for c in calls if "connect" in c)
+        assert "hidden" not in connect
+
+    def test_hidden_false_is_explicitly_off(self, monkeypatch):
+        calls = self._patch(monkeypatch)
+        wifi_provision.connect_to_wifi("HomeWiFi", "pw", hidden=False)
+        connect = next(c for c in calls if "connect" in c)
+        assert "hidden" not in connect
+
+    def test_not_found_on_typed_ssid_blames_the_spelling(self, monkeypatch):
+        """A hand-typed name nmcli can't find is nearly always a typo or a
+        case mismatch. The generic "not found" sends the user hunting for a
+        fault that isn't there; say what to check instead."""
+        self._patch(monkeypatch, returncode=1, stderr="Error: No network with SSID 'Hiddennet' found.")
+        ok, err = wifi_provision.connect_to_wifi("Hiddennet", "pw", hidden=True)
+        assert ok is False
+        assert "case-sensitive" in err
+        assert "Hiddennet" in err
+
+    def test_not_found_on_scanned_ssid_keeps_the_plain_message(self, monkeypatch):
+        """The scanned path has no spelling to doubt — the user picked from a
+        list — so it must NOT inherit the typo advice."""
+        self._patch(monkeypatch, returncode=1, stderr="Error: No network with SSID 'HomeWiFi' found.")
+        ok, err = wifi_provision.connect_to_wifi("HomeWiFi", "pw")
+        assert ok is False
+        assert "case-sensitive" not in err
+        assert "'HomeWiFi' not found" in err
+
+
+class TestNmcliSecretRedaction:
+    """The connect argv carries the recipient's home WiFi PSK in the clear.
+    journald ships Storage=persistent on the flashed image and the support
+    bundle collects it, so anyone who raises the log level once to debug a
+    first-boot failure would write that password to disk permanently, where
+    it then travels off the device (/review, litclock-dev#580)."""
+
+    def test_password_value_is_replaced(self):
+        cmd = ["sudo", "nmcli", "device", "wifi", "connect", "Home", "password", "s3cret", "ifname", "wlan0"]
+        assert wifi_provision._redact_nmcli(cmd) == [
+            "sudo",
+            "nmcli",
+            "device",
+            "wifi",
+            "connect",
+            "Home",
+            "password",
+            "***",
+            "ifname",
+            "wlan0",
+        ]
+
+    def test_psk_property_form_is_also_redacted(self):
+        """`nmcli connection modify` takes the secret as a dotted property."""
+        assert wifi_provision._redact_nmcli(["nmcli", "c", "modify", "x", "wifi-sec.psk", "s3cret"])[-1] == "***"
+
+    def test_ssid_and_flags_survive(self):
+        """Redaction must not eat the parts an operator needs to debug with."""
+        out = wifi_provision._redact_nmcli(
+            ["nmcli", "device", "wifi", "connect", "MyNet", "password", "pw", "hidden", "yes"]
+        )
+        assert "MyNet" in out and "hidden" in out and "yes" in out
+
+    def test_trailing_password_key_does_not_crash(self):
+        assert wifi_provision._redact_nmcli(["nmcli", "password"]) == ["nmcli", "password"]
+
+    def test_the_debug_line_itself_is_redacted(self, monkeypatch, caplog):
+        """The unit above is only useful if _run_nmcli actually calls it."""
+        monkeypatch.setattr(
+            subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        with caplog.at_level("DEBUG"):
+            wifi_provision._run_nmcli(["device", "wifi", "connect", "Home", "password", "s3cret"], sudo=True)
+        assert "s3cret" not in caplog.text
+        assert "***" in caplog.text

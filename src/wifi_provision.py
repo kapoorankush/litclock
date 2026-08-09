@@ -38,10 +38,30 @@ SETUP_SERVER_PORT = 8080
 DNSMASQ_CAPTIVE_CONF = "/etc/NetworkManager/dnsmasq-shared.d/captive-portal.conf"
 
 
+_NMCLI_SECRET_KEYS = frozenset({"password", "wifi-sec.psk", "802-11-wireless-security.psk"})
+
+
+def _redact_nmcli(cmd):
+    """Replace the token after any secret-bearing nmcli key with ***.
+
+    The connect argv carries the recipient's home WiFi PSK in the clear.
+    journald ships Storage=persistent on the flashed image and the support
+    bundle collects it, so anyone who raises the log level once to debug a
+    first-boot failure would write that password to disk permanently, where
+    it then travels off the device (/review, litclock-dev#580).
+    """
+    out = []
+    redact_next = False
+    for token in cmd:
+        out.append("***" if redact_next else token)
+        redact_next = token in _NMCLI_SECRET_KEYS
+    return out
+
+
 def _run_nmcli(args, check=True, sudo=False):
     """Run an nmcli command and return the result."""
     cmd = (["sudo"] if sudo else []) + ["nmcli"] + args
-    logging.debug(f"Running: {' '.join(cmd)}")
+    logging.debug(f"Running: {' '.join(_redact_nmcli(cmd))}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if check and result.returncode != 0:
         logging.error(f"nmcli failed: {result.stderr.strip()}")
@@ -404,30 +424,40 @@ def scan_wifi_networks():
     return networks
 
 
-def connect_to_wifi(ssid, password):
+def connect_to_wifi(ssid, password, hidden=False):
     """
     Connect to a WiFi network.
+
+    Args:
+        hidden: the SSID was typed by hand rather than picked from a scan
+            (litclock-dev#554). Adds `hidden yes`, which sets
+            802-11-wireless.hidden on the profile so the client actively
+            probes for the SSID instead of waiting for a beacon that a hidden
+            AP never broadcasts. Off by default: it makes the device announce
+            the SSID in probe requests, which is a fair trade to reach a
+            network you otherwise cannot, but not something to impose on the
+            ordinary visible-network path.
 
     Returns:
         (success: bool, error_message: str or None)
     """
-    logging.info(f"Connecting to WiFi: {ssid}")
+    logging.info(f"Connecting to WiFi: {ssid}" + (" (hidden)" if hidden else ""))
 
     # Use nmcli to connect — sudo needed when run from systemd (no polkit session)
-    result = _run_nmcli(
-        [
-            "device",
-            "wifi",
-            "connect",
-            ssid,
-            "password",
-            password,
-            "ifname",
-            "wlan0",
-        ],
-        check=False,
-        sudo=True,
-    )
+    args = [
+        "device",
+        "wifi",
+        "connect",
+        ssid,
+        "password",
+        password,
+        "ifname",
+        "wlan0",
+    ]
+    if hidden:
+        args += ["hidden", "yes"]
+
+    result = _run_nmcli(args, check=False, sudo=True)
 
     if result.returncode != 0:
         error = result.stderr.strip()
@@ -435,6 +465,12 @@ def connect_to_wifi(ssid, password):
         if "Secrets were required" in error or "password" in error.lower():
             return False, "Incorrect WiFi password"
         if "No network with SSID" in error:
+            # A hand-typed name that nmcli can't find is nearly always a typo
+            # or a case mismatch, not an absent network — say so, because the
+            # generic "not found" sends the user looking for a fault that
+            # isn't there.
+            if hidden:
+                return False, f"Couldn't find '{ssid}'. Check the spelling - network names are case-sensitive."
             return False, f"Network '{ssid}' not found"
         return False, f"Connection failed: {error}"
 
@@ -518,6 +554,11 @@ def main():
     connect_parser = subparsers.add_parser("connect", help="Connect to WiFi network")
     connect_parser.add_argument("--ssid", "-s", required=True, help="Network SSID")
     connect_parser.add_argument("--password", "-p", required=True, help="Network password")
+    connect_parser.add_argument(
+        "--hidden",
+        action="store_true",
+        help="Probe actively for the SSID instead of waiting for a beacon (litclock-dev#554)",
+    )
 
     # teardown command
     subparsers.add_parser("teardown", help="Tear down hotspot")
@@ -540,7 +581,7 @@ def main():
         print(json.dumps(networks, indent=2))
 
     elif args.command == "connect":
-        success, error = connect_to_wifi(args.ssid, args.password)
+        success, error = connect_to_wifi(args.ssid, args.password, hidden=args.hidden)
         if success:
             print(f"Connected to {args.ssid}")
             sys.exit(0)

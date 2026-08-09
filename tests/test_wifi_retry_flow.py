@@ -233,7 +233,7 @@ class TestDoPostWiFiFlow:
 
         # Provide a fake wifi_provision so the background thread completes quickly
         fake_wp = types.ModuleType("wifi_provision")
-        fake_wp.connect_to_wifi = lambda ssid, pw: (False, "test")
+        fake_wp.connect_to_wifi = lambda ssid, pw, hidden=False: (False, "test")
         fake_wp.teardown_hotspot = lambda: None
         sys.modules.pop("wifi_provision", None)
         sys.modules["wifi_provision"] = fake_wp
@@ -322,7 +322,7 @@ class TestDoPostWiFiFlow:
 
         # Provide a fake wifi_provision so the background thread completes
         fake_wp = types.ModuleType("wifi_provision")
-        fake_wp.connect_to_wifi = lambda ssid, pw: (False, "test")
+        fake_wp.connect_to_wifi = lambda ssid, pw, hidden=False: (False, "test")
         fake_wp.teardown_hotspot = lambda: None
         sys.modules.pop("wifi_provision", None)
         sys.modules["wifi_provision"] = fake_wp
@@ -392,7 +392,7 @@ class TestConnectAndTeardown:
 
         connect_calls = []
         fake_wp = types.ModuleType("wifi_provision")
-        fake_wp.connect_to_wifi = lambda ssid, pw: connect_calls.append((ssid, pw)) or (True, None)
+        fake_wp.connect_to_wifi = lambda ssid, pw, hidden=False: connect_calls.append((ssid, pw)) or (True, None)
         fake_wp.teardown_hotspot = lambda: None
         fake_wp.create_hotspot = lambda ssid=None, password=None: None
         sys.modules.pop("wifi_provision", None)
@@ -422,7 +422,7 @@ class TestConnectAndTeardown:
 
         restore_calls = []
         fake_wp = types.ModuleType("wifi_provision")
-        fake_wp.connect_to_wifi = lambda ssid, pw: (False, "Incorrect WiFi password")
+        fake_wp.connect_to_wifi = lambda ssid, pw, hidden=False: (False, "Incorrect WiFi password")
         fake_wp.teardown_hotspot = lambda: None
         fake_wp.create_hotspot = lambda ssid=None, password=None: (
             restore_calls.append((ssid, password)) or {"ssid": ssid, "password": password, "ip": "10.42.0.1"}
@@ -466,7 +466,7 @@ class TestConnectAndTeardown:
         connect_calls = []
         teardown_calls = []
 
-        def fake_connect(ssid, pw):
+        def fake_connect(ssid, pw, hidden=False):
             connect_calls.append((ssid, pw))
             return (True, None)
 
@@ -512,7 +512,7 @@ class TestConnectAndTeardown:
         monkeypatch.setattr(setup_server, "SIGNAL_FILE", signal_file)
 
         fake_wp = types.ModuleType("wifi_provision")
-        fake_wp.connect_to_wifi = lambda ssid, pw: (True, None)
+        fake_wp.connect_to_wifi = lambda ssid, pw, hidden=False: (True, None)
         fake_wp.teardown_hotspot = lambda: (_ for _ in ()).throw(RuntimeError("NM dbus error"))
         fake_wp.create_hotspot = lambda ssid=None, password=None: {
             "ssid": ssid,
@@ -552,7 +552,7 @@ class TestConnectAndTeardown:
 
         restore_calls = []
         fake_wp = types.ModuleType("wifi_provision")
-        fake_wp.connect_to_wifi = lambda ssid, pw: (False, "Network not found")
+        fake_wp.connect_to_wifi = lambda ssid, pw, hidden=False: (False, "Network not found")
         fake_wp.teardown_hotspot = lambda: None
         fake_wp.create_hotspot = lambda ssid=None, password=None: (
             restore_calls.append((ssid, password)) or {"ssid": ssid, "password": password, "ip": "10.42.0.1"}
@@ -596,7 +596,7 @@ class TestConnectAndTeardown:
             return {"ssid": ssid, "password": password, "ip": "10.42.0.1"}
 
         fake_wp = types.ModuleType("wifi_provision")
-        fake_wp.connect_to_wifi = lambda ssid, pw: (False, "Incorrect WiFi password")
+        fake_wp.connect_to_wifi = lambda ssid, pw, hidden=False: (False, "Incorrect WiFi password")
         fake_wp.teardown_hotspot = lambda: None
         fake_wp.create_hotspot = flaky_create_hotspot
         sys.modules.pop("wifi_provision", None)
@@ -792,11 +792,18 @@ class TestConnectAndTeardownOrdering:
 
     @staticmethod
     def _wait_for_thread(timeout=3.0):
+        """Fails loudly on timeout, unlike the sibling helper.
+
+        The `finally` below un-fakes wifi_provision. The connect thread sleeps
+        1s before importing it, so a silently-swallowed timeout would let a
+        still-live thread re-import the REAL module and shell out to
+        `sudo nmcli device wifi connect` on the dev box or CI runner."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not setup_server.WIFI_CONNECT_IN_FLIGHT:
                 return
             time.sleep(0.05)
+        pytest.fail("connect thread did not drain before the fake module was removed")
 
     @staticmethod
     def _install_fake_wp(monkeypatch, *, connect_result=(True, None), teardown_raises=False, calls=None):
@@ -807,7 +814,7 @@ class TestConnectAndTeardownOrdering:
         if calls is None:
             calls = []
 
-        def fake_connect(ssid, pw):
+        def fake_connect(ssid, pw, hidden=False):
             calls.append(("connect_to_wifi", (ssid, pw)))
             return connect_result
 
@@ -1078,7 +1085,7 @@ class TestConnectAndTeardownFailureAndExceptionPaths:
         restore_calls = []
         signal_calls = []
         fake_wp = types.ModuleType("wifi_provision")
-        fake_wp.connect_to_wifi = lambda ssid, pw: (False, "wrong password")
+        fake_wp.connect_to_wifi = lambda ssid, pw, hidden=False: (False, "wrong password")
         fake_wp.teardown_hotspot = lambda: None
         fake_wp.create_hotspot = lambda ssid=None, password=None: (
             restore_calls.append((ssid, password)) or {"ssid": ssid, "password": password, "ip": "10.42.0.1"}
@@ -1124,7 +1131,7 @@ class TestConnectAndTeardownFailureAndExceptionPaths:
         signal_calls = []
         fake_wp = types.ModuleType("wifi_provision")
 
-        def boom(ssid, pw):
+        def boom(ssid, pw, hidden=False):
             raise RuntimeError("nmcli crashed")
 
         fake_wp.connect_to_wifi = boom
@@ -1176,7 +1183,7 @@ class TestConnectAndTeardownFailureAndExceptionPaths:
         monkeypatch.setattr(setup_server, "SIGNAL_FILE", signal_file)
 
         fake_wp = types.ModuleType("wifi_provision")
-        fake_wp.connect_to_wifi = lambda ssid, pw: (True, None)
+        fake_wp.connect_to_wifi = lambda ssid, pw, hidden=False: (True, None)
         fake_wp.teardown_hotspot = lambda: (_ for _ in ()).throw(RuntimeError("NM dbus error"))
         fake_wp.create_hotspot = lambda ssid=None, password=None: {
             "ssid": ssid,
@@ -1466,3 +1473,353 @@ class TestNoWiFiBranchSigterm:
             "_schedule_self_terminate must not run when signal_completion returns False — "
             "would SIGTERM with no signal file and leave firstboot.sh waiting forever (#364)"
         )
+
+
+class TestManualSsidEntry:
+    """litclock-dev#554: the hidden-SSID path through do_POST.
+
+    Same fake-wifi_provision-in-sys.modules discipline as
+    TestConnectAndTeardown — the background thread imports it at runtime, so
+    the fake has to be installed before the POST and kept alive until the
+    thread drains. Not a subclass of it: pytest would re-run every inherited
+    test under this name for no coverage.
+    """
+
+    def _make_post_body(self, **overrides):
+        defaults = {
+            "wifi_ssid": "TestNetwork",
+            "wifi_password": "secret123",
+            "latitude": "40.7",
+            "longitude": "-74.0",
+            "units": "metric",
+            "timezone": "",
+        }
+        defaults.update(overrides)
+        return urllib.parse.urlencode(defaults)
+
+    @staticmethod
+    def _wait_for_thread(timeout=3.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not setup_server.WIFI_CONNECT_IN_FLIGHT:
+                return
+            time.sleep(0.05)
+
+    def _fake_wp(self, connect_calls, result=(True, None)):
+        import types
+
+        fake_wp = types.ModuleType("wifi_provision")
+
+        def fake_connect(ssid, pw, hidden=False):
+            connect_calls.append((ssid, pw, hidden))
+            return result
+
+        fake_wp.connect_to_wifi = fake_connect
+        fake_wp.teardown_hotspot = lambda: None
+        fake_wp.create_hotspot = lambda ssid=None, password=None: None
+        return fake_wp
+
+    def _post(self, monkeypatch, tmp_env_file, connect_calls, scanned=None, **body):
+        import sys
+
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        monkeypatch.setattr(setup_server, "ENV_FILE", tmp_env_file)
+        monkeypatch.setattr(setup_server, "HOTSPOT_SSID", "LitClock-Setup")
+        monkeypatch.setattr(setup_server, "_show_connecting_splash", lambda ssid: None)
+        monkeypatch.setattr(setup_server, "_resolve_location_from_ip", lambda: None)
+        monkeypatch.setattr(setup_server, "signal_completion", lambda: True)
+        monkeypatch.setattr(setup_server, "_schedule_self_terminate", lambda *a, **k: None)
+        # `hidden` is now decided against what the radio actually saw, so the
+        # scan set is part of the fixture rather than incidental state.
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_SSIDS", frozenset(scanned or ()))
+        monkeypatch.setattr(setup_server, "WIFI_LAST_MANUAL_SSID", "")
+
+        sys.modules.pop("wifi_provision", None)
+        sys.modules["wifi_provision"] = self._fake_wp(connect_calls)
+        try:
+            req = FakeRequest("POST", "/setup", self._make_post_body(**body))
+            response = post_setup(make_handler(req))
+            self._wait_for_thread()
+            return response
+        finally:
+            sys.modules.pop("wifi_provision", None)
+
+    def test_sentinel_plus_typed_name_joins_as_hidden(self, monkeypatch, tmp_env_file):
+        """The sentinel is a form-transport artefact, never a network name.
+        It must be swapped for the typed SSID before anything downstream
+        sees it — otherwise the clock tries to join a network literally
+        called `__litclock_type_it_myself__`."""
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "MyHiddenNet"},
+        )
+        assert calls == [("MyHiddenNet", "secret123", True)]
+
+    def test_typed_name_without_sentinel_is_still_honoured(self, monkeypatch, tmp_env_file):
+        """The no-JS user who typed a name but left the dropdown on its
+        placeholder. Honour the intent rather than bouncing them for missing
+        a step they had no reason to see."""
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            wifi_ssid="",
+            **{setup_server.MANUAL_SSID_FIELD: "MyHiddenNet"},
+        )
+        assert calls == [("MyHiddenNet", "secret123", True)]
+
+    def test_picked_network_is_not_flagged_hidden(self, monkeypatch, tmp_env_file):
+        """The ordinary path must not inherit `hidden yes` — it would make
+        every clock broadcast its owner's SSID in probe requests."""
+        calls = []
+        self._post(monkeypatch, tmp_env_file, calls, wifi_ssid="HomeWiFi")
+        assert calls == [("HomeWiFi", "secret123", False)]
+
+    def test_a_filled_dropdown_wins_over_a_stale_typed_name(self, monkeypatch, tmp_env_file):
+        """A user can open the details, type something, then change their
+        mind and pick from the list. The explicit pick wins; the abandoned
+        text must not hijack it."""
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            wifi_ssid="HomeWiFi",
+            **{setup_server.MANUAL_SSID_FIELD: "AbandonedTyping"},
+        )
+        assert calls == [("HomeWiFi", "secret123", False)]
+
+    def test_sentinel_with_empty_field_is_rejected_with_a_specific_message(self, monkeypatch, tmp_env_file):
+        """"Please select a WiFi network" is wrong here — they did select
+        one. Tell them the thing they actually have to do."""
+        calls = []
+        response = self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "   "},
+        )
+        assert "Type the name of your WiFi network" in response
+        assert calls == []
+
+    def test_typed_own_hotspot_is_rejected_like_a_picked_one(self, monkeypatch, tmp_env_file):
+        """litclock-dev#397's guard filters the hotspot from the dropdown. The free-text
+        field is a second entry point straight past that filter, so the
+        rejection has to sit after the manual value is resolved, not before
+        ([[learning-filter-all-entry-points]])."""
+        calls = []
+        response = self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "LitClock-Setup"},
+        )
+        assert "own setup network" in response
+        assert calls == []
+
+    def test_oversized_ssid_is_rejected_before_nmcli(self, monkeypatch, tmp_env_file):
+        """802.11 caps the SSID at 32 bytes. Caught here so the user gets a
+        sentence they can act on instead of nmcli's."""
+        calls = []
+        response = self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "N" * 33},
+        )
+        assert "too long" in response
+        assert calls == []
+
+    def test_length_limit_counts_bytes_not_characters(self, monkeypatch, tmp_env_file):
+        """The 32 is a byte budget. 12 emoji are 12 characters and 48 bytes —
+        a character-based check would wave them through and hand nmcli
+        something it cannot use."""
+        calls = []
+        response = self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "\N{ALARM CLOCK}" * 12},
+        )
+        assert "too long" in response
+        assert calls == []
+
+    def test_exactly_32_bytes_is_accepted(self, monkeypatch, tmp_env_file):
+        """The boundary is inclusive — 32 is legal. An off-by-one here
+        rejects a perfectly valid network name."""
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "N" * 32},
+        )
+        assert calls == [("N" * 32, "secret123", True)]
+
+
+class TestManualSsidReviewHardening(TestManualSsidEntry):
+    """Second-round findings from the litclock-dev#580 review, on the POST path.
+
+    Subclasses TestManualSsidEntry only to reuse `_post` / `_fake_wp`; pytest
+    re-running the parent's cases here is accepted because these share the
+    same fixture surface and the parent class is small.
+    """
+
+    def test_typed_name_the_radio_can_see_is_NOT_flagged_hidden(self, monkeypatch, tmp_env_file):
+        """`hidden yes` is not a per-attempt flag — nmcli writes
+        802-11-wireless.hidden=yes into the SAVED profile, so the clock then
+        broadcasts that SSID in cleartext probe requests for the life of the
+        install. A user who typed a name that IS in the scan just typed
+        instead of scrolling; they must not pay a permanent probe-request
+        leak of their home network for it."""
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            scanned={"homewifi"},
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "HomeWiFi"},
+        )
+        assert calls == [("HomeWiFi", "secret123", False)]
+
+    def test_scan_match_is_case_insensitive(self, monkeypatch, tmp_env_file):
+        """A human retyping a name off a router label gets the capitalisation
+        wrong constantly. Reading that as "the radio can't see it" would put
+        the sticky flag on most hand-typed visible networks."""
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            scanned={"homewifi"},
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "HOMEWIFI"},
+        )
+        assert calls == [("HOMEWIFI", "secret123", False)]
+
+    def test_typed_name_absent_from_the_scan_IS_flagged_hidden(self, monkeypatch, tmp_env_file):
+        """The feature still has to work: a name the radio cannot see needs
+        `hidden yes` or nmcli waits for a beacon that never comes."""
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            scanned={"someoneelse"},
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "MyHiddenNet"},
+        )
+        assert calls == [("MyHiddenNet", "secret123", True)]
+
+    def test_empty_scan_errs_toward_hidden(self, monkeypatch, tmp_env_file):
+        """With no scan we have no evidence either way. A needless probe leak
+        is a smaller harm than a hidden network that cannot be joined at
+        all — and an empty scan is the exact state in which typing the name
+        is the user's only path forward."""
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            scanned=set(),
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "MyHiddenNet"},
+        )
+        assert calls == [("MyHiddenNet", "secret123", True)]
+
+    def test_own_hotspot_rejection_is_case_insensitive(self, monkeypatch, tmp_env_file):
+        """litclock-dev#397's filter protects the dropdown. The free-text field is a
+        second, HUMAN-typed entry point straight past it — and the page
+        directly above that field displays the hotspot name. A recipient who
+        can't find their network has been handed exactly one network name and
+        a text box, so "litclock-setup" must not slip through."""
+        for typed in ("litclock-setup", "LITCLOCK-SETUP", "LitClock-setup"):
+            calls = []
+            response = self._post(
+                monkeypatch,
+                tmp_env_file,
+                calls,
+                wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+                **{setup_server.MANUAL_SSID_FIELD: typed},
+            )
+            assert "own setup network" in response, typed
+            assert calls == [], typed
+
+    def test_control_characters_are_rejected(self, monkeypatch, tmp_env_file):
+        """An interior newline forges lines in a journal that ships
+        Storage=persistent and is collected into support bundles, and the
+        same string reaches the e-ink connecting splash. `.strip()` only
+        trims the ends, so it is no defence."""
+        for bad in ("Home\nFORGED: authentication failure", "Home\r\nx", "Home\x00x", "Home\x1b[2Jx"):
+            calls = []
+            response = self._post(
+                monkeypatch,
+                tmp_env_file,
+                calls,
+                wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+                **{setup_server.MANUAL_SSID_FIELD: bad},
+            )
+            assert "characters a WiFi name can't have" in response, repr(bad)
+            assert calls == [], repr(bad)
+
+    def test_ordinary_unicode_ssid_is_not_rejected(self, monkeypatch, tmp_env_file):
+        """The control-char guard must not become a Latin-only guard. DE and
+        RU are top-two referrer geos."""
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "Кафе-Мünchen"},
+        )
+        assert calls == [("Кафе-Мünchen", "secret123", True)]
+
+    def test_oversized_message_says_bytes_not_characters(self, monkeypatch, tmp_env_file):
+        """The limit is a byte budget. Telling a Cyrillic-SSID owner to count
+        characters is a factually wrong instruction in the one place where
+        they have no keyboard and no way to check."""
+        calls = []
+        response = self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "\N{ALARM CLOCK}" * 12},
+        )
+        assert "32 bytes" in response
+        assert "32 characters" not in response
+        assert calls == []
+
+    def test_typed_name_is_remembered_for_the_retry_render(self, monkeypatch, tmp_env_file):
+        """So the retry page can echo it back instead of making the user
+        reconstruct it from memory."""
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            scanned=set(),
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "MyHiddenNet"},
+        )
+        assert setup_server.WIFI_LAST_MANUAL_SSID == "MyHiddenNet"
+
+    def test_a_picked_network_does_not_overwrite_the_remembered_name(self, monkeypatch, tmp_env_file):
+        """Only the typed path writes it — otherwise a later dropdown pick
+        would put a real SSID into the manual field on the next render."""
+        monkeypatch.setattr(setup_server, "WIFI_LAST_MANUAL_SSID", "")
+        calls = []
+        self._post(monkeypatch, tmp_env_file, calls, scanned={"homewifi"}, wifi_ssid="HomeWiFi")
+        assert setup_server.WIFI_LAST_MANUAL_SSID == ""
