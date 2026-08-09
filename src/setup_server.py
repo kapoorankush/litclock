@@ -548,7 +548,7 @@ def _build_setup_html():
                 <div class="section-title">
                     <span class="icon">WiFi</span>
                 </div>
-                <p class="help-text" style="margin:0 0 14px 0; font-size:13px; color:litclock-dev#555;">
+                <p class="help-text" style="margin:0 0 14px 0; font-size:13px; color:#555;">
                     Pick the WiFi your phone normally uses &mdash; at home, the
                     office, wherever the clock will live. Not the {hotspot_name}
                     hotspot you joined to see this page.
@@ -577,7 +577,7 @@ def _build_setup_html():
                      discover for themselves is how a hidden-network owner gets
                      stuck in a loop (/review, litclock-dev#580). -->
                 <details id="manual-ssid" style="margin-bottom:14px;"{manual_open}>
-                    <summary style="cursor:pointer; font-size:13px; color:litclock-dev#555;">
+                    <summary style="cursor:pointer; font-size:13px; color:#555;">
                         {manual_summary}
                     </summary>
                     <p class="help-text" style="margin:8px 0;">
@@ -668,7 +668,7 @@ def _build_setup_html():
         label {{
             display: block;
             font-size: 14px;
-            color: litclock-dev#555;
+            color: #555;
             margin-bottom: 6px;
         }}
         input[type="text"], input[type="number"], input[type="password"] {{

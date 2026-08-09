@@ -13,7 +13,7 @@ A/B pass on the owner clock, calibrated blind machine judge clean):
     measured advance widths over the space-split quote, line height
     ``php_round(fs*1.618)``, grow-until-fit from 18 while the paragraph
     height stays under ``H-100``, bold = EXACTLY the matched timestring
-    span (litclock-dev#540 — the #503/#504 boundary-extension cases were deleted;
+    span (litclock-dev#540 — the litclock-dev#503/litclock-dev#504 boundary-extension cases were deleted;
     bolding errors are corpus data fixes, see timestring_midword_edge);
   - credits use ``gd_bbox`` (measureSizeOfTextbox port) verbatim, including
     the two-line balance loop and the single-line ``left``-based x.
@@ -25,7 +25,7 @@ garbage; the render-invariants CI job proves the corpus never hits them):
     dash);
   - the two-line balance loop compares UTF-8 BYTE lengths like PHP strlen
     (the Stage-0 spike compared character counts — same result on the EN
-    corpus, kept exact here for #532);
+    corpus, kept exact here for litclock-dev#532);
   - a corpus row whose quote still contains a backslash after the escape
     chain raises ``CorpusGuardError`` in strict mode (PHP fgetcsv's escape
     handling diverges from csv.reader there).
@@ -81,7 +81,7 @@ from quote_corpus import _BS, _ESCAPE_CHAIN, PHP_TRIM_CHARS, preprocess_quote  #
 
 # \p{L}\p{N} equivalent for the corpus-quality mid-word probe. [^\W_] = word
 # chars minus underscore. Python \w and PCRE \p{L}\p{N} agree on the EN
-# corpus (Stage-0 parity); the corpus guards below stay armed for #532.
+# corpus (Stage-0 parity); the corpus guards below stay armed for litclock-dev#532.
 _WORD_RE = re.compile(r"^[^\W_]", re.UNICODE)
 
 _ENTITY_RE = re.compile(r"&#?\w+;")
@@ -173,7 +173,7 @@ def find_timestring(quote_bytes: bytes, timestring_bytes: bytes) -> int:
 # The renderer bolds EXACTLY the matched timestring span (owner decision
 # 2026-07-26, litclock-dev#540): the CSV row IS the bold spec, so bolding errors are
 # data fixes contributors can make per-language — no renderer heuristics.
-# The #503/#504 boundary-extension case machinery (mid-word extension,
+# The litclock-dev#503/litclock-dev#504 boundary-extension case machinery (mid-word extension,
 # trailing-punctuation bolding, hyphen-join guard) was deleted here; the
 # word-char predicate survives ONLY to flag questionable data at edit time.
 
@@ -344,7 +344,7 @@ def add_credits(img: Image.Image, title: str, author: str) -> None:
             line0 = " ".join(parts[: len(parts) - i])
             line1 = " ".join(parts[len(parts) - i :])
             # PHP strlen compares BYTE lengths — keep that for non-ASCII
-            # credits (#532); identical on the EN corpus.
+            # credits (litclock-dev#532); identical on the EN corpus.
             if len(line1.encode("utf-8")) + 5 > len(line0.encode("utf-8")):
                 break
             best = (line0, line1)
