@@ -552,6 +552,48 @@ def _prepare_for_regen(dirty: list[str], manifest_drift: bool, generator_drift: 
         )
 
 
+def _sweep_orphans() -> list[Path]:
+    """Delete PNGs the fresh manifest does not name (litclock-dev#584 review).
+
+    `_prepare_for_regen` wipes only the buckets whose CSV rows are DIRTY. That
+    is sufficient for a corpus edit, but a GENERATOR change can renumber files
+    in a bucket whose rows never changed — litclock-dev#584 renumbers midnight from
+    `quote_0000_1..72` to `0..71`, and `0000` is not dirty unless a midnight row
+    happens to be edited in the same batch. A full regen overwrites in place and
+    never deletes, so `quote_0000_72*` would survive.
+
+    That orphan is not inert. `scripts/release_images.sh` only WARNS about
+    unmanifested PNGs, so it ships in the tarball; `literary_clock.py` globs
+    `quote_<HHMM>_*_credits.png` to build the selection pool, so it can be
+    picked; and `quote_corpus.lookup_by_filename` returns None for it, which
+    empties the quote/author/title in the status file.
+
+    Run AFTER the manifest is verified in sync, so the manifest is authoritative
+    and a failed regen can never trigger a delete.
+    """
+    manifest = read_manifest() or {}
+    named = set(manifest.get("files") or ())
+    if not named:
+        return []
+    removed: list[Path] = []
+    for directory, suffix in ((IMAGES_DIR, ".png"), (METADATA_DIR, "_credits.png")):
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob("quote_*" + suffix)):
+            # The manifest keys the QUOTE png; the credits sidecar shares its stem.
+            key = path.name.replace("_credits.png", ".png")
+            if key not in named:
+                path.unlink()
+                removed.append(path)
+    if removed:
+        print(f"Swept {len(removed)} orphaned image file(s) not named by the fresh manifest:")
+        for path in removed[:10]:
+            print(f"  - {path.relative_to(REPO_ROOT)}")
+        if len(removed) > 10:
+            print(f"  … and {len(removed) - 10} more")
+    return removed
+
+
 def _run_generator() -> None:
     """Run the PHP generator and verify the manifest afterward. Shared by
     cmd_regenerate and cmd_ship. Rolls back a backed-up manifest (see
@@ -589,6 +631,7 @@ def _run_generator() -> None:
             "ERROR: PHP completed but manifest.generator_hash still doesn't match quote_to_image.php — "
             "investigate before shipping."
         )
+    _sweep_orphans()
 
 
 def cmd_regenerate(args: argparse.Namespace) -> int:
