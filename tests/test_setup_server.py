@@ -1020,7 +1020,7 @@ class TestSetupPagePickerCopy:
     realize they were supposed to pick their OWN home/office WiFi from
     the dropdown — the page gave no guidance, and "LitClock-Setup" looked
     like a selectable option. The code half (hotspot filter) shipped in
-    #397; this class pins the copy half so future polish doesn't regress
+    litclock-dev#397; this class pins the copy half so future polish doesn't regress
     the orienting cues a first-time non-tech user depends on."""
 
     @pytest.fixture(autouse=True)
@@ -1097,7 +1097,7 @@ class TestSetupPagePickerCopy:
     def test_picker_section_explains_which_wifi(self, monkeypatch):
         """An explainer next to the dropdown must tell the user which
         network this is — explicitly NOT the LitClock-Setup hotspot. The
-        hotspot SSID is filtered from the dropdown (#397), but a user
+        hotspot SSID is filtered from the dropdown (litclock-dev#397), but a user
         who doesn't read the explainer might still scan the page looking
         for "LitClock-Setup" and get confused when they don't see it.
         Calling out the hotspot by name turns absence-of-option into
@@ -1902,3 +1902,421 @@ class TestSetupServerStructuralInvariants:
         assert "#364" in doc, "helper docstring must reference issue #364"
         assert "reset_state" in doc, "helper docstring must reference reset_state"
         assert "IN_FLIGHT" in doc, "helper docstring must reference IN_FLIGHT"
+
+
+class TestWifiPickerPlaceholderAndSort:
+    """litclock-dev#554. Owner saw a network already selected in the picker
+    and asked what decided it. Nothing did: a <select> with no `selected`
+    option displays its first option, and first was whatever order nmcli
+    returned. So a user who tapped Submit without opening the dropdown
+    submitted a network they never chose — plausibly a neighbour's — and got
+    a WiFi-join failure they had no way to diagnose, on a device with no
+    keyboard. Same failure mode as litclock-dev#397's `_filter_own_hotspot`: the picker
+    presenting something that looks like a decision already made.
+    """
+
+    def test_placeholder_leads_the_list_and_cannot_be_submitted(self):
+        result = setup_server._build_wifi_options([{"ssid": "HomeWiFi", "signal": 80, "security": "WPA2"}])
+        first = result.split("\n")[0].strip()
+        assert first == f'<option value="" selected disabled>{setup_server.WIFI_PLACEHOLDER_TEXT}</option>'
+        # `disabled` is what stops it being chosen; `value=""` is what makes
+        # `required` reject it. Both, or the guard has a hole.
+        assert "selected" in first and "disabled" in first
+
+    def test_no_network_is_preselected(self):
+        """The bug itself: `selected` must appear exactly once, on the
+        placeholder. A `selected` on any real network re-creates it."""
+        result = setup_server._build_wifi_options(
+            [
+                {"ssid": "HomeWiFi", "signal": 80, "security": "WPA2"},
+                {"ssid": "Neighbour", "signal": 90, "security": "WPA2"},
+            ]
+        )
+        assert result.count("selected") == 1
+        for line in result.split("\n"):
+            if "selected" in line:
+                assert 'value=""' in line
+
+    def test_sorted_by_signal_descending(self):
+        """Sorted by us, not inherited from nmcli. Input is deliberately in
+        the wrong order — a scan race or driver quirk produces exactly this
+        and used to change which network sat in the display slot."""
+        result = setup_server._build_wifi_options(
+            [
+                {"ssid": "Weak", "signal": 20, "security": "WPA2"},
+                {"ssid": "Strong", "signal": 95, "security": "WPA2"},
+                {"ssid": "Middling", "signal": 55, "security": "WPA2"},
+            ]
+        )
+        assert result.index("Strong") < result.index("Middling") < result.index("Weak")
+
+    def test_equal_signal_keeps_scan_order(self):
+        """Python's sort is stable, so ties are deterministic rather than
+        arbitrary — otherwise the order would still be untestable."""
+        result = setup_server._build_wifi_options(
+            [
+                {"ssid": "Alpha", "signal": 60, "security": "WPA2"},
+                {"ssid": "Bravo", "signal": 60, "security": "WPA2"},
+            ]
+        )
+        assert result.index("Alpha") < result.index("Bravo")
+
+    def test_missing_signal_sorts_last_rather_than_crashing(self):
+        """/scan-wifi JSON is re-parsed client-side and could round-trip a
+        null. A sort that raises here takes the whole setup page down."""
+        result = setup_server._build_wifi_options(
+            [
+                {"ssid": "NoSignal", "signal": None, "security": "WPA2"},
+                {"ssid": "Real", "signal": 40, "security": "WPA2"},
+            ]
+        )
+        assert result.index("Real") < result.index("NoSignal")
+
+    def test_manual_entry_option_trails_the_list(self):
+        """A hidden SSID never appears in a scan, so before this there was no
+        path to join one through setup at all. Last, so it doesn't compete
+        with real networks for attention."""
+        result = setup_server._build_wifi_options([{"ssid": "HomeWiFi", "signal": 80, "security": "WPA2"}])
+        assert setup_server.MANUAL_SSID_VALUE in result
+        assert result.index("HomeWiFi") < result.index(setup_server.MANUAL_SSID_VALUE)
+        # The manual option must carry a NON-EMPTY value, or `required` would
+        # reject the very path it exists to enable. Asserted against the
+        # rendered markup: an earlier version compared the constant to "",
+        # which is a tautology that could never fail.
+        assert f'<option value="{setup_server.MANUAL_SSID_VALUE}">' in result
+        rest = result.split("\n", 1)[1]
+        assert '<option value="">' not in rest, "only the placeholder may have an empty value"
+
+    def test_empty_scan_still_offers_manual_entry(self, monkeypatch):
+        """A user whose only network is hidden sees an empty scan every time.
+        Dropping their one way to type it in would strand them on the setup
+        page with no path forward."""
+        import sys
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_CACHE", None)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_TIME", 0)
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: []
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+
+        result = setup_server._wifi_network_options()
+        assert setup_server.MANUAL_SSID_VALUE in result
+        assert setup_server.WIFI_PLACEHOLDER_EMPTY_TEXT in result
+        assert setup_server._WIFI_SCAN_CACHE is None
+
+    def test_ssid_is_escaped_in_both_value_and_label(self):
+        """An SSID is attacker-chosen text — any neighbour can name their AP —
+        rendered into an HTML attribute AND element text.
+
+        The fixture carries a double quote on purpose: without `quote=True`
+        (html.escape's default) the value attribute breaks out, and the
+        earlier version of this test asserted only the `<`/`>` half, so
+        html.escape(..., quote=False) passed the whole suite."""
+        result = setup_server._build_wifi_options([{"ssid": '<script>"x', "signal": 50, "security": "WPA2"}])
+        assert '<option value="&lt;script&gt;&quot;x">&lt;script&gt;&quot;x (Medium)</option>' in result
+        assert "<script>" not in result
+        assert '"x' not in result
+
+
+class TestWifiPickerMarkupAndScript:
+    """The server-rendered markup and the Refresh path have to agree. A
+    client-side rebuild that dropped the placeholder or the manual option
+    would silently undo the server's fix the first time a user tapped
+    Refresh (litclock-dev#554)."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_scan(self, monkeypatch):
+        import sys
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_CACHE", None)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_TIME", 0)
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", None)
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: [{"ssid": "FakeHomeNet", "signal": 75, "security": "WPA2"}]
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+
+    def test_select_is_required(self):
+        """`required` is the no-JS half of the fix: HTML validation runs
+        without JavaScript, which is the norm inside captive-portal
+        WebViews, and it rejects the empty submit before a slow
+        captive-portal round trip."""
+        html = setup_server._build_setup_html()
+        select = next(line for line in html.split("\n") if 'name="wifi_ssid"' in line)
+        assert "required" in select
+
+    def test_manual_input_is_in_the_dom_not_js_generated(self):
+        """<details>, not a JS-revealed field — it has to open with
+        JavaScript disabled."""
+        html = setup_server._build_setup_html()
+        assert f'name="{setup_server.MANUAL_SSID_FIELD}"' in html
+        assert "<details" in html
+        assert "<summary" in html
+
+    def test_manual_input_does_not_fight_the_phone_keyboard(self):
+        """SSIDs are case- and space-exact. iOS autocapitalises and
+        autocorrects a plain text input, which silently produces a name that
+        will not match."""
+        html = setup_server._build_setup_html()
+        field = next(line for line in html.split("\n") if f'name="{setup_server.MANUAL_SSID_FIELD}"' in line)
+        block = html[html.index(field) : html.index(field) + 400]
+        assert 'autocapitalize="none"' in block
+        assert 'autocorrect="off"' in block
+        assert 'spellcheck="false"' in block
+
+    def test_refresh_rebuilds_placeholder_and_manual_option(self):
+        """Both the success and the failure branch of the Refresh handler."""
+        html = setup_server._build_setup_html()
+        script = html[html.index("function refreshNetworks") :]
+        # The manual option is re-appended on every terminal branch, so a
+        # failed scan can't strip the hidden-network path.
+        assert script.count("appendManualOption(select)") >= 2
+        assert "resetSsidOptions" in script
+        # No bare `<option value="">…` replacing innerHTML — that was the
+        # shape that produced a submittable empty first option.
+        assert "select.innerHTML = '<option" not in script
+
+    def test_refresh_sorts_client_side_too(self):
+        """/scan-wifi returns the scan order; the client must not reintroduce
+        the dependency the server just removed."""
+        html = setup_server._build_setup_html()
+        script = html[html.index("function refreshNetworks") :]
+        assert "networks.sort(" in script
+
+    def test_manual_sentinel_matches_between_python_and_js(self):
+        """One constant, two languages. If they drift, the sentinel POSTs as
+        a literal SSID and the clock tries to join a network named
+        `__litclock_type_it_myself__`."""
+        import json
+
+        html = setup_server._build_setup_html()
+        assert f"var MANUAL_SSID_VALUE = {json.dumps(setup_server.MANUAL_SSID_VALUE)};" in html
+
+
+class TestWifiPickerReviewHardening:
+    """Second-round findings from the litclock-dev#580 review. Each of these was verified
+    by mutation: the guard was reverted and the suite stayed green, which is
+    what made the gap worth closing rather than the code merely looking thin.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub_scan(self, monkeypatch):
+        import sys
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_CACHE", None)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_TIME", 0)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_SSIDS", frozenset())
+        monkeypatch.setattr(setup_server, "WIFI_LAST_MANUAL_SSID", "")
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", None)
+        monkeypatch.setattr(setup_server, "HOTSPOT_SSID", "LitClock-Setup")
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: [{"ssid": "FakeHomeNet", "signal": 75, "security": "WPA2"}]
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+
+    def _script(self):
+        html = setup_server._build_setup_html()
+        return html[html.index("function resetSsidOptions") :]
+
+    # ── The Refresh path must not re-create the bug the server just fixed ──
+
+    def test_refresh_never_disables_the_select(self):
+        """THE bug this round found. A disabled control is excluded from the
+        form data set AND skipped by constraint validation, so a submit
+        landing mid-refresh POSTs no wifi_ssid at all — `required` silently
+        bypassed, and the server sees an empty pick. Disabling it also had no
+        recovery path if the fetch never settled."""
+        # Assignment, not the substring — the code carries a comment naming
+        # the hazard, and that comment must not make the guard untestable.
+        assert "select.disabled =" not in setup_server._build_setup_html()
+
+    def test_refresh_placeholder_is_selected_and_disabled(self):
+        """resetSsidOptions is the JS twin of the server placeholder, and
+        these two properties are the whole guard. Deleting either left all
+        tests green while restoring a submittable, pre-selected first
+        option — the originating litclock-dev#554 defect, via Refresh."""
+        script = self._script()
+        assert "ph.selected = true" in script
+        assert "ph.disabled = true" in script
+        assert "ph.value = ''" in script
+
+    def test_scan_fetch_is_abortable_and_bounded(self):
+        """The phone-to-clock link is exactly the link that drops. With no
+        timeout a hung scan leaves the picker reading "Scanning..." forever,
+        inside a captive-portal WebView that often has no reload control."""
+        script = self._script()
+        # Assert USE, not presence. Mutation caught the earlier version:
+        # replacing `new AbortController()` with `null` still left the word
+        # AbortController in the feature-detect, and swapping SCAN_TIMEOUT_MS
+        # for a huge literal still left the constant declared. Both passed.
+        assert "new AbortController()" in script
+        assert "ctrl.abort()" in script
+        assert "}}, SCAN_TIMEOUT_MS);" in script or "}, SCAN_TIMEOUT_MS);" in script
+        assert "fetch('/scan-wifi', ctrl ? {signal: ctrl.signal} : undefined)" in script
+        assert "clearTimeout(timer)" in script
+
+    def test_manual_option_survives_even_while_scanning(self):
+        """Refresh appends it up front too, so the hidden-network path is
+        never absent from the dropdown at any point in the cycle."""
+        script = self._script()
+        assert script.count("appendManualOption(select)") >= 3
+
+    def test_onssidchange_is_defined_and_wired(self):
+        """Deleting the onchange attribute left every test green while
+        silently killing the one path this feature exists to add: the
+        <details> stays collapsed, the input is never focused, and the user
+        submits an empty manual field."""
+        html = setup_server._build_setup_html()
+        # The ATTRIBUTE, not the bare call — `onSsidChange()` also appears in
+        # the function definition, so the earlier assertion survived deleting
+        # the wiring entirely (mutation-verified).
+        assert 'onchange="onSsidChange()"' in html
+        assert "function onSsidChange" in html
+
+    # ── One string, one constant ──
+
+    def test_manual_label_is_one_constant_across_python_and_js(self):
+        """The label appears in the option, the <details> summary, the help
+        copy that quotes it, and the JS rebuild. Four literals would let the
+        dropdown option drift from the disclosure it tells the user to open."""
+        import html as html_mod
+        import json
+
+        html = setup_server._build_setup_html()
+        # Three HTML surfaces (option label, <summary>, the help copy that
+        # quotes it) all escaped, plus the JS literal via json.dumps.
+        assert html.count(html_mod.escape(setup_server.MANUAL_SSID_TEXT)) >= 3
+        assert f"opt.textContent = {json.dumps(setup_server.MANUAL_SSID_TEXT)};" in html
+
+    # ── Retry render ──
+
+    def test_retry_echoes_the_typed_ssid_back_and_opens_the_disclosure(self, monkeypatch):
+        """Without this the retry page is blank and re-collapsed: the
+        hidden-network owner has to remember what they typed while a red
+        banner tells them to check their PASSWORD, when the likelier fault on
+        that path is the SSID spelling."""
+        monkeypatch.setattr(setup_server, "WIFI_LAST_MANUAL_SSID", "MyHiddenNet")
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", "Incorrect WiFi password")
+        html = setup_server._build_setup_html()
+        assert 'value="MyHiddenNet"' in html
+        assert '<details id="manual-ssid" style="margin-bottom:14px;" open>' in html
+
+    def test_echoed_ssid_is_html_escaped(self):
+        """It round-trips through an HTML attribute, and it is attacker-typed."""
+        setup_server.WIFI_LAST_MANUAL_SSID = 'evil" onfocus="x'
+        try:
+            html = setup_server._build_setup_html()
+            assert 'evil" onfocus' not in html
+            assert "&quot; onfocus" in html
+        finally:
+            setup_server.WIFI_LAST_MANUAL_SSID = ""
+
+    def test_empty_scan_opens_the_disclosure(self, monkeypatch):
+        """When the scan is empty, typing the name is the ONLY way forward and
+        the Refresh button does nothing without JavaScript. Leaving the
+        instructions folded inside a disclosure the user has to discover is
+        how that user gets stuck."""
+        import sys
+        from unittest.mock import MagicMock
+
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: []
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+        html = setup_server._build_setup_html()
+        assert setup_server.WIFI_PLACEHOLDER_EMPTY_TEXT in html
+        assert '<details id="manual-ssid" style="margin-bottom:14px;" open>' in html
+
+    def test_disclosure_stays_shut_on_a_clean_first_render(self):
+        """The 95% case must not pay for the retry case with extra clutter."""
+        html = setup_server._build_setup_html()
+        assert '<details id="manual-ssid" style="margin-bottom:14px;">' in html
+
+    # ── Byte budget, stated in bytes ──
+
+    def test_manual_input_carries_a_client_side_length_guard(self):
+        """maxlength counts UTF-16 code units; SSID_MAX_BYTES counts bytes.
+        The two are decoupled in the source so a future change to the byte
+        budget doesn't silently move a character limit.
+
+        Honest limitation: this cannot distinguish the literal from the
+        constant, because SSID_MAX_BYTES is 32 today and both render
+        `maxlength="32"`. Mutation confirms it — that swap is an equivalent
+        mutant at the HTML level. What IS pinned here is that the attribute
+        exists and sits on the manual SSID input; the decoupling itself rests
+        on the comment at SSID_MAX_BYTES and on the server-side byte check,
+        which its own tests do pin."""
+        html = setup_server._build_setup_html()
+        at = html.index('maxlength="32"')
+        assert setup_server.MANUAL_SSID_FIELD in html[at - 400 : at], "maxlength must sit on the manual SSID input"
+
+
+class TestScannedSsids:
+    """`hidden yes` is not a per-attempt flag — nmcli writes
+    802-11-wireless.hidden=yes into the SAVED profile, so the clock then
+    announces that SSID in cleartext probe requests for the life of the
+    install. _scanned_ssids is what keeps that off a network the radio can
+    plainly see (/review, litclock-dev#580)."""
+
+    def test_casefolds_so_a_retyped_name_still_matches(self):
+        """A human copying a name off a router label gets the capitalisation
+        wrong constantly; that must not be read as 'the radio can't see it'."""
+        assert setup_server._scanned_ssids([{"ssid": "HomeWiFi"}]) == frozenset({"homewifi"})
+
+    def test_skips_nameless_entries(self):
+        assert setup_server._scanned_ssids([{"ssid": ""}, {"signal": 50}]) == frozenset()
+
+    def test_populated_from_a_scan(self, monkeypatch):
+        import sys
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_CACHE", None)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_TIME", 0)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_SSIDS", frozenset())
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: [{"ssid": "HomeWiFi", "signal": 70, "security": "WPA2"}]
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+        setup_server._wifi_network_options()
+        assert "homewifi" in setup_server._WIFI_SCAN_SSIDS
+
+
+class TestNetSignalCoercion:
+    """Both arms of the except tuple, because narrowing it to TypeError alone
+    left the whole suite green while a string signal would 500 the setup
+    page — which on a captive portal is a user with no path forward."""
+
+    def test_none_signal(self):
+        assert setup_server._net_signal({"signal": None}) == 0
+
+    def test_absent_signal(self):
+        assert setup_server._net_signal({}) == 0
+
+    def test_non_numeric_string_signal(self):
+        """The ValueError arm. Untested before; `except TypeError` passed."""
+        assert setup_server._net_signal({"signal": "excellent"}) == 0
+
+    def test_numeric_string_signal_is_coerced_not_zeroed(self):
+        assert setup_server._net_signal({"signal": "55"}) == 55
+
+    def test_a_garbled_scan_still_renders_a_page(self):
+        """The whole point: one malformed entry must not take the page down."""
+        result = setup_server._build_wifi_options(
+            [{"ssid": "Garbled", "signal": "excellent", "security": "WPA2"}, {"ssid": "Real", "signal": 40}]
+        )
+        assert result.index("Real") < result.index("Garbled")
+
+
+class TestSentinelCollision:
+    """The comment on MANUAL_SSID_VALUE claims a real AP broadcasting that
+    exact name 'degrades to one extra step, never to a wrong network'.
+    Asserted, not just asserted-in-prose."""
+
+    def test_collision_renders_two_options_with_the_same_value(self):
+        result = setup_server._build_wifi_options(
+            [{"ssid": setup_server.MANUAL_SSID_VALUE, "signal": 90, "security": "WPA2"}]
+        )
+        assert result.count(f'value="{setup_server.MANUAL_SSID_VALUE}"') == 2

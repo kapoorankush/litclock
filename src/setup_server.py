@@ -65,6 +65,38 @@ HOTSPOT_PASSWORD = None  # Original hotspot password, used to restore after fail
 _WIFI_SCAN_CACHE = None  # Cached HTML <option> tags from last WiFi scan
 _WIFI_SCAN_TIME = 0  # time.monotonic() when cache was populated
 _WIFI_SCAN_TTL = 30  # seconds before cache expires
+# SSIDs from the same scan that produced _WIFI_SCAN_CACHE. Kept alongside the
+# rendered HTML so a hand-typed name can be checked against what the radio
+# actually saw — see the `hidden` decision in do_POST (litclock-dev#554).
+_WIFI_SCAN_SSIDS = frozenset()
+
+# Sentinel <option> value meaning "I'll type the network name myself"
+# (litclock-dev#554). Deliberately not a plausible SSID: an access point could
+# in principle broadcast this exact name, in which case picking it from the
+# list would route the user through the manual text input — which they can
+# then use to type that same name. Degrades to one extra step, never to a
+# wrong network.
+MANUAL_SSID_VALUE = "__litclock_type_it_myself__"
+MANUAL_SSID_FIELD = "wifi_ssid_manual"
+MANUAL_SSID_TEXT = "My network isn't listed"
+# Last SSID typed into the manual field, echoed back on a retry render. Only
+# ever a name the user chose; never a password.
+WIFI_LAST_MANUAL_SSID = ""
+WIFI_PLACEHOLDER_TEXT = "Choose your WiFi network"
+WIFI_PLACEHOLDER_EMPTY_TEXT = "No networks found - tap Refresh"
+# 802.11 caps the SSID at 32 BYTES, not characters. Checked before nmcli sees
+# it so an over-long paste gets a sentence a recipient can act on rather than
+# nmcli's. The user-facing message says "bytes" deliberately: DE and RU are
+# top-two referrer geos, and a Cyrillic name is two bytes per character, so
+# "32 characters" would be a factually wrong instruction in the one place
+# where the user has no keyboard and no way to check.
+SSID_MAX_BYTES = 32
+# Control characters are rejected outright. An interior newline in a
+# hand-typed SSID forges lines in the persistent journal (journald ships
+# Storage=persistent on the flashed image, and the support bundle collects
+# it) and reaches the e-ink connecting splash. Same class as the env.sh
+# splitlines round-trip: reject at the entry point, do not sanitise downstream.
+SSID_FORBIDDEN = frozenset(chr(c) for c in range(0x20)) | {chr(0x7F)} | frozenset(chr(c) for c in range(0x80, 0xA0))
 
 # Thread safety: the server runs in threaded mode so a stuck handler can't
 # block new connections. These locks guard state mutated from both request
@@ -140,8 +172,8 @@ def reset_state(wait_for_inflight: float = 2.0) -> None:
 
     Not used by production code paths; safe to call from any test fixture.
     """
-    global WIFI_CONNECT_ERROR, WIFI_CONNECT_IN_FLIGHT
-    global _WIFI_SCAN_CACHE, _WIFI_SCAN_TIME
+    global WIFI_CONNECT_ERROR, WIFI_CONNECT_IN_FLIGHT, WIFI_LAST_MANUAL_SSID
+    global _WIFI_SCAN_CACHE, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS
 
     import time
 
@@ -178,9 +210,11 @@ def reset_state(wait_for_inflight: float = 2.0) -> None:
     with _WIFI_CONNECT_LOCK:
         WIFI_CONNECT_ERROR = None
         WIFI_CONNECT_IN_FLIGHT = False
+        WIFI_LAST_MANUAL_SSID = ""
     with _SCAN_CACHE_LOCK:
         _WIFI_SCAN_CACHE = None
         _WIFI_SCAN_TIME = 0
+        _WIFI_SCAN_SSIDS = frozenset()
 
 
 def _schedule_self_terminate(delay: float = 0.0) -> None:
@@ -231,12 +265,65 @@ def _schedule_self_terminate(delay: float = 0.0) -> None:
         os.kill(os.getpid(), signal.SIGTERM)
 
 
-def _build_wifi_options(networks):
-    """Convert a list of network dicts into HTML <option> tags."""
-    options = []
-    for net in networks:
+def _scanned_ssids(networks):
+    """Case-folded SSIDs from a scan, for "did the radio actually see this?".
+
+    Case-folded because the question being asked is "is the name this person
+    typed the same network as one we can see", and a human retyping a name
+    off a router label gets the capitalisation wrong constantly.
+    """
+    return frozenset(n["ssid"].casefold() for n in networks if n.get("ssid"))
+
+
+def _net_signal(net):
+    """Signal strength as an int, treating absent/None/non-numeric as 0.
+
+    Cheap insurance, not a defence against a live threat: today the only
+    caller is fed by scan_wifi_networks(), which always emits an int. (An
+    earlier version of this docstring claimed the list round-trips through
+    /scan-wifi JSON — it does not; that JSON goes to the browser and never
+    comes back.) The reason to keep the coercion is that both the sort and
+    the Strong/Medium/Weak comparison would raise on a malformed entry, and
+    an exception here takes down the whole setup page, which on a captive
+    portal leaves the user with no path forward at all.
+
+    Note the deliberate asymmetry with `net["ssid"]` below, which is a bare
+    subscript: a network with no name is not renderable at all, so there is
+    nothing to degrade to.
+    """
+    signal = net.get("signal")
+    try:
+        return int(signal)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _build_wifi_options(networks, placeholder=None):
+    """Convert a list of network dicts into HTML <option> tags.
+
+    Three things beyond the obvious (litclock-dev#554):
+
+    1. A **disabled placeholder leads the list**. A <select> with no `selected`
+       option displays its first option, so whatever happened to sort first
+       looked like a decision the user had already made — someone tapping
+       Submit without opening the dropdown submitted a neighbour's SSID they
+       never chose, then hit a WiFi-join failure they had no way to diagnose.
+       Paired with `required` on the <select> so the no-JS path refuses an
+       empty submit client-side, before a slow captive-portal round trip.
+    2. **Sorted here, by signal descending.** nmcli happens to sort that way,
+       but that is inherited behaviour we never asked for and never asserted;
+       a driver quirk or scan race silently reorders the list. Python's sort
+       is stable, so equal-signal networks keep scan order.
+    3. A **manual-entry option trails the list**. A hidden SSID never appears
+       in a scan, so before this there was no path to join one through setup
+       at all. Its non-empty value is what satisfies `required` when the user
+       is going to type the name into the paired text input instead.
+    """
+    placeholder = html.escape(placeholder or WIFI_PLACEHOLDER_TEXT)
+    options = [f'<option value="" selected disabled>{placeholder}</option>']
+    for net in sorted(networks, key=_net_signal, reverse=True):
         ssid = html.escape(net["ssid"])
-        signal = net["signal"]
+        signal = _net_signal(net)
         if signal >= 70:
             bars = "Strong"
         elif signal >= 40:
@@ -246,6 +333,7 @@ def _build_wifi_options(networks):
         security = net.get("security", "")
         lock = " [Open]" if not security or security == "--" else ""
         options.append(f'<option value="{ssid}">{ssid} ({bars}{lock})</option>')
+    options.append(f'<option value="{MANUAL_SSID_VALUE}">{html.escape(MANUAL_SSID_TEXT)}</option>')
     return "\n                    ".join(options)
 
 
@@ -269,7 +357,7 @@ def _filter_own_hotspot(networks):
 
 def _wifi_network_options():
     """Generate <option> tags for scanned WiFi networks, with 30s caching."""
-    global _WIFI_SCAN_CACHE, _WIFI_SCAN_TIME
+    global _WIFI_SCAN_CACHE, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS
     import time
 
     now = time.monotonic()
@@ -286,11 +374,15 @@ def _wifi_network_options():
     networks = _filter_own_hotspot(networks)
 
     if not networks:
-        # Don't cache empty results — let the next call retry
-        return '<option value="">No networks found - try refreshing</option>'
+        # Don't cache empty results — let the next call retry. Still built via
+        # _build_wifi_options so the manual-entry option survives: a user whose
+        # only network is hidden sees an empty scan every time, and dropping
+        # their one path to type it in would strand them (litclock-dev#554).
+        return _build_wifi_options([], placeholder=WIFI_PLACEHOLDER_EMPTY_TEXT)
 
     result = _build_wifi_options(networks)
     _WIFI_SCAN_CACHE = result
+    _WIFI_SCAN_SSIDS = _scanned_ssids(networks)
     _WIFI_SCAN_TIME = now
     return result
 
@@ -439,13 +531,24 @@ def _build_setup_html():
         # special chars; wifi_provision.DEFAULT_SSID is plain ASCII but
         # we don't enforce that on the CLI override.
         hotspot_name = html.escape(HOTSPOT_SSID or "LitClock-Setup")
+
+        # Echo the last hand-typed SSID back, and open the disclosure, when a
+        # retry is showing or the scan came back empty. Without this the retry
+        # page is blank and re-collapsed: the hidden-network user has to
+        # remember what they typed while a red banner tells them to check their
+        # PASSWORD, when the likelier fault on that path is the SSID spelling
+        # (/review, litclock-dev#580).
+        scan_was_empty = WIFI_PLACEHOLDER_EMPTY_TEXT in network_options
+        manual_value = html.escape(WIFI_LAST_MANUAL_SSID)
+        manual_open = " open" if (manual_value or scan_was_empty or WIFI_CONNECT_ERROR) else ""
+        manual_summary = html.escape(MANUAL_SSID_TEXT)
         wifi_section = f"""
             <!-- WiFi Section -->
             <div class="section">
                 <div class="section-title">
                     <span class="icon">WiFi</span>
                 </div>
-                <p class="help-text" style="margin:0 0 14px 0; font-size:13px; color:#555;">
+                <p class="help-text" style="margin:0 0 14px 0; font-size:13px; color:litclock-dev#555;">
                     Pick the WiFi your phone normally uses &mdash; at home, the
                     office, wherever the clock will live. Not the {hotspot_name}
                     hotspot you joined to see this page.
@@ -453,7 +556,8 @@ def _build_setup_html():
 
                 <label>Pick your WiFi network</label>
                 <div style="display:flex; gap:8px; margin-bottom:10px;">
-                    <select id="wifi-ssid" name="wifi_ssid"
+                    <select id="wifi-ssid" name="wifi_ssid" required
+                        onchange="onSsidChange()"
                         style="flex:1; padding:12px; font-size:16px; border:2px solid #ddd; border-radius:8px;">
                         {network_options}
                     </select>
@@ -461,6 +565,31 @@ def _build_setup_html():
                         style="width:auto; margin-bottom:0; padding:12px 16px;"
                         onclick="refreshNetworks()">Refresh</button>
                 </div>
+
+                <!-- Hidden-SSID path. A <details> rather than a JS-revealed
+                     field so it still opens with JavaScript disabled, which is
+                     the norm inside captive-portal WebViews.
+
+                     Force-opened when a retry is showing or the scan came back
+                     empty: in both states typing the name is the likeliest (in
+                     the empty-scan case, the ONLY) way forward, and leaving the
+                     instructions folded inside a disclosure the user has to
+                     discover for themselves is how a hidden-network owner gets
+                     stuck in a loop (/review, litclock-dev#580). -->
+                <details id="manual-ssid" style="margin-bottom:14px;"{manual_open}>
+                    <summary style="cursor:pointer; font-size:13px; color:litclock-dev#555;">
+                        {manual_summary}
+                    </summary>
+                    <p class="help-text" style="margin:8px 0;">
+                        Hidden networks never show up in a scan. Pick
+                        &ldquo;{manual_summary}&rdquo; above, then type its
+                        name exactly &mdash; capitals and inner spaces count.
+                    </p>
+                    <input type="text" id="wifi-ssid-manual" name="{MANUAL_SSID_FIELD}"
+                        placeholder="Network name" autocomplete="off"
+                        autocapitalize="none" autocorrect="off" spellcheck="false"
+                        value="{manual_value}" maxlength="32">
+                </details>
 
                 <label>Your WiFi Password</label>
                 <input type="password" id="wifi-password" name="wifi_password"
@@ -471,6 +600,14 @@ def _build_setup_html():
                 </p>
             </div>
 """
+
+    # json.dumps, not a bare quoted literal: these strings end up inside a
+    # <script> block, and it emits correctly escaped JS string literals for
+    # the apostrophes and any future non-ASCII in the placeholder copy.
+    manual_value_js = json.dumps(MANUAL_SSID_VALUE)
+    placeholder_js = json.dumps(WIFI_PLACEHOLDER_TEXT)
+    placeholder_empty_js = json.dumps(WIFI_PLACEHOLDER_EMPTY_TEXT)
+    manual_text_js = json.dumps(MANUAL_SSID_TEXT)
 
     return f"""<!DOCTYPE html>
 <html>
@@ -531,7 +668,7 @@ def _build_setup_html():
         label {{
             display: block;
             font-size: 14px;
-            color: #555;
+            color: litclock-dev#555;
             margin-bottom: 6px;
         }}
         input[type="text"], input[type="number"], input[type="password"] {{
@@ -605,19 +742,77 @@ def _build_setup_html():
     </div>
 
     <script>
+        var MANUAL_SSID_VALUE = {manual_value_js};
+
+        // Rebuild the dropdown to the same shape the server renders: disabled
+        // placeholder first so nothing is pre-selected, manual-entry option
+        // last so a hidden network stays reachable after a Refresh
+        // (litclock-dev#554). Dropping either on this path would have let the
+        // client silently undo the server's fix.
+        function resetSsidOptions(select, placeholderText) {{
+            select.innerHTML = '';
+            var ph = document.createElement('option');
+            ph.value = '';
+            ph.selected = true;
+            ph.disabled = true;
+            ph.textContent = placeholderText;
+            select.appendChild(ph);
+        }}
+
+        function appendManualOption(select) {{
+            var opt = document.createElement('option');
+            opt.value = MANUAL_SSID_VALUE;
+            opt.textContent = {manual_text_js};
+            select.appendChild(opt);
+        }}
+
+        // Open the "My network isn't listed" details and focus the input the
+        // moment that option is picked, so the field the user now has to fill
+        // isn't hidden behind a collapsed disclosure they have to find.
+        function onSsidChange() {{
+            var select = document.getElementById('wifi-ssid');
+            var details = document.getElementById('manual-ssid');
+            var input = document.getElementById('wifi-ssid-manual');
+            if (!select || !details) return;
+            if (select.value === MANUAL_SSID_VALUE) {{
+                details.open = true;
+                if (input) input.focus();
+            }}
+        }}
+
+        // NEVER set select.disabled here. A disabled control is excluded from
+        // the form data set AND skipped by constraint validation, so a submit
+        // landing mid-refresh would POST no wifi_ssid at all — silently
+        // bypassing `required` and handing the server an empty pick. Swapping
+        // the options is enough to show the scan is running (/review, litclock-dev#580).
+        //
+        // The fetch is aborted after SCAN_TIMEOUT_MS because the phone-to-clock
+        // link is exactly the link that drops: with no timeout a hung scan
+        // leaves the picker reading "Scanning..." forever, inside a captive
+        // portal WebView that often has no visible reload control.
+        var SCAN_TIMEOUT_MS = 20000;
+
         function refreshNetworks() {{
             var select = document.getElementById('wifi-ssid');
             if (!select) return;
-            select.innerHTML = '<option value="">Scanning...</option>';
-            select.disabled = true;
+            resetSsidOptions(select, 'Scanning...');
+            appendManualOption(select);
 
-            fetch('/scan-wifi')
+            var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+            var timer = setTimeout(function() {{
+                if (ctrl) ctrl.abort();
+            }}, SCAN_TIMEOUT_MS);
+
+            fetch('/scan-wifi', ctrl ? {{signal: ctrl.signal}} : undefined)
                 .then(function(r) {{ return r.json(); }})
                 .then(function(networks) {{
-                    select.innerHTML = '';
                     if (networks.length === 0) {{
-                        select.innerHTML = '<option value="">No networks found</option>';
+                        resetSsidOptions(select, {placeholder_empty_js});
                     }} else {{
+                        resetSsidOptions(select, {placeholder_js});
+                        networks.sort(function(a, b) {{
+                            return (b.signal || 0) - (a.signal || 0);
+                        }});
                         networks.forEach(function(net) {{
                             var opt = document.createElement('option');
                             opt.value = net.ssid;
@@ -627,11 +822,14 @@ def _build_setup_html():
                             select.appendChild(opt);
                         }});
                     }}
-                    select.disabled = false;
+                    appendManualOption(select);
                 }})
                 .catch(function() {{
-                    select.innerHTML = '<option value="">Scan failed - try again</option>';
-                    select.disabled = false;
+                    resetSsidOptions(select, 'Scan failed - tap Refresh');
+                    appendManualOption(select);
+                }})
+                .then(function() {{
+                    clearTimeout(timer);
                 }});
         }}
     </script>
@@ -1103,7 +1301,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
             self.send_html(_build_cna_bridge_html())
 
         elif parsed.path == "/scan-wifi":
-            global _WIFI_SCAN_CACHE, _WIFI_SCAN_TIME
+            global _WIFI_SCAN_CACHE, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS
             import time
 
             # Serialize scans — multiple phones hitting /scan-wifi concurrently
@@ -1123,6 +1321,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                 networks = _filter_own_hotspot(networks)
                 if networks:
                     _WIFI_SCAN_CACHE = _build_wifi_options(networks)
+                    _WIFI_SCAN_SSIDS = _scanned_ssids(networks)
                     _WIFI_SCAN_TIME = time.monotonic()
             self.send_json(networks)
 
@@ -1172,8 +1371,66 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         # spawned below, after the resolver returns.
         wifi_ssid = params.get("wifi_ssid", [""])[0].strip()
 
+        # Hidden networks never appear in a scan, so the picker offers a
+        # sentinel option paired with a free-text field (litclock-dev#554).
+        # Resolved here, ahead of every check below, so the typed SSID gets
+        # the same own-network rejection, the same emptiness check and the
+        # same character validation as one picked from the list.
+        #
+        # .strip() is deliberate even though leading/trailing spaces are legal
+        # SSID bytes: a phone keyboard appends a space far more often than an
+        # AP is named with one, and the accidental case fails in a way the
+        # recipient cannot diagnose.
+        wifi_ssid_manual = params.get(MANUAL_SSID_FIELD, [""])[0].strip()
+        wifi_typed = False
+        if wifi_ssid == MANUAL_SSID_VALUE or (not wifi_ssid and wifi_ssid_manual):
+            # Arm 2 is NOT the no-JS user, despite what an earlier version of
+            # this comment claimed: `required` is HTML constraint validation,
+            # which browsers enforce with JavaScript off, so that user is
+            # blocked before the POST. What arm 2 actually catches is a submit
+            # landing while the dropdown is absent from the form data set —
+            # and taking the typed name there is strictly better than joining
+            # nothing. (The refresh path no longer disables the select, which
+            # was how that state used to arise. See the JS comment.)
+            wifi_ssid = wifi_ssid_manual
+            wifi_typed = True
+
+        # Remember a typed name so the retry render can echo it back. Set
+        # before any rejection below, so the page the user lands on after an
+        # error still shows what they typed.
+        if wifi_typed:
+            global WIFI_LAST_MANUAL_SSID
+            WIFI_LAST_MANUAL_SSID = wifi_ssid
+
         if PROVISIONING_MODE and not wifi_ssid:
-            self.send_html(HTML_ERROR.format(error="Please select a WiFi network"))
+            error = (
+                "Type the name of your WiFi network, or pick one from the list."
+                if wifi_typed
+                else "Please select a WiFi network"
+            )
+            self.send_html(HTML_ERROR.format(error=error))
+            return
+
+        # Control characters are rejected before the value reaches the journal,
+        # the e-ink splash or nmcli. An interior newline in a hand-typed SSID
+        # forges lines in a journal that ships Storage=persistent and gets
+        # collected into support bundles.
+        if PROVISIONING_MODE and SSID_FORBIDDEN.intersection(wifi_ssid):
+            self.send_html(HTML_ERROR.format(error="That network name contains characters a WiFi name can't have."))
+            return
+
+        # 802.11 caps the SSID at 32 bytes. Rejected here so an over-long
+        # value gets a sentence the recipient can act on, instead of nmcli's.
+        # "bytes", not "characters" — see SSID_MAX_BYTES.
+        if PROVISIONING_MODE and len(wifi_ssid.encode("utf-8")) > SSID_MAX_BYTES:
+            self.send_html(
+                HTML_ERROR.format(
+                    error=(
+                        f"That network name is too long - WiFi names are at most {SSID_MAX_BYTES} bytes "
+                        "(accented and non-Latin letters count as more than one)."
+                    )
+                )
+            )
             return
 
         # Never let the clock try to join its own setup hotspot. The picker
@@ -1182,11 +1439,29 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         # AP and fail (single-radio chip can't join the network it's hosting),
         # dumping the user into the connect-fail + hotspot-restart retry loop.
         # Reject up front with a clear message instead.
-        if PROVISIONING_MODE and HOTSPOT_SSID and wifi_ssid == HOTSPOT_SSID:
+        #
+        # casefold, not ==, because the free-text field is a HUMAN typing entry
+        # point straight past the dropdown filter, and the page directly above
+        # that field displays the hotspot name to them. A recipient who can't
+        # find their network has been handed exactly one network name and a
+        # text box; "litclock-setup" must not slip through (/review, litclock-dev#580).
+        if PROVISIONING_MODE and HOTSPOT_SSID and wifi_ssid.casefold() == HOTSPOT_SSID.casefold():
             self.send_html(
                 HTML_ERROR.format(error="That's the clock's own setup network. Pick your home or office WiFi instead.")
             )
             return
+
+        # `hidden yes` is NOT a per-attempt flag: nmcli writes
+        # 802-11-wireless.hidden=yes into the saved profile, so the clock then
+        # announces that SSID in cleartext probe requests on every scan, for
+        # the life of the install. Only ask for it when the radio genuinely
+        # cannot see the network — a name typed by hand that IS in the current
+        # scan is just a user who typed instead of scrolling, and does not
+        # deserve a permanent probe-request leak of their home SSID
+        # (/review, litclock-dev#580). When the scan is empty we have no evidence either
+        # way, and we err toward `hidden`: a needless probe leak is a smaller
+        # harm than a hidden network that cannot be joined at all.
+        wifi_hidden = wifi_typed and wifi_ssid.casefold() not in _WIFI_SCAN_SSIDS
 
         # Send success response BEFORE connecting to WiFi. On the Pi Zero 2W,
         # connecting to WiFi tears down the hotspot (single-radio chip can't
@@ -1248,7 +1523,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                     # P2.C: replace the stale hotspot QR with a progress splash
                     # while WiFi connects + IP-geo resolves (~30s).
                     _show_connecting_splash(wifi_ssid)
-                    success, error = connect_to_wifi(wifi_ssid, wifi_password)
+                    success, error = connect_to_wifi(wifi_ssid, wifi_password, hidden=wifi_hidden)
                     if not success:
                         # WiFi failed — on single-radio Pi, nmcli killed the hotspot
                         # when it tried to connect. Restore it so the phone can
