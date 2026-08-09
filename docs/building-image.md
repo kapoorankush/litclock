@@ -127,8 +127,8 @@ Replace `/dev/sdX` with your SD card device (check with `lsblk`).
 Insert the SD card into a Pi Zero 2W and power on, then check:
 
 1. **Splash screen** — "LitClock / Starting..." appears on the e-ink display
-2. **WiFi hotspot** — "LitClock-Setup" network becomes available
-3. **Phone setup** — connect to the hotspot, scan the QR code on the display, and submit the setup form (WiFi network and password only — location, timezone and units are detected automatically after the Pi joins your network)
+2. **Setup network** — "LitClock-Setup" becomes available in nearby WiFi lists
+3. **Phone setup** — join that network, scan the QR code on the display, and submit the setup form (WiFi network and password only — location, timezone and units are detected automatically after the Pi joins your network)
 4. **Clock starts** — after setup, the display updates every minute with a literary quote
 5. **Version metadata** — SSH in and verify:
    ```bash

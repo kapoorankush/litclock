@@ -1,5 +1,5 @@
 {% extends "base.html.j2" %}
-{# System tab — Restart + Power off action cards (#245 M4 Story 2.1).
+{# System tab — Restart + Power off action cards (litclock-dev#245 M4 Story 2.1).
 
    Each card renders a <form> with a server-issued single-use confirm
    token in a hidden input. Form posts to /api/system/{action}; the route
@@ -10,7 +10,7 @@
 
    Icons are simple stroke-based shapes that follow the locked DESIGN.md
    icon mapping (Restart=arrow-clockwise, Power off=power). Final Phosphor
-   swap is gated on issue #255 (good first issue, M2 follow-up).
+   swap is gated on issue litclock-dev#255 (good first issue, M2 follow-up).
 #}
 {% block title %}System — LitClock{% endblock %}
 
@@ -26,7 +26,7 @@
 {% endblock %}
 
 {% block content %}
-{# #317 item 7 — success / failure banners for the gift card writer (which
+{# litclock-dev#317 item 7 — success / failure banners for the gift card writer (which
    PRG-redirects back to /system?saved=gift). Mirrors the settings.html.j2
    pattern so users see the same confirmation on either tab. #}
 {% if saved_section %}
@@ -88,7 +88,7 @@
     </form>
   </article>
 
-  {# #245 M5 D1/D11 — Reset WiFi card.
+  {# litclock-dev#245 M5 D1/D11 — Reset WiFi card.
 
      Highest-blast destructive action: deletes ALL saved wifi profiles,
      drops the user back into firstboot AP-mode. Modal copy MUST clearly
@@ -123,7 +123,7 @@
     </form>
   </article>
 
-  {# #510 — Factory reset card. Full-wipe sibling of Reset WiFi: erases ALL
+  {# litclock-dev#510 — Factory reset card. Full-wipe sibling of Reset WiFi: erases ALL
      settings AND WiFi and reboots into first-boot setup. Modal copy MUST make
      the "everything, not just WiFi" distinction so a mover reaching for
      Reset WiFi doesn't nuke their preferences by mistake. #}
@@ -151,7 +151,7 @@
     </form>
   </article>
 
-  {# #317 item 7 — Prepare for Gifting moved here from /settings.
+  {# litclock-dev#317 item 7 — Prepare for Gifting moved here from /settings.
 
      Two-form card. The first form persists GIFT_MODE_MESSAGE to env.sh via
      the existing /settings (section=gift) PRG path so the gifter can
@@ -165,7 +165,7 @@
      uses the last-saved text. With JS, system.js syncs the live textarea
      value into the hidden field so unsaved edits are honored.
 
-     GIFT_MODE_MAX_LEN = 80 (#319). The renderer word-wraps to two lines at
+     GIFT_MODE_MAX_LEN = 80 (litclock-dev#319). The renderer word-wraps to two lines at
      the title font; a live counter in the card warns near the limit. #}
   <article class="action-card action-card--destructive action-card--gift" data-action="prepare_for_gift">
     <header class="action-card__header">
@@ -285,7 +285,7 @@
   </div>
 </dialog>
 
-{# #245 M5 D1/D11/D12 — Reset WiFi confirm modal.
+{# litclock-dev#245 M5 D1/D11/D12 — Reset WiFi confirm modal.
 
    Copy MUST distinguish "WiFi only" from "factory reset" or a gift-
    transfer user panics. D12 lock: ALL saved wifi profiles get wiped (not
@@ -302,7 +302,7 @@
     <h2 id="confirm-wifi-reset-title" class="confirm-sheet__title">Reset WiFi?</h2>
     <p id="confirm-wifi-reset-body" class="confirm-sheet__body">
       <strong>Only your WiFi</strong> will be cleared. Your location, weather, and gift settings stay saved.
-      You’ll connect your phone to the <strong>LitClock-Setup</strong> hotspot to enter new WiFi.
+      You’ll join the <strong>LitClock-Setup</strong> network from your phone’s WiFi list to enter new WiFi.
     </p>
     <div class="confirm-sheet__actions">
       <button type="button" class="confirm-sheet__cancel" data-modal-cancel>Cancel</button>
@@ -311,7 +311,7 @@
   </div>
 </dialog>
 
-{# #510 — Factory reset confirm modal. Consequence copy per DESIGN.md
+{# litclock-dev#510 — Factory reset confirm modal. Consequence copy per DESIGN.md
    "Confirm dialogs" (one-line consequence, destructive text-link + filled
    confirm). MUST say "everything", not just WiFi, so it reads as distinct
    from the Reset WiFi sheet directly above. #}
@@ -325,8 +325,8 @@
     <h2 id="confirm-factory-reset-title" class="confirm-sheet__title">Factory reset?</h2>
     <p id="confirm-factory-reset-body" class="confirm-sheet__body">
       <strong>Everything</strong> will be erased — all settings and WiFi — and the clock
-      reboots into setup. This can’t be undone. You’ll set it up again from your phone via
-      the <strong>LitClock-Setup</strong> hotspot.
+      reboots into setup. This can’t be undone. You’ll set it up again by joining the
+      <strong>LitClock-Setup</strong> network from your phone’s WiFi list.
     </p>
     <div class="confirm-sheet__actions">
       <button type="button" class="confirm-sheet__cancel" data-modal-cancel>Cancel</button>
@@ -335,7 +335,7 @@
   </div>
 </dialog>
 
-{# #317 item 7 — Prepare for Gifting confirm modal. Copy verbatim from
+{# litclock-dev#317 item 7 — Prepare for Gifting confirm modal. Copy verbatim from
    DESIGN.md "Confirm modals — copy library" (moved here from settings.html.j2). #}
 <dialog class="confirm-sheet"
         role="alertdialog"

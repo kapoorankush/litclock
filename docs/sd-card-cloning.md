@@ -42,7 +42,7 @@ sudo dd if=litclock.img of=/dev/sdX bs=4M status=progress
 
 When they insert the cloned card and power on:
 1. Display shows "Welcome!"
-2. If no WiFi: they connect phone to "LitClock-Setup" hotspot
+2. If no WiFi: they join the "LitClock-Setup" network from their phone
 3. Display shows QR code to scan
 4. They fill out the form with their location and API key
 5. Clock starts!

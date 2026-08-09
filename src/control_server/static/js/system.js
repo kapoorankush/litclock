@@ -1,4 +1,4 @@
-/* System tab interactivity (#245 M4 — Stories 2.2 + 3.1).
+/* System tab interactivity (litclock-dev#245 M4 — Stories 2.2 + 3.1).
  *
  * Progressive enhancement: action cards in system.html.j2 render as plain
  * <form> elements that POST to /api/system/{action} with a hidden confirm
@@ -23,7 +23,7 @@
 (function () {
   'use strict';
 
-  // #317 item 7 — Prepare-for-Gifting wiring (moved from settings.js).
+  // litclock-dev#317 item 7 — Prepare-for-Gifting wiring (moved from settings.js).
   //
   // Two pieces of progressive enhancement for the gift card:
   //
@@ -35,14 +35,14 @@
   //     the Prepare button. No-JS clients get the server-rendered persisted
   //     draft, which is the right fallback.
   //
-  // (b) Live character counter — #319 fix. The textarea has maxlength=80 so
+  // (b) Live character counter — litclock-dev#319 fix. The textarea has maxlength=80 so
   //     the browser silently stops accepting input at the cap, but the
   //     user has no idea where they are until they hit it. The counter
   //     updates on `input`, turns warning at ≥80% (64), and treats the
   //     hard cap (80) as the error point. aria-live=polite on the element
   //     announces the count to screen readers without spamming.
   //
-  //     #317 item 3 codex follow-up: the server-side validator caps
+  //     litclock-dev#317 item 3 codex follow-up: the server-side validator caps
   //     GIFT_MODE_MESSAGE at 80 CODEPOINTS AND 80 BYTES (the byte cap
   //     mirrors reset-setup.sh's os.read(fd, 80) byte-bound consumer).
   //     A codepoint-only counter would stay green for 79 ASCII + 1 emoji
@@ -70,7 +70,7 @@
     // returns UTF-16 code units, so a single emoji counts as 2 and would
     // make the counter show "is-at-limit" red at 40 emoji while Python's
     // validator (which uses len(value) = codepoints) still passes 80.
-    // Adversarial /review caught this mirror of #317 item 3.
+    // Adversarial /review caught this mirror of litclock-dev#317 item 3.
     var codepointLength = function (s) {
       return Array.from(s).length;
     };
@@ -131,7 +131,7 @@
     dialogs[dialog.dataset.action] = dialog;
   });
 
-  // #305: open the confirm sheet so the slide-up keyframe actually fires
+  // litclock-dev#305: open the confirm sheet so the slide-up keyframe actually fires
   // on iOS Safari pre-17.5. Native <dialog>.showModal() flips
   // display:none → block AND promotes the element into the top layer in
   // the same paint, so a CSS keyframe gated on `[open]` never observes
@@ -141,7 +141,7 @@
   // animates `.is-opening` instead of `[open]`. The close listener
   // strips the class so a re-open re-triggers the animation.
   //
-  // Defensive guards (codex /review on #305 PR):
+  // Defensive guards (codex /review on litclock-dev#305 PR):
   //   1. Strip `.is-opening` BEFORE showModal so a stale class from a
   //      prior interrupted open doesn't suppress the current animation.
   //   2. Check `dialog.open` inside the rAF callback so a user who taps
@@ -218,7 +218,7 @@
     postAction(form, action, tokenInput, false);
   }
 
-  // #317 item 1 (TTL-expiry-mid-typing half): on a 401 with the SPECIFIC
+  // litclock-dev#317 item 1 (TTL-expiry-mid-typing half): on a 401 with the SPECIFIC
   // ``confirm_token_expired`` slug for prepare_for_gift, mint a fresh
   // token via /api/system/confirm-token and replay the action POST
   // exactly once. The slow-drafter path — open /system, type a message,
@@ -229,7 +229,7 @@
   // expired token there is a real staleness signal worth surfacing
   // rather than silently papering over.
   //
-  // #317 item 1 codex P2 follow-up — the server now distinguishes three
+  // litclock-dev#317 item 1 codex P2 follow-up — the server now distinguishes three
   // token failure modes (`confirm_token_expired` 401, `confirm_token_consumed`
   // 409, `confirm_token_invalid` 401). The refresh-and-retry path gates
   // on `confirm_token_expired` ONLY. A `confirm_token_consumed` response
@@ -246,7 +246,7 @@
   // failures (network, 5xx, malformed body) likewise fall through —
   // never silently swallow.
   function postAction(form, action, tokenInput, retried) {
-    // #316 /review CRITICAL fix — include every additional hidden field
+    // litclock-dev#316 /review CRITICAL fix — include every additional hidden field
     // beyond `token` in the JSON body so destructive forms can carry
     // action-specific state. Prepare-for-Gifting needs `message`; without
     // this loop the JS path always submitted an empty message, defeating
@@ -255,7 +255,7 @@
     // (reboot/poweroff/wifi_reset) only ship `token`, so the loop is a
     // no-op there; this future-proofs any later action that needs more.
     //
-    // #319 hardware-QA fix: the destructive Prepare form's `message` field
+    // litclock-dev#319 hardware-QA fix: the destructive Prepare form's `message` field
     // is a `<textarea hidden>` (not a hidden `<input>`) so newlines
     // round-trip on the no-JS path. The original `input[type="hidden"]`
     // selector missed it, so the JS path shipped an empty message and the
@@ -290,9 +290,9 @@
           .json()
           .then(function (body) {
             var code = body && body.error && body.error.code;
-            // #317 item 1: refresh-and-retry once on TTL expiry,
+            // litclock-dev#317 item 1: refresh-and-retry once on TTL expiry,
             // prepare_for_gift only. Gated on the SPECIFIC
-            // `confirm_token_expired` slug (#317 item 1 codex P2)
+            // `confirm_token_expired` slug (litclock-dev#317 item 1 codex P2)
             // so a `confirm_token_consumed` double-submit cannot
             // bypass the single-use guard via this branch.
             if (
@@ -304,7 +304,7 @@
               refreshTokenAndRetry(form, action, tokenInput, body);
               return;
             }
-            // #317 item 1 codex P2 — explicit `confirm_token_consumed`
+            // litclock-dev#317 item 1 codex P2 — explicit `confirm_token_consumed`
             // branch. The destructive action was ALREADY submitted (in
             // flight elsewhere, or the form was resubmitted from a
             // bfcached page). Surface a specific message and STOP — do
@@ -405,7 +405,7 @@
     }
 
     if (action === 'wifi_reset') {
-      // Reset-WiFi handoff (#245 M5 D11). The litclock-wifi-reset.service
+      // Reset-WiFi handoff (litclock-dev#245 M5 D11). The litclock-wifi-reset.service
       // unit drops the LAN and restarts firstboot.service which brings up
       // the LitClock-Setup hotspot. There's no point polling /api/health
       // — control_server is being stopped. Just show terminal handoff
@@ -416,7 +416,7 @@
     }
 
     if (action === 'factory_reset') {
-      // #510 — Factory reset handoff. litclock-reset.service wipes config +
+      // litclock-dev#510 — Factory reset handoff. litclock-reset.service wipes config +
       // WiFi and reboots into first-boot (the LitClock-Setup hotspot). Like
       // wifi_reset, the LAN drops and control_server goes down, so show
       // terminal handoff copy rather than polling /api/health.
@@ -425,7 +425,7 @@
     }
 
     if (action === 'prepare_for_gift') {
-      // #316 /review CRITICAL fix — Prepare-for-Gifting handoff. The
+      // litclock-dev#316 /review CRITICAL fix — Prepare-for-Gifting handoff. The
       // litclock-prepare-for-gift.service unit wipes WiFi, paints the
       // welcome on the e-ink, then powers the device off. Like
       // wifi_reset, there's no point polling /api/health — the box is
@@ -456,15 +456,15 @@
   }
 
   function renderResetWifiCard(main) {
-    // #245 M5 D11 — terminal handoff copy. No health-poll: by the time
+    // litclock-dev#245 M5 D11 — terminal handoff copy. No health-poll: by the time
     // this renders, litclock-wifi-reset.service has either started OR is
     // about to start, and the LAN is going away regardless. The user has
-    // to switch their phone over to the LitClock-Setup hotspot.
+    // to switch their phone over to the LitClock-Setup network.
     main.innerHTML =
       '<section class="reconnect-state" role="status" aria-live="polite" data-state="wifi-reset">' +
       '  <h2 class="reconnect-state__title"><em>Switching to setup mode…</em></h2>' +
       '  <p class="reconnect-state__body">' +
-      '    Connect your phone to the <strong>LitClock-Setup</strong> hotspot, then enter your new WiFi.' +
+      '    Join <strong>LitClock-Setup</strong> from your phone&rsquo;s WiFi list, then enter your new WiFi.' +
       '  </p>' +
       '  <p class="reconnect-state__body">' +
       '    Your location, weather, and gift settings stay saved.' +
@@ -473,7 +473,7 @@
   }
 
   function renderFactoryResetCard(main) {
-    // #510 — terminal handoff copy. No health-poll: litclock-reset.service is
+    // litclock-dev#510 — terminal handoff copy. No health-poll: litclock-reset.service is
     // wiping config + WiFi and rebooting into setup, so the LAN is going away.
     // Distinct from wifi-reset — this wiped EVERYTHING, so no "settings stay
     // saved" reassurance line.
@@ -484,13 +484,13 @@
       '    The clock is erasing its settings and rebooting into setup.' +
       '  </p>' +
       '  <p class="reconnect-state__body">' +
-      '    Connect your phone to the <strong>LitClock-Setup</strong> hotspot to set it up again.' +
+      '    Join <strong>LitClock-Setup</strong> from your phone&rsquo;s WiFi list to set it up again.' +
       '  </p>' +
       '</section>';
   }
 
   function renderPrepareForGiftCard(main) {
-    // #316 — terminal handoff copy. The device is paining the welcome
+    // litclock-dev#316 — terminal handoff copy. The device is paining the welcome
     // splash on the e-ink, wiping WiFi, and powering off. No health-poll
     // is meaningful here — the box is going down for good (until the
     // recipient unboxes + plugs back in).

@@ -1,5 +1,7 @@
 """Tests for setup_server module — IP-geo resolver, timezone helper, captive portal API."""
 
+import pathlib
+import re
 import subprocess
 
 import pytest
@@ -45,7 +47,7 @@ class TestSetSystemTimezone:
         assert "not found" in err.lower()
 
 
-# ── _update_env_location (EPIC #383 kwargs API) ───────────────────────
+# ── _update_env_location (EPIC litclock-dev#383 kwargs API) ───────────────────────
 
 
 class TestUpdateEnvLocation:
@@ -77,7 +79,7 @@ class TestUpdateEnvLocation:
         assert "WEATHER_UNITS=imperial" in content
 
     def test_writes_weather_location_name_separately(self, tmp_env_file, monkeypatch):
-        """T3 / #380 regression: WEATHER_LOCATION_NAME must be written when
+        """T3 / litclock-dev#380 regression: WEATHER_LOCATION_NAME must be written when
         location_name is supplied. The pre-pivot writer skipped this key,
         which is why the Status tab showed raw coords after first-boot."""
         monkeypatch.setattr(setup_server, "ENV_FILE", tmp_env_file)
@@ -176,7 +178,7 @@ class TestUpdateEnvLocation:
         validator. The function prints a warning but does not raise, since
         it runs in a background thread where uncaught exceptions disappear.
 
-        A valid timezone is passed so the call clears the #393 "coords without
+        A valid timezone is passed so the call clears the litclock-dev#393 "coords without
         a tz" guard and actually reaches atomic_update's validator — the thing
         this test is pinning."""
         monkeypatch.setattr(setup_server, "ENV_FILE", tmp_env_file)
@@ -193,7 +195,7 @@ class TestUpdateEnvLocation:
         assert before == after
 
     def test_skips_coords_when_timezone_unresolved(self, tmp_env_file, monkeypatch):
-        """#393: coordinates must NOT be persisted without a resolved timezone.
+        """litclock-dev#393: coordinates must NOT be persisted without a resolved timezone.
         handoff.timezone_known() reads "tz correct" off a populated
         WEATHER_LATITUDE, so writing lat/lon with timezone=None would falsely
         pass the handoff gate and start a wrong-time clock. With no tz the writer
@@ -226,7 +228,7 @@ class TestUpdateEnvLocation:
         assert "WEATHER_LONGITUDE=-97.74" not in content
 
     def test_skips_partial_coords_even_with_timezone(self, tmp_env_file, monkeypatch):
-        """#393 (review follow-up): a single-axis coord (lat present, lon
+        """litclock-dev#393 (review follow-up): a single-axis coord (lat present, lon
         missing) must NOT be written, even with a tz. handoff.py:_has_location
         needs BOTH axes but litclock-handoff-fallback.sh checks latitude alone —
         a lat-only env state would fool the shell fallback into completing the
@@ -249,7 +251,7 @@ class TestUpdateEnvLocation:
         assert "WEATHER_LATITUDE=30.27" not in content
 
     def test_timezone_only_write_still_allowed(self, tmp_env_file, monkeypatch):
-        """#393 guard must NOT block the PATCH-semantics tz-only write. The
+        """litclock-dev#393 guard must NOT block the PATCH-semantics tz-only write. The
         resolver docstring supports handing off "only timezone resolved" state
         (tz set, no coords): set_system_timezone runs, and a units update (no
         coords) still lands. The guard only fires for coords-without-tz."""
@@ -265,7 +267,7 @@ class TestUpdateEnvLocation:
         assert "WEATHER_UNITS=imperial" in content
 
 
-# ── _resolve_location_from_ip (EPIC #383 IP-geo retry pipeline) ──────
+# ── _resolve_location_from_ip (EPIC litclock-dev#383 IP-geo retry pipeline) ──────
 
 
 class TestResolveDeferredLocation:
@@ -285,7 +287,7 @@ class TestResolveDeferredLocation:
     def _stub_update_env_location(self, monkeypatch):
         """Capture the kwargs the resolver hands to _update_env_location.
 
-        #337 A4 extracted the resolver to location_resolver.py; the writer
+        litclock-dev#337 A4 extracted the resolver to location_resolver.py; the writer
         now also receives ``mode`` and ``ip_country`` kwargs (A1 + A6.1).
         ``**kwargs`` here keeps the legacy assertions working while letting
         the new-test cases inspect the new kwargs explicitly (see the
@@ -562,7 +564,7 @@ class TestResolveDeferredLocation:
         )
 
     def test_propagates_none_tz_when_fallback_also_fails(self, monkeypatch, tmp_env_file):
-        """#393: when ip-api returns coords with no timezone AND the offline
+        """litclock-dev#393: when ip-api returns coords with no timezone AND the offline
         timezone_from_coords fallback also returns None (degenerate/edge coords),
         the resolver must hand timezone=None to _update_env_location rather than
         fabricating a tz. The writer then skips the coord write (covered by
@@ -645,7 +647,7 @@ class TestResolveDeferredLocation:
         assert len(calls) == 1
 
 
-# ── _build_setup_html regression (T9 — EPIC #383 hotspot HTML shape) ──
+# ── _build_setup_html regression (T9 — EPIC litclock-dev#383 hotspot HTML shape) ──
 
 
 class TestSetupHtmlPivotShape:
@@ -720,7 +722,7 @@ class TestSetupHtmlPivotShape:
         import inspect
 
         src = inspect.getsource(setup_server.SetupHandler.do_GET)
-        assert "/geocode" not in src, "/geocode endpoint should be removed in EPIC #383"
+        assert "/geocode" not in src, "/geocode endpoint should be removed in EPIC litclock-dev#383"
 
 
 # ── WiFi scan caching ─────────────────────────────────────────────
@@ -944,7 +946,7 @@ class TestCnaBridge:
         assert setup_server.HOTSPOT_GATEWAY_IP in html
 
     def test_bridge_copy_is_browser_generic_not_safari(self):
-        """#482: on-screen setup copy must not name Safari (wrong on Android /
+        """litclock-dev#482: on-screen setup copy must not name Safari (wrong on Android /
         any non-iOS phone) — it should point at the generic 'browser'. Also
         must not quote a specific button label (/review: iOS's actual CNA
         escape button says "Open in Safari", so a quoted "Open in Browser"
@@ -974,38 +976,43 @@ class TestCnaBridge:
 class TestWifiErrorBanner:
     def test_banner_mentions_rescan_fallback(self, monkeypatch):
         """The red error banner must tell the user what to do if the setup
-        page doesn't auto-reload — phones auto-disconnect from the hotspot
-        during the failed WiFi attempt, so the browser won't see the error
-        until they rescan the QR code and rejoin. Without this instruction
-        the user is stuck staring at a stale loading page."""
+        page doesn't auto-reload — phones auto-disconnect from the clock's
+        setup network during the failed WiFi attempt, so the browser won't
+        see the error until they rescan the QR code and rejoin. Without this
+        instruction the user is stuck staring at a stale loading page."""
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", "wrong password")
         html = setup_server._build_setup_html()
         assert "rescan" in html.lower()
         assert "qr" in html.lower()
-        assert "hotspot has restarted" in html.lower()
+        assert "own network has restarted" in html.lower()
+        # litclock-dev#555: "hotspot" reads as an instruction about the
+        # user's OWN phone (iOS Personal Hotspot), i.e. the opposite
+        # direction of travel. It must not creep back into user-facing copy.
+        assert "hotspot" not in html.lower()
 
-    def test_banner_distinguishes_wifi_from_hotspot_password(self, monkeypatch):
-        """The banner must explicitly call out the WiFi password vs the
-        hotspot password so a user staring at the visible hotspot password
-        on the clock doesn't type that one into the WiFi password field.
+    def test_banner_distinguishes_wifi_from_setup_network_password(self, monkeypatch):
+        """The banner must explicitly call out the user's WiFi password vs
+        the one printed on the clock, so a user staring at the visible setup
+        password doesn't type that one into the WiFi password field.
 
-        EPIC #383 dropped the 'home' qualifier (which was scary jargon for
-        non-tech users — issue #384) but the WiFi-vs-hotspot disambiguation
-        is still load-bearing copy."""
+        EPIC litclock-dev#383 dropped the 'home' qualifier (which was scary jargon for
+        non-tech users — issue litclock-dev#384); litclock-dev#555 dropped "hotspot"
+        for the same reason. The disambiguation itself is still
+        load-bearing copy — only the word for it changed."""
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", "wrong password")
         html = setup_server._build_setup_html()
         assert "wifi password" in html.lower()
-        assert "hotspot password shown on the clock" in html.lower()
+        assert "password shown on the clock" in html.lower()
         # Regression: the dropped "home" qualifier must not creep back in.
         assert "home wifi" not in html.lower()
 
     def test_wifi_form_field_label_no_home_qualifier(self, monkeypatch):
         """The WiFi password input label must say 'Your WiFi Password' (no
-        'Home' qualifier per #384). The hotspot-vs-WiFi cue lives in the
+        'Home' qualifier per litclock-dev#384). The hotspot-vs-WiFi cue lives in the
         error banner, not the field label."""
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
@@ -1016,7 +1023,7 @@ class TestWifiErrorBanner:
 
 
 class TestSetupPagePickerCopy:
-    """Issue #398: hardware QA with a non-tech user showed they did not
+    """Issue litclock-dev#398: hardware QA with a non-tech user showed they did not
     realize they were supposed to pick their OWN home/office WiFi from
     the dropdown — the page gave no guidance, and "LitClock-Setup" looked
     like a selectable option. The code half (hotspot filter) shipped in
@@ -1096,7 +1103,7 @@ class TestSetupPagePickerCopy:
 
     def test_picker_section_explains_which_wifi(self, monkeypatch):
         """An explainer next to the dropdown must tell the user which
-        network this is — explicitly NOT the LitClock-Setup hotspot. The
+        network this is — explicitly NOT the LitClock-Setup network. The
         hotspot SSID is filtered from the dropdown (litclock-dev#397), but a user
         who doesn't read the explainer might still scan the page looking
         for "LitClock-Setup" and get confused when they don't see it.
@@ -1112,8 +1119,8 @@ class TestSetupPagePickerCopy:
         # exercises the parameterized-SSID interpolation in the explainer.
         monkeypatch.setattr(setup_server, "HOTSPOT_SSID", "LitClock-Setup")
         html = setup_server._build_setup_html()
-        # The explainer must call out the LitClock-Setup hotspot by name,
-        # not just "the hotspot" (which is hand-wavy for a first-time user).
+        # The explainer must call out LitClock-Setup by name, not just
+        # "the setup network" (hand-wavy for a first-time user).
         # Scope the assertion to the WiFi section using the surrounding
         # HTML comments as boundaries (the section has nested <div>s, so
         # a non-greedy </div> regex stops at the wrong close tag).
@@ -1121,7 +1128,14 @@ class TestSetupPagePickerCopy:
         end = html.find("<!-- Submit -->", start)
         assert start != -1 and end != -1, "WiFi/Submit markers missing — boundaries unclear"
         section = re.sub(r"\s+", " ", html[start:end])
-        assert "LitClock-Setup hotspot" in section, "picker explainer must name the hotspot inside the WiFi section"
+        # Comma-free anchor. The earlier "Not LitClock-Setup," pinned an
+        # appositive that reads at least as naturally as a contrastive
+        # ("not A, [but] B") — which turns one network into two, the exact
+        # confusion this issue exists to remove.
+        assert "Not the LitClock-Setup network" in section, (
+            "picker explainer must name the setup network, unambiguously, inside the WiFi section"
+        )
+        assert "Not LitClock-Setup," not in section, "the comma-appositive form is ambiguous; use a single noun phrase"
         # The "phone normally uses" anchor must repeat near the picker
         # (the subtitle test already covers the subtitle copy of this
         # phrase; here we pin the duplication inside the picker block).
@@ -1148,27 +1162,29 @@ class TestSetupPagePickerCopy:
         end = html.find("<!-- Submit -->", start)
         assert start != -1 and end != -1
         section = re.sub(r"\s+", " ", html[start:end])
-        assert "Brand &amp; Co Setup hotspot" in section, "custom SSID must appear in the explainer, HTML-escaped"
+        assert "Not the Brand &amp; Co Setup network" in section, (
+            "custom SSID must appear INSIDE the disambiguation sentence, HTML-escaped"
+        )
         # And the raw (unescaped) ampersand must NOT leak — that would
         # signal a missing escape.
-        assert "Brand & Co Setup hotspot" not in section, "raw & in SSID must be HTML-escaped before interpolation"
+        assert "Brand & Co Setup" not in section, "raw & in SSID must be HTML-escaped before interpolation"
 
-    def test_password_helper_calls_out_hotspot_disambiguation(self, monkeypatch):
+    def test_password_helper_calls_out_password_disambiguation(self, monkeypatch):
         """The helper under the password input must call out the
-        hotspot-vs-WiFi password distinction up-front, not just in the
-        error banner. The visible hotspot password is on the e-ink in
-        front of the user; typing it in is the natural first attempt.
-        Wording must align with the error banner's "hotspot password
-        shown on the clock" so the two surfaces don't drift."""
+        clock's-password-vs-WiFi-password distinction up-front, not just in
+        the error banner. The setup password is on the e-ink in front of the
+        user; typing it in is the natural first attempt. Wording must align
+        with the error banner's "password shown on the clock" so the two
+        surfaces don't drift."""
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", None)
         html = setup_server._build_setup_html()
         # Aligned with the error banner's exact phrasing — both surfaces
         # describe the SAME password to the SAME user; divergent wording
-        # ("temporary" vs "hotspot") would confuse a non-tech user who
+        # ("temporary" vs "setup") would confuse a non-tech user who
         # sees both on a failed-then-retry sequence.
-        assert "hotspot password shown on the clock" in html.lower()
+        assert "password shown on the clock" in html.lower()
         # And it must keep the open-network escape hatch (a fraction of
         # users do have unsecured WiFi).
         assert "open networks" in html.lower()
@@ -1348,7 +1364,7 @@ class TestCaptivePortalProbeRouting:
         assert "status=302" in out
 
     def test_probe_logs_host_ua_path_diagnostic_in_provisioning(self, capsys, monkeypatch):
-        """#483: the access log records only the request line + status, so a
+        """litclock-dev#483: the access log records only the request line + status, so a
         'portal didn't auto-open' phone repro can't tell which host/UA iOS
         probed. In provisioning mode the probe handler must log Host + path +
         User-Agent so the next repro pins exactly what the phone asked for."""
@@ -1525,7 +1541,7 @@ class TestDoGetCaptivePortalDispatch:
         """The wispr client following the cna-302 Location must land on a
         200 bridge, never another 302 — a redirect loop here means the CNA
         sheet never opens, and CI is the only guard (iOS captive behavior
-        can't be simulated). Pins the loop-termination invariant of #526."""
+        can't be simulated). Pins the loop-termination invariant of litclock-dev#526."""
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
         handler = _make_do_get_handler("/cna", "10.42.0.1")
         ua = "CaptiveNetworkSupport-514.120.2 wispr"
@@ -1549,7 +1565,7 @@ class TestDoGetCaptivePortalDispatch:
         """A detection probe from a host/path outside the known sets must
         still get the DNS-free /cna redirect from the provisioning
         catch-all, not the litclock.setup Location whose DNS-dependent
-        shape is what iOS 26 distrusts (#526 /review F5)."""
+        shape is what iOS 26 distrusts (litclock-dev#526 /review F5)."""
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
         handler = _make_do_get_handler("/some-future-probe", "netcts.cdn-apple.com")
         ua = "CaptiveNetworkSupport-514.120.2 wispr"
@@ -1664,11 +1680,11 @@ class TestRestoreHotspot:
         create_hotspot.assert_not_called()
 
 
-# ── _schedule_self_terminate helper (#364) ──────────────────────────
+# ── _schedule_self_terminate helper (litclock-dev#364) ──────────────────────────
 
 
 class TestScheduleSelfTerminate:
-    """Unit tests for the SIGTERM-scheduling helper introduced in #364.
+    """Unit tests for the SIGTERM-scheduling helper introduced in litclock-dev#364.
 
     Centralizes the daemon-thread + os.kill pattern so the no-WiFi branch
     and the WiFi-connect success path share one tested implementation
@@ -1762,7 +1778,7 @@ class TestScheduleSelfTerminate:
         assert kill_calls[-1] == (os.getpid(), signal_mod.SIGTERM)
 
 
-# ── signal_completion bool return (#364 D4, codex post-review fix) ──
+# ── signal_completion bool return (litclock-dev#364 D4, codex post-review fix) ──
 
 
 class TestSignalCompletionReturnsBool:
@@ -1817,12 +1833,12 @@ class TestSignalCompletionReturnsBool:
         assert setup_server.signal_completion() is True
 
 
-# ── Structural / regression-prevention pins (#364) ──────────────────
+# ── Structural / regression-prevention pins (litclock-dev#364) ──────────────────
 
 
 class TestSetupServerStructuralInvariants:
     """Pins that future refactors cannot silently re-introduce the bug
-    class fixed in #364. These run against the on-disk source — they
+    class fixed in litclock-dev#364. These run against the on-disk source — they
     do not exercise runtime behavior, but they fail loudly if the
     helper indirection is undone."""
 
@@ -1874,7 +1890,7 @@ class TestSetupServerStructuralInvariants:
         assert offending == [], (
             f"Bare os.kill() found outside _schedule_self_terminate at lines: {offending}. "
             f"Route through _schedule_self_terminate to preserve the SIGTERM-ordering "
-            f"invariant (#364)."
+            f"invariant (litclock-dev#364)."
         )
 
     def test_delayed_shutdown_function_removed(self):
@@ -1899,7 +1915,7 @@ class TestSetupServerStructuralInvariants:
         delete the invariant comment.
         """
         doc = setup_server._schedule_self_terminate.__doc__ or ""
-        assert "#364" in doc, "helper docstring must reference issue #364"
+        assert "litclock-dev#364" in doc, "helper docstring must reference issue litclock-dev#364"
         assert "reset_state" in doc, "helper docstring must reference reset_state"
         assert "IN_FLIGHT" in doc, "helper docstring must reference IN_FLIGHT"
 
@@ -2320,3 +2336,150 @@ class TestSentinelCollision:
             [{"ssid": setup_server.MANUAL_SSID_VALUE, "signal": 90, "security": "WPA2"}]
         )
         assert result.count(f'value="{setup_server.MANUAL_SSID_VALUE}"') == 2
+
+
+class TestNoHotspotJargonInUserFacingCopy:
+    """litclock-dev#555. "Hotspot" is genuinely ambiguous in consumer usage:
+    on iOS the word appears as *Personal Hotspot*, a thing YOU turn on to
+    share YOUR connection; Android labels it *Hotspot & tethering*. So the
+    one place a phone owner has already met the word teaches the opposite
+    direction of travel from what we mean — join a network the clock is
+    already broadcasting.
+
+    A per-string assertion in each copy test would leave gaps; these sweep
+    whole rendered surfaces, which is what catches the next well-meaning
+    copy edit that reaches for the familiar word. Code comments and
+    internal identifiers are untouched and out of scope — only what a
+    recipient reads.
+
+    These cover setup_server ONLY. The cross-module surfaces — the e-ink
+    splash, first-boot.sh's painted titles, and the control_server route
+    messages — are swept by TestNoHotspotJargonAcrossSurfaces below. An
+    earlier version of this docstring claimed to sweep "whole rendered
+    surfaces" while reaching one module family, which is precisely how
+    "Hotspot Failed" and two API messages shipped green.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _provisioning(self, monkeypatch):
+        import sys
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        monkeypatch.setattr(setup_server, "HOTSPOT_SSID", "LitClock-Setup")
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_CACHE", None)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_TIME", 0)
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: [{"ssid": "FakeHomeNet", "signal": 75, "security": "WPA2"}]
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+
+    @staticmethod
+    def _copy_only(html):
+        """Strip <option> elements before sweeping.
+
+        The page interpolates scanned SSIDs into the dropdown, and a
+        neighbour is perfectly entitled to broadcast "xfinitywifi Hotspot".
+        Asserting over the raw page asserts a property of scan DATA, not of
+        our copy — it would flip red for a non-defect the moment anyone made
+        the scan mock realistic."""
+        return re.sub(r"<option\b.*?</option>", "", html, flags=re.S)
+
+    def test_setup_page_is_clean(self, monkeypatch):
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", None)
+        assert "hotspot" not in self._copy_only(setup_server._build_setup_html()).lower()
+
+    def test_a_neighbours_ssid_containing_the_word_is_not_a_failure(self, monkeypatch):
+        """Pins the scoping above: our copy is clean, their SSID is theirs."""
+        import sys
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", None)
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: [{"ssid": "xfinitywifi Hotspot", "signal": 60, "security": "WPA2"}]
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+        html = setup_server._build_setup_html()
+        assert "xfinitywifi Hotspot" in html, "the neighbour's network must still be offered"
+        assert "hotspot" not in self._copy_only(html).lower()
+
+    def test_setup_page_with_error_banner_is_clean(self, monkeypatch):
+        """The retry path is where the word did the most damage — the user
+        has already failed once and is re-reading every word."""
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", "Incorrect WiFi password")
+        assert "hotspot" not in self._copy_only(setup_server._build_setup_html()).lower()
+
+    def test_cna_bridge_page_is_clean(self):
+        assert "hotspot" not in setup_server._build_cna_bridge_html().lower()
+
+    def test_success_and_error_templates_are_clean(self):
+        assert "hotspot" not in setup_server.HTML_SUCCESS.lower()
+        assert "hotspot" not in setup_server.HTML_ERROR.lower()
+
+
+class TestNoHotspotJargonAcrossSurfaces:
+    """The cross-module half of the sweep (litclock-dev#555).
+
+    TestNoHotspotJargonInUserFacingCopy reaches setup_server only. Review
+    found three surfaces it could not see, each of which shipped green:
+    `scripts/first-boot.sh` painting "Hotspot Failed" to the SAME e-ink panel
+    as the reworded labels, and the two control_server route messages that
+    back the reworded PWA cards on the no-JS form-POST path.
+
+    A recipient can meet the e-ink panel, the captive portal, the PWA and
+    the API messages inside one setup session. One vocabulary or none.
+    """
+
+    REPO = pathlib.Path(__file__).resolve().parent.parent
+
+    def test_eink_splash_copy_is_clean(self):
+        import eink_display
+
+        surfaces = [eink_display.SETUP_LABEL_NETWORK, eink_display.SETUP_LABEL_PASSWORD]
+        for is_retry in (False, True):
+            surfaces += eink_display.setup_instruction_lines("10.42.0.1", is_retry=is_retry)
+        for text in surfaces:
+            assert "hotspot" not in text.lower(), text
+
+    def test_first_boot_painted_titles_are_clean(self):
+        """`display_message`/`display_qr` arguments land on the panel via
+        `eink_display.py status`. This is the check whose absence let
+        "Hotspot Failed" survive the first pass."""
+        script = (self.REPO / "scripts" / "first-boot.sh").read_text()
+        painted = re.findall(r'display_(?:message|qr)\s+"([^"]*)"', script)
+        assert painted, "no painted titles found — the regex has drifted from the script"
+        offenders = [t for t in painted if "hotspot" in t.lower()]
+        assert not offenders, offenders
+
+    def test_first_boot_console_banner_is_clean(self):
+        """/etc/issue is the HDMI-console twin of the panel labels."""
+        script = (self.REPO / "scripts" / "first-boot.sh").read_text()
+        banner = re.findall(r'printf\s+"([^"]*)"', script)
+        offenders = [b for b in banner if "hotspot" in b.lower()]
+        assert not offenders, offenders
+
+    def test_control_server_route_messages_are_clean(self):
+        """These back the reset cards on the no-JS form-POST path, where the
+        browser renders the raw JSON body as the user's terminal screen."""
+        for name in ("wifi.py", "system.py"):
+            src = (self.REPO / "src" / "control_server" / "routes" / name).read_text()
+            for message in re.findall(r'"message":\s*\(?\s*((?:\s*"[^"]*")+)', src):
+                assert "hotspot" not in message.lower(), f"{name}: {message}"
+
+    def test_pwa_user_facing_copy_is_clean(self):
+        """The confirm sheets and the reconnect cards."""
+        tpl = (self.REPO / "src" / "control_server" / "templates" / "system.html.j2").read_text()
+        js = (self.REPO / "src" / "control_server" / "static" / "js" / "system.js").read_text()
+        # Template: visible text only, and JS: only the strings that reach innerHTML.
+        for text in re.findall(r">([^<>]*hotspot[^<>]*)<", tpl, flags=re.I):
+            raise AssertionError(f"system.html.j2: {text.strip()}")
+        for line in js.split("\n"):
+            if "reconnect-state__body" in line or "&rsquo;s WiFi list" in line:
+                assert "hotspot" not in line.lower(), line
+
+    def test_operator_scripts_are_clean(self):
+        """Semi-technical surfaces (SSH + sudo), but a human still reads them,
+        and docs/sd-card-cloning.md was reworded to match."""
+        for name in ("reset-setup.sh", "prepare-for-cloning.sh"):
+            script = (self.REPO / "scripts" / name).read_text()
+            for echoed in re.findall(r'echo\s+(?:-e\s+)?"([^"]*)"', script):
+                assert "hotspot" not in echoed.lower(), f"{name}: {echoed}"
