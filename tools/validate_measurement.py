@@ -28,8 +28,9 @@ Two modes:
     exits 1: DO NOT enable LITCLOCK_RUNTIME_RENDER where this fails.
 
 The committed dump lives at tools/gd-expected-measurements.json.gz; the
-render-invariants CI job runs ``check`` against it so a font swap or a
-gd_measure edit that breaks the recorded contract fails loud.
+development repo's render-invariants CI runs ``check`` against it so a
+font swap or a gd_measure edit that breaks the recorded contract fails
+loud there. In this repo, run ``check`` manually after any font change.
 """
 
 from __future__ import annotations
