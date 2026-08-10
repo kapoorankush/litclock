@@ -51,8 +51,6 @@ pillow==12.3.0
     # via -r requirements.in
 pycparser==3.0
     # via cffi
-pytz==2026.3.post1
-    # via -r requirements.in
 qrcode==8.2
     # via -r requirements.in
 requests==2.34.2
