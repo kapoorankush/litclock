@@ -21,7 +21,7 @@
 # apt-provisioned packages (gpiozero / lgpio / pigpio / spidev /
 # colorzero) are listed here so the lock is self-documenting AND the
 # resolver has the full constraint graph. The install paths
-# (scripts/install.sh, scripts/update.sh, pi-gen) filter these names
+# (scripts/update.sh, pi-gen) filter these names
 # out of the generated lock before pip-install via requirements-apt.txt —
 # they come from apt at runtime via --system-site-packages (#214).
 

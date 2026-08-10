@@ -1,7 +1,7 @@
 """Tests for the pi-gen custom stage.
 
-Validates that the stage structure is correct, packages match install.sh,
-and build configuration is consistent.
+Validates that the stage structure is correct, the package list stays
+self-consistent, and build configuration is consistent.
 """
 
 import os
@@ -55,75 +55,90 @@ class TestStageStructure:
                     assert mode & stat.S_IXUSR, f"{path} is not executable"
 
 
-# ── Package parity with install.sh ───────────────────────────────────
+# ── Package list is self-describing ──────────────────────────────────
 
 
-class TestPackageParity:
-    """Ensure pi-gen stage installs the same packages as install.sh."""
+def _strip_comments(body):
+    """Drop full-line shell comments so text assertions cannot be satisfied by
+    commented-out code. Without this, `# cp "${INSTALL_DIR}/systemd/x.service"`
+    would look identical to the real thing to a substring search."""
+    return "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
 
-    @staticmethod
-    def _parse_install_sh_packages():
-        """Extract apt packages from install.sh."""
-        install_sh = os.path.join(REPO_ROOT, "scripts", "install.sh")
-        with open(install_sh) as f:
-            content = f.read()
 
-        # Find the apt install block: "sudo apt install -y \" through the
-        # last continuation line (indented package name without backslash)
-        match = re.search(
-            r"sudo apt install -y\s*\\(.*?)(?=\n\s*\n|\n\s*log_info)",
-            content,
-            re.DOTALL,
-        )
-        assert match, "Could not find apt install block in install.sh"
-        block = match.group(1)
-        packages = set()
-        for line in block.strip().splitlines():
-            pkg = line.strip().rstrip("\\").strip()
-            if pkg:
-                packages.add(pkg)
-        return packages
+class TestPackageList:
+    """pi-gen's 00-packages was previously cross-checked against
+    scripts/install.sh, both directions. That guard died with install.sh
+    (litclock-dev#547): with one install path there is no second list to drift
+    from, so "parity" has nothing to compare against.
+
+    What survives is the invariant that actually mattered — the apt-provisioned
+    GPIO/SPI packages must stay in lockstep with requirements-apt.txt, which is
+    the single source of truth for names pip must NOT install. That is enforced
+    by tests/test_apt_provisioned_drift.py::test_pi_gen_gpio_packages_are_in_requirements_apt,
+    which never depended on install.sh.
+
+    Kept here: the list must parse, and must not regain the packages #214
+    deliberately removed.
+    """
 
     @staticmethod
     def _parse_pi_gen_packages():
-        """Extract packages from pi-gen 00-packages file."""
         packages_file = os.path.join(STAGE_DIR, "00-install-deps", "00-packages")
+        packages = set()
         with open(packages_file) as f:
-            packages = set()
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#"):
                     packages.add(line)
         return packages
 
-    def test_pi_gen_has_all_install_sh_packages(self):
-        """Every package in install.sh must appear in pi-gen's 00-packages."""
-        install_pkgs = self._parse_install_sh_packages()
-        pi_gen_pkgs = self._parse_pi_gen_packages()
-        missing = install_pkgs - pi_gen_pkgs
-        assert not missing, f"Packages in install.sh but missing from pi-gen: {missing}"
-
-    # Hardware GPIO/SPI packages installed via apt in pi-gen to avoid
-    # QEMU cross-compilation issues (see #127). install.sh gets these
-    # from pip instead, so they are expected to be pi-gen-only.
-    #
-    # python3-rpi.gpio was removed in #214 — the runtime chain
-    # (display_driver → waveshare_epd.epd7in5_V2 → epdconfig.py) binds
-    # to gpiozero's lgpio pin factory and never imports RPi.GPIO.
-    PI_GEN_ONLY = {
-        "python3-gpiozero",
-        "python3-lgpio",
-        "python3-spidev",
-        "python3-pigpio",
+    # The list install.sh used to be diffed against, pinned here instead.
+    # Review caught that `len(pkgs) > 10` let 14 of the 25 lines be deleted
+    # with the whole suite green — including wireless-tools, whose absence
+    # silently unships the WiFi power-save mitigation (see below).
+    REQUIRED = {
+        "git",
+        "python3",
+        "python3-pip",
+        "python3-venv",
+        "python3-dev",
+        # Pillow build deps — the renderer will not import without them.
+        "libopenjp2-7-dev",
+        "libjpeg-dev",
+        "zlib1g-dev",
+        "libfreetype6-dev",
+        # CJK fonts: the corpus is EN today, but #19/#532 land per-language
+        # corpora and a missing font renders tofu rather than failing loudly.
+        "ttf-wqy-zenhei",
+        "ttf-wqy-microhei",
+        # /usr/sbin/iwconfig, baked into /etc/rc.local by
+        # pi-gen/stage3/02-configure-system/00-run.sh to disable brcmfmac
+        # power save. rc.local has no `set -e` and ends `exit 0`, so a missing
+        # iwconfig fails SILENTLY and the mitigation just stops applying on
+        # every flashed device. That mitigation has already been broken once
+        # by a different mechanism (the rc.local shebang escape); this pins
+        # the package half of it.
+        "wireless-tools",
+        # jq — M5 status-file helper needs it for atomic JSON writes.
+        "jq",
     }
 
-    def test_no_extra_packages_in_pi_gen(self):
-        """Pi-gen shouldn't install packages that install.sh doesn't
-        (except for known pi-gen-only hardware packages)."""
-        install_pkgs = self._parse_install_sh_packages()
-        pi_gen_pkgs = self._parse_pi_gen_packages()
-        extra = pi_gen_pkgs - install_pkgs - self.PI_GEN_ONLY
-        assert not extra, f"Packages in pi-gen but not in install.sh: {extra}"
+    def test_required_packages_are_present(self):
+        """Replaces the old install.sh package-parity check. Parity needed two
+        parties; this needs none — it states the requirement directly."""
+        pkgs = self._parse_pi_gen_packages()
+        missing = self.REQUIRED - pkgs
+        assert not missing, f"00-packages is missing required packages: {sorted(missing)}"
+
+    def test_package_list_is_non_empty_and_parses(self):
+        pkgs = self._parse_pi_gen_packages()
+        assert len(pkgs) > 10, f"00-packages looks truncated: {sorted(pkgs)}"
+
+    def test_rpi_gpio_apt_package_not_reintroduced(self):
+        """#214 removed python3-rpi.gpio — the runtime chain
+        (display_driver -> waveshare_epd.epd7in5_V2 -> epdconfig.py) binds to
+        gpiozero's lgpio pin factory and never imports RPi.GPIO."""
+        assert "python3-rpi.gpio" not in self._parse_pi_gen_packages()
 
 
 # ── Config file ──────────────────────────────────────────────────────
@@ -167,28 +182,24 @@ class TestConfig:
         assert "stage3" in config["STAGE_LIST"]
 
 
-# ── BCM2835 version matches install.sh ───────────────────────────────
+# ── BCM2835 version is declared ──────────────────────────────────────
 
 
 class TestBCM2835:
-    def test_version_matches_install_sh(self):
-        """BCM2835 version in pi-gen stage must match install.sh."""
-        install_sh = os.path.join(REPO_ROOT, "scripts", "install.sh")
-        with open(install_sh) as f:
-            install_content = f.read()
+    """Previously cross-checked against scripts/install.sh. With install.sh
+    retired (litclock-dev#547) pi-gen is the sole definer, so there is no
+    second value to disagree with. What is still worth asserting is that the
+    version is declared at all and is a plausible version string — a silently
+    empty BCM2835_VERSION would build an image whose e-ink driver never
+    links."""
 
+    def test_version_is_declared_and_well_formed(self):
         chroot_sh = os.path.join(STAGE_DIR, "00-install-deps", "01-run.sh")
         with open(chroot_sh) as f:
             chroot_content = f.read()
-
-        install_match = re.search(r'BCM2835_VERSION="(\S+)"', install_content)
-        chroot_match = re.search(r'BCM2835_VERSION="(\S+)"', chroot_content)
-
-        assert install_match, "BCM2835_VERSION not found in install.sh"
-        assert chroot_match, "BCM2835_VERSION not found in chroot script"
-        assert install_match.group(1) == chroot_match.group(1), (
-            f"BCM2835 version mismatch: install.sh={install_match.group(1)}, pi-gen={chroot_match.group(1)}"
-        )
+        match = re.search(r'BCM2835_VERSION="(\S+)"', chroot_content)
+        assert match, "BCM2835_VERSION not found in pi-gen chroot script"
+        assert re.fullmatch(r"\d+(\.\d+)+", match.group(1)), f"BCM2835_VERSION looks malformed: {match.group(1)!r}"
 
 
 # ── Systemd units referenced in stage match repo ─────────────────────
@@ -196,8 +207,8 @@ class TestBCM2835:
 
 class TestSystemdUnitsInStage:
     def test_stage_copies_all_required_units(self):
-        """The install-services chroot script must copy all units that
-        install.sh copies."""
+        """The install-services chroot script must copy every unit the
+        clock needs at runtime."""
         chroot_sh = os.path.join(STAGE_DIR, "03-install-services", "00-run.sh")
         with open(chroot_sh) as f:
             content = f.read()
@@ -251,6 +262,60 @@ class TestSystemdUnitsInStage:
 
 
 # ── Version metadata ─────────────────────────────────────────────────
+
+
+class TestPiGenVenvPosture:
+    """The #214/#321/#323 venv invariants, asserted against the IMAGE build.
+
+    These were previously covered for scripts/install.sh (tests/test_install_sh.py,
+    deleted with it in litclock-dev#547) and for scripts/update.sh
+    (tests/test_update_sh.py). Nothing ever read
+    pi-gen/stage3/01-setup-app/00-run.sh — which is where a flashed device
+    actually gets its venv.
+
+    Before litclock-dev#547 that was 2 of 3 install paths guarded. Retiring
+    install.sh would have left 1 of 2, with the unguarded one being the ONLY
+    path that ships. Review flagged it; retiring the mirror is the moment to
+    point the assertions at the survivor rather than lose them.
+    """
+
+    @staticmethod
+    def _setup_app():
+        with open(os.path.join(STAGE_DIR, "01-setup-app", "00-run.sh")) as f:
+            return f.read()
+
+    def test_venv_uses_system_site_packages(self):
+        """#214: the apt-provisioned GPIO/SPI wheels are only visible to the
+        venv with --system-site-packages. Without it the driver chain cannot
+        import lgpio and the panel never paints."""
+        body = self._setup_app()
+        assert "python3 -m venv --system-site-packages" in body, (
+            "pi-gen must create the venv with --system-site-packages (#214)"
+        )
+
+    def test_pip_install_filters_apt_provisioned_names(self):
+        """#214: requirements-apt.txt is the single source of truth for names
+        pip must NOT install. The filter builds EXCLUDE_RE from that file, so
+        a hand-edited list here would silently drift."""
+        # Comments stripped first: mutation showed `"requirements-apt.txt" in
+        # body` was satisfied by the explanatory comment above the code, so the
+        # executable line could stop reading the file and this stayed green.
+        body = _strip_comments(self._setup_app())
+        assert re.search(r"EXCLUDE_RE=.*requirements-apt\.txt", body), (
+            "pi-gen must build EXCLUDE_RE from requirements-apt.txt itself (#214) — "
+            "a hand-maintained list here is exactly the drift that file exists to prevent"
+        )
+        assert re.search(r"grep -vE .*EXCLUDE_RE.* requirements\.txt", body), (
+            "pi-gen must filter requirements.txt through EXCLUDE_RE before pip install"
+        )
+
+    def test_pip_install_is_not_eager(self):
+        """#322: eager upgrade-strategy silently bumps transitives fleet-wide;
+        the smoke test never imports Flask, so a break would ship."""
+        body = self._setup_app()
+        assert "--upgrade-strategy eager" not in body, (
+            "pi-gen must NOT use eager upgrade-strategy (#322) — transitive breaks ship unnoticed"
+        )
 
 
 class TestVersionMetadata:

@@ -6,7 +6,7 @@ on_chroot << 'CHROOT'
 set -e
 
 # --- System packages needed for Pillow compilation and runtime ---
-# (mirrors scripts/install.sh; skip packages already in Bookworm Lite base)
+# (skip packages already in Bookworm Lite base)
 apt-get update
 apt-get install -y \
     python3-dev \

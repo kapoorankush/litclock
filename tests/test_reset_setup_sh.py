@@ -459,7 +459,6 @@ class TestPrivilegeHardening387:
 
     SERVICE = REPO_ROOT / "systemd" / "litclock-prepare-for-gift.service"
     PI_GEN = REPO_ROOT / "pi-gen" / "stage3" / "03-install-services" / "00-run.sh"
-    INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
     UPDATE_SH = REPO_ROOT / "scripts" / "update.sh"
 
     def test_service_execstart_is_root_owned_copy(self):
@@ -487,7 +486,7 @@ class TestPrivilegeHardening387:
         )
 
     def test_install_paths_ship_reset_setup_and_state_root_owned(self):
-        for src, name in ((self.PI_GEN, "pi-gen"), (self.INSTALL_SH, "install.sh"), (self.UPDATE_SH, "update.sh")):
+        for src, name in ((self.PI_GEN, "pi-gen"), (self.UPDATE_SH, "update.sh")):
             body = src.read_text()
             assert "reset-setup.sh" in body and "/usr/local/lib/litclock" in body, (
                 f"{name} must install reset-setup.sh root-owned to /usr/local/lib/litclock (#387)"

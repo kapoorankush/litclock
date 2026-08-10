@@ -31,8 +31,8 @@
 #
 # Install: the git-tracked source lives in scripts/ (mode 0755) and is the
 # install SOURCE only. #387 C1 installs a ROOT-OWNED copy to
-# /usr/local/lib/litclock/litclock-mark-collected.sh (install.sh / update.sh /
-# pi-gen); the NM dispatcher invokes THAT copy so a root run never executes a
+# /usr/local/lib/litclock/litclock-mark-collected.sh (update.sh / pi-gen);
+# the NM dispatcher invokes THAT copy so a root run never executes a
 # pi-writable script. The pi-side writer is the separate src/collected_marker.py.
 #
 # WARNING: do NOT wire anything to run the pi-writable repo copy as root — that

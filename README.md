@@ -65,10 +65,8 @@ That's it — no config files to edit, no SSH to set up. Everything else happens
 > machine whose settings belong to you, which made it impossible to test
 > honestly. It had also drifted from the image build: it never writes the
 > `dtoverlay=spi0-1cs` line the image does, which pins the display to CE0.
-> `scripts/install.sh` is still in the tree, and CI still holds it in sync with
-> the image build so the two don't diverge — but it is unsupported as a way to
-> set up a clock, and nobody tests it end to end on real hardware. Please
-> don't run it.
+> `scripts/install.sh` has now been removed outright — flashing the released
+> image is the only supported install path.
 
 > **Turn the clock's self-repair off as soon as you have a shell**, before you
 > check anything out. Left on, it will reboot the Pi under you and eventually

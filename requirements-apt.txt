@@ -6,7 +6,6 @@
 #
 # Filtered by:
 #   - pi-gen/stage3/01-setup-app/00-run.sh       (image build)
-#   - scripts/install.sh                         (DIY install)
 #   - scripts/update.sh                          (in-place update)
 #
 # Rule: when requirements.txt adds a new package that is also apt-provided

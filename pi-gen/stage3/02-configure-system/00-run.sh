@@ -64,7 +64,7 @@ install -m 644 files/litclock-journald.conf "${ROOTFS_DIR}/etc/systemd/journald.
 install -m 644 files/brcmfmac.conf "${ROOTFS_DIR}/etc/modprobe.d/brcmfmac.conf"
 # #245 M5 D8 — single canonical wifi-watchdog.sh under scripts/. The pi-gen
 # files/wifi-watchdog.sh copy is gone; we install from the same source as
-# scripts/install.sh and scripts/update.sh do.
+# scripts/update.sh does.
 install -m 755 "${ROOTFS_DIR}/home/pi/litclock/scripts/wifi-watchdog.sh" \
     "${ROOTFS_DIR}/usr/local/bin/wifi-watchdog.sh"
 # #245 M5 D11 — Reset-WiFi helper invoked by litclock-wifi-reset.service.
