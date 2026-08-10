@@ -33,10 +33,56 @@ jobs:
       attestations: write   # post attestation to GitHub's attestation store
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.inputs.litclock_ref || github.ref }}
           submodules: true
+          # litclock-dev#551 — defense in depth, NOT a live leak. Read the detail before
+          # removing this, and before assuming it is urgent.
+          #
+          # The "Copy checkout into pi-gen" step below runs `cp -a .` mid-job,
+          # so the whole tree including .git is staged into the rootfs at
+          # /home/pi/litclock and ships on every flashed card. .git is kept
+          # deliberately (README Option 2 documents that path as a
+          # build-from-source checkout), so whatever checkout leaves in
+          # .git/config ships with it.
+          #
+          # What checkout actually leaves there depends on its version:
+          #   v4.2.2  — wrote the real token into .git/config as an
+          #             `http.<origin>/.extraheader` AUTHORIZATION line.
+          #   v6.0.0+ — writes the token to a separate file under $RUNNER_TEMP
+          #             and leaves only an include/includeIf reference in
+          #             .git/config (src/git-auth-helper.ts::configureToken).
+          #
+          # This workflow has pinned v6+ since 2026-04-15 and v7 since
+          # 2026-07-01, and no release in either repo predates that, so no
+          # published image has ever carried the token. With v7 the staged
+          # .git/config holds only a dangling path into a runner temp dir.
+          #
+          # Setting this anyway because the job needs no git credential at all
+          # (it only runs `git rev-parse HEAD`; every `gh` call takes its token
+          # from the environment), so the correct posture is to not request one
+          # — which also holds if a future checkout version changes the
+          # mechanism back, or if someone downgrades the pin.
+          persist-credentials: false
+
+      # Image-correctness tests, BEFORE the 40-minute build.
+      #
+      # tests/test_pi_gen.py is the gate that decides whether the units, the
+      # tmpfiles drop-in and the [Install] directives are sane. Without this step
+      # it never ran during a build at all: this workflow is a single `build` job
+      # with no `needs:`, so moving the [Install]-validity check out of
+      # 05-smoke-test and into pytest quietly moved it off the release path
+      # entirely. A `WnatedBy=` typo would have shipped.
+      #
+      # Runs early on purpose — a broken tree fails in ~1 minute instead of at
+      # minute 38 of a 40-minute build. Deliberately NOT the whole suite: this
+      # needs only pytest + PyYAML, no Pillow/hardware deps, so it cannot become
+      # a flaky gate on an unrelated test.
+      - name: Image-correctness tests
+        run: |
+          python3 -m pip install --quiet --upgrade pytest pyyaml
+          python3 -m pytest tests/test_pi_gen.py tests/test_build_image_workflow.py -q
 
       # Free disk space — pi-gen needs ~10 GB
       - name: Free disk space
@@ -53,25 +99,43 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           DISPATCH_REF: ${{ github.event.inputs.litclock_ref || 'master' }}
         run: |
-          # The commit the image is actually built from = the checked-out
-          # HEAD (which honors litclock_ref), NOT github.sha (the dispatch
-          # ref's HEAD). These diverge when litclock_ref != the dispatch ref,
-          # and the promote job later tags the release at this commit — so it
-          # must be the built one. On a tag push they're identical.
-          BUILT_SHA=$(git rev-parse HEAD)
+          # Use the SHA actually CHECKED OUT, not GITHUB_SHA. On a
+          # workflow_dispatch, GITHUB_SHA is the SHA of the ref the workflow
+          # FILE came from (master), not the litclock_ref that was checked out
+          # at the step above — so a dev build of a feature branch was tagged
+          # and stamped with master's SHA. That mislabelled both the release
+          # asset name and the git_sha= line in /etc/litclock-version, making a
+          # QA artifact impossible to trace back to the code inside it.
+          #
+          # Correct for BOTH paths: on a tag push HEAD *is* the tagged commit,
+          # so this is a no-op for real releases and only fixes dispatch builds.
+          # The checkout step runs before this one, so HEAD is already resolved.
+          # Full SHA first, then slice it. `git rev-parse --short=7` returns a
+          # MINIMUM of 7 characters and lengthens on collision or when
+          # core.abbrev is set, and this string becomes the dev tag, the .img
+          # asset name and git_sha= in /etc/litclock-version. A positional slice
+          # is deterministic. Full form is also what `gh release create --target`
+          # needs: target_commitish takes a branch name or a full commit SHA, and
+          # a 7-char abbreviation is not guaranteed to resolve.
+          RESOLVED_FULL_SHA="$(git rev-parse HEAD)"
+          RESOLVED_SHA="${RESOLVED_FULL_SHA:0:7}"
           if [[ "${REF_TYPE}" == "tag" ]]; then
             VERSION="${REF_NAME}"
             VERSION="${VERSION#v}"  # strip leading v
             REF="${REF_NAME}"
           else
-            VERSION="dev-$(date +%Y%m%d)-${BUILT_SHA:0:7}"
+            # `dev-` prefix is load-bearing: the stale-dev-release cleanup step
+            # below selects on startswith("dev-"), and the OTA resolver
+            # (scripts/lib/github_api.sh) filters tags to vMAJOR.MINOR.PATCH so
+            # dev tags stay invisible to fielded clocks.
+            VERSION="dev-$(date +%Y%m%d)-${RESOLVED_SHA}"
             REF="${DISPATCH_REF}"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "ref=${REF}" >> "$GITHUB_OUTPUT"
-          echo "sha=${BUILT_SHA:0:7}" >> "$GITHUB_OUTPUT"
-          echo "commit=${BUILT_SHA}" >> "$GITHUB_OUTPUT"
-          echo "Version: ${VERSION}, Ref: ${REF}, Commit: ${BUILT_SHA}"
+          echo "sha=${RESOLVED_SHA}" >> "$GITHUB_OUTPUT"
+          echo "full_sha=${RESOLVED_FULL_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION}, Ref: ${REF}, SHA: ${RESOLVED_SHA}"
 
       # pi-gen builds arm64 images via QEMU emulation on x86 runners
       - name: Set up QEMU
@@ -95,14 +159,25 @@ jobs:
           fi
 
       - name: Configure pi-gen
+        # Through `env:`, not `${{ }}` inline. LITCLOCK_REF derives from
+        # github.event.inputs.litclock_ref, which is attacker-controlled text on
+        # the dispatch path; `${{ }}` splices it into the script BEFORE bash sees
+        # it, so `master$(...)` executed arbitrary code on a runner holding
+        # contents:write + id-token:write + attestations:write — i.e. one that
+        # can build, sign and publish a release image. Quoted shell variables
+        # cannot be re-parsed that way.
+        env:
+          REF: ${{ steps.version.outputs.ref }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA: ${{ steps.version.outputs.sha }}
         run: |
           # Copy base config
           cp pi-gen/config /tmp/pi-gen/config
 
           # Append build-time variables
-          echo "LITCLOCK_REF=${{ steps.version.outputs.ref }}" >> /tmp/pi-gen/config
-          echo "LITCLOCK_VERSION=${{ steps.version.outputs.version }}" >> /tmp/pi-gen/config
-          echo "LITCLOCK_SHA=${{ steps.version.outputs.sha }}" >> /tmp/pi-gen/config
+          echo "LITCLOCK_REF=${REF}" >> /tmp/pi-gen/config
+          echo "LITCLOCK_VERSION=${VERSION}" >> /tmp/pi-gen/config
+          echo "LITCLOCK_SHA=${SHA}" >> /tmp/pi-gen/config
 
           # Replace pi-gen's default stage3 with our custom stage
           rm -rf /tmp/pi-gen/stage3
@@ -198,6 +273,11 @@ jobs:
 
       - name: Compress image
         id: compress
+        # VERSION via env: for the same reason as the other steps — on a tag
+        # push it is github.ref_name with the leading v stripped, i.e.
+        # ref-derived text reaching a shell string.
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           DEPLOY=/tmp/pi-gen/deploy
 
@@ -215,7 +295,7 @@ jobs:
             exit 1
           fi
 
-          IMG_NAME="litclock-${{ steps.version.outputs.version }}.img"
+          IMG_NAME="litclock-${VERSION}.img"
 
           # Rename to versioned name
           mv "${IMG}" "/tmp/${IMG_NAME}"
@@ -250,10 +330,17 @@ jobs:
       # unlike artifacts which accrue GB-hours against the 500 MB free tier)
       - name: Upload dev build
         if: github.ref_type != 'tag'
+        # REF through `env:` for the same reason as Configure pi-gen: it carries
+        # the dispatch input verbatim, and `${{ }}` inside a double-quoted shell
+        # string is re-parsed by bash, so `master$(...)` would execute here.
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.version }}
+          REF: ${{ steps.version.outputs.ref }}
+          TARGET_SHA: ${{ steps.version.outputs.full_sha }}
+          IMG: ${{ steps.compress.outputs.img }}
+          SHA: ${{ steps.compress.outputs.sha }}
         run: |
-          TAG="${{ steps.version.outputs.version }}"
           # Delete existing release with this tag (idempotent re-runs)
           gh release delete "${TAG}" --yes --cleanup-tag 2>/dev/null || true
           # Clean up dev releases older than 7 days
@@ -262,11 +349,11 @@ jobs:
           | xargs -I{} gh release delete {} --yes --cleanup-tag 2>/dev/null || true
           gh release create "${TAG}" \
             --prerelease \
-            --title "Dev build ${{ steps.version.outputs.version }}" \
-            --notes "Dev build from \`${{ steps.version.outputs.ref }}\` ($(date -u +%Y-%m-%dT%H:%M:%SZ)). Auto-generated, not for production use." \
-            --target "${{ steps.version.outputs.commit }}" \
-            "${{ steps.compress.outputs.img }}" \
-            "${{ steps.compress.outputs.sha }}"
+            --title "Dev build ${TAG}" \
+            --notes "Dev build from \`${REF}\` ($(date -u +%Y-%m-%dT%H:%M:%SZ)). Auto-generated, not for production use." \
+            --target "${TARGET_SHA}" \
+            "${IMG}" \
+            "${SHA}"
 
       # On tag push: create GitHub Release
       #
@@ -276,6 +363,22 @@ jobs:
       # git rev-list, but downstream tooling (and any future resolver that
       # trusts target_commitish) needs honest metadata. Always stamp the
       # actual commit SHA so the Release points where everyone thinks it does.
+      #
+      # Both release steps pass steps.version.outputs.full_sha, never
+      # github.sha. Where it actually BITES is the dispatch path: there gh
+      # creates the dev- tag itself, so target_commitish decides where the tag
+      # lands, and github.sha is the SHA of the ref the workflow FILE came from
+      # (master) — every dev Release pointed at master while the image inside
+      # held a feature branch.
+      #
+      # On THIS path the tag already exists (the push created it), and GitHub
+      # documents target_commitish as unused when the tag exists — so --target
+      # here is honest metadata rather than load-bearing. Both steps follow the
+      # same rule anyway, because one rule beats two plus a footnote about which
+      # path each is safe on.
+      #
+      # Note the --clobber branch below cannot set target_commitish at all; it
+      # does not need to, for the reason above.
       - name: Create release
         if: github.ref_type == 'tag'
         env:
@@ -283,6 +386,8 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           IMG: ${{ steps.compress.outputs.img }}
           SHA: ${{ steps.compress.outputs.sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TARGET_SHA: ${{ steps.version.outputs.full_sha }}
         # Idempotent: if a release with this tag already exists (someone
         # pre-cut it manually with curated notes, or a prior workflow run
         # got this far and partial-failed), upload the assets to it with
@@ -295,12 +400,13 @@ jobs:
             gh release upload "${REF_NAME}" "${IMG}" "${SHA}" --clobber
           else
             gh release create "${REF_NAME}" \
-              --title "LitClock ${{ steps.version.outputs.version }}" \
-              --target "${{ steps.version.outputs.commit }}" \
+              --title "LitClock ${VERSION}" \
+              --target "${TARGET_SHA}" \
               --generate-notes \
               "${IMG}" \
               "${SHA}"
           fi
+
 
   # ─────────────────────────────────────────────────────────────────────
   # PROMOTE mode (build-once, ship-what-you-tested)
@@ -349,7 +455,7 @@ jobs:
       group: promote-${{ github.event.inputs.release_version }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
 

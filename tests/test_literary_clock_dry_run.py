@@ -23,21 +23,20 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LITERARY_CLOCK = REPO_ROOT / "src" / "literary_clock.py"
 
 # These tests subprocess out to `sys.executable -m src.literary_clock`. CI
-# installs PIL/pytz/requests into the same interpreter via
+# installs PIL/requests into the same interpreter via
 # `pip install -r requirements.txt`, so subprocess runs have the deps. On a
 # dev machine where pytest runs under the bare system python without deps,
 # skip — activating the venv (`./venv/bin/python -m pytest`) runs these.
 _HAS_CLOCK_DEPS = True
 try:
     import PIL  # noqa: F401
-    import pytz  # noqa: F401
     import requests  # noqa: F401
 except ImportError:
     _HAS_CLOCK_DEPS = False
 
 pytestmark = pytest.mark.skipif(
     not _HAS_CLOCK_DEPS,
-    reason="literary_clock deps (PIL/pytz/requests) not installed in the current interpreter",
+    reason="literary_clock deps (PIL/requests) not installed in the current interpreter",
 )
 
 

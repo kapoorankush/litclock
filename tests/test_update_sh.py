@@ -12,6 +12,7 @@ Two layers of coverage:
    reaches the right phases and makes the expected subprocess calls.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,21 @@ def update_sh_content():
 
 
 # ── Structural tests ──────────────────────────────────────────────────
+
+
+def _tmpfiles_block(content):
+    """The tmpfiles install block, delimited by real anchors.
+
+    Was a fixed 2600-character slice, which is a magic number masquerading as a
+    boundary: adding a comment inside the block silently pushed the tail out of
+    the window and the assertions started reading truncated text. Anchor on the
+    counter that opens the block and the next section that follows it.
+    """
+    start = content.find("tmpfiles_installed=0")
+    assert start != -1, "tmpfiles install counter missing"
+    end = content.find("if [[ ${#ENABLED_UNITS[@]}", start)
+    assert end != -1, "could not find the section following the tmpfiles block"
+    return content[start:end]
 
 
 class TestUpdateScriptStructure:
@@ -81,6 +97,93 @@ class TestUpdateScriptStructure:
         assert "*.service" not in loop_body, (
             "loop must NOT match *.service — services are timer-driven or have their own start hooks"
         )
+
+    def test_tmpfiles_dropins_are_globbed_not_named(self, update_sh_content):
+        """litclock-dev#547's shape on the OTA path. This was
+        `if [[ -f .../tmpfiles.d/litclock.conf ]]; then sudo cp ...` — a
+        hand-maintained name behind a soft `if`, so a second drop-in would
+        never reach a fielded Pi and a missing one skipped with no journal
+        line. pi-gen/stage3/03-install-services globs; so must this."""
+        assert 'for conf in "$INSTALL_DIR"/systemd/tmpfiles.d/*.conf' in update_sh_content, (
+            "update.sh must glob systemd/tmpfiles.d/ rather than naming litclock.conf"
+        )
+        hardcoded = re.findall(
+            r"^\s*(?:sudo\s+)?cp\b[^\n]*?/systemd/tmpfiles\.d/[\w.\-]+\.conf",
+            update_sh_content,
+            re.MULTILINE,
+        )
+        assert not hardcoded, f"per-file cp of a tmpfiles drop-in reintroduced: {hardcoded}"
+
+    def test_missing_tmpfiles_dropins_warn_rather_than_skip_silently(self, update_sh_content):
+        """A glob that matches nothing exits 0. The old soft `if` reported
+        nothing in that case; an OTA that silently stops refreshing the rules
+        for /run/litclock and /var/lib/litclock must at least say so."""
+        block = _tmpfiles_block(update_sh_content)
+        assert re.search(r"if \[\[ \$tmpfiles_seen -eq 0 \]\]", block), "no zero-drop-in check after the tmpfiles glob"
+        assert "log_warn" in block.split("tmpfiles_seen -eq 0")[1][:400], (
+            "the zero-drop-in case must log_warn, not pass silently"
+        )
+
+    def test_tmpfiles_glob_is_paired_with_nullglob(self, update_sh_content):
+        """Without `shopt -s nullglob` an unmatched glob stays LITERAL, so the
+        copy fails on a path containing `*`, and — because update.sh has no
+        errexit — the loop body still runs once. Verified defeat: deleting the
+        shopt left the other tests green while making the zero-drop-in warning
+        unreachable, i.e. the new guard reported success having installed
+        nothing. Restore is save/restore, not a blind `shopt -u`, so a future
+        `shopt -s nullglob` earlier in this 1400-line script is not silently
+        cleared for every later phase."""
+        block = _tmpfiles_block(update_sh_content)
+        assert "shopt -s nullglob" in block, "the tmpfiles glob is not guarded by nullglob"
+        assert "_ng_saved=$(shopt -p nullglob)" in block, "nullglob must be saved before being set"
+        assert 'eval "$_ng_saved"' in block, "nullglob must be RESTORED, not blindly cleared"
+
+    def test_tmpfiles_copy_failure_is_checked_before_counting(self, update_sh_content):
+        """The counter must not advance on a failed privileged copy.
+
+        update.sh has no errexit, so an unchecked `cp` left the PREVIOUS
+        release's drop-in in place, `systemd-tmpfiles --create` then succeeded
+        against that stale file so its own `|| log_warn` never fired, the
+        counter read non-zero so the zero-drop-in warning never fired either,
+        and the OTA reported success having installed nothing — on the only path
+        that touches already-working clocks.
+        """
+        block = _tmpfiles_block(update_sh_content)
+        assert re.search(r"if ! sudo install -m 0644 -o root -g root \"\$conf\" /etc/tmpfiles\.d/; then", block), (
+            "the tmpfiles copy must be failure-checked before the counter advances"
+        )
+        # The increment must come AFTER the guarded copy, not before it.
+        copy_at = block.find("if ! sudo install -m 0644")
+        inc_at = block.find("tmpfiles_installed=$(( tmpfiles_installed + 1 ))")
+        assert copy_at != -1 and inc_at > copy_at, "counter increments before the copy is verified"
+
+    def test_tmpfiles_and_units_are_installed_not_cp(self, update_sh_content):
+        """`install -m 0644 -o root -g root`, matching pi-gen's 03. `cp` applies
+        the SOURCE mode, so a drop-in committed 0755 or 0600 landed correctly on
+        a flashed image and incorrectly on every OTA'd Pi — a divergence only
+        reproducible on the fielded fleet, which is the one configuration QA
+        never covers."""
+        block = _tmpfiles_block(update_sh_content)
+        assert not re.search(r"sudo cp \"\$conf\"", block), "tmpfiles drop-ins are still copied with plain cp"
+
+    def test_tmpfiles_rejects_non_regular_files(self, update_sh_content):
+        """$INSTALL_DIR is pi-writable and `cp`/`install` dereference the source,
+        so a symlink here would make the sudo below read an arbitrary path and
+        write it into /etc/tmpfiles.d/, which root systemd-tmpfiles parses at
+        every boot. pi-gen's 03 rejects these explicitly; this path did not."""
+        block = _tmpfiles_block(update_sh_content)
+        assert re.search(r'\[\[ ! -f "\$conf" \|\| -L "\$conf" \]\]', block), (
+            "no regular-file/symlink guard before the privileged tmpfiles copy"
+        )
+
+    def test_failed_enable_is_not_recorded_as_newly_enabled(self, update_sh_content):
+        """ENABLED_UNITS drives the "Newly enabled" log line and the end-of-run
+        summary. With no errexit, a failed `systemctl enable` used to fall
+        through and still append, so the OTA reported a new timer as enabled
+        while it stayed disabled — nothing runs, nothing complains."""
+        assert re.search(
+            r"if sudo systemctl enable \"\$name\"; then\s*\n\s*ENABLED_UNITS\+=\(\"\$name\"\)", update_sh_content
+        ), "ENABLED_UNITS must only record units whose `systemctl enable` actually succeeded"
 
     def test_timer_start_after_daemon_reload(self, update_sh_content):
         """The new-timer-start loop must run AFTER `systemctl daemon-reload`
@@ -1196,3 +1299,63 @@ def test_migrates_handoff_complete_for_existing_devices():
     src = UPDATE_SH.read_text()
     assert "/etc/litclock/.handoff-complete" in src
     assert "sudo touch /etc/litclock/.handoff-complete" in src
+
+
+class TestRuntimeMarkerInvalidation:
+    """litclock-dev#604 — the validation marker is gitignored, so the
+    Phase-2 git reset never touches it; update.sh itself must remove it
+    when any proof input changed in the release being applied."""
+
+    def test_marker_removal_block_exists_with_every_proof_input(self):
+        src = UPDATE_SH.read_text()
+        assert ".runtime-render-validated" in src
+        block_start = src.index("RUNTIME_MARKER=")
+        block = src[block_start : src.index("Remove old systemd units", block_start)]
+        # The delete is gated on the diff of the proof inputs, not unconditional.
+        assert "git diff --quiet" in block
+        for proof_input in (
+            "fonts/",
+            "tools/gd-expected-measurements.json.gz",
+            "requirements.txt",
+            "src/quote_renderer.py",
+            "src/gd_measure.py",
+            "tools/validate_measurement.py",
+        ):
+            assert proof_input in block, f"{proof_input} missing from the invalidation trigger set"
+        assert 'rm -f "$RUNTIME_MARKER"' in block
+
+    def test_marker_removal_runs_after_the_git_reset(self):
+        """The diff needs the NEW tree (and NEW_SHA) to exist — before the
+        reset it would compare the wrong states and the marker would
+        survive the exact updates that invalidate it."""
+        src = UPDATE_SH.read_text()
+        assert src.index('NEW_SHA=$(git rev-parse --short HEAD)') < src.index("RUNTIME_MARKER=")
+
+    def test_marker_removal_diffs_old_to_new(self):
+        src = UPDATE_SH.read_text()
+        block = src[src.index("RUNTIME_MARKER=") :]
+        assert '"$OLD_SHA" "$NEW_SHA"' in block.split("Remove old systemd units")[0]
+
+    def test_marker_path_honors_the_env_override(self):
+        """litclock-dev#611 review — the reader honors
+        LITCLOCK_RUNTIME_VALIDATED_MARKER (via env.sh); update.sh must
+        resolve the same path or a relocated marker silently survives the
+        only invalidation layer covering semantics-only proof changes."""
+        src = UPDATE_SH.read_text()
+        start = src.index("RUNTIME_MARKER=")
+        block = src[start : src.index("Remove old systemd units", start)]
+        assert "LITCLOCK_RUNTIME_VALIDATED_MARKER" in block
+        assert 'source "$INSTALL_DIR/env.sh"' in block
+
+    def test_git_diff_failure_also_removes_the_marker_with_an_honest_log(self):
+        """A gc'd SHA or corrupt object makes git diff exit >1 under
+        2>/dev/null. We cannot PROVE the inputs unchanged, so the marker
+        still goes (wrong fallback beats wrong render) — but under its own
+        log line, not the 'inputs changed' claim."""
+        src = UPDATE_SH.read_text()
+        start = src.index("RUNTIME_MARKER=")
+        block = src[start : src.index("Remove old systemd units", start)]
+        assert "_marker_diff_rc" in block
+        assert "-gt 1" in block
+        assert block.count('rm -f "$RUNTIME_MARKER"') == 2
+        assert "could not verify" in block

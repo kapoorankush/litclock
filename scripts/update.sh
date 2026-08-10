@@ -589,6 +589,45 @@ if [[ ${#REMOVED[@]} -gt 0 ]]; then
     log_info "Removed stale files: ${REMOVED[*]}"
 fi
 
+# litclock-dev#604 — invalidate the runtime-render validation marker when
+# any of its proof inputs changed in this update. The marker records that
+# `validate_measurement.py check --stamp` proved THIS freetype reproduces
+# THAT measurement dump with THESE fonts; it is gitignored, so the
+# git-reset above never touches it, and without this step a font change,
+# dump regen, freetype pin bump, or measurement-semantics change would
+# leave a stale proof in force. Removing it drops flag-enabled devices to
+# the pre-rendered tier until an operator re-runs check --stamp — a wrong
+# fallback is impossible, a wrong render is not.
+# The reader honors LITCLOCK_RUNTIME_VALIDATED_MARKER (set via env.sh,
+# which runtheclock.sh sources) — resolve the SAME path here or a relocated
+# marker silently survives the one invalidation layer that covers
+# semantics-only proof changes, where the digest recompute can't help
+# (litclock-dev#611 review). Subshell so env.sh can't mutate this script.
+RUNTIME_MARKER=$(
+    [[ -f "$INSTALL_DIR/env.sh" ]] && source "$INSTALL_DIR/env.sh" 2>/dev/null
+    echo "${LITCLOCK_RUNTIME_VALIDATED_MARKER:-$INSTALL_DIR/.runtime-render-validated}"
+)
+if [[ -f "$RUNTIME_MARKER" ]]; then
+    git diff --quiet "$OLD_SHA" "$NEW_SHA" -- \
+        fonts/ \
+        tools/gd-expected-measurements.json.gz \
+        requirements.txt \
+        src/quote_renderer.py \
+        src/gd_measure.py \
+        tools/validate_measurement.py 2>/dev/null
+    _marker_diff_rc=$?
+    if [[ "$_marker_diff_rc" -eq 1 ]]; then
+        rm -f "$RUNTIME_MARKER"
+        log_info "runtime-render validation marker removed: its proof inputs changed in this update (litclock-dev#604) — re-run tools/validate_measurement.py check --stamp to re-enable the runtime tier"
+    elif [[ "$_marker_diff_rc" -gt 1 ]]; then
+        # git diff itself failed (gc'd SHA, corrupt object) — we cannot
+        # PROVE the inputs are unchanged, and a wrong fallback beats a
+        # wrong render. Same action, honest log.
+        rm -f "$RUNTIME_MARKER"
+        log_info "runtime-render validation marker removed: could not verify its proof inputs across this update (git diff rc=$_marker_diff_rc) — re-run tools/validate_measurement.py check --stamp to re-enable the runtime tier"
+    fi
+fi
+
 # Remove old systemd units that no longer exist in the repo
 for installed_unit in /etc/systemd/system/litclock*.service \
                       /etc/systemd/system/litclock*.timer; do
@@ -766,7 +805,7 @@ elif ! grep -q "VIRTUAL_ENV=[\"']*$INSTALL_DIR/venv[\"']*$" "$INSTALL_DIR/venv/b
     rm -rf "$INSTALL_DIR/venv"
     python3 -m venv --system-site-packages "$INSTALL_DIR/venv"
     NEED_PIP=true
-elif ! "$PYTHON" -c "import PIL, pytz, requests" &>/dev/null 2>&1; then
+elif ! "$PYTHON" -c "import PIL, requests" &>/dev/null 2>&1; then
     log_warn "Virtual environment broken — recreating..."
     rm -rf "$INSTALL_DIR/venv"
     python3 -m venv --system-site-packages "$INSTALL_DIR/venv"
@@ -1016,7 +1055,7 @@ for unit in "$INSTALL_DIR"/systemd/*.service "$INSTALL_DIR"/systemd/*.timer; do
         continue
     fi
 
-    # firstboot service is managed by install.sh/reset-setup.sh — don't re-enable
+    # firstboot service is managed by the image build/reset-setup.sh — don't re-enable
     if [[ "$name" == "litclock-firstboot.service" ]]; then
         sudo cp "$unit" /etc/systemd/system/
         continue
@@ -1043,23 +1082,85 @@ for unit in "$INSTALL_DIR"/systemd/*.service "$INSTALL_DIR"/systemd/*.timer; do
         # state, which is the post-cp default for a freshly-installed unit
         # that has [Install].
         if systemctl is-enabled "$name" 2>/dev/null | grep -q "^disabled$"; then
-            sudo systemctl enable "$name"
-            ENABLED_UNITS+=("$name")
+            # Record only on SUCCESS. update.sh has no errexit by design, so a
+            # failed `systemctl enable` used to fall through and still append to
+            # ENABLED_UNITS — the run then logged "Newly enabled: <unit>", the
+            # summary reported it under "New services", and the OTA declared
+            # success with the unit still disabled. For a timer that is the
+            # brick-class outcome: nothing runs, nothing complains.
+            if sudo systemctl enable "$name"; then
+                ENABLED_UNITS+=("$name")
+            else
+                log_warn "failed to enable $name — it is installed but will NOT run"
+            fi
         fi
     fi
 done
 
 sudo systemctl daemon-reload
 
-# #241 — install tmpfiles.d entry for the tmpfs heartbeat dir and
-# materialize it now (avoids waiting until next boot). If --create
-# fails, /run/litclock won't exist on the running system and the
-# heartbeat will silently drop until the next reboot — log loudly so
-# operators see it in journalctl rather than silently swallowing.
-if [[ -f "$INSTALL_DIR/systemd/tmpfiles.d/litclock.conf" ]]; then
-    sudo cp "$INSTALL_DIR/systemd/tmpfiles.d/litclock.conf" /etc/tmpfiles.d/
-    sudo systemd-tmpfiles --create /etc/tmpfiles.d/litclock.conf \
-        || log_warn "systemd-tmpfiles --create failed — /run/litclock may not exist until reboot"
+# #241 — install tmpfiles.d drop-ins for the tmpfs heartbeat dir and the
+# /var/lib/litclock state dir, and materialize them now (avoids waiting until
+# next boot). If --create fails, /run/litclock won't exist on the running
+# system and the heartbeat will silently drop until the next reboot — log
+# loudly so operators see it in journalctl rather than silently swallowing.
+#
+# Globbed, like the unit loop above and like pi-gen's 03-install-services.
+# This was a hardcoded litclock.conf behind a soft `if [[ -f ]]`, which is
+# two bugs in three lines: a second drop-in would never reach a fielded Pi
+# via OTA, and a MISSING one skipped silently with no journal line at all.
+# litclock-dev#547 is the same shape one directory up.
+tmpfiles_installed=0
+tmpfiles_seen=0
+# Save and restore rather than blindly clearing: update.sh is 1400 lines and a
+# future `shopt -s nullglob` above this point would otherwise be switched off
+# here for every later phase.
+_ng_saved=$(shopt -p nullglob)
+shopt -s nullglob
+sudo install -d -m 0755 /etc/tmpfiles.d
+for conf in "$INSTALL_DIR"/systemd/tmpfiles.d/*.conf; do
+    tmpfiles_seen=$(( tmpfiles_seen + 1 ))
+    # Same regular-file requirement pi-gen's 03 uses. Catches ACCIDENTS — a
+    # stray symlink or a directory named *.conf — not a hostile pi user. This
+    # is a check-then-use on a pi-writable path, so the file can be swapped for
+    # a symlink between the test and the `sudo install` below; treating it as a
+    # privilege boundary would be wrong. It is not one here: the attacker would
+    # be the pi user, who already runs this script and (per the shipped
+    # 010_pi-nopasswd) already has full sudo. See the O_NOFOLLOW/O_NONBLOCK
+    # note in the project learnings for the shape a real boundary needs.
+    if [[ ! -f "$conf" || -L "$conf" ]]; then
+        log_warn "skipping $(basename "$conf") — not a regular file"
+        continue
+    fi
+    # `install -m 0644 -o root -g root`, not `cp`, matching 03-install-services.
+    # cp applies the SOURCE mode, so a drop-in committed 0755 or 0600 landed
+    # correctly on a flashed image and incorrectly on every OTA'd Pi — a
+    # divergence only reproducible on the fielded fleet, which is the one
+    # configuration QA never covers.
+    #
+    # The exit status is CHECKED and the counter only advances on success. It
+    # used to increment unconditionally, which meant: cp fails (read-only /etc,
+    # ENOSPC, EIO on a worn SD), the PREVIOUS release's drop-in is still present
+    # so `systemd-tmpfiles --create` succeeds against the stale file and its
+    # log_warn never fires, the counter reads 1 so the zero-drop-in warning
+    # never fires either, and the OTA reports success having installed nothing.
+    # That is the exact silent-swallow class this block was written to remove.
+    if ! sudo install -m 0644 -o root -g root "$conf" /etc/tmpfiles.d/; then
+        log_warn "failed to install $(basename "$conf") into /etc/tmpfiles.d/ — its rules were NOT refreshed"
+        continue
+    fi
+    sudo systemd-tmpfiles --create "/etc/tmpfiles.d/$(basename "$conf")" \
+        || log_warn "systemd-tmpfiles --create failed for $(basename "$conf") — its directories may not exist until reboot"
+    tmpfiles_installed=$(( tmpfiles_installed + 1 ))
+done
+eval "$_ng_saved"
+if [[ $tmpfiles_seen -eq 0 ]]; then
+    # Not fatal — the previously installed drop-ins are still in /etc and the
+    # clock keeps running off them. But it means this checkout is not what we
+    # think it is, and the old soft `if` reported nothing at all here.
+    log_warn "no tmpfiles.d drop-ins found under $INSTALL_DIR/systemd/tmpfiles.d/ — /run/litclock and /var/lib/litclock rules were not refreshed"
+elif [[ $tmpfiles_installed -ne $tmpfiles_seen ]]; then
+    log_warn "installed only ${tmpfiles_installed} of ${tmpfiles_seen} tmpfiles.d drop-ins — see warnings above"
 fi
 
 if [[ ${#ENABLED_UNITS[@]} -gt 0 ]]; then
