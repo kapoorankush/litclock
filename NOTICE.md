@@ -39,7 +39,46 @@ assembled database and derived images are subject to the following terms:
 - **ShareAlike** — If you remix, transform, or build upon the material, you must
   distribute your contributions under the same license.
 
-Full license text: https://creativecommons.org/licenses/by-nc-sa/2.5/legalcode
+### Version: distributed under CC BY-NC-SA 4.0
+
+`image-gen/litclock_annotated.csv` is a **derivative work** of the
+JohannesNE/literature-clock database (extended with additional quotes and
+re-annotated for mature content). Because the ShareAlike condition on that
+CC-licensed portion governs the assembled database as a whole — including
+material folded in from the other sources in the table above — this project
+distributes the derivative under
+**[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)**, as
+expressly permitted by section 4(b) of the 2.5 license (emphasis added):
+
+> You may distribute, publicly display, publicly perform, or publicly digitally
+> perform a Derivative Work only under the terms of this License, **a later
+> version of this License with the same License Elements as this License**, or a
+> Creative Commons iCommons license that contains the same License Elements as
+> this License […]
+
+The same terms cover every corpus-derived artifact: the tooling sample
+`image-gen/gold_set_192.csv`, the generated images (`images/`, shipped in
+quote-image releases), and the rendered examples committed to the repository
+(`example.png`, `docs/media/litclock-intro.gif`).
+
+CC BY-NC-SA 4.0 carries the same three License Elements (Attribution,
+NonCommercial, ShareAlike), so the obligations above are unchanged. Version 4.0
+is used because it, unlike 2.5:
+
+- explicitly licenses **sui generis database rights** (2.5 does not mention
+  databases at all) — the relevant right for a curated quote compilation in the
+  EU and UK;
+- reinstates a terminated license automatically if the violation is **cured
+  within 30 days** (under 2.5, a breach terminates the license automatically,
+  with no automatic reinstatement);
+- is a single international license rather than a per-jurisdiction port.
+
+Upstream's original database remains available under CC BY-NC-SA 2.5 from
+[JohannesNE/literature-clock](https://github.com/JohannesNE/literature-clock);
+this re-versioning applies only to this project's derivative.
+
+Full license text: https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
+Upstream (2.5) license text: https://creativecommons.org/licenses/by-nc-sa/2.5/legalcode
 
 ---
 
@@ -60,7 +99,7 @@ Full license text: https://creativecommons.org/licenses/by-sa/4.0/legalcode
 
 ## Fonts
 
-### E-ink display (image-gen/`fonts/`)
+### E-ink display (`fonts/`)
 
 The Literata font files in `fonts/` are from
 [Google Fonts](https://fonts.google.com/specimen/Literata), licensed under the
