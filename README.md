@@ -8,7 +8,8 @@
   <a href="https://github.com/kapoorankush/litclock/actions/workflows/lint.yml"><img src="https://github.com/kapoorankush/litclock/actions/workflows/lint.yml/badge.svg" alt="Tests"></a>
   <a href="https://github.com/kapoorankush/litclock/actions/workflows/build-image.yml"><img src="https://github.com/kapoorankush/litclock/actions/workflows/build-image.yml/badge.svg" alt="Image Build"></a>
   <a href="https://github.com/kapoorankush/litclock/releases/latest"><img src="https://img.shields.io/github/v/release/kapoorankush/litclock?label=Download%20Image&color=brightgreen" alt="Download Image"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/code-MIT-yellow.svg" alt="Code: MIT"></a>
+  <a href="NOTICE.md"><img src="https://img.shields.io/badge/quotes-CC%20BY--NC--SA%204.0-lightgrey.svg" alt="Quotes: CC BY-NC-SA 4.0"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11-blue.svg" alt="Python 3.11"></a>
   <a href="https://www.raspberrypi.com/"><img src="https://img.shields.io/badge/platform-Raspberry%20Pi-c51a4a.svg" alt="Platform"></a>
 </p>
@@ -430,13 +431,15 @@ This project was originally forked from [jadonn/literary-clock](https://github.c
 - [Dhole's Monochrome Weather Icons](https://github.com/Dhole/weather-pixel-icons) (CC BY-SA 4.0)
 - [Google Fonts](https://fonts.google.com) — Literata (OFL 1.1)
 
+Because the quote corpus derives from CC BY-NC-SA material, the assembled database (`image-gen/litclock_annotated.csv`) and the generated quote images are distributed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) — **non-commercial use only**. The code is MIT.
+
 See [NOTICE.md](NOTICE.md) for full license details on third-party components.
 
 > LitClock was developed privately before this repository was published, so issue/PR numbers referenced in the [CHANGELOG](CHANGELOG.md) predate the public issue tracker.
 
 ## Disclaimer
 
-LitClock is a hobbyist, open-source project provided free of charge and released under the [MIT License](LICENSE).
+LitClock is a hobbyist, open-source project provided free of charge. The **code** is released under the [MIT License](LICENSE). The **quote database** (`image-gen/litclock_annotated.csv`) and the quote **images** derived from it are not MIT — they are distributed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/), which prohibits commercial use. See [NOTICE.md](NOTICE.md).
 
 **THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED**, including but not limited to warranties of merchantability, fitness for a particular purpose, non-infringement, or that the software is free of defects, errors, or vulnerabilities.
 

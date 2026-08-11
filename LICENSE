@@ -19,3 +19,28 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+-------------------------------------------------------------------------------
+
+IMPORTANT: The MIT terms above apply to the SOFTWARE ONLY.
+
+The quote database and every quote image rendered from it are NOT
+MIT-licensed. They incorporate Creative Commons material and are distributed
+under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+(CC BY-NC-SA 4.0). This covers, without limitation:
+
+    image-gen/litclock_annotated.csv     (the quote database)
+    image-gen/gold_set_192.csv           (quote sample used by tooling)
+    images/                              (generated quote images, shipped
+                                          in quote-image releases)
+    example.png, docs/media/litclock-intro.gif, and any other rendered
+    quote image, wherever it appears in this repository or its releases
+
+That license is NonCommercial: you may not use the quote database or the
+rendered quote images for commercial purposes. It is also ShareAlike:
+derivatives of them must carry the same license.
+
+Other bundled assets carry their own terms (weather icons: CC BY-SA 4.0;
+fonts: OFL-1.1; 3D-printed case STLs: CC BY).
+
+See NOTICE.md for the complete third-party license inventory.
