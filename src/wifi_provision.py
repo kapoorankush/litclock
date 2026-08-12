@@ -46,6 +46,49 @@ _NMCLI_SECRET_KEYS = frozenset({"password", "wifi-sec.psk", "802-11-wireless-sec
 # status, so no genuine nmcli failure can collide with it.
 NMCLI_TIMEOUT_RC = 124
 
+# Bounds on the two nmcli calls in scan_wifi_networks(). Both scan entry points
+# (the /scan-wifi handler and the GET / page build) hold _SCAN_CACHE_LOCK across
+# the whole scan to serialize radio access, so an UNBOUNDED nmcli here would let
+# a single wedged NetworkManager (D-Bus stall, brcmfmac hang) hold the lock
+# forever and freeze every setup-page render and rescan (litclock-dev#615). A
+# timeout synthesizes rc=124 and the scan degrades to an empty result the
+# callers already handle. Generous on a Pi Zero 2 W's weak 2.4GHz radio: a busy
+# band can make a rescan genuinely slow, so these only trip on a true wedge.
+SCAN_RESCAN_TIMEOUT = 10
+SCAN_LIST_TIMEOUT = 15
+
+# Failure classes carried on connect_to_wifi's error returns
+# (litclock-dev#603). The retry surfaces — the e-ink retry variant and the
+# web banner's advice line — branch on these instead of re-deriving the
+# cause by sniffing user-facing copy (the antipattern litclock-dev#605 item 11 flags).
+WIFI_FAIL_TIMEOUT = "timeout"
+WIFI_FAIL_BAD_PASSWORD = "bad_password"
+WIFI_FAIL_NOT_FOUND = "not_found"
+WIFI_FAIL_NO_IP = "no_ip"
+WIFI_FAIL_OTHER = "other"
+
+
+class WifiFailure(str):
+    """connect_to_wifi's error copy, carrying its failure class.
+
+    A str subclass so every existing consumer — html.escape at the web
+    banner, equality and substring asserts, journald interpolation — keeps
+    working byte-for-byte unchanged; ``failure_class`` rides along for the
+    retry surfaces (litclock-dev#603). Immutable like its base."""
+
+    __slots__ = ("failure_class",)
+
+    def __new__(cls, message, failure_class):
+        obj = super().__new__(cls, message)
+        obj.failure_class = failure_class
+        return obj
+
+    def __getnewargs__(self):
+        # str's default returns one arg; our __new__ demands two, so without
+        # this, copy.copy / deepcopy / pickle all raise TypeError (/review on
+        # litclock-dev#610 — e.g. a future QueueHandler pickling log args).
+        return (str(self), self.failure_class)
+
 
 def _redact_nmcli(cmd):
     """Replace the token after any secret-bearing nmcli key with ***.
@@ -64,8 +107,12 @@ def _redact_nmcli(cmd):
     return out
 
 
-def _run_nmcli(args, check=True, sudo=False, timeout=None):
+def _run_nmcli(args, check=True, sudo=False, timeout=None, secret_output=False, input_text=None):
     """Run an nmcli command and return the result.
+
+    ``input_text`` feeds the command's stdin (litclock-dev#599: the
+    interactive-editor path carries a PSK via stdin so it never transits
+    argv, where sudo's audit line would persist it to journald).
 
     ``timeout`` (seconds, None = unbounded) exists for the connect path
     (litclock-dev#598): on an exists-but-hidden SSID this NM version can
@@ -73,11 +120,18 @@ def _run_nmcli(args, check=True, sudo=False, timeout=None):
     is already torn down and the user's phone dangles with no feedback.
     On expiry the caller gets a synthetic result (returncode 124, stderr
     "nmcli timed out") instead of an exception, so every existing
-    error-handling path keeps working."""
+    error-handling path keeps working.
+
+    ``secret_output`` marks a command whose STDOUT is itself a secret
+    (``-s -g …psk`` reads — litclock-dev#613). argv redaction does not cover
+    OUTPUT, and the TimeoutExpired branch below otherwise logs the partial
+    pre-kill output at ERROR: a wedged secret read could then land the PSK in
+    persistent journald (litclock-dev#616 review). When set, the partial output is
+    replaced with a byte count."""
     cmd = (["sudo"] if sudo else []) + ["nmcli"] + args
     logging.debug(f"Running: {' '.join(_redact_nmcli(cmd))}")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, input=input_text)
     except subprocess.TimeoutExpired as exc:
         # Keep whatever nmcli wrote before the kill — it's the only record of
         # what NM was doing (slow DHCP vs hidden 5GHz vs wedged daemon) and
@@ -86,11 +140,27 @@ def _run_nmcli(args, check=True, sudo=False, timeout=None):
         # but don't bet on that across versions — normalize either way.
         parts = [p for p in (exc.stdout, exc.stderr) if p]
         partial = " ".join(p.decode("utf-8", "replace") if isinstance(p, bytes) else p for p in parts).strip()
+        if secret_output and partial:
+            # The output is the secret itself — never journal it (litclock-dev#613/litclock-dev#616).
+            partial = f"<{len(partial)} bytes redacted>"
         logging.error(
             f"nmcli timed out after {timeout}s: {' '.join(_redact_nmcli(cmd))}"
             + (f" — output before kill: {partial}" if partial else "")
         )
-        return subprocess.CompletedProcess(cmd, returncode=NMCLI_TIMEOUT_RC, stdout="", stderr="nmcli timed out")
+        # Redacted argv in the synthetic result: .args embeds the command line,
+        # and the connect argv carries the PSK. No current caller logs it, but
+        # the whole redaction machinery exists because a future debug line
+        # writing an argv persists the password to journald (litclock-dev#580) — make the
+        # sentinel object safe to log by construction.
+        return subprocess.CompletedProcess(
+            _redact_nmcli(cmd), returncode=NMCLI_TIMEOUT_RC, stdout="", stderr="nmcli timed out"
+        )
+    # Same invariant on the common path: subprocess.run stored the RAW argv
+    # in result.args, so without this line the "safe to log" property would
+    # hold for exactly one of the two result shapes — the rare one. Nothing
+    # re-executes or compares .args (verified across src/), so overwriting
+    # it loses nothing.
+    result.args = _redact_nmcli(cmd)
     if check and result.returncode != 0:
         logging.error(f"nmcli failed: {result.stderr.strip()}")
     return result
@@ -100,6 +170,69 @@ def _generate_password(length=8):
     """Generate a random password for the hotspot."""
     chars = string.ascii_letters + string.digits
     return "".join(secrets.choice(chars) for _ in range(length))
+
+
+# Hotspot credential bounds (litclock-dev#626). 802.11-2020 §9.4.2.2: an SSID
+# element is 0-32 octets (zero-length is the wildcard SSID, meaningless for an
+# AP we host). WPA2-PSK passphrases (802.11i Annex H, enforced by both
+# wpa_supplicant and hostapd) are 8-63 printable-ASCII characters.
+#
+# The SSID rule is deliberately TIGHTER than 802.11 (which allows any 32
+# octets): printable ASCII only. This AP is ours, and the name must render
+# faithfully on every surface that shows it — the e-ink splash (Aileron has no
+# CJK/emoji glyphs; a Unicode name paints as tofu boxes while the AP
+# broadcasts the real bytes), the /etc/issue box (bash pads printf fields by
+# BYTES while ${#var} counts characters, so any multibyte name misaligns the
+# border), and WIFI: QR parsers on phones (several trim or re-encode
+# non-ASCII). ASCII is the one alphabet where chars == bytes == terminal
+# columns, which is what makes the four-surfaces-agree guarantee of this
+# validator actually hold (/review on litclock-dev#629: three independent
+# passes converged on this).
+HOTSPOT_SSID_MAX_CHARS = 32
+HOTSPOT_PASSWORD_MIN_CHARS = 8
+HOTSPOT_PASSWORD_MAX_CHARS = 63
+
+
+def _outside_printable_ascii(value):
+    return any(not (0x20 <= ord(ch) <= 0x7E) for ch in value)
+
+
+def validate_hotspot_credentials(ssid, password):
+    """Validate an SSID/password pair BEFORE the AP exists (litclock-dev#626).
+
+    create_hotspot() is the single chokepoint through which the live AP, the
+    e-ink QR, the /etc/issue console banner, and the splash instruction steps
+    all receive their credentials, so rejecting out-of-spec values here is what
+    guarantees those four surfaces can never disagree about what the network
+    is. The renderer's own sanitize/clamp (litclock-dev#589) stays as
+    belt-and-suspenders, but after this check it can no longer be the only
+    guard. Unreachable on the shipped path — first-boot.sh always uses the
+    defaults — so this only ever fires on a hand-typed --ssid/--password.
+
+    Returns None when the pair is valid, else a log-safe error string (never
+    echoes the password; never echoes raw control characters).
+    """
+    if not ssid or not ssid.strip():
+        # All-spaces is as bad as empty: an invisible name on every surface,
+        # and phone QR parsers whitespace-trim the payload, so the phone would
+        # seek a DIFFERENT SSID than the AP broadcasts (/review).
+        return "SSID is empty or blank"
+    if _outside_printable_ascii(ssid):
+        return "SSID must be printable ASCII (0x20-0x7E) so every surface renders the same name"
+    if len(ssid) > HOTSPOT_SSID_MAX_CHARS:
+        return f"SSID is {len(ssid)} characters; 802.11 caps SSIDs at {HOTSPOT_SSID_MAX_CHARS} octets"
+    if not password:
+        # Guard None/empty explicitly — this reads as public API and must
+        # return an error string, never raise, for a future direct caller.
+        return "password is missing"
+    if not (HOTSPOT_PASSWORD_MIN_CHARS <= len(password) <= HOTSPOT_PASSWORD_MAX_CHARS):
+        return (
+            f"password must be {HOTSPOT_PASSWORD_MIN_CHARS}-{HOTSPOT_PASSWORD_MAX_CHARS} "
+            f"characters for WPA2-PSK (got {len(password)})"
+        )
+    if _outside_printable_ascii(password):
+        return "password contains characters outside printable ASCII; WPA2-PSK passphrases are printable ASCII"
+    return None
 
 
 _READY_STATES = {"disconnected", "connected", "connecting"}
@@ -333,6 +466,14 @@ def create_hotspot(ssid=DEFAULT_SSID, password=None):
     if password is None:
         password = _generate_password()
 
+    # Reject out-of-spec credentials before ANY side effect (no teardown, no
+    # captive-portal config, no nmcli) — a rejected pair must leave the system
+    # exactly as it was (litclock-dev#626).
+    error = validate_hotspot_credentials(ssid, password)
+    if error:
+        logging.error(f"Refusing to create hotspot: {error}")
+        return None
+
     logging.info(f"Creating hotspot: {ssid}")
 
     if not ensure_wifi_ready():
@@ -397,8 +538,9 @@ def scan_wifi_networks():
     Returns:
         list of dicts with 'ssid', 'signal', 'security', 'in_use'
     """
-    # Trigger a rescan — sudo for consistency with other nmcli calls from systemd
-    _run_nmcli(["device", "wifi", "rescan"], check=False, sudo=True)
+    # Trigger a rescan — sudo for consistency with other nmcli calls from systemd.
+    # Bounded so a wedged NM can't hold _SCAN_CACHE_LOCK forever (litclock-dev#615).
+    _run_nmcli(["device", "wifi", "rescan"], check=False, sudo=True, timeout=SCAN_RESCAN_TIMEOUT)
     time.sleep(2)
 
     # Get results
@@ -406,6 +548,7 @@ def scan_wifi_networks():
         ["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list"],
         check=False,
         sudo=True,
+        timeout=SCAN_LIST_TIMEOUT,
     )
 
     if result.returncode != 0:
@@ -452,6 +595,276 @@ def scan_wifi_networks():
     return networks
 
 
+def _profile_uuids():
+    """Set of saved NM connection profile UUIDs, or None if unreadable.
+
+    UUIDs, not NAMEs (litclock-dev#609 review, Codex + adversarial converged): NM
+    uniquifies a colliding name ("MyNet 1"), an operator can rename a
+    profile over SSH so its name no longer matches its SSID, and duplicate
+    names collapse in a set — all three defeat name membership. UUIDs are
+    stable, unique per profile, and escape-free in terse output.
+
+    Bounded (~0.1s measured; 10s cap for a wedged daemon) and unprivileged —
+    listing needs no polkit session."""
+    result = _run_nmcli(["-t", "-f", "UUID", "connection", "show"], check=False, timeout=10)
+    if result.returncode != 0:
+        return None
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def _created_profile_uuids(pre_uuids):
+    """UUIDs of profiles created since the pre-connect snapshot.
+
+    None when the diff cannot be computed (either listing failed) — callers
+    decide per failure class how loud to be, because "unknown" and "known
+    empty" drive different cleanup decisions."""
+    if pre_uuids is None:
+        return None
+    post = _profile_uuids()
+    if post is None:
+        return None
+    return post - pre_uuids
+
+
+def _delete_created_profiles(created, ssid):
+    """Delete the profile(s) THIS attempt created (litclock-dev#595).
+
+    nmcli's own failure exits (wrong password via WRONG_KEY ~24s, SSID not
+    found) leave the just-created profile saved with ``autoconnect=yes`` and
+    the unverified PSK. On a fielded device that profile autoconnect-loops
+    failed WPA auth whenever the real network drops — and the single radio
+    spends every one of those retries NOT rejoining the good network.
+
+    The UUID set-diff means a profile that pre-existed the attempt — under
+    ANY name — is structurally untouchable here, so a previously-working
+    saved network can never be deleted (the hazard the owner declined to
+    risk in litclock-dev#600). Bounded deletes: an unbounded delete against a wedged
+    NetworkManager would recreate the very hang the connect timeout exists
+    to prevent, on the cleanup path.
+    """
+    ok = True
+    for uuid in sorted(created):
+        cleanup = _run_nmcli(["connection", "delete", "uuid", uuid], check=False, sudo=True, timeout=10)
+        if cleanup.returncode != 0:
+            logging.error(
+                f"Could not delete profile {uuid} created by the failed "
+                f"attempt on '{ssid}' (rc={cleanup.returncode}): it may keep "
+                "autoconnecting with an unverified password "
+                "(litclock-dev#595). See journalctl -u NetworkManager."
+            )
+            ok = False
+    return ok
+
+
+def _unescape_terse(field):
+    """Undo nmcli ``-t`` terse-mode escaping (``\\:`` -> ``:``, ``\\\\`` ->
+    ``\\``). nmcli escapes the field separator and backslash in VALUE fields;
+    an SSID legitimately containing a colon arrives as ``My\\:Net`` and would
+    otherwise never match the target (litclock-dev#616 review F8 — silent snapshot miss
+    on colon SSIDs)."""
+    out = []
+    escaped = False
+    for ch in field:
+        if escaped:
+            out.append(ch)
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        else:
+            out.append(ch)
+    if escaped:  # trailing lone backslash — keep it literally
+        out.append("\\")
+    return "".join(out)
+
+
+def _snapshot_ssid_psks(ssid):
+    """Map of pre-existing wifi profile UUID -> stored PSK for profiles whose
+    802-11-wireless.ssid equals the connect target (litclock-dev#613).
+
+    Hardware-verified 2026-08-09 (NM 1.42.4): ``nmcli device wifi connect``
+    REUSES a pre-existing profile for the SSID and writes the attempted
+    password into it even when the join fails — a previously-working saved
+    network is left armed (autoconnect=yes) with a password that can never
+    authenticate. The litclock-dev#609 UUID set-diff is structurally blind to this (no
+    profile is *created*), so the failure paths restore from this snapshot
+    instead.
+
+    UUID-keyed for the same reasons as _profile_uuids (rename/uniquify).
+    Shape: ONE UUID,TYPE listing + one unprivileged ssid read per WIFI
+    profile + one sudo secret read per SSID MATCH. (litclock-dev#616 tried to fold the
+    ssid into the listing — `-f UUID,TYPE,802-11-wireless.ssid` — but the
+    list form rejects setting properties with rc=2 on real nmcli 1.42.4,
+    which silently disabled the whole restore; hardware-caught in the litclock-dev#630
+    retest. The litclock-dev#616-F1 N+1 concern was specifically per-profile SUDO SECRET
+    reads; the ssid reads here are unprivileged and wifi-only.)
+
+    The PSK values live in this dict IN MEMORY ONLY. The listing/ssid read is
+    unprivileged; only the secret read is sudo. A listing failure or an
+    unreadable secret drops that profile and logs a WARNING (never the value)
+    — restore then degrades to the pre-#613 no-op, but LOUDLY, because a
+    silent miss leaves the fielded device in exactly the litclock-dev#613 brick state with
+    no journal trace (litclock-dev#616 review F6)."""
+    # The LIST form of `connection show` accepts only profile COLUMNS
+    # (NAME, UUID, TYPE, ...) — setting properties like 802-11-wireless.ssid
+    # are rejected with rc=2 "invalid field". The litclock-dev#616 one-listing shape
+    # (`-f UUID,TYPE,802-11-wireless.ssid`) therefore ALWAYS failed on real
+    # nmcli 1.42.4, silently disabling the whole litclock-dev#613 restore; the unit-test
+    # fake accepted the invalid field (hardware-caught during the litclock-dev#630
+    # retest, 2026-08-10). The ssid must come from a per-profile query.
+    # That reintroduces a per-profile read, but NOT the litclock-dev#616-F1 hazard: F1
+    # was about per-profile SUDO SECRET reads serializing 10s timeouts —
+    # these ssid reads are unprivileged, wifi-type-only, and the secret
+    # reads below remain per-MATCH.
+    listing = _run_nmcli(["-t", "-f", "UUID,TYPE", "connection", "show"], check=False, timeout=10)
+    if listing.returncode != 0:
+        logging.warning(
+            f"Could not list connections to snapshot the saved password for "
+            f"'{ssid}' (rc={listing.returncode}) — a failed attempt that "
+            "overwrites a reused profile will NOT be auto-restored "
+            "(litclock-dev#613)."
+        )
+        return {}
+    snapshot = {}
+    for line in listing.stdout.splitlines():
+        parts = line.split(":", 1)
+        if len(parts) < 2:
+            continue
+        uuid, ctype = parts
+        if ctype != "802-11-wireless":
+            continue
+        ssid_q = _run_nmcli(
+            ["-t", "-g", "802-11-wireless.ssid", "connection", "show", "uuid", uuid],
+            check=False,
+            timeout=10,
+        )
+        if ssid_q.returncode != 0:
+            logging.warning(
+                f"Could not read the ssid of wifi profile {uuid} while "
+                f"snapshotting for '{ssid}' (rc={ssid_q.returncode}) — that "
+                "profile will NOT be auto-restored (litclock-dev#613)."
+            )
+            continue
+        if _unescape_terse(ssid_q.stdout.rstrip("\n")) != ssid:
+            continue
+        psk_q = _run_nmcli(
+            ["-s", "-g", "802-11-wireless-security.psk", "connection", "show", "uuid", uuid],
+            check=False,
+            sudo=True,
+            timeout=10,
+            secret_output=True,
+        )
+        if psk_q.returncode != 0:
+            logging.warning(
+                f"Could not read the saved password on profile {uuid} ('{ssid}') "
+                f"to snapshot it (rc={psk_q.returncode}) — a failed attempt that "
+                "overwrites it will NOT be auto-restored (litclock-dev#613)."
+            )
+            continue
+        # ``-g`` output is terse-ESCAPED even for a single field — verified on
+        # NM 1.42.4: a stored ``pa:ss\word`` reads back as ``pa\:ss\\word``
+        # (litclock-dev#599 review F1). Un-escape so every comparison and the
+        # editor replay below operate on the RAW value; without this, a PSK
+        # containing ``:`` or ``\`` silently defeats the whole litclock-dev#613 restore.
+        snapshot[uuid] = _unescape_terse(psk_q.stdout.rstrip("\n"))
+    return snapshot
+
+
+def _restore_ssid_psks(snapshot, ssid, attempted):
+    """Restore each snapshotted profile's PSK when the failed attempt is what
+    overwrote it (litclock-dev#613). Called only on the paths where nmcli
+    reported the connect itself failed — NOT on the rc=0 "connected but no
+    IP" path, where association proves the submitted password was correct and
+    NM's stored value is the right final state.
+
+    Restore condition is ``current == attempted and attempted != good``, not
+    merely ``current != good`` (litclock-dev#616 review, Codex): only undo the exact write
+    THIS attempt made. A value that is neither the good snapshot nor this
+    attempt's password was changed by something else (SSH, a concurrent NM
+    edit) and must not be clobbered; an open network (good == attempted == "")
+    is left alone. Per profile: re-read the current PSK (bounded, sudo —
+    secrets read needs root), then modify only when the condition holds. A
+    failed restore is logged loudly (the profile is left unable to rejoin);
+    the secret never reaches logs OR argv — the write rides the editor's
+    stdin (litclock-dev#599) and the reads use secret_output."""
+    if not snapshot:
+        return
+    for uuid, good in snapshot.items():
+        if attempted == good:
+            continue  # nothing this attempt could have corrupted (e.g. open network)
+        current = _run_nmcli(
+            ["-s", "-g", "802-11-wireless-security.psk", "connection", "show", "uuid", uuid],
+            check=False,
+            sudo=True,
+            timeout=10,
+            secret_output=True,
+        )
+        # Skip unless the stored PSK is exactly what this attempt wrote: an
+        # unreadable profile (deleted meanwhile), an unchanged one, or one a
+        # third party changed are all left untouched. The read is un-escaped
+        # (-g terse-escapes ``:`` and ``\`` — see _snapshot_ssid_psks) so the
+        # comparison is raw-vs-raw.
+        if current.returncode != 0 or _unescape_terse(current.stdout.rstrip("\n")) != attempted:
+            continue
+        # The good PSK goes back via `connection edit` with the commands fed
+        # on STDIN — never `connection modify … wifi-sec.psk <value>`, whose
+        # argv sudo audits to persistent journald; that leaked the RESTORED
+        # (working!) password, the worst credential to leak (litclock-dev#599,
+        # widened by litclock-dev#616). The editor's `set` takes the rest of the line
+        # LITERALLY (verified on NM 1.42.4: colons and backslashes round-trip
+        # unmodified) — but it cannot carry a value with control characters
+        # (each newline would execute as another editor command under sudo)
+        # or leading/trailing whitespace (the editor strips it). No real WPA
+        # passphrase contains either; a snapshot value that does is corrupt,
+        # so refuse loudly rather than write a mangled third value.
+        if good and (any(ord(ch) < 0x20 or ch == "\x7f" for ch in good) or good != good.strip()):
+            logging.error(
+                f"Snapshot password for profile {uuid} ('{ssid}') contains "
+                "characters the profile editor cannot carry safely — restore "
+                "skipped; re-provision this network to fix it (litclock-dev#599)."
+            )
+            continue
+        # An empty good value (open-network profile that somehow got a psk
+        # written) clears the property instead of `set` with no value, which
+        # would drop the editor into an interactive prompt and hang until
+        # the timeout.
+        if good:
+            commands = f"set 802-11-wireless-security.psk {good}\nsave persistent\nquit\n"
+        else:
+            commands = "remove 802-11-wireless-security.psk\nsave persistent\nquit\n"
+        fix = _run_nmcli(
+            ["connection", "edit", "uuid", uuid],
+            check=False,
+            sudo=True,
+            timeout=15,
+            input_text=commands,
+            secret_output=True,
+        )
+        # The editor's exit code is a weak signal (it exits 0 after `quit`
+        # even when `save` printed an error), so the authority on success is
+        # a read-back: the stored PSK must now equal the snapshot.
+        verify = _run_nmcli(
+            ["-s", "-g", "802-11-wireless-security.psk", "connection", "show", "uuid", uuid],
+            check=False,
+            sudo=True,
+            timeout=10,
+            secret_output=True,
+        )
+        restored = verify.returncode == 0 and _unescape_terse(verify.stdout.rstrip("\n")) == good
+        if restored:
+            logging.info(
+                f"Restored the saved password on profile {uuid} ('{ssid}') — the "
+                "failed attempt had overwritten it (litclock-dev#613)."
+            )
+        else:
+            logging.error(
+                f"Could not restore the saved password on profile {uuid} "
+                f"('{ssid}', edit rc={fix.returncode}, verified=False): the "
+                "profile is left with the failed attempt's password and cannot "
+                "rejoin until re-provisioned (litclock-dev#613). "
+                "See journalctl -u NetworkManager."
+            )
+
+
 def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
     """
     Connect to a WiFi network.
@@ -468,26 +881,67 @@ def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
         connect_timeout: seconds before the nmcli connect is abandoned and
             the half-created profile deleted (litclock-dev#598). None =
             unbounded — the CLI's manual/SSH path passes it via --timeout 0,
-            where "return the hotspot to the user" doesn't apply.
+            where "return the hotspot to the user" doesn't apply and NO
+            profile cleanup runs on any failure path (litclock-dev#595
+            keeps the setup-flow semantics off the recovery path).
 
     Returns:
         (success: bool, error_message: str or None)
     """
     logging.info(f"Connecting to WiFi: {ssid}" + (" (hidden)" if hidden else ""))
 
-    # Use nmcli to connect — sudo needed when run from systemd (no polkit session)
+    # A control character in the password would be consumed as extra --ask
+    # prompt lines below (and can never be part of a real WPA passphrase —
+    # 802.11 Annex H is printable ASCII); reject it before ANY nmcli
+    # activity with the honest failure class (litclock-dev#599).
+    if password and any(ord(ch) < 0x20 or ch == "\x7f" for ch in password):
+        return False, WifiFailure(
+            "WiFi passwords can't contain line breaks or control characters — re-type the password and try again.",
+            WIFI_FAIL_BAD_PASSWORD,
+        )
+
+    # litclock-dev#595 snapshot-and-diff: capture the profile UUID set BEFORE
+    # the connect so every failure path below can tell what THIS attempt
+    # created. UUIDs, not names — see _profile_uuids.
+    pre_uuids = _profile_uuids()
+
+    # litclock-dev#613: also snapshot the stored PSK of any PRE-EXISTING
+    # profile for this SSID — nmcli reuses such a profile and persists the
+    # attempted password into it even on failure (hardware-verified). Gated
+    # like the cleanup below: the manual --timeout 0 SSH-recovery path must
+    # never touch profiles (litclock-dev#600 decision d), so it skips the snapshot too.
+    pre_psks = _snapshot_ssid_psks(ssid) if connect_timeout is not None else {}
+
+    # Use nmcli to connect — sudo needed when run from systemd (no polkit
+    # session). The PSK travels via `--ask` + stdin, NEVER as a `password
+    # <value>` argv token: sudo's command-audit line writes the full argv to
+    # persistent journald, so the old form logged every attempted password —
+    # and after litclock-dev#616, restored good ones — to disk on every provisioning
+    # (litclock-dev#599, hardware-verified on the QA Pi including a real home
+    # PSK). NOT --passwd-file: that option does not exist on nmcli 1.42.4
+    # (verified on-device — "Option '--passwd-file' is unknown"; it is a
+    # `connection up` sub-argument only). With --ask, nmcli prompts for
+    # whatever secret NM requests (psk for WPA, wep-key for WEP — no
+    # secret-type hardcoding) and reads it from stdin when stdin is a pipe;
+    # verified live on NM 1.42.4: the prompt consumed a piped password and
+    # activation proceeded. On a wrong password NM re-asks, stdin is at EOF,
+    # and nmcli fails with the same "Secrets were required" error string the
+    # classification below already handles. An empty password (open network —
+    # the setup form says "leave blank") omits --ask entirely. Control
+    # characters in the password were already rejected at the top of this
+    # function.
     args = [
         "device",
         "wifi",
         "connect",
         ssid,
-        "password",
-        password,
         "ifname",
         "wlan0",
     ]
     if hidden:
         args += ["hidden", "yes"]
+    if password:
+        args = ["--ask"] + args
 
     # litclock-dev#598: bound the connect. Hardware-measured: an
     # exists-but-hidden SSID blocks ~107s inside NM activation before
@@ -496,7 +950,13 @@ def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
     # is generous for a genuine slow hidden association (the successful
     # hidden join measured ~3s) and returns the hotspot to the user while
     # they still have context.
-    result = _run_nmcli(args, check=False, sudo=True, timeout=connect_timeout)
+    result = _run_nmcli(
+        args,
+        check=False,
+        sudo=True,
+        timeout=connect_timeout,
+        input_text=(password + "\n") if password else None,
+    )
 
     if result.returncode != 0:
         error = result.stderr.strip()
@@ -520,31 +980,86 @@ def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
                     _clear_wifi_watchdog_counter()
                     return True, None
                 time.sleep(1)
-            # No rescue: THIS delete is what actually aborts the in-flight
-            # activation and drops the half-created profile; without it the
-            # profile lingers with autoconnect=yes and a possibly-wrong
-            # password (the litclock-dev#595 failure class, made worse by a
-            # kill). Explicit "id" selector — bare `delete <ssid>` makes
-            # nmcli spec-guess, and an SSID named "id"/"uuid"/"path" would
-            # break the cleanup. The result is checked because a silent
-            # delete failure leaves BOTH the armed profile and a live
-            # activation racing the hotspot restore for the single radio.
-            cleanup = _run_nmcli(["connection", "delete", "id", ssid], check=False, sudo=True, timeout=10)
-            if cleanup.returncode != 0:
+            # No rescue: abort the in-flight activation FIRST, independent of
+            # profile identity (litclock-dev#609 review — the sharpest hole): nmcli was
+            # only a D-Bus client, NM keeps trying, and litclock-dev#600's delete-as-abort
+            # only worked when the activated profile happened to be NAMED
+            # exactly the SSID (nmcli reuses profiles by SSID match, and an
+            # operator can rename one over SSH). `device disconnect` stops
+            # whatever wlan0 is activating so the hotspot restore isn't
+            # racing it for the single radio. create_hotspot recovers the
+            # manual-disconnected state this leaves (ensure_wifi_ready
+            # accepts `disconnected`; the hotspot activation is explicit).
+            abort = _run_nmcli(["device", "disconnect", "wlan0"], check=False, sudo=True, timeout=10)
+            if abort.returncode != 0:
                 logging.error(
-                    f"Could not delete half-created profile '{ssid}' "
-                    f"(rc={cleanup.returncode}): it may keep autoconnecting "
-                    "with an unverified password (litclock-dev#595) and its "
-                    "activation may still be racing the hotspot restore. "
+                    f"Could not disconnect wlan0 after the bound expired on "
+                    f"'{ssid}' (rc={abort.returncode}): the activation may "
+                    "still be racing the hotspot restore. "
                     "See journalctl -u NetworkManager."
                 )
-            return False, (
+            # Then drop what this attempt created (the armed-profile half).
+            created = _created_profile_uuids(pre_uuids)
+            if created is None:
+                # Listing broken — fall back to litclock-dev#600's shipped name-targeted
+                # delete. On THIS path an armed leftover is near-certain (the
+                # attempt got far enough to activate) and the abort above
+                # already handled the racing-activation half; the residual
+                # risk (a same-named pre-existing profile deleted while
+                # listing is broken but delete works) is the documented
+                # double-fault tradeoff. Explicit "id" selector — bare
+                # `delete <ssid>` makes nmcli spec-guess.
+                cleanup = _run_nmcli(["connection", "delete", "id", ssid], check=False, sudo=True, timeout=10)
+                if cleanup.returncode != 0:
+                    logging.error(
+                        f"Could not delete half-created profile '{ssid}' "
+                        f"(rc={cleanup.returncode}): it may keep autoconnecting "
+                        "with an unverified password (litclock-dev#595). "
+                        "See journalctl -u NetworkManager."
+                    )
+            else:
+                _delete_created_profiles(created, ssid)
+            # A reused pre-existing profile survives the delete above by
+            # design — un-write the failed password from it (litclock-dev#613).
+            _restore_ssid_psks(pre_psks, ssid, password)
+            return False, WifiFailure(
                 f"Couldn't reach '{ssid}' — the network didn't answer in time. "
-                "Check that it's a 2.4GHz network and in range, then try again."
+                "Check that it's a 2.4GHz network and in range, then try again.",
+                WIFI_FAIL_TIMEOUT,
             )
+        # nmcli exited on its own — no activation left running, but the
+        # profile this attempt created survives with autoconnect=yes and the
+        # unverified password (litclock-dev#595 — hardware repro: a wrong PSK
+        # fails via WRONG_KEY in ~24s and the armed profile remains; on a
+        # fielded device it then autoconnect-loops failed auth whenever the
+        # real network drops). Clean up what this attempt created before
+        # returning. The manual --timeout 0 path opts out entirely (litclock-dev#600
+        # decision d — SSH-recovery semantics must never delete profiles).
+        # When the UUID diff is unavailable, SKIP the cleanup rather than
+        # guess by name (litclock-dev#609 Codex): unlike the timeout branch there is no
+        # activation to abort here, so a name-targeted delete has no upside
+        # to weigh against deleting a good pre-existing profile.
+        if connect_timeout is not None:
+            created = _created_profile_uuids(pre_uuids)
+            if created is None:
+                logging.warning(
+                    f"Could not determine whether the failed attempt on "
+                    f"'{ssid}' left a profile behind (connection listing "
+                    "unavailable) — leaving profiles untouched "
+                    "(litclock-dev#595)."
+                )
+            else:
+                _delete_created_profiles(created, ssid)
+            # The wrong-password path on a REUSED profile creates nothing —
+            # it corrupts the pre-existing profile's stored PSK instead
+            # (hardware: 6s rc=4 "Secrets were required", stored PSK ==
+            # the failed attempt's). Restore what this attempt overwrote
+            # (litclock-dev#613).
+            _restore_ssid_psks(pre_psks, ssid, password)
+
         # Parse common error messages for user-friendly messages
         if "Secrets were required" in error or "password" in error.lower():
-            return False, "Incorrect WiFi password"
+            return False, WifiFailure("Incorrect WiFi password", WIFI_FAIL_BAD_PASSWORD)
         if "No network with SSID" in error:
             # litclock-dev#598 (hardware-established): for a TYPED name this
             # is usually NOT a typo — a hidden 5GHz-only network is invisible
@@ -552,13 +1067,14 @@ def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
             # hidden 2.4GHz one can too until it enters the scan cache. Lead
             # with the likely causes; keep the spelling hint last.
             if hidden:
-                return False, (
+                return False, WifiFailure(
                     f"Couldn't find '{ssid}'. If it's a hidden network, make sure "
                     "it's 2.4GHz and in range, then try again. Also double-check "
-                    "the exact spelling — network names are case-sensitive."
+                    "the exact spelling — network names are case-sensitive.",
+                    WIFI_FAIL_NOT_FOUND,
                 )
-            return False, f"Network '{ssid}' not found"
-        return False, f"Connection failed: {error}"
+            return False, WifiFailure(f"Network '{ssid}' not found", WIFI_FAIL_NOT_FOUND)
+        return False, WifiFailure(f"Connection failed: {error}", WIFI_FAIL_OTHER)
 
     # Verify connection - wait for IP address
     for _ in range(15):
@@ -569,7 +1085,7 @@ def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
             return True, None
         time.sleep(1)
 
-    return False, "Connected but could not obtain IP address"
+    return False, WifiFailure("Connected but could not obtain IP address", WIFI_FAIL_NO_IP)
 
 
 def _clear_wifi_watchdog_counter():

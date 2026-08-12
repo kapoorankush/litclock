@@ -104,26 +104,64 @@ update_issue_hotspot() {
         sudo cp /etc/issue /etc/issue.bak 2>/dev/null || true
     fi
 
-    # Pad values to fixed width so the box border aligns
-    local line_ssid line_pass line_ip
-    # Wording tracks the e-ink panel deliberately: a reader who plugs in a
-    # monitor is looking at the same two credentials the panel shows, and
-    # "Clock's Password:" is the exact string non-technical readers stored
-    # instead of typing. Field widths keep each line at the 43 chars it
-    # already rendered, so this changes no alignment.
-    line_ssid=$(printf "  LitClock's WiFi network: %-16s" "$ssid")
-    line_pass=$(printf "  LitClock's WiFi password: %-15s" "$password")
-    line_ip=$(printf "  Setup URL: %-23s" "http://${ip}:8080")
+    # Box width is derived from the content, floored at 45 so the shipped-path
+    # box (default 14-char SSID, 8-char password, IPv4 URL) stays byte-for-byte
+    # what it was. litclock-dev#589 item 4 fixed the border overflowing the
+    # fixed-width fields; litclock-dev#626 closes the residual gap — the old
+    # %-16s/%-15s/%-30s fields PADDED but never GREW, so any value longer than
+    # its field (a 32-char --ssid, a 63-char password, a non-IPv4 ip) broke the
+    # right border again. Growing the box keeps the border aligned for every
+    # value wifi_provision's boundary validation admits, without truncating —
+    # this banner exists so a tester can read the EXACT credentials.
+    # The char-count arithmetic below (${#var} vs printf byte-width padding)
+    # is only coherent because the validator restricts credentials to
+    # printable ASCII, where chars == bytes == terminal columns. A 63-char
+    # password grows the box past 80 columns and wraps on a narrow console —
+    # accepted: exactness over truncation, custom-credential path only.
+    # Wording tracks the e-ink panel deliberately.
+    # agetty interprets backslash escapes in /etc/issue (\d date, \l tty,
+    # \e ESC...). A credential containing a backslash — printable ASCII, so
+    # the validator admits it — would DISPLAY as something other than itself
+    # (the exact divergence litclock-dev#626 exists to prevent), and \e is
+    # terminal-escape injection into the login console. Double every
+    # backslash so getty renders the literal credential. Alignment for such
+    # values degrades gracefully (the file holds \\ = 2 cols, getty shows
+    # \ = 1): an honest credential beats a perfect border. Shipped-path
+    # values never contain backslashes, so this is a no-op there.
+    ssid="${ssid//\\/\\\\}"
+    password="${password//\\/\\\\}"
+    ip="${ip//\\/\\\\}"
+
+    local c_ssid c_pass c_ip title
+    c_ssid="  LitClock's WiFi network: ${ssid}"
+    c_pass="  LitClock's WiFi password: ${password}"
+    c_ip="  Setup URL: http://${ip}:8080"
+    title="LitClock WiFi Setup"
+
+    local interior=45 line
+    for line in "$c_ssid" "$c_pass" "$c_ip"; do
+        # +2 keeps the two trailing spaces the fixed template had
+        if (( ${#line} + 2 > interior )); then
+            interior=$(( ${#line} + 2 ))
+        fi
+    done
+
+    local border pad_l pad_r
+    # sed, not tr: tr is byte-wise and would emit only the first byte of the
+    # multibyte ═ per space, producing invalid UTF-8
+    border=$(printf '%*s' "$interior" '' | sed 's/ /═/g')
+    pad_l=$(( (interior - ${#title}) / 2 ))
+    pad_r=$(( interior - ${#title} - pad_l ))
 
     sudo tee /etc/issue > /dev/null << ISSUEEOF
 
-  ╔══════════════════════════════════════╗
-  ║       LitClock WiFi Setup            ║
-  ╠══════════════════════════════════════╣
-  ║${line_ssid}  ║
-  ║${line_pass}  ║
-  ║${line_ip}  ║
-  ╚══════════════════════════════════════╝
+  ╔${border}╗
+  ║$(printf '%*s%s%*s' "$pad_l" '' "$title" "$pad_r" '')║
+  ╠${border}╣
+  ║$(printf '%-*s' "$interior" "$c_ssid")║
+  ║$(printf '%-*s' "$interior" "$c_pass")║
+  ║$(printf '%-*s' "$interior" "$c_ip")║
+  ╚${border}╝
 
   Connect to the WiFi network above,
   then open the Setup URL in your browser.

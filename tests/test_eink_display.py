@@ -1,9 +1,10 @@
 """Tests for eink_display module — QR code generation (no hardware needed)."""
 
+import logging
 import sys
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 # eink_display imports qrcode at module level and calls setup_logging(),
 # which is fine. But waveshare_epd is only imported inside get_display().
@@ -159,7 +160,7 @@ class TestSetupSplashCopy:
         would block a wording decision without measuring anything real. The
         510px budget is the actual constraint and both clear it.
         """
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image
 
         draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 255))
         font = ImageFont.truetype(eink_display.FONT_PATH_BOLD, 22)
@@ -168,31 +169,43 @@ class TestSetupSplashCopy:
             width = draw.textbbox((0, 0), label, font=font)[2]
             assert width < budget, f"{label!r} is {width}px, over the {budget}px budget"
 
+    # Every instruction-block shape the renderer can produce. A variant
+    # missing here is invisible to every guard below — the litclock-dev#603
+    # connect_failed variant shipped with exactly that gap (/review).
+    ALL_VARIANTS = [
+        (False, None),
+        (True, None),  # pre-#603 call shape — renders the password copy
+        (True, "wifi_password"),
+        (True, "connect_failed"),
+    ]
+
     def test_instruction_lines_fit_the_panel(self):
         """The block is centred on its widest line and the lines are
         left-aligned within it, so the whole 800px is the budget."""
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image
 
         draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 255))
         font = ImageFont.truetype(eink_display.FONT_PATH, 18)
-        for is_retry in (False, True):
-            for line in eink_display.setup_instruction_lines("192.168.100.100", is_retry=is_retry):
+        for is_retry, retry_reason in self.ALL_VARIANTS:
+            for line in eink_display.setup_instruction_lines(
+                "192.168.100.100", is_retry=is_retry, retry_reason=retry_reason
+            ):
                 width = draw.textbbox((0, 0), line, font=font)[2]
                 assert width < eink_display.DISPLAY_SIZE[0], f"{line!r} is {width}px"
 
-    @pytest.mark.parametrize("is_retry", [False, True])
-    def test_instruction_lines_do_not_say_hotspot(self, is_retry):
-        lines = eink_display.setup_instruction_lines("10.42.0.1", is_retry=is_retry)
+    @pytest.mark.parametrize(("is_retry", "retry_reason"), ALL_VARIANTS)
+    def test_instruction_lines_do_not_say_hotspot(self, is_retry, retry_reason):
+        lines = eink_display.setup_instruction_lines("10.42.0.1", is_retry=is_retry, retry_reason=retry_reason)
         assert not any("hotspot" in line.lower() for line in lines), lines
 
-    @pytest.mark.parametrize("is_retry", [False, True])
-    def test_no_punctuation_a_reader_could_mistake_for_the_address(self, is_retry):
+    @pytest.mark.parametrize(("is_retry", "retry_reason"), ALL_VARIANTS)
+    def test_no_punctuation_a_reader_could_mistake_for_the_address(self, is_retry, retry_reason):
         """The fallback used to read "litclock.setup  |  10.42.0.1". A pipe
         between two URL-shaped strings does not say "or" to someone who has
         never seen one used that way — it looks like part of what to type,
         and they type it. Alternatives are separated by the word.
         """
-        lines = eink_display.setup_instruction_lines("10.42.0.1", is_retry=is_retry)
+        lines = eink_display.setup_instruction_lines("10.42.0.1", is_retry=is_retry, retry_reason=retry_reason)
         assert not any("|" in line for line in lines), lines
         fallback = [ln for ln in lines if eink_display.SETUP_HOSTNAME in ln]
         assert fallback, lines
@@ -256,19 +269,29 @@ class TestSetupSplashCopy:
         above is satisfied by a colliding line just as well as a clear one.
 
         Assert the real clearance for every line count the renderer actually
-        produces. Today that is 3 (retry) and 4 (first run), which clear by
-        34px and 6px. A fifth line would put the block top at y=320 against
-        framing ink ending at 342, so adding one makes THIS test fail rather
-        than silently overlapping on a panel nobody looks at until a
-        stranger is holding the device.
+        produces. Today that is 3 (password retry), 4 (first run), and 4
+        (connect-failed retry, litclock-dev#603). A fifth line would put the
+        block top at y=320 against framing ink ending at 342, so adding one
+        makes THIS test fail rather than silently overlapping on a panel
+        nobody looks at until a stranger is holding the device. (The retry
+        variants skip the framing line entirely, so for them the binding
+        constraint is the QR block above — covered by the quiet-zone guard.)
         """
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image
 
         draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 255))
         font = ImageFont.truetype(eink_display.FONT_PATH, 18)
         framing_bottom = draw.textbbox((0, eink_display.SETUP_FRAMING_Y), eink_display.SETUP_FRAMING_LINE, font=font)[3]
 
-        produced = {len(eink_display.setup_instruction_lines("10.42.0.1", is_retry=r)) for r in (False, True)}
+        produced = {
+            len(eink_display.setup_instruction_lines("10.42.0.1", is_retry=r, retry_reason=reason))
+            for r, reason in (
+                (False, None),
+                (True, None),
+                (True, eink_display.HOTSPOT_RETRY_WIFI_PASSWORD),
+                (True, eink_display.HOTSPOT_RETRY_CONNECT_FAILED),
+            )
+        }
         for count in sorted(produced):
             top = eink_display.instruction_block_top(count)
             assert framing_bottom < top, (
@@ -326,7 +349,11 @@ class TestSetupSplashCopy:
         qx, qy, qs = eink_display.SETUP_QR_X, eink_display.SETUP_QR_Y, eink_display.SETUP_QR_SIZE
         margin = eink_display.SETUP_QR_QUIET_ZONE_PX
         for ssid, password in (("", ""), ("LitClock-Setup", "clockwis"), ("LitClock-Setup", "clockwise42")):
-            for retry_reason in (None, eink_display.HOTSPOT_RETRY_WIFI_PASSWORD):
+            for retry_reason in (
+                None,
+                eink_display.HOTSPOT_RETRY_WIFI_PASSWORD,
+                eink_display.HOTSPOT_RETRY_CONNECT_FAILED,
+            ):
                 img = eink_display.create_hotspot_display_image(
                     ssid or "x", password or "y", "10.42.0.1", retry_reason=retry_reason
                 )
@@ -465,7 +492,6 @@ class TestSetupSplashCopy:
         the helper directly, so create_hotspot_display_image could regress to
         drawing a literal "Hotspot Network:" — or omit the labels entirely —
         and the whole file would stay green. Capture what reaches the canvas."""
-        from PIL import ImageDraw
 
         drawn = []
         original = ImageDraw.ImageDraw.text
@@ -487,7 +513,6 @@ class TestSetupSplashCopy:
         assert not any("hotspot" in str(t).lower() for t in drawn), drawn
 
     def test_retry_splash_also_draws_only_the_new_copy(self):
-        from PIL import ImageDraw
 
         drawn = []
         original = ImageDraw.ImageDraw.text
@@ -512,3 +537,206 @@ class TestSetupSplashCopy:
         to match in their WiFi list. It was the only variant naming nothing."""
         lines = eink_display.setup_instruction_lines("10.42.0.1", is_retry=True)
         assert any("LitClock-Setup" in line for line in lines), lines
+
+
+class TestSetupStepLineClamp:
+    """litclock-dev#626 (the litclock-dev#589-review Q4 gap): the instruction STEP lines
+    interpolate the ssid/ip but had no per-line width guard — a long value
+    clipped at x=800 and could show a DIFFERENT truncation than the credential
+    block, the exact two-networks-don't-match confusion litclock-dev#589 exists to
+    prevent. Each line now goes through _clamp_to_width."""
+
+    def _steps_image(self, caplog, ssid):
+        with caplog.at_level(logging.WARNING):
+            img = eink_display.create_hotspot_display_image(ssid, "Ab3xYz9q", "10.42.0.1")
+        assert img.size == eink_display.DISPLAY_SIZE
+        return [r.message for r in caplog.records if "setup step" in r.message]
+
+    def test_default_ssid_steps_are_never_clamped(self, caplog):
+        # The shipped path must not ellipsize a single step line.
+        assert self._steps_image(caplog, "LitClock-Setup") == []
+
+    def test_realistic_max_length_ssid_steps_are_never_clamped(self, caplog):
+        # A realistic mixed-case SSID at the 32-char validation cap fits every
+        # step line whole at 18pt — measured, not assumed.
+        assert self._steps_image(caplog, "MyVeryLongHomeNetworkName2026-XY") == []
+
+    def test_pathological_max_width_ssid_is_clamped_honestly(self, caplog):
+        # 32 W's pass the boundary but are the widest glyph run the validator
+        # admits — measured 880px > 800 for step 3 at 18pt, so the clamp MUST
+        # fire with a warning (honest ellipsis), never a silent clip at x=800.
+        # Unconditional assert: a hedged `if messages:` version could never
+        # fail if a regression stopped the warning entirely (/review, two
+        # passes converged on the vacuity).
+        messages = self._steps_image(caplog, "W" * 32)
+        assert messages, "expected the W*32 ssid to clamp at least one step line with a warning"
+        assert all("truncated" in m for m in messages)
+
+    def test_over_long_ssid_step_lines_are_clamped_and_logged(self, caplog):
+        # Belt-and-suspenders beyond the boundary: a direct renderer caller
+        # with an absurd ssid gets an ellipsized line and a WARNING naming the
+        # step, not a silent clip at the panel edge.
+        messages = self._steps_image(caplog, "A" * 120)
+        assert messages, "expected at least one 'setup step N' truncation warning"
+        assert any("truncated" in m for m in messages)
+
+    def test_clamped_steps_still_fit_the_panel(self):
+        # Every drawn line must measure within the panel for an absurd ssid.
+        # SETUP_SMALL_FONT_PT, not a hardcoded 18: the measurement must track
+        # the size production actually draws at (/review).
+        draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 255))
+        font = ImageFont.truetype(eink_display.FONT_PATH, eink_display.SETUP_SMALL_FONT_PT)
+        lines = eink_display.setup_instruction_lines("10.42.0.1", ssid="A" * 120)
+        clamped = [
+            eink_display._clamp_to_width(ln, font, draw, eink_display.DISPLAY_SIZE[0], f"setup step {i + 1}")
+            for i, ln in enumerate(lines)
+        ]
+        for ln in clamped:
+            assert draw.textlength(ln, font=font) <= eink_display.DISPLAY_SIZE[0]
+
+
+class TestSetupSplashHardening:
+    """litclock-dev#589. The hotspot splash renderer treated its ssid/password
+    args as constants. Production is protected only by the 14-char DEFAULT_SSID
+    and the 8-char generated password; wifi_provision honours --ssid and the
+    generator could change, and this is the ONE screen where a rendering
+    failure means the device cannot be set up at all. Each guard below degrades
+    gracefully AND logs — never a silent clip, silent 10px collapse, or a
+    wrong-network QR."""
+
+    # Derived from the renderer's own geometry, NOT the literal 290, so the
+    # budget tracks the QR position if it ever moves (/review).
+    VALUE_LEFT_EDGE = eink_display.SETUP_QR_X + eink_display.SETUP_QR_SIZE + 30
+    VALUE_BUDGET = eink_display.DISPLAY_SIZE[0] - VALUE_LEFT_EDGE
+
+    def test_wifi_qr_payload_escapes_reserved_chars(self):
+        # \ ; , : " are structural in the WIFI: format; unescaped they encode a
+        # different (wrong) network onto the scanning phone.
+        assert eink_display._wifi_qr_escape('a;b:c,d"e\\f') == 'a\\;b\\:c\\,d\\"e\\\\f'
+        assert eink_display._wifi_qr_escape("PlainNet") == "PlainNet"
+
+    def test_control_chars_are_stripped_and_logged(self, caplog):
+        # Newline (breaks single-line layout), CR, BEL, NUL, TAB, DEL.
+        with caplog.at_level(logging.WARNING):
+            out = eink_display._sanitize_render_text("Home\r\nWiFi\x07\x00\t\x7f", "ssid")
+        assert out == "HomeWiFi"
+        assert any("control characters" in r.message for r in caplog.records)
+
+    def test_sanitize_drops_c1_and_unicode_separators_keeps_printable(self):
+        # /review: str.isprintable() also drops C1 (U+0085 NEL), the line/para
+        # separators U+2028/U+2029, and NBSP — which a bare 32<=ord<127 range
+        # missed — while keeping accented letters and emoji.
+        assert eink_display._sanitize_render_text("a\x85b\u2028c\u2029d\xa0e", "ssid") == "abcde"
+        assert eink_display._sanitize_render_text("Café-WiFi", "ssid") == "Café-WiFi"
+
+    def test_sanitize_keeps_spaces_and_normal_text(self):
+        assert eink_display._sanitize_render_text("My Home 5G", "ssid") == "My Home 5G"
+        assert eink_display._sanitize_render_text(None, "ssid") == ""
+
+    @pytest.mark.parametrize("field", ["network name", "password"])
+    def test_over_budget_value_is_truncated_with_ellipsis_and_logged(self, caplog, field):
+        # Both the SSID and the password go through the clamp; each logs under
+        # its own field label so a truncation of either is attributable.
+        draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 255))
+        font = ImageFont.truetype(eink_display.FONT_PATH, 24)
+        long_value = "A" * 40  # overflows the value budget at 24pt
+        with caplog.at_level(logging.WARNING):
+            fitted = eink_display._clamp_to_width(long_value, font, draw, self.VALUE_BUDGET, field)
+        assert fitted.endswith("…")
+        assert draw.textlength(fitted, font=font) <= self.VALUE_BUDGET
+        assert any("too wide" in r.message and field in r.message for r in caplog.records)
+
+    def test_clamp_degenerate_inputs_never_crash(self):
+        # Empty string → "" (no ellipsis, no log); a budget smaller than one
+        # ellipsis glyph → the bare ellipsis (can't do better). Both terminate.
+        draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 255))
+        font = ImageFont.truetype(eink_display.FONT_PATH, 24)
+        assert eink_display._clamp_to_width("", font, draw, self.VALUE_BUDGET, "x") == ""
+        assert eink_display._clamp_to_width("anything", font, draw, 1, "x") == "…"
+
+    def test_within_budget_value_is_left_intact(self):
+        draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 255))
+        font = ImageFont.truetype(eink_display.FONT_PATH, 24)
+        # The default hotspot credentials must never be touched by the clamp.
+        for value in ("LitClock-Setup", "Abc12dEf"):
+            assert eink_display._clamp_to_width(value, font, draw, self.VALUE_BUDGET, "x") == value
+
+    def test_default_credentials_fit_the_value_budget_measured(self):
+        # The production-safe path: DEFAULT_SSID + an 8-char password render
+        # whole within the 510px right-column budget (mirrors the litclock-dev#588 label
+        # test, for the VALUES the renderer previously left unclamped).
+        draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 255))
+        font = ImageFont.truetype(eink_display.FONT_PATH, 24)
+        for value in ("LitClock-Setup", "Ab3xYz9q"):
+            assert draw.textlength(value, font=font) < self.VALUE_BUDGET
+
+    def test_font_fallback_passes_size_and_logs_not_a_silent_10px(self, monkeypatch, caplog):
+        # The regression: a missing fonts/ dir fell to bare load_default() → a
+        # 10px bitmap → a fully-painted but unreadable panel with a clean
+        # journal. The fallback must pass size= (>= the real sizes) AND log.
+        sizes_used = []
+        real_truetype = eink_display.ImageFont.truetype
+        real_load_default = eink_display.ImageFont.load_default
+
+        def only_our_fonts_fail(path, *args, **kwargs):
+            # Simulate a missing fonts/ dir: OUR Literata paths fail, but PIL's
+            # own bundled font (which load_default(size=) loads via truetype
+            # internally on Pillow >= 10) must still resolve.
+            if path in (eink_display.FONT_PATH, eink_display.FONT_PATH_BOLD):
+                raise OSError("fonts/ missing")
+            return real_truetype(path, *args, **kwargs)
+
+        def recording_load_default(*args, **kwargs):
+            sizes_used.append(kwargs.get("size"))
+            return real_load_default(*args, **kwargs)
+
+        monkeypatch.setattr(eink_display.ImageFont, "truetype", only_our_fonts_fail)
+        monkeypatch.setattr(eink_display.ImageFont, "load_default", recording_load_default)
+        with caplog.at_level(logging.ERROR):
+            img = eink_display.create_hotspot_display_image("LitClock-Setup", "Ab3xYz9q", "10.42.0.1")
+        assert img.size == eink_display.DISPLAY_SIZE
+        assert sizes_used and all(s is not None and s >= 18 for s in sizes_used), (
+            f"fallback fonts must pass size= (never the silent 10px default); got {sizes_used}"
+        )
+        assert any("fonts unavailable" in r.message for r in caplog.records)
+
+    def test_instructions_name_the_ssid_the_credential_block_shows(self):
+        # litclock-dev#589 item 2: the numbered steps must name the SAME network the
+        # credential block paints. Threading ssid through is what couples them;
+        # a hardcoded "LitClock-Setup" step under a different credential name is
+        # unreadable to the audience that can't tell two networks apart.
+        for is_retry, reason in [(False, None), (True, "wifi_password"), (True, "connect_failed")]:
+            lines = eink_display.setup_instruction_lines(
+                "10.42.0.1", ssid="CustomNet-9", is_retry=is_retry, retry_reason=reason
+            )
+            assert any("CustomNet-9" in ln for ln in lines), lines
+            assert not any("LitClock-Setup" in ln for ln in lines), lines
+
+    def test_hostile_ssid_renders_without_crashing(self):
+        # Long + newline + reserved chars: the render must degrade, not raise —
+        # a blank/crashed splash on the setup screen is the worst outcome.
+        img = eink_display.create_hotspot_display_image("X" * 40 + "\ntail;bad", "pw12345", "10.42.0.1")
+        assert img.size == eink_display.DISPLAY_SIZE
+        assert _count_black_pixels(img) > 0  # actually painted something
+
+    def test_full_render_keeps_value_lines_within_the_panel(self, monkeypatch):
+        # Integration guard (/review): the helper tests can't see whether
+        # create_hotspot_display_image actually APPLIES the clamp. Dropping it,
+        # or miscomputing value_budget, would still paint pixels. Capture what
+        # is drawn at the value column and assert nothing overflows x=800.
+        drawn = []
+        real_text = ImageDraw.ImageDraw.text
+
+        def capturing_text(self, xy, text, *args, **kwargs):
+            drawn.append((xy, text, kwargs.get("font")))
+            return real_text(self, xy, text, *args, **kwargs)
+
+        monkeypatch.setattr(ImageDraw.ImageDraw, "text", capturing_text)
+        eink_display.create_hotspot_display_image("Z" * 50, "Q" * 50, "10.42.0.1")
+
+        measure = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 255))
+        value_col = [(xy, t, f) for (xy, t, f) in drawn if xy[0] == self.VALUE_LEFT_EDGE]
+        assert value_col, "nothing drawn at the value column"
+        for xy, text, font in value_col:
+            right = xy[0] + measure.textlength(text, font=font)
+            assert right <= eink_display.DISPLAY_SIZE[0], f"{text!r} overflows the panel ({right}px > 800)"

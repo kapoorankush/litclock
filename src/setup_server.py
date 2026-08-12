@@ -90,6 +90,13 @@ WIFI_PLACEHOLDER_EMPTY_TEXT = "No networks found - tap Refresh"
 # top-two referrer geos, and a Cyrillic name is two bytes per character, so
 # "32 characters" would be a factually wrong instruction in the one place
 # where the user has no keyboard and no way to check.
+#
+# The manual-SSID input also interpolates this as its maxlength
+# (litclock-dev#605 item 12). maxlength counts CHARACTERS (UTF-16 code
+# units), so for multi-byte names the client guard is looser than the
+# byte budget — that's fine: it exists to stop the all-ASCII 99% case
+# before a captive-portal round trip, and the byte check in do_POST is
+# the real gate either way.
 SSID_MAX_BYTES = 32
 # Control characters are rejected outright. An interior newline in a
 # hand-typed SSID forges lines in the persistent journal (journald ships
@@ -223,8 +230,8 @@ def _schedule_self_terminate(delay: float = 0.0) -> None:
     When ``delay == 0``, signals synchronously from the calling thread:
     ``os.kill`` queues SIGTERM in the kernel; the default SIGTERM handler
     terminates the Python interpreter (there is NO graceful handler in
-    setup_server — only ``except KeyboardInterrupt`` around serve_forever at
-    lines 1612-1644). The 1s/2s sleep before this call gives the HTTP
+    setup_server — only ``except KeyboardInterrupt`` around the
+    serve_forever calls in ``main()``). The 1s/2s sleep before this call gives the HTTP
     response time to flush; after termination, the firstboot.sh wrapper
     script polls ``/tmp/litclock-setup-done`` (written by
     ``signal_completion()``) to detect successful handoff.
@@ -356,35 +363,77 @@ def _filter_own_hotspot(networks):
 
 
 def _wifi_network_options():
-    """Generate <option> tags for scanned WiFi networks, with 30s caching."""
+    """Generate <option> tags for scanned WiFi networks, with 30s caching.
+
+    Returns ``(options_html, scan_was_empty)``. The flag is explicit
+    because the page build used to infer emptiness by sniffing the
+    rendered HTML for the placeholder copy (litclock-dev#605 item 11) —
+    a check that breaks silently the day the copy gains an escapable
+    character."""
     global _WIFI_SCAN_CACHE, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS
     import time
 
-    now = time.monotonic()
-    if _WIFI_SCAN_CACHE is not None and (now - _WIFI_SCAN_TIME) < _WIFI_SCAN_TTL:
-        return _WIFI_SCAN_CACHE
+    # Take _SCAN_CACHE_LOCK across the whole cache-miss path, exactly like
+    # /scan-wifi does. This is the second scan entry point that shares
+    # _WIFI_SCAN_CACHE/_SSIDS/_TIME, and it was previously unlocked
+    # (litclock-dev#615). Consequences of the gap on a threaded server:
+    #   - two concurrent GET / builds at a cold/expired cache each fired their
+    #     own nmcli rescan on the single hotspot radio — the exact contention
+    #     the lock exists to prevent (an iOS CNA sheet + the real browser is a
+    #     realistic pair within the 30s TTL);
+    #   - interleaving with /scan-wifi could leave _WIFI_SCAN_CACHE from one
+    #     scan and _WIFI_SCAN_SSIDS from another, so wifi_hidden in do_POST is
+    #     computed against evidence that doesn't match the dropdown the user
+    #     saw — which can flip a VISIBLE typed SSID to `hidden yes`, the
+    #     permanent probe-request leak litclock-dev#580's policy is meant to prevent;
+    #   - the cache-hit branch double-read _WIFI_SCAN_CACHE unlocked, so a
+    #     concurrent reset to None could interpolate "None" into the <select>.
+    # A waiter that blocks here through another thread's scan finds the fresh
+    # cache on the recheck and skips its own scan entirely.
+    with _SCAN_CACHE_LOCK:
+        now = time.monotonic()
+        if _WIFI_SCAN_CACHE is not None and (now - _WIFI_SCAN_TIME) < _WIFI_SCAN_TTL:
+            return _WIFI_SCAN_CACHE, False
 
-    try:
-        from wifi_provision import scan_wifi_networks
+        try:
+            from wifi_provision import scan_wifi_networks
 
-        networks = scan_wifi_networks()
-    except Exception:
-        networks = []
+            networks = scan_wifi_networks()
+        except Exception:
+            networks = []
 
-    networks = _filter_own_hotspot(networks)
+        networks = _filter_own_hotspot(networks)
 
-    if not networks:
-        # Don't cache empty results — let the next call retry. Still built via
-        # _build_wifi_options so the manual-entry option survives: a user whose
-        # only network is hidden sees an empty scan every time, and dropping
-        # their one path to type it in would strand them (litclock-dev#554).
-        return _build_wifi_options([], placeholder=WIFI_PLACEHOLDER_EMPTY_TEXT)
+        if not networks:
+            # Don't cache empty results — let the next call retry. Still built via
+            # _build_wifi_options so the manual-entry option survives: a user whose
+            # only network is hidden sees an empty scan every time, and dropping
+            # their one path to type it in would strand them (litclock-dev#554).
+            # _WIFI_SCAN_SSIDS deliberately keeps its previous contents: an empty
+            # rescan never clears the evidence, and the thing it guards against —
+            # writing `hidden yes` into the saved profile — is permanent while
+            # the staleness is transient (see the wifi_hidden decision in
+            # do_POST; litclock-dev#605 item 7, refined to UNION by litclock-dev#615).
+            return _build_wifi_options([], placeholder=WIFI_PLACEHOLDER_EMPTY_TEXT), True
 
-    result = _build_wifi_options(networks)
-    _WIFI_SCAN_CACHE = result
-    _WIFI_SCAN_SSIDS = _scanned_ssids(networks)
-    _WIFI_SCAN_TIME = now
-    return result
+        result = _build_wifi_options(networks)
+        _WIFI_SCAN_CACHE = result
+        # UNION, not replace (litclock-dev#615): accumulate every SSID seen this
+        # provisioning session. Scans flicker — a network that is genuinely
+        # visible can be absent from one scan — and a replace would drop it,
+        # flipping a typed, previously-seen name to a permanent `hidden yes`
+        # probe-request leak. Union can only ever SUPPRESS `hidden yes`, never
+        # add one, so it fails in the no-leak direction. reset_state() clears the
+        # set at the session boundary; SSIDs in radio range are bounded, so the
+        # accumulation cannot grow without limit.
+        _WIFI_SCAN_SSIDS = _WIFI_SCAN_SSIDS | _scanned_ssids(networks)
+        # Stamp AFTER the scan, like /scan-wifi does. `now` was measured before a
+        # scan that can take seconds (rescan + 2s settle + list); stamping it
+        # would make the cache born up to that much closer to expiry — a slow
+        # scan near the TTL could yield an already-expired cache that the next
+        # caller immediately rescans, defeating the serialization (litclock-dev#615).
+        _WIFI_SCAN_TIME = time.monotonic()
+        return result, False
 
 
 # Path serving the CNA bridge on our own host — the target of the Apple
@@ -492,13 +541,30 @@ def _build_setup_html():
         # and doubled braces would leak into the rendered HTML as literal
         # `{{` `}}`. (Earlier copies of this code doubled braces defensively
         # for a .format() call site that no longer exists.)
-        safe_error = html.escape(WIFI_CONNECT_ERROR)
+        # Snapshot the global once (litclock-dev#610 review): the connect
+        # thread writes it, and reading it twice — once for the message,
+        # once for the class — could pair an old message with new-class
+        # advice across a mid-render write.
+        connect_error = WIFI_CONNECT_ERROR
+        safe_error = html.escape(connect_error)
+        # litclock-dev#603 — the advice line must not contradict the honest
+        # cause {safe_error} just gave. Password advice only when the failure
+        # actually WAS the password (the class rides on the WifiFailure
+        # error string); a timeout or not-found gets a neutral retry line,
+        # because "double-check your password" after "the network didn't
+        # answer in time" reads as the page arguing with itself.
+        if getattr(connect_error, "failure_class", None) == "bad_password":
+            advice = (
+                "Double-check your <strong>WiFi password</strong> and try "
+                "again &mdash; not the password shown on the clock&rsquo;s screen. "
+            )
+        else:
+            advice = "Check the message above, then try again. "
         wifi_error_banner = (
             '<div style="background:#fef2f2; border:2px solid #ef4444; border-radius:8px;'
             ' padding:12px 16px; margin-bottom:16px; color:#991b1b;">'
             f"<strong>Couldn&rsquo;t join your WiFi:</strong> {safe_error}<br>"
-            "Double-check your <strong>WiFi password</strong> and try "
-            "again &mdash; not the password shown on the clock&rsquo;s screen. "
+            f"{advice}"
             "If this page doesn&rsquo;t reload, rescan the QR code on the "
             "display &mdash; the clock&rsquo;s own network has restarted.</div>"
         )
@@ -522,7 +588,7 @@ def _build_setup_html():
 
     wifi_section = ""
     if PROVISIONING_MODE:
-        network_options = _wifi_network_options()
+        network_options, scan_was_empty = _wifi_network_options()
         # Source the hotspot SSID from the runtime constant rather than
         # hardcoding "LitClock-Setup" — branded builds set this via the
         # --hotspot-ssid CLI flag, and the disambiguating cue ("Not the
@@ -537,8 +603,11 @@ def _build_setup_html():
         # page is blank and re-collapsed: the hidden-network user has to
         # remember what they typed while a red banner tells them to check their
         # PASSWORD, when the likelier fault on that path is the SSID spelling
-        # (/review, litclock-dev#580).
-        scan_was_empty = WIFI_PLACEHOLDER_EMPTY_TEXT in network_options
+        # (/review, litclock-dev#580). The echo covers JOIN failures only: a value the
+        # server rejected outright (malformed, the clock's own hotspot name,
+        # or a POST that lost the in-flight race) is deliberately never
+        # stored, so those paths re-render blank (litclock-dev#605 item 10 — see the
+        # store site in do_POST).
         manual_value = html.escape(WIFI_LAST_MANUAL_SSID)
         manual_open = " open" if (manual_value or scan_was_empty or WIFI_CONNECT_ERROR) else ""
         manual_summary = html.escape(MANUAL_SSID_TEXT)
@@ -588,7 +657,7 @@ def _build_setup_html():
                     <input type="text" id="wifi-ssid-manual" name="{MANUAL_SSID_FIELD}"
                         placeholder="Network name" autocomplete="off"
                         autocapitalize="none" autocorrect="off" spellcheck="false"
-                        value="{manual_value}" maxlength="32">
+                        value="{manual_value}" maxlength="{SSID_MAX_BYTES}">
                 </details>
 
                 <label>Your WiFi Password</label>
@@ -808,6 +877,12 @@ def _build_setup_html():
                 .then(function(networks) {{
                     if (networks.length === 0) {{
                         resetSsidOptions(select, {placeholder_empty_js});
+                        // Match the server-rendered empty-scan path, which
+                        // force-opens this disclosure: a hidden-network user who
+                        // taps Refresh into an empty scan needs the "type it in"
+                        // field visible, not folded away (litclock-dev#615).
+                        var details = document.getElementById('manual-ssid');
+                        if (details) details.open = true;
                     }} else {{
                         resetSsidOptions(select, {placeholder_js});
                         networks.sort(function(a, b) {{
@@ -1319,9 +1394,19 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                 # server-rendered dropdown. Leaving either unfiltered re-exposes
                 # the clock's own hotspot SSID.
                 networks = _filter_own_hotspot(networks)
+                # An empty rescan updates NOTHING — same policy as
+                # _wifi_network_options: no caching of empties (next call
+                # retries), and _WIFI_SCAN_SSIDS keeps the evidence an
+                # earlier scan gathered (litclock-dev#605 item 7 — see the
+                # wifi_hidden decision in do_POST for why stale visibility
+                # evidence beats none).
                 if networks:
                     _WIFI_SCAN_CACHE = _build_wifi_options(networks)
-                    _WIFI_SCAN_SSIDS = _scanned_ssids(networks)
+                    # UNION, not replace — accumulate seen SSIDs so a flickered
+                    # scan can't drop a genuinely-visible name and flip it to a
+                    # permanent `hidden yes` leak (litclock-dev#615; see the
+                    # matching write in _wifi_network_options).
+                    _WIFI_SCAN_SSIDS = _WIFI_SCAN_SSIDS | _scanned_ssids(networks)
                     _WIFI_SCAN_TIME = time.monotonic()
             self.send_json(networks)
 
@@ -1342,7 +1427,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
-        global WIFI_CONNECT_ERROR, WIFI_CONNECT_IN_FLIGHT
+        global WIFI_CONNECT_ERROR, WIFI_CONNECT_IN_FLIGHT, WIFI_LAST_MANUAL_SSID
 
         if self.path != "/setup":
             self.send_response(404)
@@ -1394,13 +1479,6 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
             # was how that state used to arise. See the JS comment.)
             wifi_ssid = wifi_ssid_manual
             wifi_typed = True
-
-        # Remember a typed name so the retry render can echo it back. Set
-        # before any rejection below, so the page the user lands on after an
-        # error still shows what they typed.
-        if wifi_typed:
-            global WIFI_LAST_MANUAL_SSID
-            WIFI_LAST_MANUAL_SSID = wifi_ssid
 
         if PROVISIONING_MODE and not wifi_ssid:
             error = (
@@ -1458,9 +1536,22 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         # cannot see the network — a name typed by hand that IS in the current
         # scan is just a user who typed instead of scrolling, and does not
         # deserve a permanent probe-request leak of their home SSID
-        # (/review, litclock-dev#580). When the scan is empty we have no evidence either
-        # way, and we err toward `hidden`: a needless probe leak is a smaller
-        # harm than a hidden network that cannot be joined at all.
+        # (/review, litclock-dev#580). When the evidence set doesn't hold the name we
+        # err toward `hidden`: a needless probe leak is a smaller harm than
+        # a hidden network that cannot be joined at all. The evidence set is
+        # the UNION of every non-empty scan this provisioning session — each
+        # non-empty scan accumulates into it and an empty rescan leaves it
+        # untouched (litclock-dev#605 item 7, refined to union by litclock-dev#615): a
+        # network seen even once stays "visible" evidence across later scan
+        # flicker, because the `hidden yes` it suppresses would be written into
+        # the saved profile permanently while any staleness is transient.
+        #
+        # This read of _WIFI_SCAN_SSIDS is deliberately OUTSIDE _SCAN_CACHE_LOCK
+        # (litclock-dev#615): it is a single atomic reference-read of an
+        # immutable frozenset that the scan writers only ever rebind wholesale
+        # under the lock, so it always resolves to one complete evidence set.
+        # Do NOT pair it with a second lock-guarded global at this site without
+        # taking the lock — that would reintroduce the torn read litclock-dev#615 closed.
         wifi_hidden = wifi_typed and wifi_ssid.casefold() not in _WIFI_SCAN_SSIDS
 
         # Send success response BEFORE connecting to WiFi. On the Pi Zero 2W,
@@ -1510,6 +1601,18 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                     return
                 WIFI_CONNECT_IN_FLIGHT = True
                 WIFI_CONNECT_ERROR = None  # Clear stale error from previous attempt
+                # Remember a typed name so the retry render can echo it back
+                # (litclock-dev#605 review item 10). Stored HERE — after every rejection
+                # (empty/control-chars/over-long, the own-hotspot refusal),
+                # after the PROVISIONING_MODE gate (a normal-mode POST skips
+                # the validations entirely, so nothing it carries may land in
+                # this global), and after winning the in-flight CAS (a POST
+                # that races a live attempt never joins, so its name must not
+                # become the retry echo) — the global only ever holds the
+                # <=32-byte validated SSID of a join actually launched.
+                # Same lock as reset_wifi_globals, the other writer.
+                if wifi_typed:
+                    WIFI_LAST_MANUAL_SSID = wifi_ssid
 
             def _connect_and_teardown():
                 global WIFI_CONNECT_ERROR, WIFI_CONNECT_IN_FLIGHT
@@ -1530,7 +1633,13 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                         # reconnect and the user can retry.
                         WIFI_CONNECT_ERROR = error
                         print(f"WiFi connection failed: {error}")
-                        _restore_hotspot(create_hotspot)
+                        # litclock-dev#603 — thread the failure class through
+                        # so the e-ink retry variant matches the actual cause
+                        # (a timeout painted wrong-password guidance before).
+                        _restore_hotspot(
+                            create_hotspot,
+                            failure_class=getattr(error, "failure_class", None),
+                        )
                         return  # Keep server alive for retry
 
                     # WiFi connected — resolve location from IP, then clean up.
@@ -1650,16 +1759,23 @@ class HTTPSServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.socket = context.wrap_socket(self.socket, server_side=True)
 
 
-def _restore_hotspot(create_hotspot_fn):
+def _restore_hotspot(create_hotspot_fn, failure_class=None):
     """Restore the hotspot after a failed WiFi connection attempt.
 
     On single-radio Pi hardware, nmcli tears down the hotspot when attempting
     a station connection. If the connection fails, we must recreate the hotspot
     so the user can reconnect and retry — AND refresh the e-ink display with a
-    distinct "Wrong Password — Retry" variant, because phones auto-disconnect
-    from the hotspot during the failed attempt and may not see the red banner
-    on the setup form until they've rescanned the QR. The e-ink is the only
-    surface the user is looking at during that gap.
+    retry variant, because phones auto-disconnect from the hotspot during the
+    failed attempt and may not see the red banner on the setup form until
+    they've rescanned the QR. The e-ink is the only surface the user is
+    looking at during that gap.
+
+    ``failure_class`` (litclock-dev#603) selects the variant: the
+    wrong-password steps only when the failure actually WAS the password;
+    everything else — timeout, not-found, unknown (None included: with no
+    evidence, telling the user to retype their password sends them fixing
+    the one thing known-least-likely to be broken) — gets the class-neutral
+    connect-failed steps.
     """
     if not HOTSPOT_SSID or not HOTSPOT_PASSWORD:
         print("No hotspot credentials available — cannot restore hotspot")
@@ -1692,13 +1808,20 @@ def _restore_hotspot(create_hotspot_fn):
     # Everything else propagates — a TypeError from a bad signature change
     # should fail loud, not silently degrade the retry UX.
     try:
-        from eink_display import HOTSPOT_RETRY_WIFI_PASSWORD, display_hotspot_info
+        from eink_display import HOTSPOT_RETRY_CONNECT_FAILED, HOTSPOT_RETRY_WIFI_PASSWORD, display_hotspot_info
 
+        # Literal, not `from wifi_provision import WIFI_FAIL_BAD_PASSWORD`:
+        # the retry-flow tests replace wifi_provision in sys.modules with a
+        # bare fake, and a missing-name import here would be swallowed by
+        # the ImportError arm below — silently degrading the variant
+        # selection in exactly the tests meant to pin it. A lockstep test
+        # asserts the literal matches wifi_provision.WIFI_FAIL_BAD_PASSWORD.
+        retry_reason = HOTSPOT_RETRY_WIFI_PASSWORD if failure_class == "bad_password" else HOTSPOT_RETRY_CONNECT_FAILED
         display_hotspot_info(
             HOTSPOT_SSID,
             HOTSPOT_PASSWORD,
             HOTSPOT_GATEWAY_IP,
-            retry_reason=HOTSPOT_RETRY_WIFI_PASSWORD,
+            retry_reason=retry_reason,
         )
         logging.info("E-ink refreshed with retry instructions")
     except (ImportError, OSError, RuntimeError):
