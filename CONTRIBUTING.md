@@ -28,9 +28,9 @@ you keep it, and the license you grant is non-exclusive.
 ### Quote and translation contributions
 
 Translations are welcome — the corpus is built to be localized, and
-[#19](https://github.com/kapoorankush/litclock/issues/19) tracks that work. Two things are worth getting right before
-you start, because both are cheap to check once and effectively unauditable
-across thousands of rows later.
+[#19](https://github.com/kapoorankush/litclock/issues/19) tracks that work.
+Two things are worth getting right before you start, because both are cheap
+to check once and effectively unauditable across thousands of rows later.
 
 **Name the edition you took a quote from, in the pull request.** Which edition
 a row came from is the one fact nobody can recover from a CSV diff.
