@@ -133,63 +133,91 @@ class TestGiftMode:
         block = reset_sh_content[idx:elif_idx]
         assert "poweroff" in block
 
-    def test_gift_mode_disables_ssh_before_poweroff(self, reset_sh_content):
-        """#528: gift mode must force SSH off before shipping — an owner who
-        ever enabled SSH (QA, recovery) would otherwise hand the recipient a
-        device with SSH + default creds listening on their network. Every
-        layer: the SOCKET (Bookworm socket-activates sshd — disabling only
-        ssh.service leaves port 22 open, caught by hardware QA 2026-07-16),
-        the classic service, raspi-config posture, and the boot-partition
-        re-enable flags (sshswitch re-enables SSH if a bare `ssh` file
-        exists on /boot or /boot/firmware)."""
+    @staticmethod
+    def _ssh_gate_body(reset_sh_content):
+        """Extract disable_ssh_for_handoff()'s body (litclock-dev#636 moved the
+        #528 gate into a shared function so gift mode and the non-gift
+        factory-reset poweroff enforce the same posture)."""
+        idx = reset_sh_content.find("disable_ssh_for_handoff() {")
+        assert idx != -1, "disable_ssh_for_handoff() definition missing"
+        end = reset_sh_content.find("\n}", idx)
+        assert end != -1
+        return reset_sh_content[idx:end]
+
+    @staticmethod
+    def _gift_block(reset_sh_content):
         # rfind: the end-of-script branch is the LAST $GIFT_MODE test in the
         # file (the first one is the early marker-write block).
         idx = reset_sh_content.rfind('if [[ "$GIFT_MODE" == "true" ]]')
-        elif_idx = reset_sh_content.find("elif", idx)
-        block = reset_sh_content[idx:elif_idx]
+        assert idx != -1, "gift-mode end-of-script branch missing"
+        return reset_sh_content[idx : reset_sh_content.find("elif", idx)]
+
+    def test_ssh_gate_disables_every_layer(self, reset_sh_content):
+        """#528: the handoff gate must force SSH off across every layer: the
+        SOCKET (Bookworm socket-activates sshd — disabling only ssh.service
+        leaves port 22 open, caught by hardware QA 2026-07-16), the classic
+        service, raspi-config posture, and the boot-partition re-enable
+        flags (sshswitch re-enables SSH if a bare `ssh` file exists on
+        /boot or /boot/firmware)."""
+        body = self._ssh_gate_body(reset_sh_content)
         # The socket is the load-bearing unit on current images — a
         # service-only disable ships a device with port 22 still open.
         # Disabled in a SEPARATE call from the service so a missing unit on
         # an older image can't abort the other disable (/review).
-        assert "systemctl disable --now ssh.socket" in block, "must disable ssh.socket separately"
-        assert "systemctl disable --now ssh.service" in block, "must disable ssh.service separately"
-        assert "raspi-config nonint do_ssh 1" in block
-        assert "/boot/firmware/ssh" in block and "/boot/ssh" in block
-        # And it must happen before the poweroff COMMAND (rfind: the word
-        # also appears in comments earlier in the branch).
-        assert block.find("systemctl disable --now ssh") < block.rfind("\n    poweroff")
+        assert "systemctl disable --now ssh.socket" in body, "must disable ssh.socket separately"
+        assert "systemctl disable --now ssh.service" in body, "must disable ssh.service separately"
+        assert "raspi-config nonint do_ssh 1" in body
+        assert "/boot/firmware/ssh" in body and "/boot/ssh" in body
 
-    def test_gift_mode_verifies_port_22_closed_as_gate(self, reset_sh_content):
+    def test_ssh_gate_verifies_port_22_closed(self, reset_sh_content):
         """#528 /review: the SSH-off step is a security gate, not best-effort.
         After disabling, it must verify port 22 is actually closed (the
         disables are all `|| true`, and socket-activation means unit state
-        alone doesn't prove the port is shut) and refuse to power off if
-        sshd still listens — same abort-before-ship posture as the env-wipe
-        failure gate."""
-        idx = reset_sh_content.rfind('if [[ "$GIFT_MODE" == "true" ]]')
-        block = reset_sh_content[idx : reset_sh_content.find("elif", idx)]
-        assert "ss -H -ltn" in block, "must probe listening sockets to verify SSH is off"
+        alone doesn't prove the port is shut) and refuse to power off
+        (exit) if sshd still listens."""
+        body = self._ssh_gate_body(reset_sh_content)
+        assert "ss -H -ltn" in body, "must probe listening sockets to verify SSH is off"
         # Exact port match, not a substring that would false-hit :2222 etc.
-        assert "grep -qx 22" in block
-        # The verify must sit AFTER the disables and gate the poweroff: the
-        # port-open branch exits before the poweroff command.
-        verify_idx = block.find("ss -H -ltn")
-        disable_idx = block.find("systemctl disable --now ssh.socket")
-        exit_idx = block.find("exit 1", verify_idx)
-        poweroff_idx = block.rfind("\n    poweroff")
-        assert disable_idx < verify_idx < exit_idx < poweroff_idx
+        assert "grep -qx 22" in body
+        verify_idx = body.find("ss -H -ltn")
+        disable_idx = body.find("systemctl disable --now ssh.socket")
+        exit_idx = body.find("exit 1", verify_idx)
+        assert disable_idx < verify_idx < exit_idx
 
-    def test_gift_mode_ssh_disable_after_env_wipe_failure_gate(self, reset_sh_content):
-        """#528: on a FAILED gift prep the script exits non-zero and the
-        device stays on — the owner may need SSH to fix it. The SSH disable
-        must therefore sit AFTER the ENV_WIPE_FAILED fatal gate so the
-        failure path never locks the owner out."""
-        idx = reset_sh_content.rfind('if [[ "$GIFT_MODE" == "true" ]]')
-        block = reset_sh_content[idx : reset_sh_content.find("elif", idx)]
+    def test_gift_mode_calls_ssh_gate_before_poweroff(self, reset_sh_content):
+        """#528: gift mode must run the gate, after the ENV_WIPE_FAILED fatal
+        gate (on a FAILED prep the device stays on and the owner may need
+        SSH to fix it) and before the poweroff command."""
+        block = self._gift_block(reset_sh_content)
         gate_idx = block.find('"$ENV_WIPE_FAILED" == "true"')
-        ssh_idx = block.find("systemctl disable --now ssh")
-        assert gate_idx != -1 and ssh_idx != -1
-        assert gate_idx < ssh_idx
+        call_idx = block.find("\n    disable_ssh_for_handoff")
+        poweroff_idx = block.rfind("\n    poweroff")
+        assert gate_idx != -1 and call_idx != -1 and poweroff_idx != -1
+        assert gate_idx < call_idx < poweroff_idx
+
+    def test_poweroff_mode_calls_ssh_gate_before_poweroff(self, reset_sh_content):
+        """litclock-dev#636: the non-gift factory-reset copy invites "move or
+        pass the clock on", so the poweroff path must hand over the same
+        SSH posture a recipient gets from a gift or fresh flash: off. Its
+        env-wipe safety mirrors gift mode structurally — --poweroff implies
+        --strict-env-wipe, whose failure aborts long before this branch."""
+        content = reset_sh_content
+        idx = content.rfind('elif [[ "$DO_POWEROFF" == "true" ]]')
+        assert idx != -1, "poweroff end-of-script branch missing"
+        block = content[idx : content.find("elif", idx + 1)]
+        call_idx = block.find("disable_ssh_for_handoff")
+        poweroff_idx = block.rfind("\n    poweroff")
+        assert call_idx != -1, "poweroff branch must run the SSH handoff gate"
+        assert call_idx < poweroff_idx
+
+    def test_reboot_and_plain_paths_leave_ssh_alone(self, reset_sh_content):
+        """The device stays the owner's on --reboot and the no-flag hint path
+        — no SSH change there (litclock-dev#636 scope: handoff paths only)."""
+        content = reset_sh_content
+        idx = content.rfind('elif [[ "$DO_REBOOT" == "true" ]]')
+        assert idx != -1
+        tail = content[idx:]
+        assert "disable_ssh_for_handoff" not in tail
 
     def test_gift_mode_marker_written_before_shutdown_service_stop(self, reset_sh_content):
         """CRITICAL ordering invariant: the .welcome-mode marker must be written

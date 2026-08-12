@@ -46,8 +46,9 @@
 # Issue litclock-dev#510 entry:
 #   * `systemctl start --no-block litclock-reset.service` — /api/system/reset
 #     (Factory reset). The unit's ExecStart is reset-setup.sh --wipe-wifi
-#     --reboot --yes (full wipe + reboot into setup). Fixed argv, no user
-#     input crosses the sudo boundary. Sibling of the wifi-reset/gift grants.
+#     --strict-env-wipe --poweroff --yes (full wipe + power off for pack-up,
+#     litclock-dev#627). Fixed argv, no user input crosses the sudo boundary. Sibling of
+#     the wifi-reset/gift grants.
 #
 # EPIC litclock-dev#383 PR2 (litclock-dev#388) entry:
 #   * `touch /etc/litclock/.handoff-complete` — control_server's handoff

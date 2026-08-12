@@ -430,8 +430,18 @@ def status() -> tuple[object, int]:
         # `stale` is deliberately NOT inferred (review): a torn read
         # self-corrects within one atomic-write tick, and inventing phase 1
         # for it would visually regress a mid-run reading list. A `running`
-        # file also passes through un-checked here — the dead-updater
-        # cross-check lives on the page render only, where a wrong answer
-        # costs a reload instead of a terminal verdict mid-poll-loop.
+        # file also passes through with its state intact — but see below.
         payload = {"state": "running", "phase_index": 1, "inferred": "unit-busy"}
+    if payload.get("state") == "running":
+        # litclock-dev#636 — a `running` file with an idle unit is a dead updater
+        # (SIGKILL/OOM skips the EXIT trap and the file lies until reboot
+        # clears tmpfs). The route still never issues that verdict itself:
+        # one sample can be the 2s memo lagging the dispatch window, and a
+        # false "dead" mid-run would resurrect the litclock-dev#607 stale-card bug. It
+        # exposes the evidence instead — updates.js requires several
+        # consecutive idle-unit readings before it stops treating the run
+        # as live, and the server-rendered page keeps the authoritative
+        # cross-check via _live_run(). The inferred-busy payload above is
+        # unit-busy by construction, so unit_busy=True there is exact.
+        payload = {**payload, "unit_busy": _unit_busy_memoized()}
     return jsonify({"ok": True, **payload}), 200

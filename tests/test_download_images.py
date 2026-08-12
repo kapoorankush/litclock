@@ -1213,8 +1213,8 @@ class TestReleaseSourceDerivation:
         server = _MockServer(release, slug="kapoorankush/litclock-dev")
         server.start()
         try:
-                # slug=None → no env override, so derivation decides.
-                proc = _run(repo, base_url=server.base_url, slug=None)
+            # slug=None → no env override, so derivation decides.
+            proc = _run(repo, base_url=server.base_url, slug=None)
         finally:
             server.stop()
         assert proc.returncode == 0, proc.stderr
@@ -1228,7 +1228,7 @@ class TestReleaseSourceDerivation:
         server = _MockServer(release, slug="kapoorankush/litclock-dev")
         server.start()
         try:
-                proc = _run(repo, base_url=server.base_url, slug=None)
+            proc = _run(repo, base_url=server.base_url, slug=None)
         finally:
             server.stop()
         assert proc.returncode == 0, proc.stderr
@@ -1246,14 +1246,12 @@ class TestReleaseSourceDerivation:
         # skip the corpus guard entirely and prove nothing about the real path
         # (red-team finding).
         digest = _write_corpus(repo, b"00:00|midnight|local corpus\n")
-        release = _make_release(
-            tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash=digest
-        )
+        release = _make_release(tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash=digest)
         # Server only knows the DEFAULT slug; the derived somebody/litclock 404s.
         server = _MockServer(release, slug="kapoorankush/litclock")
         server.start()
         try:
-                proc = _run(repo, base_url=server.base_url, slug=None)
+            proc = _run(repo, base_url=server.base_url, slug=None)
         finally:
             server.stop()
         assert proc.returncode == 0, proc.stderr
@@ -1267,7 +1265,7 @@ class TestReleaseSourceDerivation:
         server = _MockServer(release, slug="kapoorankush/litclock")
         server.start()
         try:
-                proc = _run(repo, base_url=server.base_url, slug=None)
+            proc = _run(repo, base_url=server.base_url, slug=None)
         finally:
             server.stop()
         assert proc.returncode == 0, proc.stderr
@@ -1281,9 +1279,9 @@ class TestReleaseSourceDerivation:
         server = _MockServer(release, slug="kapoorankush/litclock")
         server.start()
         try:
-                # Explicit slug points somewhere with no release → graceful no-op,
-                # NOT a silent fallback to the default that does have one.
-                proc = _run(repo, base_url=server.base_url, slug="someone/elsewhere")
+            # Explicit slug points somewhere with no release → graceful no-op,
+            # NOT a silent fallback to the default that does have one.
+            proc = _run(repo, base_url=server.base_url, slug="someone/elsewhere")
         finally:
             server.stop()
         assert proc.returncode == 0, proc.stderr
@@ -1298,13 +1296,11 @@ class TestCorpusImageCorrespondence:
         repo = _make_repo(tmp_path, version="v8")
         _write_corpus(repo, b"00:00|midnight|local corpus\n")
         # Manifest claims a DIFFERENT corpus — exactly the dev-v8/public-v8 case.
-        release = _make_release(
-            tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash="deadbeef" * 5
-        )
+        release = _make_release(tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash="deadbeef" * 5)
         server = _MockServer(release)
         server.start()
         try:
-                proc = _run(repo, base_url=server.base_url)
+            proc = _run(repo, base_url=server.base_url)
         finally:
             server.stop()
         assert proc.returncode == 1, f"expected hard failure, got {proc.returncode}"
@@ -1317,13 +1313,11 @@ class TestCorpusImageCorrespondence:
         """The guard must not fire on the correct set — otherwise it's useless."""
         repo = _make_repo(tmp_path, version="v8")
         digest = _write_corpus(repo, b"00:00|midnight|local corpus\n")
-        release = _make_release(
-            tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash=digest
-        )
+        release = _make_release(tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash=digest)
         server = _MockServer(release)
         server.start()
         try:
-                proc = _run(repo, base_url=server.base_url)
+            proc = _run(repo, base_url=server.base_url)
         finally:
             server.stop()
         assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -1337,19 +1331,17 @@ class TestCorpusImageCorrespondence:
         server = _MockServer(good)
         server.start()
         try:
-                assert _run(repo, base_url=server.base_url).returncode == 0
+            assert _run(repo, base_url=server.base_url).returncode == 0
         finally:
             server.stop()
         assert (repo / "images" / ".installed-version").read_text().strip() == "v7"
 
         (repo / ".images-version").write_text("v8\n")
-        bad = _make_release(
-            tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash="cafe" * 10
-        )
+        bad = _make_release(tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash="cafe" * 10)
         server = _MockServer(bad)
         server.start()
         try:
-                proc = _run(repo, base_url=server.base_url)
+            proc = _run(repo, base_url=server.base_url)
         finally:
             server.stop()
         assert proc.returncode == 1
@@ -1364,7 +1356,7 @@ class TestCorpusImageCorrespondence:
         server = _MockServer(release)
         server.start()
         try:
-                proc = _run(repo, base_url=server.base_url)
+            proc = _run(repo, base_url=server.base_url)
         finally:
             server.stop()
         assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -1373,13 +1365,11 @@ class TestCorpusImageCorrespondence:
     def test_deploy_without_local_csv_still_installs(self, tmp_path):
         """A slim deploy may ship no CSV; the check skips rather than fails."""
         repo = _make_repo(tmp_path, version="v8")  # no image-gen/ at all
-        release = _make_release(
-            tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash="beef" * 10
-        )
+        release = _make_release(tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash="beef" * 10)
         server = _MockServer(release)
         server.start()
         try:
-                proc = _run(repo, base_url=server.base_url)
+            proc = _run(repo, base_url=server.base_url)
         finally:
             server.stop()
         assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -1553,6 +1543,43 @@ class TestNonGitHubOriginDoesNotDerive:
         assert any("litclock-dev/releases" in h for h in hits), hits
 
 
+class TestDerivedSlugCharacterAllowlist:
+    """litclock-dev#636 — the derived slug is spliced into api.github.com URLs, so a
+    crafted origin (an attacker or accident editing .git/config) carrying
+    '?', '#', '&', '%', or whitespace could reshape the request path/query.
+    An anchored allowlist (mirroring build-image.yml's ref_ok) rejects those
+    origins into the default-slug fallback instead.
+    """
+
+    _requests_for_origin = staticmethod(TestNonGitHubOriginDoesNotDerive._requests_for_origin)
+
+    def test_hostile_slug_characters_fall_back_to_default(self, tmp_path):
+        hostile_origins = [
+            "https://github.com/kapoorankush/litclock?tab=readme.git",
+            "https://github.com/kapoorankush/litclock#frag.git",
+            "https://github.com/kapoorankush/lit%2fclock.git",
+            "https://github.com/kapoorankush/lit clock.git",
+            "https://github.com/.hidden/litclock.git",
+            "https://github.com/kapoorankush/...git",
+        ]
+        for i, origin in enumerate(hostile_origins):
+            subdir = tmp_path / str(i)
+            subdir.mkdir()
+            hits = self._requests_for_origin(subdir, origin)
+            assert len(hits) == 1, (origin, hits)
+            assert "/kapoorankush/litclock/releases" in hits[0], (origin, hits)
+            slug_part = hits[0].split("/releases")[0].removeprefix("/repos/")
+            for bad in ("?", "#", "%", " ", ".hidden"):
+                assert bad not in slug_part, (origin, bad, hits)
+            assert not slug_part.endswith(("/.", "/..")), (origin, hits)
+
+    def test_dots_and_dashes_in_real_repo_names_still_derive(self, tmp_path):
+        """Allowlist must not over-reject: '.', '_', '-' are legitimate in
+        GitHub owner/repo names."""
+        hits = self._requests_for_origin(tmp_path, "git@github.com:kapoor-ankush/lit.clock_2.git")
+        assert any("/kapoor-ankush/lit.clock_2/releases" in h for h in hits), hits
+
+
 class TestRefusalIsOperatorVisible:
     """litclock-dev#561 red-team — a permanent refusal must raise the '!' glyph.
 
@@ -1569,9 +1596,7 @@ class TestRefusalIsOperatorVisible:
         if origin_url:
             _git_repo_with_origin(repo, origin_url)
         marker = tmp_path / "state" / "update-failed"
-        release = _make_release(
-            tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash="ab" * 20
-        )
+        release = _make_release(tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash="ab" * 20)
         server = _MockServer(release)
         server.start()
         try:
@@ -1595,9 +1620,7 @@ class TestRefusalIsOperatorVisible:
     def test_divergent_fork_is_refused_and_flagged(self, tmp_path):
         """A fork whose corpus diverges falls back to the default repo, whose
         images legitimately do NOT match. Refusing is correct; being silent is not."""
-        proc, repo, marker = self._run_mismatch(
-            tmp_path, "https://github.com/somebody/litclock.git"
-        )
+        proc, repo, marker = self._run_mismatch(tmp_path, "https://github.com/somebody/litclock.git")
         assert proc.returncode == 1
         assert marker.exists()
         combined = proc.stdout + proc.stderr
@@ -1608,9 +1631,7 @@ class TestRefusalIsOperatorVisible:
         repo = _make_repo(tmp_path, version="v8")
         _write_corpus(repo, b"00:00|midnight|local corpus\n")
         marker = tmp_path / "state" / "update-failed"
-        release = _make_release(
-            tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash=""
-        )
+        release = _make_release(tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash="")
         server = _MockServer(release)
         server.start()
         try:
@@ -1643,9 +1664,7 @@ class TestAlreadyInstalledWrongSource:
         (imgs / "metadata").mkdir(exist_ok=True)
         (imgs / "metadata" / "quote_0000_0_credits.png").write_bytes(b"WRONG credits")
         (imgs / "manifest.json").write_text(
-            json.dumps(
-                {"corpus_hash": installed_corpus_hash, "generator_hash": "0", "files": {}}
-            )
+            json.dumps({"corpus_hash": installed_corpus_hash, "generator_hash": "0", "files": {}})
         )
         _write_byte_manifest(imgs)  # bytes ARE self-consistent
         (imgs / ".installed-version").write_text(f"{version}\n")
@@ -1673,9 +1692,7 @@ class TestAlreadyInstalledWrongSource:
         finally:
             server.stop()
         assert proc.returncode == 0, proc.stdout + proc.stderr
-        assert (imgs / "quote_0000_0.png").read_bytes() == b"RIGHT image", (
-            "wrong-source images were left in place"
-        )
+        assert (imgs / "quote_0000_0.png").read_bytes() == b"RIGHT image", "wrong-source images were left in place"
 
     def test_same_version_matching_corpus_still_short_circuits(self, tmp_path):
         """Guard must not force a 124MB re-download on every correct device."""

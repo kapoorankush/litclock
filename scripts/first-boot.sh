@@ -85,7 +85,7 @@ display_message() {
     local submessage="$3"
 
     if [[ -f "$INSTALL_DIR/src/eink_display.py" ]]; then
-        cd "$INSTALL_DIR" || return || return
+        cd "$INSTALL_DIR" || return
         timeout 20 "$PYTHON" src/eink_display.py status "$title" ${message:+--message "$message"} ${submessage:+--submessage "$submessage"} || true
     fi
 }
@@ -177,7 +177,7 @@ display_hotspot() {
     local ip="$3"
 
     if [[ -f "$INSTALL_DIR/src/eink_display.py" ]]; then
-        cd "$INSTALL_DIR" || return || return
+        cd "$INSTALL_DIR" || return
         timeout 20 "$PYTHON" src/eink_display.py hotspot "$ssid" "$password" "$ip" || true
     fi
 }
@@ -189,7 +189,7 @@ display_qr() {
     local caption="$3"
 
     if [[ -f "$INSTALL_DIR/src/eink_display.py" ]]; then
-        cd "$INSTALL_DIR" || return || return
+        cd "$INSTALL_DIR" || return
         timeout 20 "$PYTHON" src/eink_display.py qr "$url" ${title:+--title "$title"} ${caption:+--caption "$caption"} || true
     fi
 }
@@ -333,7 +333,7 @@ wait_for_setup() {
             # Server died unexpectedly — restart it
             log "Setup server exited unexpectedly, restarting..."
             display_message "Setup Server" "Restarting setup page..." ""
-            cd "$INSTALL_DIR" || return || return
+            cd "$INSTALL_DIR" || return
             if [[ "${PROVISIONING:-}" == "true" ]]; then
                 "$PYTHON" src/setup_server.py "$ENV_FILE" "$SIGNAL_FILE" --provisioning \
                     --hotspot-ssid "${HOTSPOT_SSID:-}" --hotspot-password "${HOTSPOT_PASSWORD:-}" &
@@ -376,7 +376,7 @@ start_clock_service() {
     else
         # Run the clock directly
         log "Running clock directly..."
-        cd "$INSTALL_DIR" || return || return
+        cd "$INSTALL_DIR" || return
         ./scripts/runtheclock.sh &
     fi
 

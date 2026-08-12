@@ -103,7 +103,15 @@ SSID_MAX_BYTES = 32
 # Storage=persistent on the flashed image, and the support bundle collects
 # it) and reaches the e-ink connecting splash. Same class as the env.sh
 # splitlines round-trip: reject at the entry point, do not sanitise downstream.
-SSID_FORBIDDEN = frozenset(chr(c) for c in range(0x20)) | {chr(0x7F)} | frozenset(chr(c) for c in range(0x80, 0xA0))
+# U+2028/U+2029 ride along with the C0/C1 controls: Python's isprintable()
+# treats them as unprintable (the renderer already strips them) but they are
+# not in the C1 range, so without this the reject-before-journal comment
+# below would overclaim (litclock-dev#636).
+SSID_FORBIDDEN = (
+    frozenset(chr(c) for c in range(0x20))
+    | {chr(0x7F), "\u2028", "\u2029"}
+    | frozenset(chr(c) for c in range(0x80, 0xA0))
+)
 
 # Thread safety: the server runs in threaded mode so a stuck handler can't
 # block new connections. These locks guard state mutated from both request
