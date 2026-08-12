@@ -26,9 +26,16 @@ images (`images/`) incorporate data from the following sources:
 
 | Source | License |
 |--------|---------|
-| [JohannesNE/literature-clock](https://github.com/JohannesNE/literature-clock) | [CC BY-NC-SA 2.5](https://creativecommons.org/licenses/by-nc-sa/2.5/) |
+| JohannesNE/literature-clock (now [JohsEnevoldsen/literature-clock](https://github.com/JohsEnevoldsen/literature-clock)) | [CC BY-NC-SA 2.5](https://creativecommons.org/licenses/by-nc-sa/2.5/) |
 | [cdmoro/literature-clock](https://github.com/cdmoro/literature-clock) | [MIT](https://opensource.org/licenses/MIT) |
-| [arthurgassner/timeteller](https://github.com/arthurgassner/timeteller) | No explicit license (repo); case design CC BY via [Printables](https://www.printables.com/model/1398618-timeteller-a-literature-clock) — see "3D-Printed Case" below |
+| [The Guardian "Books blog" reader thread](https://www.theguardian.com/books/booksblog/2011/apr/21/literary-clock) | No explicit license — community-sourced reader comments, quoted with attribution |
+
+`image-gen/gather_quotes.py` also fetched
+[arthurgassner/timeteller](https://github.com/arthurgassner/timeteller), whose
+quote file is **byte-identical** to the JohannesNE database above (verified by
+checksum). It is a mirror, not an independent source: every row it supplied is
+already covered by the first row of this table. That project's own contribution
+to LitClock is the case design, credited under "3D-Printed Case" below.
 
 Because the quote database includes material licensed under **Creative Commons
 Attribution-NonCommercial-ShareAlike 2.5 Generic (CC BY-NC-SA 2.5)**, the

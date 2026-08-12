@@ -27,11 +27,21 @@ SOURCES = {
         "format": "csv",
         "delimiter": "|",
     },
-    "johannesne": {
-        "url": "https://raw.githubusercontent.com/JohannesNE/literature-clock/master/litclock_annotated.csv",
+    # The upstream account renamed JohannesNE -> JohsEnevoldsen. raw.github
+    # usercontent.com does NOT follow username-rename redirects, so the old
+    # URL 404s and download_file() skips the source silently — which would
+    # have left the mirror below as the only path by which these rows enter
+    # the corpus. Attribution still names the original account (NOTICE.md).
+    "johsenevoldsen": {
+        "url": "https://raw.githubusercontent.com/JohsEnevoldsen/literature-clock/master/litclock_annotated.csv",
         "format": "csv",
         "delimiter": "|",
     },
+    # MIRROR, not an independent source: timeteller's quote file is
+    # byte-identical to the JohannesNE/JohsEnevoldsen database above, so every
+    # row it supplies is already CC BY-NC-SA 2.5 material from that upstream.
+    # Kept as a fallback fetch path; it adds no quotes of its own, and NOTICE.md
+    # records it as a mirror so the provenance table stays honest.
     "arthurgassner": {
         "url": "https://raw.githubusercontent.com/arthurgassner/timeteller/main/data/litclock_annotated.csv",
         "format": "csv",
