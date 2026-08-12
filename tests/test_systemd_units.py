@@ -757,6 +757,30 @@ class TestReresolveLocationUnit:
         raw = self._raw()
         assert "NetworkManager-wait-online" in raw or "network-online.target" in raw
 
+    def test_wants_pulls_in_nm_wait_online(self):
+        """litclock-dev#549: After= ORDERS against a unit without pulling it
+        into the transaction. If NetworkManager-wait-online isn't otherwise
+        started, the ordering is vacuous and the resolver can run before the
+        network is genuinely up — an intermittent failure that looks like a
+        geolocation problem. The distro preset happens to enable the waiter
+        today; the unit must be self-sufficient. Both directives, same unit.
+
+        Raw-line regex, NOT configparser (/review F9): configparser
+        lowercases option names, so a regression to `wants=` — which systemd
+        logs as "Unknown key" and IGNORES, silently un-pulling the waiter —
+        would still satisfy a parse_unit lookup. systemd directives are
+        case-sensitive; assert on the exact-case raw lines."""
+        import re as _re
+
+        raw = self._raw()
+        assert _re.search(r"^After=.*NetworkManager-wait-online\.service", raw, _re.M), (
+            "After= must order against the NM waiter (exact case, uncommented line)"
+        )
+        assert _re.search(r"^Wants=.*NetworkManager-wait-online\.service", raw, _re.M), (
+            "litclock-dev#549: Wants= must PULL IN NetworkManager-wait-online.service — "
+            "After= alone is vacuous when nothing else starts the waiter"
+        )
+
     def test_does_not_block_first_quote_tick(self):
         """#337 A8 (locked, deliberately rejected during /review): NO
         `Before=litclock.service`. Best-effort boot. Blocking the first

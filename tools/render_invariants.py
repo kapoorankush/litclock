@@ -159,15 +159,24 @@ def cmd_check(args: argparse.Namespace) -> int:
     # WARN tier (litclock-dev#540): mid-word timestring edges — data bugs that
     # render half-bold words under exact-span bolding. Non-gating until the
     # known 11 rows are fixed in the next corpus release; then tighten.
-    midword = [
-        (r.ordinal, r.time, edge)
-        for r in rows
-        if (edge := qr.timestring_midword_edge(r.quote, r.timestring))
-    ]
+    midword = [(r.ordinal, r.time, edge) for r in rows if (edge := qr.timestring_midword_edge(r.quote, r.timestring))]
     if midword:
         print(f"WARN: {len(midword)} row(s) with mid-word timestring edges (half-bold words; litclock-dev#540):")
         for o, t, edge in midword[:15]:
             print(f"  row {o} ({t}): {edge}")
+
+    # WARN tier (litclock-dev#539): fitted-fs floors (canonical values in
+    # quote_renderer). Below the hard floor the panel strains legibility at
+    # shelf distance. Non-gating for the existing
+    # corpus (the 126-row backlog is a review queue, not an auto-fail);
+    # per-EDIT enforcement lives in corpus_edit.py. Tighten to a gate once
+    # the backlog is worked off.
+    subfloor_hard = [e for e in report if "font_size" in e and e["font_size"] < qr.FS_HARD_FLOOR]
+    subfloor_soft = [e for e in report if "font_size" in e and qr.FS_HARD_FLOOR <= e["font_size"] < qr.FS_SOFT_FLOOR]
+    if subfloor_hard:
+        print(f"WARN: {len(subfloor_hard)} row(s) fit below the fs hard floor {qr.FS_HARD_FLOOR} (litclock-dev#539):")
+        for e in subfloor_hard[:15]:
+            print(f"  row {e['ordinal']} ({e['time']}): fs {e['font_size']}")
 
     rendered = sum(1 for e in report if "error" not in e)
     summary = {
@@ -178,6 +187,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         "wall_seconds": round(time.time() - t_start, 1),
         "corpus_sha1": hashlib.sha1(csv_path.read_bytes()).hexdigest(),
         "midword_edge_rows": len(midword),
+        "fs_below_hard_floor": len(subfloor_hard),
+        "fs_soft_band_rows": len(subfloor_soft),
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps({"summary": summary, "failures": failures, "rows": report}, indent=1) + "\n")

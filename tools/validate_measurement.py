@@ -67,14 +67,16 @@ def _freetype_version() -> str:
 
 
 def build_sample(csv_path: Path) -> list[str]:
-    """400 seeded corpus words + ALL non-ASCII words + edge strings, each
-    with a trailing-space variant (trailing spaces hit GD's xmax=advance
-    rule). Words are pooled from quote AND title/author fields — the CRED
-    face renders credits, and accented glyphs often appear ONLY there
-    (Brontë, García; litclock-dev#537 review, finding 3). Non-ASCII words are
-    included exhaustively (capped, seeded) because per-glyph hinting drift
-    is exactly where FreeType versions disagree first. Seed pinned so
-    regeneration is reproducible."""
+    """400 seeded corpus words + up to 150 non-ASCII words + edge strings,
+    each with a trailing-space variant (trailing spaces hit GD's
+    xmax=advance rule). Words are pooled from quote AND title/author
+    fields — the CRED face renders credits, and accented glyphs often
+    appear ONLY there (Brontë, García; litclock-dev#537 review, finding 3).
+    Non-ASCII words are included preferentially — all of them when the
+    corpus has ≤150, a seeded sample of 150 otherwise — because per-glyph
+    hinting drift is exactly where FreeType versions disagree first
+    (docstring previously claimed ALL; litclock-dev#605 item 17). Seed
+    pinned so regeneration is reproducible."""
     words: set[str] = set()
     with open(csv_path, encoding="utf-8") as fh:
         for row in csv.reader(fh, delimiter="|"):
@@ -176,7 +178,36 @@ def _validate_dump_coverage(payload: dict) -> None:
                 raise SystemExit(f"ERROR: dump {tag}/fs{fs} has {len(per_size)} rows for {len(strings)} strings")
 
 
+def _dump_is_the_committed_one(dump: Path) -> bool:
+    """True when ``dump`` carries the same bytes as the committed ground
+    truth the runtime reader validates against. Content-based, so a copy at
+    another path still qualifies."""
+    import hashlib
+
+    from quote_renderer import EXPECTED_DUMP_PATH
+
+    try:
+        return hashlib.sha256(dump.read_bytes()).digest() == hashlib.sha256(EXPECTED_DUMP_PATH.read_bytes()).digest()
+    except OSError:
+        return False
+
+
 def cmd_check(args: argparse.Namespace) -> int:
+    if args.stamp and not _dump_is_the_committed_one(Path(args.dump)):
+        # Refuse up front, before the (long) measurement pass: the runtime
+        # reader recomputes the digest against the COMMITTED dump, so a
+        # marker stamped against different bytes would print "may be
+        # enabled" here and then be rejected on every start — a lie the
+        # operator only discovers in journald (litclock-dev#611 review).
+        print(
+            "ERROR: refusing --stamp against a --dump that differs from the committed "
+            "tools/gd-expected-measurements.json.gz — the runtime reader validates against "
+            "the committed dump, so this marker could never be accepted. Run the check "
+            "without --stamp to evaluate a candidate dump.",
+            file=sys.stderr,
+        )
+        return 2
+
     from gd_measure import gd_bbox, gd_text_width
 
     with gzip.open(args.dump, "rt", encoding="utf-8") as gz:
@@ -194,7 +225,14 @@ def cmd_check(args: argparse.Namespace) -> int:
     err: Counter = Counter()
     worst: list[tuple] = []
     for tag, font_name in payload["meta"]["fonts"].items():
-        font_path = str(_REPO / "fonts" / font_name)
+        # Resolve through the renderer's own font lookup (honors
+        # LITCLOCK_FONTS_DIR) so the check measures THE SAME bytes the
+        # digest stamps and the runtime renders. A hardcoded repo path here
+        # let `check` prove the repo fonts while an override made the
+        # runtime render different ones (litclock-dev#611 review).
+        from quote_renderer import _font_path
+
+        font_path = _font_path(font_name)
         for fs_str, per_size in payload["boxes"][tag].items():
             fs = int(fs_str)
             for i, (xmin, xmax, ymin, ymax) in enumerate(per_size):
@@ -238,9 +276,48 @@ def cmd_check(args: argparse.Namespace) -> int:
         return 1
     print("PASS: this environment reproduces GD metrics exactly.")
     if args.stamp:
-        Path(args.marker).write_text(f"freetype={_freetype_version()} dump_gd={meta['gd']} measurements={n}\n")
+        write_validation_marker(Path(args.marker), Path(args.dump), meta["gd"], n)
         print(f"validation marker written: {args.marker} — LITCLOCK_RUNTIME_RENDER may be enabled")
     return 0
+
+
+def write_validation_marker(marker: Path, dump: Path, gd_version: str, measurements: int) -> None:
+    """Write the marker _runtime_render_enabled() accepts.
+
+    Extracted from cmd_check so tests can exercise the ACTUAL writer against
+    the ACTUAL reader (litclock-dev#605 item 1 — every prior test hand-wrote
+    the format, so a drift on either side shipped green).
+
+    The digest (litclock-dev#604) binds the stamp to its proof inputs —
+    freetype version, font bytes, dump bytes — so a font swap or dump regen
+    with the SAME freetype wheel invalidates the marker instead of leaving a
+    stale proof in force.
+    """
+    import os
+    import tempfile
+
+    from quote_renderer import runtime_validation_digest
+
+    content = (
+        f"freetype={_freetype_version()} "
+        f"digest={runtime_validation_digest(dump)} "
+        f"dump_gd={gd_version} measurements={measurements}\n"
+    )
+    # tmp + rename, not open(O_TRUNC): a previous sudo-run stamp leaves a
+    # root-owned marker that a pi-run re-stamp cannot truncate — but CAN
+    # replace, because rename only needs write on the pi-owned parent dir
+    # (litclock-dev#611 review).
+    fd, tmp = tempfile.mkstemp(dir=str(marker.parent), prefix=marker.name + ".")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(content)
+        os.replace(tmp, marker)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def main() -> int:

@@ -20,7 +20,7 @@ invalidates every filename in the affected buckets. Pre-#299 the generator's
 file_exists short-circuit silently preserved the stale images; post-#299 the
 ``images/manifest.json`` content-hash sidecar drives a content-aware skip and
 ``.github/workflows/corpus-integrity.yml`` blocks PRs that don't pair their
-CSV change with a matching release. See issues #211 and #299.
+CSV change with a matching release. See issues litclock-dev#211 and litclock-dev#299.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ IMAGES_DIR = REPO_ROOT / "images"
 METADATA_DIR = IMAGES_DIR / "metadata"
 MANIFEST_PATH = IMAGES_DIR / "manifest.json"
 # Renamed aside (not deleted) before a full regen so a failed/interrupted PHP run
-# rolls back to the last-known-good manifest instead of losing it (#502 review R4).
+# rolls back to the last-known-good manifest instead of losing it (litclock-dev#502 review R4).
 MANIFEST_BAK = IMAGES_DIR / "manifest.json.bak"
 IMAGES_VERSION_REL = ".images-version"
 IMAGES_VERSION_FILE = REPO_ROOT / IMAGES_VERSION_REL
@@ -114,7 +114,7 @@ def image_content_hash(quote: str, title: str, author: str, timestring: str) -> 
     """SHA1 of the per-row image content tuple.
 
     MUST stay byte-for-byte in sync with quote_to_image.php's hash logic
-    (#299/F): trimmed CSV values for quote/title/author/timestring, JSON-array
+    (litclock-dev#299/F): trimmed CSV values for quote/title/author/timestring, JSON-array
     encoded with no whitespace, then SHA1 of the UTF-8 bytes.
 
     Python `json.dumps(..., separators=(",",":"), ensure_ascii=False)` matches
@@ -147,7 +147,7 @@ def generator_file_hash() -> str:
 def read_manifest() -> dict | None:
     """Load images/manifest.json, or return None if missing/unparseable.
 
-    Manifest schema (#299):
+    Manifest schema (litclock-dev#299):
         {
           "corpus_hash":    "<sha1 of litclock_annotated.csv>",
           "generator_hash": "<sha1 of quote_to_image.php>",
@@ -254,8 +254,26 @@ def diff_changed_rows(head_rows: list[Row], work_rows: list[Row]) -> list[Row]:
     fingerprint on the work side. Deletions drop off — we don't validate
     them (there's nothing to check).
     """
-    head_fps = {r.fingerprint() for r in head_rows}
-    return [r for r in work_rows if r.fingerprint() not in head_fps]
+    # Multiset, not set (litclock-dev#559 review, litclock-dev#565). With set semantics, adding a
+    # SECOND exact copy of a row already at HEAD produced no changed row at
+    # all, so every per-row validator — time tag, mid-word edges, the
+    # fitted-fs floor — was skipped for it. A duplicate of a sub-floor row
+    # could enter the corpus with no acknowledgement, while
+    # compute_dirty_buckets still regenerated the bucket. Consuming one head
+    # occurrence per work row leaves every other case identical and surfaces
+    # the extra copies.
+    remaining: dict[str, int] = {}
+    for r in head_rows:
+        fp = r.fingerprint()
+        remaining[fp] = remaining.get(fp, 0) + 1
+    changed: list[Row] = []
+    for r in work_rows:
+        fp = r.fingerprint()
+        if remaining.get(fp, 0) > 0:
+            remaining[fp] -= 1
+        else:
+            changed.append(r)
+    return changed
 
 
 def validate_rows(rows: list[Row]) -> list[str]:
@@ -292,6 +310,228 @@ def validate_midword_edges(rows: list[Row]) -> list[str]:
     return warns
 
 
+def warn_midword_edges(changed: list[Row]) -> None:
+    """Run the mid-word edge check and print any warnings to stderr.
+
+    One body for the WARN block that `validate` and `ship` both need
+    (litclock-dev#605 item 16) — the two copies had already started life
+    identical and only stay that way by accident. Non-fatal by design
+    (litclock-dev#540): the owner may rarely intend a mid-word edge."""
+    warns = validate_midword_edges(changed)
+    if warns:
+        print(f"WARN: {len(warns)} changed row(s) have mid-word timestring edges (litclock-dev#540):", file=sys.stderr)
+        for line in warns:
+            print(line, file=sys.stderr)
+
+
+# Prefix on the stale-acknowledgement error line. The hint below must not
+# scrape tokens out of these: a stale token is one the operator should REMOVE,
+# and re-suggesting it produces a command that fails again on every run
+# (litclock-dev#559 review — the hint could not converge).
+_STALE_MARKER = "stale acknowledgement "
+
+
+def _render_pair(row: Row) -> tuple[str, str]:
+    """The only inputs that reach the renderer, so the only ones that can move
+    fitted size. If this pair is unchanged, the fit is unchanged — no
+    measurement needed."""
+    return (row.quote, row.match)
+
+
+def violation_token(row: Row) -> str:
+    """Acknowledgement key for a sub-floor row: `HH:MM#<8 hex>`.
+
+    The time is a locator for humans; the hash is the authority. It MUST be
+    content-bound (litclock-dev#559 review): a minute holds several rows, and 421
+    (time, title, author) identities in the live corpus are shared by more than
+    one row, so neither is unique enough to excuse a specific row. Binding to
+    the fingerprint also makes an acknowledgement self-invalidating — edit the
+    row again after acknowledging it and the token changes, so the gate speaks
+    up again instead of silently honouring a stale approval."""
+    return f"{row.time}#{row.fingerprint()[:8]}"
+
+
+def validate_fs_floor(
+    rows: list[Row],
+    acknowledged: list[str] | None = None,
+    head_rows: list[Row] | None = None,
+    work_rows: list[Row] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Fitted-font-size floor check (litclock-dev#539), measured by the production
+    renderer so the floor can never drift from what actually renders.
+    Returns (errors, warns).
+
+    The floor is absolute by default. Exactly one relaxation is automatic,
+    because it is the only one that can be PROVEN safe (litclock-dev#559):
+
+        (quote, match) unchanged at HEAD -> pass.
+
+    Fitted size is a pure function of that pair; nothing else reaches the
+    renderer. So a metadata-only edit — a retag, a title or author fix, an nsfw
+    flag — cannot have moved the fit. That matters because retagging is the
+    workflow this tool was built for (litclock-dev#211), and judging such an edit against
+    the floor made long rows permanently uneditable: the Ballard rows carrying
+    the `master dock` scanning error sit at fs19, so even correcting the typo
+    tripped the gate.
+
+    Everything else that lands below the floor is REPORTED, not guessed at.
+
+    An earlier version tried to infer intent — pair the row with its pre-edit
+    self and pass anything that did not get worse. Cross-model review found it
+    bypassable, and unfixably so: deleting a sub-floor row and adding a
+    different one at the same identity produces exactly the diff an edit
+    produces. A text-similarity threshold was measured and rejected (a real
+    approved trim scores 0.92 against 0.03 for a wholesale swap, leaving no
+    safe cutoff). The tool cannot know intent, so it stops pretending to and
+    asks instead.
+
+    ``acknowledged`` is the answer: a list of violation_token() values naming
+    exactly which sub-floor rows the operator has accepted. A token that is not
+    currently failing is itself an error — a stale acknowledgement pasted from
+    a script or a doc must not silently excuse something else.
+
+    A row whose timestring can't be found or that fits at no size is always an
+    error; no acknowledgement covers a row that would not render.
+
+    Needs freetype-py at call time and fails LOUDLY without it — a floor that
+    silently skips is not a floor (same reasoning as running this on both ship
+    and validate, litclock-dev#540)."""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / "src"))
+    import quote_renderer as _qr
+
+    # The metadata-only exemption needs BOTH sides. Membership alone is too
+    # loose: 235 (quote, match) pairs in the live corpus are carried by more
+    # than one row, so "this text exists somewhere at HEAD" would exempt a
+    # brand-new row that merely duplicates existing text — a row with no
+    # predecessor at all, whose text is sub-floor and ought to be gated.
+    #
+    # Requiring the count not to have RISEN says the right thing: the text is
+    # not new to the corpus, and nobody added another copy of it. A retag or a
+    # byline fix keeps the count level; adding a duplicate raises it.
+    head_pair_counts: dict[tuple[str, str], int] = {}
+    for hr in head_rows or []:
+        pair = _render_pair(hr)
+        head_pair_counts[pair] = head_pair_counts.get(pair, 0) + 1
+    work_pair_counts: dict[tuple[str, str], int] | None = None
+    if work_rows is not None:
+        work_pair_counts = {}
+        for wr in work_rows:
+            pair = _render_pair(wr)
+            work_pair_counts[pair] = work_pair_counts.get(pair, 0) + 1
+
+    def _text_is_unchanged(row: Row) -> bool:
+        pair = _render_pair(row)
+        if pair not in head_pair_counts:
+            return False
+        if work_pair_counts is None:
+            return True
+        return work_pair_counts.get(pair, 0) <= head_pair_counts[pair]
+
+    ack = set(acknowledged or [])
+    offered: set[str] = set()  # tokens a row actually needs
+    present: set[str] = set()  # tokens for EVERY row in this edit
+
+    errors: list[str] = []
+    warns: list[str] = []
+    unrenderable: set[str] = set()
+    for row in rows:
+        present.add(violation_token(row))
+        try:
+            fs = _qr.fitted_font_size(row.quote, row.match)
+        except ImportError as e:
+            raise SystemExit(
+                f"fs-floor check needs freetype-py ({e}); run inside the venv "
+                "(venv/bin/python3) or pip install freetype-py. Refusing to skip the gate."
+            ) from None
+        if fs is None:
+            unrenderable.add(violation_token(row))
+            errors.append(
+                f"  time {row.time} / match {row.match!r}: timestring not found or no font size fits — row won't render"
+            )
+        elif fs < _qr.FS_HARD_FLOOR:
+            if _text_is_unchanged(row):
+                warns.append(
+                    f"  time {row.time}: fits at fs {fs} < hard floor {_qr.FS_HARD_FLOOR} "
+                    f"({len(row.quote)} chars) — allowed: rendered text is unchanged at HEAD, "
+                    "so this edit cannot have moved the fit (litclock-dev#559)"
+                )
+                continue
+            token = violation_token(row)
+            offered.add(token)
+            if token in ack:
+                warns.append(
+                    f"  time {row.time}: fits at fs {fs} < hard floor {_qr.FS_HARD_FLOOR} "
+                    f"({len(row.quote)} chars) — accepted via {token}"
+                )
+            else:
+                errors.append(
+                    f"  time {row.time}: fits at fs {fs} < hard floor {_qr.FS_HARD_FLOOR} "
+                    f"({len(row.quote)} chars) — truncate at a sentence boundary (litclock-dev#539), "
+                    f"or accept it explicitly as {token}"
+                )
+        elif fs < _qr.FS_SOFT_FLOOR:
+            warns.append(
+                f"  time {row.time}: fits at fs {fs} < soft target {_qr.FS_SOFT_FLOOR} "
+                f"({len(row.quote)} chars) — consider trimming"
+            )
+
+    # A token naming nothing in this edit is an error, not a no-op: a list
+    # pasted from a script or an old PR body must not look like it is still
+    # authorising something.
+    #
+    # Compared against `present`, not `offered` (litclock-dev#559 review): a token for a
+    # row that IS in the edit but did not need acknowledging — because the
+    # metadata-only exemption covered it, or because it now fits above the
+    # floor — is merely unnecessary. Rejecting it blocked a run whose rows were
+    # all fine, with a message that read as though something were wrong.
+    # A row that will not render is already a hard error; telling the operator
+    # its token "was not needed" is false and points them away from the real
+    # problem (litclock-dev#559 review).
+    for unnecessary in sorted((ack & present) - offered - unrenderable):
+        warns.append(
+            f"  acknowledgement {unnecessary} was not needed: that row passes on its own now. "
+            "Safe to drop from --allow-small."
+        )
+    for stale in sorted(ack - present):
+        errors.append(
+            f"  {_STALE_MARKER}{stale}: no sub-floor row matches it now. "
+            "The row was changed, fixed, or removed — drop it from --allow-small."
+        )
+    return errors, warns
+
+
+def _print_allow_small_hint(fs_errors: list[str]) -> None:
+    """Print the exact command that would accept exactly these rows.
+
+    The operator should never have to construct the token list by hand — that
+    is how people end up reaching for a blanket override instead."""
+    import re as _re
+
+    # startswith, not `in`: the marker is prose, and an error line can quote a
+    # row's timestring verbatim. Anchoring to the start means a quoted value can
+    # never masquerade as a stale line (litclock-dev#559 review).
+    actionable = [line for line in fs_errors if not line.lstrip().startswith(_STALE_MARKER)]
+    tokens = sorted({m.group(0) for line in actionable for m in _re.finditer(r"\d{2}:\d{2}#[0-9a-f]{8}", line)})
+    if any(line.lstrip().startswith(_STALE_MARKER) for line in fs_errors):
+        print(
+            "       One or more --allow-small tokens no longer match a failing row.\n"
+            "       Drop those from the command — do not re-pass them.",
+            file=sys.stderr,
+        )
+    if not tokens:
+        print("       Fix the rows above, or trim them at a sentence boundary.", file=sys.stderr)
+        return
+    print(
+        "       These are below the floor. Trim them at a sentence boundary, or if\n"
+        "       they are meant to stay long, accept exactly these rows with:\n"
+        f"         --allow-small {' '.join(tokens)}",
+        file=sys.stderr,
+    )
+
+
 def validate_bucket_contiguity(rows: list[Row]) -> list[str]:
     """Flag any HHMM bucket that appears non-contiguously in CSV row order.
 
@@ -301,7 +541,7 @@ def validate_bucket_contiguity(rows: list[Row]) -> list[str]:
     silently overwrites the first. The Python mirror (per_row_filenames) has
     the same assumption. The current corpus is naturally sorted, but a
     manual edit could break ordering without any other check catching it.
-    Run as part of `corpus_edit.py validate`. (#299/E)
+    Run as part of `corpus_edit.py validate`. (litclock-dev#299/E)
     """
     errors: list[str] = []
     last_bucket: str | None = None
@@ -367,7 +607,7 @@ def _parse_sides() -> tuple[list[Row], list[Row]]:
 # ---------------------------------------------------------------------------
 
 
-def cmd_validate(_args: argparse.Namespace) -> int:
+def cmd_validate(args: argparse.Namespace) -> int:
     head_rows, work_rows = _parse_sides()
 
     # Bucket contiguity is a whole-corpus invariant, not a per-changed-row
@@ -393,14 +633,26 @@ def cmd_validate(_args: argparse.Namespace) -> int:
         for line in errors:
             print(line, file=sys.stderr)
         return 2
-    midword = validate_midword_edges(changed)
-    if midword:
+    warn_midword_edges(changed)
+    fs_errors, fs_warns = validate_fs_floor(
+        changed,
+        acknowledged=getattr(args, "allow_small", None),
+        head_rows=head_rows,
+        work_rows=work_rows,
+    )
+    if fs_warns:
+        print(f"WARN: {len(fs_warns)} changed row(s) below the fs floors (litclock-dev#539):", file=sys.stderr)
+        for line in fs_warns:
+            print(line, file=sys.stderr)
+    if fs_errors:
         print(
-            f"WARN: {len(midword)} changed row(s) have mid-word timestring edges (litclock-dev#540):",
+            f"ERROR: {len(fs_errors)} changed row(s) fail the fitted-fs hard floor (litclock-dev#539):",
             file=sys.stderr,
         )
-        for line in midword:
+        for line in fs_errors:
             print(line, file=sys.stderr)
+        _print_allow_small_hint(fs_errors)
+        return 2
     print(f"OK: {len(changed)} changed row(s) validate cleanly; bucket contiguity OK.")
     return 0
 
@@ -420,7 +672,7 @@ def cmd_diff(_args: argparse.Namespace) -> int:
         print("No dirty buckets vs HEAD.")
 
     # Section 2: manifest health — is the on-disk images/ in sync with the
-    # current CSV? Independent of HEAD comparison; surfaces #299-class drift
+    # current CSV? Independent of HEAD comparison; surfaces litclock-dev#299-class drift
     # (CSV edits made without re-running corpus_edit ship).
     print()
     manifest = read_manifest()
@@ -490,7 +742,7 @@ def _changed_vs_base(path_rel: str, base: str = SHIP_BASE_BRANCH) -> bool:
     Ship uses this (not the on-disk manifest) to decide what to ship: it's durable
     across a local `regenerate` (which rewrites the manifest and erases
     `_generator_out_of_sync`), it can't be faked by a missing local manifest, and
-    it correctly sees committed CSV/renderer edits (#502 review R2). Returns False
+    it correctly sees committed CSV/renderer edits (litclock-dev#502 review R2). Returns False
     (and prints a warning) if the base ref is unavailable, so a shallow/base-less
     checkout degrades to "no committed change detected" rather than crashing.
     """
@@ -527,7 +779,7 @@ def _prepare_for_regen(dirty: list[str], manifest_drift: bool, generator_drift: 
     """Force PHP to regenerate the right images. SINGLE source of truth for the
     wipe-or-remove-manifest decision, shared by cmd_regenerate and cmd_ship.
 
-    Order matters (#502 review R1): a generator (renderer) change can alter EVERY
+    Order matters (litclock-dev#502 review R1): a generator (renderer) change can alter EVERY
     image, so it MUST win over a dirty-bucket subset — otherwise PHP's content-hash
     skip leaves the unchanged buckets on the OLD renderer and the release ships
     mixed old/new-renderer PNGs. Generator drift therefore dominates `dirty`.
@@ -537,7 +789,7 @@ def _prepare_for_regen(dirty: list[str], manifest_drift: bool, generator_drift: 
         # Still wipe dirty buckets FIRST: a full regen overwrites current rows in
         # place but does NOT delete orphaned PNGs left by removed/renumbered rows
         # (a mixed CSV+renderer edit) — only wipe_buckets clears those, and the
-        # release tarball would otherwise ship the stale orphans (#503 review P1).
+        # release tarball would otherwise ship the stale orphans (litclock-dev#503 review P1).
         if dirty:
             removed = wipe_buckets(dirty, dry_run=dry_run)
             print(f"  (also wiped {len(removed)} file(s) in {len(dirty)} dirty bucket(s) to clear orphans.)")
@@ -598,7 +850,7 @@ def _run_generator() -> None:
     """Run the PHP generator and verify the manifest afterward. Shared by
     cmd_regenerate and cmd_ship. Rolls back a backed-up manifest (see
     `_remove_manifest_for_regen`) if PHP dies or writes no manifest, so a failed
-    regen never leaves the tree with no last-known-good manifest (#502 review R4/R5).
+    regen never leaves the tree with no last-known-good manifest (litclock-dev#502 review R4/R5).
     """
     if not PHP_GENERATOR.exists():
         _restore_manifest_bak()
@@ -657,7 +909,7 @@ def cmd_ship(args: argparse.Namespace) -> int:
       the CSV on master; ship branches, regenerates the dirty buckets, commits
       CSV + .images-version, releases).
     - GENERATOR: the renderer (quote_to_image.php) changed in a COMMIT on this
-      feature branch, with no pending CSV edit (#502 review). Ships in place on the
+      feature branch, with no pending CSV edit (litclock-dev#502 review). Ships in place on the
       branch: full regen, commit .images-version only, release.
     """
     diff_paths = tracked_diff_paths()
@@ -665,7 +917,7 @@ def cmd_ship(args: argparse.Namespace) -> int:
 
     # Preflight — no stray uncommitted tracked changes. A dirty .images-version left
     # by a half-finished prior run lands here and is rejected, which prevents a
-    # double version bump on rerun (#502 review R6).
+    # double version bump on rerun (litclock-dev#502 review R6).
     allowed = {CORPUS_REL}
     unexpected = [p for p in diff_paths if p not in allowed]
     if unexpected:
@@ -678,7 +930,7 @@ def cmd_ship(args: argparse.Namespace) -> int:
     # GENERATOR trigger uses git-history (committed renderer change vs base), NOT the
     # on-disk manifest: the trigger must survive a local `regenerate` (which rewrites
     # the manifest and erases `_generator_out_of_sync`) and must not be fakeable by a
-    # missing local manifest (#502 review R2).
+    # missing local manifest (litclock-dev#502 review R2).
     generator_ship = not csv_uncommitted and _changed_vs_base(PHP_GENERATOR_REL)
 
     if not csv_uncommitted and not generator_ship:
@@ -737,14 +989,30 @@ def _cmd_ship_csv(args: argparse.Namespace) -> int:
     # Mid-word bold-edge warning runs on BOTH ship and validate (litclock-dev#540 —
     # ship is the primary workflow; a warn only in `validate` is bypassable
     # by never running it). Non-fatal: the owner may rarely intend it.
-    midword_warns = validate_midword_edges(changed)
-    if midword_warns:
+    warn_midword_edges(changed)
+
+    # fs floor gates ship too, for the same reason midword warns on both
+    # paths: ship is the primary workflow, and a gate only in `validate`
+    # is bypassable by never running it (litclock-dev#539/litclock-dev#540).
+    fs_errors, fs_warns = validate_fs_floor(
+        changed,
+        acknowledged=getattr(args, "allow_small", None),
+        head_rows=head_rows,
+        work_rows=work_rows,
+    )
+    if fs_warns:
+        print(f"WARN: {len(fs_warns)} changed row(s) below the fs floors (litclock-dev#539):", file=sys.stderr)
+        for line in fs_warns:
+            print(line, file=sys.stderr)
+    if fs_errors:
         print(
-            f"WARN: {len(midword_warns)} changed row(s) have mid-word timestring edges (litclock-dev#540):",
+            f"ERROR: {len(fs_errors)} changed row(s) fail the fitted-fs hard floor (litclock-dev#539):",
             file=sys.stderr,
         )
-        for line in midword_warns:
+        for line in fs_errors:
             print(line, file=sys.stderr)
+        _print_allow_small_hint(fs_errors)
+        return 2
 
     dirty = compute_dirty_buckets(head_rows, work_rows)
     if not dirty:
@@ -752,10 +1020,10 @@ def _cmd_ship_csv(args: argparse.Namespace) -> int:
         return 2
 
     # If the renderer ALSO changed (mixed edit), generator drift dominates and forces
-    # a full regen inside _prepare_for_regen (#502 review R1) — the dirty subset alone
+    # a full regen inside _prepare_for_regen (litclock-dev#502 review R1) — the dirty subset alone
     # would leave unchanged buckets on the old renderer. Detect it via git-diff-vs-base
     # OR the on-disk manifest: the committed-renderer signal survives a local regen
-    # that already refreshed the manifest (#503 review R2 seam).
+    # that already refreshed the manifest (litclock-dev#503 review R2 seam).
     manifest_drift = _manifest_out_of_sync()
     generator_drift = _changed_vs_base(PHP_GENERATOR_REL) or _generator_out_of_sync()
 
@@ -791,7 +1059,7 @@ def _cmd_ship_csv(args: argparse.Namespace) -> int:
 def _cmd_ship_generator(args: argparse.Namespace) -> int:
     # In-place on the feature branch holding the committed renderer change. Never
     # master/detached — we don't commit a version bump straight to master, and a
-    # detached HEAD can't be pushed as a branch (#502 review R3).
+    # detached HEAD can't be pushed as a branch (litclock-dev#502 review R3).
     branch = current_branch()
     if branch in ("master", "HEAD"):
         print(
@@ -805,7 +1073,7 @@ def _cmd_ship_generator(args: argparse.Namespace) -> int:
     # Rerun-safety: if .images-version was already bumped on this branch, a prior
     # ship already cut the release — re-running would double-bump vN+1 -> vN+2 and
     # cut a second tag. Finish the prior ship with the recovery steps instead
-    # (#503 review P1). The initial ship sees no bump vs base and proceeds.
+    # (litclock-dev#503 review P1). The initial ship sees no bump vs base and proceeds.
     if _changed_vs_base(IMAGES_VERSION_REL):
         print(
             f"ERROR: {IMAGES_VERSION_REL} is already bumped on this branch vs "
@@ -818,7 +1086,7 @@ def _cmd_ship_generator(args: argparse.Namespace) -> int:
 
     # A mixed renderer + committed-CSV branch is not supported by the in-place
     # generator flow (it skips CSV validation + dirty-bucket orphan clearing). Fail
-    # loud rather than ship stale/unvalidated rows (#503 review P1).
+    # loud rather than ship stale/unvalidated rows (litclock-dev#503 review P1).
     if _changed_vs_base(CORPUS_REL):
         print(
             f"ERROR: this branch also has committed changes to {CORPUS_REL}. A mixed "
@@ -888,7 +1156,7 @@ def _print_recovery(
     By this point the tracked ship files are already committed on `branch`. The user
     just needs to re-run whatever post-commit step blew up. `release_done` makes the
     hint step-aware: once the release_images.sh step has cut the tag, do NOT suggest
-    re-running it — the tag already exists and a second run would error (#502 review #8).
+    re-running it — the tag already exists and a second run would error (litclock-dev#502 review #8).
     """
     print(f"\nERROR: ship failed after commit was made: {exc}", file=sys.stderr)
     print("The local commit is intact. To finish manually:", file=sys.stderr)
@@ -926,7 +1194,7 @@ def _build_pr_body(
     lines += [
         f"- Images version: {old_version} -> {new_version}",
         "",
-        "Generated by `image-gen/corpus_edit.py ship` (issue #211).",
+        "Generated by `image-gen/corpus_edit.py ship` (issue litclock-dev#211).",
     ]
     return "\n".join(lines)
 
@@ -935,7 +1203,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("validate", help="Check changed rows' time-tag parses correctly.")
+    p_validate = sub.add_parser("validate", help="Check changed rows' time-tag parses correctly.")
+    p_validate.add_argument(
+        "--allow-small",
+        nargs="*",
+        default=None,
+        metavar="HH:MM#HASH",
+        help=(
+            "Accept specific sub-floor rows by their violation token (litclock-dev#559). "
+            "Run without it first — the error names the exact tokens. A token is "
+            "content-bound, so editing the row again invalidates it, and naming a "
+            "token that is not currently failing is an error."
+        ),
+    )
     sub.add_parser("diff", help="List dirty HH:MM buckets vs HEAD.")
 
     p_regen = sub.add_parser("regenerate", help="Wipe dirty buckets, then run quote_to_image.php.")
@@ -947,6 +1227,18 @@ def main(argv: list[str] | None = None) -> int:
     p_ship.add_argument("--no-release", action="store_true", help="Skip scripts/release_images.sh.")
     p_ship.add_argument("--no-push", action="store_true", help="Skip git push and gh pr create.")
     p_ship.add_argument("--branch", default=None, help="Override auto-derived branch name.")
+    p_ship.add_argument(
+        "--allow-small",
+        nargs="*",
+        default=None,
+        metavar="HH:MM#HASH",
+        help=(
+            "Accept specific sub-floor rows by their violation token (litclock-dev#559). "
+            "Run without it first — the error names the exact tokens. A token is "
+            "content-bound, so editing the row again invalidates it, and naming a "
+            "token that is not currently failing is an error."
+        ),
+    )
     p_ship.add_argument(
         "--skip-validate",
         action="store_true",

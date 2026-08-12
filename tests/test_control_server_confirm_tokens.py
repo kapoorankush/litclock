@@ -1,6 +1,6 @@
 """Tests for src/control_server/confirm_tokens.py + POST /api/system/confirm-token.
 
-The store is the destructive-action gate for #245 M4 reboot/poweroff. These
+The store is the destructive-action gate for litclock-dev#245 M4 reboot/poweroff. These
 tests pin its security-critical properties:
 
 - Tokens are single-use (consume removes — second consume returns False).
@@ -27,6 +27,7 @@ from control_server.confirm_tokens import (  # noqa: E402
     TTL_SECONDS,
     VALID_ACTIONS,
     ConfirmTokenStore,
+    _hash_token,
     envelope_for_consume_outcome,
 )
 
@@ -52,7 +53,7 @@ class TestConfirmTokenStore:
             "factory_reset",
         ), (
             "M4 shipped reboot + poweroff. M5 added update_apply + wifi_reset. "
-            "Issue #280 added prepare_for_gift. Issue #510 added factory_reset. "
+            "Issue litclock-dev#280 added prepare_for_gift. Issue litclock-dev#510 added factory_reset. "
             "Each new action requires: a sudoers entry (sudoers/020_litclock-control), "
             "a route handler that consume()s with the matching action string, and "
             "DESIGN.md confirm-modal copy. Adding one without those leaks an "
@@ -76,7 +77,7 @@ class TestConfirmTokenStore:
     def test_consume_happy_path(self):
         store = ConfirmTokenStore()
         token, _ = store.issue("reboot")
-        # #328 — consume() now returns the monotonic expiry on success
+        # litclock-dev#328 — consume() now returns the monotonic expiry on success
         # (a float, so callers can pass it back to restore() if a
         # pre-side-effect failure path needs to un-consume).
         result = store.consume("reboot", token)
@@ -156,7 +157,7 @@ class TestConfirmTokenStore:
         for t in threads:
             t.join()
 
-        # #328 — consume() now returns the monotonic expiry (float) on
+        # litclock-dev#328 — consume() now returns the monotonic expiry (float) on
         # success and None on failure. Exactly one must win under contention.
         successes = [r for r in results if r is not None]
         failures = [r for r in results if r is None]
@@ -190,11 +191,11 @@ class TestConfirmTokenStore:
         assert len(set(produced)) == 16, "all minted tokens must be distinct"
 
 
-# ─── #328 — consume signature change + restore() round-trip ─────────────────
+# ─── litclock-dev#328 — consume signature change + restore() round-trip ─────────────────
 
 
 class TestConfirmTokenRestore:
-    """Issue #328: destructive routes consume the confirm token at
+    """Issue litclock-dev#328: destructive routes consume the confirm token at
     validation time, BEFORE subprocess.run. If a pre-side-effect failure
     path (busy gate, validation error, systemctl returned non-zero before
     dispatch) fires, the token is gone but no side effect happened. User
@@ -263,7 +264,7 @@ class TestConfirmTokenRestore:
             store.restore("delete-everything", "anything", time.monotonic() + 60)
 
     def test_restore_clamps_oversized_expiry_to_ttl(self):
-        """Issue #342 I8 — defense-in-depth: a caller passing an expiry
+        """Issue litclock-dev#342 I8 — defense-in-depth: a caller passing an expiry
         beyond ``now + TTL_SECONDS`` (e.g. a future refactor that
         hardcodes a stale literal instead of round-tripping consume's
         return) must NOT mint a long-lived token. The clamp caps any
@@ -283,7 +284,7 @@ class TestConfirmTokenRestore:
         assert consumed < far_future, "expiry must NOT preserve the oversized value"
 
     def test_restore_preserves_in_range_expiry(self):
-        """Issue #342 I8 — the clamp is a no-op on the happy path. A
+        """Issue litclock-dev#342 I8 — the clamp is a no-op on the happy path. A
         restore with an in-range expiry (the canonical case: round-trip
         from ``consume``) must preserve it exactly."""
         store = ConfirmTokenStore(ttl_seconds=300)
@@ -454,7 +455,7 @@ class TestConfirmTokenRoute:
 
     def test_error_envelope_shape(self, client):
         """Pin the M4-local envelope shape — story 1.3 routes reuse it.
-        Future #254 ratification may drop `ok` from non-2xx; if so, the
+        Future litclock-dev#254 ratification may drop `ok` from non-2xx; if so, the
         migration is mechanical (`del response['ok']`)."""
         response = client.post(
             "/api/system/confirm-token",
@@ -485,7 +486,7 @@ class TestConfirmTokenRoute:
             assert store_b.consume("reboot", token) is None
 
 
-# ─── #317 item 1 codex P2 — distinct expired vs consumed outcomes ──────────
+# ─── litclock-dev#317 item 1 codex P2 — distinct expired vs consumed outcomes ──────────
 
 
 class TestConsumeClassified:
@@ -532,11 +533,13 @@ class TestConsumeClassified:
         `consumed` (replay) and `invalid` (unknown).
 
         Implementation note: ``consume_classified()`` looks up the record
-        BEFORE running ``_sweep_locked()`` so an expired-but-not-swept
-        token is classified as "expired" deterministically (without this
-        ordering the sweep would drop the record and we'd report "invalid"
-        on the route, which 401s but doesn't trigger the JS retry path
-        — the slow-drafter trap would re-emerge).
+        BEFORE running ``_sweep_locked()``, which classifies an
+        expired-but-not-yet-swept token as "expired" on this first consume.
+        Since litclock-dev#597 that ordering is only an optimization — the
+        expired tombstone (parked on both the sweep and this expired branch)
+        is what makes the classification independent of sweep timing, so a
+        token already swept by an intervening issue/consume still reports
+        "expired" (see test_swept_expired_token_still_reports_expired).
         """
         store = ConfirmTokenStore(ttl_seconds=0)
         token, _ = store.issue("prepare_for_gift")
@@ -582,7 +585,7 @@ class TestConsumeClassified:
     def test_restore_clears_tombstone(self):
         """After restore(), the token is consumable again — the tombstone
         must NOT short-circuit the consume to `consumed`. Otherwise the
-        route's restore-on-pre-side-effect-failure path (#328) would 409
+        route's restore-on-pre-side-effect-failure path (litclock-dev#328) would 409
         the user's retry instead of running the action."""
         store = ConfirmTokenStore()
         token, _ = store.issue("wifi_reset")
@@ -592,7 +595,7 @@ class TestConsumeClassified:
         second = store.consume_classified("wifi_reset", token)
         assert second.outcome == "ok", (
             "restore() must clear the tombstone for this token so the "
-            "retry succeeds. Without this, #328's pre-side-effect retry "
+            "retry succeeds. Without this, litclock-dev#328's pre-side-effect retry "
             "loop would 409 instead of running."
         )
 
@@ -638,6 +641,124 @@ class TestConsumeClassified:
             "(still rejected — the refresh-and-retry path gates on 'expired' only)"
         )
 
+    def test_swept_expired_token_still_reports_expired(self):
+        """litclock-dev#597: the core fix. A token that expired unconsumed and
+        was ALREADY SWEPT (by an intervening issue/consume) must still report
+        `expired`, not `invalid`. Before the expired tombstone, whether a
+        sat-on token classified expired-vs-invalid depended on sweep timing —
+        the owner opened the System tab, sat past the TTL, tapped a destructive
+        action (an intervening mint had swept the token) and hit the dead-end
+        'confirm token unrecognised' alert."""
+        store = ConfirmTokenStore(ttl_seconds=0)
+        token, _ = store.issue("factory_reset")
+        time.sleep(0.01)  # token is now past its zero TTL
+        # Force a sweep that drops the expired token from the live store BEFORE
+        # we consume it — this is the intervening issue/consume the owner hit.
+        store.issue("reboot")
+        assert token not in store._tokens, "precondition: the sweep dropped the live record"
+        assert _hash_token(token) in store._expired, "the sweep must park an expired tombstone (litclock-dev#597)"
+
+        result = store.consume_classified("factory_reset", token)
+        assert result.outcome == "expired", (
+            f"a swept-but-genuinely-issued token must report 'expired' so the client remints; got {result.outcome}"
+        )
+        assert result.expiry is None
+
+    def test_retry_on_a_stale_token_stays_expired_not_invalid(self):
+        """A second consume of the same stale token (the first popped the live
+        record) still reports `expired`, because the expired-branch parks a
+        tombstone. Before litclock-dev#597 this second attempt collapsed to `invalid`."""
+        store = ConfirmTokenStore(ttl_seconds=0)
+        token, _ = store.issue("wifi_reset")
+        time.sleep(0.01)
+        first = store.consume_classified("wifi_reset", token)
+        assert first.outcome == "expired"
+        second = store.consume_classified("wifi_reset", token)
+        assert second.outcome == "expired", (
+            f"retry on the same stale token must stay 'expired', not fall to 'invalid'; got {second.outcome}"
+        )
+
+    def test_expired_tombstone_stores_hash_not_raw_token(self):
+        """Same posture as the consumed tombstone: a memory disclosure of the
+        expired shadow dict alone cannot replay tokens against a live store."""
+        store = ConfirmTokenStore(ttl_seconds=0)
+        token, _ = store.issue("reboot")
+        time.sleep(0.01)
+        store.consume_classified("reboot", token)  # expired branch parks the hash
+        assert token not in store._expired
+        assert _hash_token(token) in store._expired
+
+    def test_expired_tombstone_is_swept_after_horizon(self):
+        """Lazy GC: after EXPIRED_TTL_SECONDS a sat-on token finally falls back
+        to 'invalid'. The horizon is a full day in production, far longer than
+        any realistic open-modal-then-tap window."""
+        store = ConfirmTokenStore(ttl_seconds=0, expired_ttl_seconds=0)
+        token, _ = store.issue("factory_reset")
+        time.sleep(0.01)
+        store.issue("reboot")  # sweeps the token into _expired (expiry now+0)
+        time.sleep(0.01)
+        store.issue("poweroff")  # this sweep GCs the aged-out expired tombstone
+        assert _hash_token(token) not in store._expired
+        late = store.consume_classified("factory_reset", token)
+        assert late.outcome == "invalid", (
+            f"past the expired-tombstone horizon a sat-on token falls back to 'invalid'; got {late.outcome}"
+        )
+
+    def test_consumed_takes_precedence_over_expired_classification(self):
+        """The record-is-None branch checks _consumed BEFORE _expired. Normal
+        flows never put a token in both dicts, so this is white-boxed: inject a
+        hash into BOTH and assert 'consumed' wins. A reordered elif (expired
+        first) would flip a genuinely-consumed token onto the client's
+        mint-and-retry path — the single-use guard must always win."""
+        store = ConfirmTokenStore()
+        token, _ = store.issue("factory_reset")
+        h = _hash_token(token)
+        # Force co-membership that the normal state machine can't produce.
+        store._consumed[h] = time.monotonic() + 600
+        store._expired[h] = time.monotonic() + 600
+        # Pop the live record so we land in the record-is-None branch.
+        store._tokens.pop(token, None)
+        result = store.consume_classified("factory_reset", token)
+        assert result.outcome == "consumed", (
+            f"consumed must take precedence over expired in the record-None branch; got {result.outcome}"
+        )
+
+    def test_expired_tombstone_is_size_capped_evicting_oldest(self):
+        """litclock-dev#597 /review: token ISSUANCE (GET /system, unauthenticated
+        + unrate-limited) feeds _expired, so it is capped to bound memory on a
+        512MB Pi. Over the cap, the OLDEST entry is evicted (degrading only a
+        very stale tap back to 'invalid', never to anything unsafe)."""
+        cap = 4
+        store = ConfirmTokenStore(ttl_seconds=0, expired_max_entries=cap)
+        tokens = []
+        for _ in range(cap + 3):
+            tok, _ = store.issue("reboot")
+            tokens.append(tok)
+            time.sleep(0.001)
+            store.issue("poweroff")  # sweep the just-expired token into _expired
+        assert len(store._expired) <= cap, f"_expired exceeded its cap: {len(store._expired)}"
+        # The earliest tokens were evicted → 'invalid'; the most recent survive → 'expired'.
+        assert store.consume_classified("reboot", tokens[0]).outcome == "invalid"
+        assert store.consume_classified("reboot", tokens[-1]).outcome == "expired"
+
+    def test_restore_clears_the_expired_tombstone(self):
+        """litclock-dev#597 /review: restore() must drop any expired tombstone
+        for the token so the restored token consumes 'ok', not 'expired'.
+        Unreachable in production (restore only follows an 'ok' consume), but the
+        'a live token has no stale tombstone' invariant must hold."""
+        store = ConfirmTokenStore()
+        token, _ = store.issue("wifi_reset")
+        # Consume first so the token leaves _tokens — restore() is a no-op while
+        # the token is still live, so it only reaches the tombstone-clearing
+        # path after a pop.
+        result = store.consume_classified("wifi_reset", token)
+        assert result.outcome == "ok"
+        h = _hash_token(token)
+        store._expired[h] = time.monotonic() + 600  # inject a stale tombstone
+        store.restore("wifi_reset", token, result.expiry)
+        assert h not in store._expired, "restore() must clear the expired tombstone"
+        assert store.consume_classified("wifi_reset", token).outcome == "ok"
+
 
 class TestEnvelopeForConsumeOutcome:
     """Pin the HTTP envelope mapping for each consume outcome — the
@@ -652,6 +773,11 @@ class TestEnvelopeForConsumeOutcome:
         body = response.get_json()
         assert body["ok"] is False
         assert body["error"]["code"] == "confirm_token_expired"
+        # litclock-dev#597: user-facing copy tells the user what to do and
+        # carries NO "confirm token" jargon. Pin intent, not exact prose.
+        msg = body["error"]["message"]
+        assert "reload" in msg.lower()
+        assert "token" not in msg.lower()
 
     def test_consumed_maps_to_409_consumed(self):
         """409 (not 401) so the JS can branch cleanly on status code AND
@@ -673,3 +799,6 @@ class TestEnvelopeForConsumeOutcome:
         assert status == 401
         body = response.get_json()
         assert body["error"]["code"] == "confirm_token_invalid"
+        msg = body["error"]["message"]
+        assert "reload" in msg.lower()
+        assert "token" not in msg.lower()  # litclock-dev#597 jargon ban

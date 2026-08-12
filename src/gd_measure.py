@@ -170,7 +170,11 @@ def gd_bbox(font_path: str, ptsize: int, s: str) -> tuple[int, int, int, int]:
 
 
 def reset_caches() -> None:
-    """Test hook — drop cached faces and measurements."""
+    """Reset hook — drop cached faces and measurements.
+
+    No callers today (litclock-dev#605 item 14): nothing repoints the font
+    files mid-process, so the caches never go stale in tests. Kept as the
+    documented reset point — call this, not the internals, if that changes."""
     _faces.clear()
     gd_text_width.cache_clear()
     gd_bbox.cache_clear()

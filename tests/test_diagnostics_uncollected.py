@@ -1,6 +1,6 @@
-"""Tests for the #432 grey "Not yet collected" tier.
+"""Tests for the litclock-dev#432 grey "Not yet collected" tier.
 
-Three layers locked by the v0.214.4 plan (#432):
+Three layers locked by the v0.214.4 plan (litclock-dev#432):
 
 1. ``_compute_uncollected(values)`` — pure predicate. Reads the
    ``DIAG_LAST_IP_PATH`` config + the marker file on disk; gates the
@@ -79,7 +79,7 @@ def app_with_marker(tmp_path):
 
     ``DIAG_COLLECTED_MARKER_PATH`` is pinned at a never-exists path so these
     legacy cases deterministically exercise the v0.214.4 tmpfs fallback in
-    ``_read_collected_sections`` (#445) regardless of the host's
+    ``_read_collected_sections`` (litclock-dev#445) regardless of the host's
     ``/var/lib/litclock`` — the persistent-marker behavior is covered
     separately in :class:`TestPersistentCollectedMarker`.
     """
@@ -100,7 +100,7 @@ def app_with_marker(tmp_path):
 def app_no_marker(tmp_path):
     """Build an app whose ``DIAG_LAST_IP_PATH`` is absent on disk. The
     persistent collected-marker is also absent, so the predicate falls back
-    to the tmpfs check (#445)."""
+    to the tmpfs check (litclock-dev#445)."""
     env = tmp_path / "env.sh"
     env.write_text("WEATHER_ENABLED=false\n")
     return create_app(
@@ -166,27 +166,21 @@ class TestComputeUncollectedNetwork:
         assert "network" in anomalies
         assert "network" not in uncollected
 
-    def test_stale_dhcp_anomaly_blocks_uncollected(self, app_no_marker):
-        # Fix A symmetric: stale DHCP age (> 24h) is a real renewal
-        # failure, not "data was never collected." Uncollected must NOT
-        # fire even if marker absent + lan_ip + ssid all empty.
+    def test_stale_dhcp_does_not_block_uncollected(self, app_no_marker):
+        """litclock-dev#552 — the carve-out went with the trigger it mirrored.
+
+        Keeping it would assert a fault the anomaly logic no longer
+        recognises: a never-collected section with an old lease would stay
+        un-muted while producing no anomaly, reading as healthy rather than
+        grey. Signal remains a carve-out because it is a real measurement.
+        """
         v = _clean_values()
         v["lan_ip"] = ""
         v["ssid"] = ""
         v["last_dhcp_at"] = (datetime.now(UTC) - timedelta(hours=25)).isoformat()
         with app_no_marker.app_context():
-            assert "network" not in _anomalies._compute_uncollected(v)
-            anomalies, uncollected = _anomalies._compute_section_states(v)
-        assert "network" in anomalies
-        assert "network" not in uncollected
-
-
-# ---- _compute_uncollected — time-location -----------------------------------
-
-
-class TestComputeUncollectedTimeLocation:
-    """D3 time-location gate: weather_enabled AND mode=auto AND name empty AND
-    last_ip_geo_at empty."""
+            uncollected = _anomalies._compute_uncollected(v)
+        assert "network" in uncollected
 
     def test_all_four_conditions_marks_uncollected(self, app_with_marker):
         v = _clean_values()
@@ -244,7 +238,7 @@ class TestComputeUncollectedTimeLocation:
         # Fix C (Codex structured review #1): legacy / pre-#337 env files
         # don't set WEATHER_LOCATION_MODE, so the predicate accepts None
         # and "" alongside "auto". Without this, legacy Pis kept showing
-        # the orange "Location stale" false positive #432 was opened to
+        # the orange "Location stale" false positive litclock-dev#432 was opened to
         # remove. Locks the loosened gate so a future tightening that
         # demands an explicit "auto" string would surface here.
         v = _clean_values()
@@ -295,13 +289,13 @@ class TestSectionStatesPrecedence:
         assert "network" not in uncollected
 
     def test_uncollected_wins_on_overlap_fresh_flash_case(self, app_no_marker):
-        # The user-reported fresh-flash case from #432: marker absent,
+        # The user-reported fresh-flash case from litclock-dev#432: marker absent,
         # lan_ip empty, ssid empty, weather_enabled, mode=auto, name
         # empty, last_ip_geo_at empty. BOTH predicates fire for BOTH
         # sections (network: lan_ip empty trips anomaly + uncollected;
         # time-location: name empty trips anomaly + uncollected).
         # Uncollected-wins precedence ensures the user sees grey, not the
-        # orange pills that #432 was opened to fix.
+        # orange pills that litclock-dev#432 was opened to fix.
         v = _clean_values()
         v["lan_ip"] = ""
         v["ssid"] = ""
@@ -331,7 +325,7 @@ class TestSectionStatesPrecedence:
         # Row 1 (truth-table — both predicates fire). Per the helper's
         # docstring (uncollected wins on overlap), a section appearing
         # in BOTH raw lists is moved to uncollected and removed from
-        # anomalies. The carve-out justification: the user-reported #432
+        # anomalies. The carve-out justification: the user-reported litclock-dev#432
         # bug only closes when the grey tier paints in the overlap case.
         v = _clean_values()
         v["weather_enabled"] = True
@@ -366,13 +360,18 @@ class TestAnomalyRegressionUnchanged:
         assert "network" in anomalies
         assert "network" not in uncollected
 
-    def test_stale_dhcp_still_trips_network_anomaly(self, app_no_marker):
+    def test_stale_dhcp_no_longer_trips_network_anomaly(self, app_no_marker):
+        """litclock-dev#552 — a long-stable lease is not a fault.
+
+        Previously 25 h old tripped the network anomaly. The NM dispatcher
+        short-circuits on an unchanged IP, so this field freezes at boot and
+        the rule fired hardest on the healthiest clocks.
+        """
         v = _clean_values()
-        # 25 h old DHCP → past the 24 h threshold.
         v["last_dhcp_at"] = (datetime.now(UTC) - timedelta(hours=25)).isoformat()
         with app_no_marker.app_context():
             anomalies, uncollected = _anomalies._compute_section_states(v)
-        assert "network" in anomalies
+        assert "network" not in anomalies
 
     def test_lan_ip_empty_with_ssid_present_stays_anomaly_not_uncollected(self, app_no_marker):
         # The SSID-present sanity gate: association with no IP is a real
@@ -472,7 +471,7 @@ def integ_app(tmp_path):
     images_version = tmp_path / ".images-version"
     images_version.write_text("v4\n")
     # Marker INTENTIONALLY absent — this is the fresh-flash / fresh-update
-    # case that #432 is opening to fix.
+    # case that litclock-dev#432 is opening to fix.
     return create_app(
         {
             "ENV_FILE": str(env),
@@ -626,7 +625,7 @@ def _fresh_values() -> dict:
     }
 
 
-# ---- #445 persistent collected-marker --------------------------------------
+# ---- litclock-dev#445 persistent collected-marker --------------------------------------
 
 
 def _app_with_persistent_marker(tmp_path, marker_obj, *, last_ip_present=False):
@@ -655,7 +654,7 @@ def _app_with_persistent_marker(tmp_path, marker_obj, *, last_ip_present=False):
 
 
 class TestPersistentCollectedMarker:
-    """#445 — the persistent marker (section key present == ever collected)
+    """litclock-dev#445 — the persistent marker (section key present == ever collected)
     replaces the reboot-wiped tmpfs check, with fallback to the tmpfs check
     (network) / env-only gate (time-location) when the marker is
     absent/unreadable."""

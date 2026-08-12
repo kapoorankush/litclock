@@ -54,7 +54,7 @@ def _issue_token(client, action: str) -> str:
 def csrf_token(app) -> str:
     """Mint a CSRF token for the settings/gift writer endpoint. Mirrors
     the fixture in test_control_server_settings.py — duplicated locally so
-    the #317 item 7 gift-card tests can POST to /settings (section=gift)
+    the litclock-dev#317 item 7 gift-card tests can POST to /settings (section=gift)
     without pulling in the whole settings test module."""
     from control_server.csrf import CSRF_ACTION  # noqa: PLC0415
 
@@ -64,7 +64,7 @@ def csrf_token(app) -> str:
 
 @pytest.fixture(autouse=True)
 def _reset_shutdown_imminent_flag():
-    """#362 D7 — clear the module-level ``_SHUTDOWN_IMMINENT`` flag between
+    """litclock-dev#362 D7 — clear the module-level ``_SHUTDOWN_IMMINENT`` flag between
     tests. ``_execute_action`` sets this flag once per shutdown and there
     is no production "unset" path (it's intentionally one-way: a shutdown
     is happening, abort ad-hoc work). Tests that fire reboot/poweroff would
@@ -82,7 +82,7 @@ def _reset_shutdown_imminent_flag():
 
 @pytest.fixture(autouse=True)
 def _gift_unit_always_loadable():
-    """#393 — prepare_for_gift now runs a read-only `systemctl show -p LoadState`
+    """litclock-dev#393 — prepare_for_gift now runs a read-only `systemctl show -p LoadState`
     pre-flight before its destructive location clear. On dev/CI hosts the unit
     isn't installed, so the real probe would return not-found and abort every
     gift test. Patch it to "loadable" module-wide; the dedicated not-loadable
@@ -93,7 +93,7 @@ def _gift_unit_always_loadable():
 
 @pytest.fixture
 def _bypass_update_busy_for_execute_action():
-    """#362 D8 — ``_execute_action`` now checks ``update_state.update_is_busy()``
+    """litclock-dev#362 D8 — ``_execute_action`` now checks ``update_state.update_is_busy()``
     before pre-stop. In CI / dev hosts that don't have systemd available,
     the probe returns whatever the test machine reports — bypass it
     explicitly for happy-path tests on the reboot/poweroff routes. The
@@ -133,7 +133,7 @@ class TestRateLimiter:
         assert allowed is True
 
     def test_eviction_drops_idle_buckets(self):
-        """Caught in /review on PR #267: bucket dict was unbounded.
+        """Caught in /review on PR litclock-dev#267: bucket dict was unbounded.
         Idle entries get evicted after EVICTION_AGE_WINDOWS * per_seconds
         of silence. Re-creating on next access produces the same result
         as keeping the stale full-capacity entry, so the eviction is a
@@ -161,7 +161,7 @@ class TestRateLimiter:
 class TestRebootRoute:
     @pytest.fixture(autouse=True)
     def _bypass_update_busy_gate(self, _bypass_update_busy_for_execute_action):
-        """#362 D8 — pre-stop gate added; bypass for the happy-path tests so
+        """litclock-dev#362 D8 — pre-stop gate added; bypass for the happy-path tests so
         the test host's systemctl probe doesn't randomly 409. The 'update
         in progress' branch gets its own dedicated test class."""
         yield
@@ -174,7 +174,7 @@ class TestRebootRoute:
         assert response.status_code == 200, response.json
         assert response.json == {"ok": True, "action": "reboot"}
 
-        # #362 — _execute_action now fires two subprocess.run calls per
+        # litclock-dev#362 — _execute_action now fires two subprocess.run calls per
         # successful reboot: the pre-stop and then the destructive reboot.
         assert mock_run.call_count == 2, (
             "expected exactly two subprocess.run calls (pre-stop + destructive); "
@@ -189,7 +189,7 @@ class TestRebootRoute:
         )
 
     def test_token_is_single_use(self, client):
-        """#317 item 1 codex P2: duplicate POST on a consumed token now
+        """litclock-dev#317 item 1 codex P2: duplicate POST on a consumed token now
         returns 409 ``confirm_token_consumed`` (was 401
         ``confirm_token_invalid``). The single-use guard remains in
         force — the second POST is rejected — but the more-specific
@@ -226,7 +226,7 @@ class TestRebootRoute:
 class TestPoweroffRoute:
     @pytest.fixture(autouse=True)
     def _bypass_update_busy_gate(self, _bypass_update_busy_for_execute_action):
-        """#362 D8 — see TestRebootRoute for rationale."""
+        """litclock-dev#362 D8 — see TestRebootRoute for rationale."""
         yield
 
     def test_happy_path_invokes_systemctl_poweroff_no_block(self, client):
@@ -236,17 +236,17 @@ class TestPoweroffRoute:
 
         assert response.status_code == 200, response.json
         assert response.json == {"ok": True, "action": "poweroff"}
-        # #362 — pre-stop + destructive. Last call is the destructive one.
+        # litclock-dev#362 — pre-stop + destructive. Last call is the destructive one.
         assert mock_run.call_count == 2, mock_run.call_args_list
         destructive_args = mock_run.call_args_list[-1].args[0]
         assert destructive_args == ["sudo", "/usr/bin/systemctl", "poweroff", "--no-block"]
 
 
-# ─── #362 — Pre-shutdown stop ordering + flag + update-busy + rollback ──────
+# ─── litclock-dev#362 — Pre-shutdown stop ordering + flag + update-busy + rollback ──────
 
 
 class TestPreShutdownStop:
-    """#362 — verify the locked plan-eng-review decisions D1, D2, D3, D7, D8,
+    """litclock-dev#362 — verify the locked plan-eng-review decisions D1, D2, D3, D7, D8,
     D9 in the shared ``_execute_action`` dispatcher (reboot + poweroff).
 
     The race that prompted these tests: ``litclock.timer`` fires every
@@ -509,7 +509,7 @@ class TestPreShutdownStop:
         mock_run.assert_not_called()
 
     def test_update_busy_restores_token_for_retry(self, client):
-        """D8 (#328 parity) — a 409 update_in_progress is pre-side-effect.
+        """D8 (litclock-dev#328 parity) — a 409 update_in_progress is pre-side-effect.
         Restore the token so the user's retry after the update finishes
         works with the same open page."""
         token = _issue_token(client, "reboot")
@@ -733,7 +733,7 @@ class TestPreShutdownStop:
         for call in mock_run.call_args_list:
             argv = call.args[0]
             assert argv[2:5] != ["stop", "litclock.timer", "litclock.service"], (
-                f"prepare_for_gift must NOT invoke the #362 pre-stop; saw {argv}"
+                f"prepare_for_gift must NOT invoke the litclock-dev#362 pre-stop; saw {argv}"
             )
 
     def test_stop_NOT_called_for_wifi_reset(self, client):
@@ -748,22 +748,22 @@ class TestPreShutdownStop:
         ):
             response = client.post("/api/wifi/reset", json={"token": token})
         # The wifi.reset route should succeed without ever touching the
-        # #362 pre-stop. The route lives on the wifi blueprint and uses
+        # litclock-dev#362 pre-stop. The route lives on the wifi blueprint and uses
         # control_server.routes.wifi.subprocess.run (not system.subprocess.run).
         assert response.status_code == 200, response.json
         for call in mock_run.call_args_list:
             argv = call.args[0]
             assert argv[2:5] != ["stop", "litclock.timer", "litclock.service"], (
-                f"wifi.reset must NOT invoke the #362 pre-stop; saw {argv}"
+                f"wifi.reset must NOT invoke the litclock-dev#362 pre-stop; saw {argv}"
             )
 
 
-# ─── Codex post-review regression tests (#362 round 2) ─────────────────────
+# ─── Codex post-review regression tests (litclock-dev#362 round 2) ─────────────────────
 
 
 class TestShutdownPostReviewFixes:
     """Regression tests for the four HIGH findings codex caught on the
-    initial #362 PR (TOCTOU + flag-stuck-True + silent rollback non-zero +
+    initial litclock-dev#362 PR (TOCTOU + flag-stuck-True + silent rollback non-zero +
     missing timeout rollback). Each test pins the specific failure mode so
     a future refactor can't silently reintroduce it.
     """
@@ -1052,11 +1052,11 @@ class TestShutdownPostReviewFixes:
         )
 
 
-# ─── /api/system/prepare-for-gift (#280) ────────────────────────────────────
+# ─── /api/system/prepare-for-gift (litclock-dev#280) ────────────────────────────────────
 
 
 class TestPrepareForGiftRoute:
-    """#280: PWA-triggered "Prepare for Gifting" flow. Writes the optional
+    """litclock-dev#280: PWA-triggered "Prepare for Gifting" flow. Writes the optional
     welcome message to /run/litclock/gift-message, then invokes the
     litclock-prepare-for-gift.service systemd unit (which runs reset-setup.sh
     --gift-mode, wipes WiFi, paints the welcome on the e-ink, powers off).
@@ -1064,7 +1064,7 @@ class TestPrepareForGiftRoute:
 
     @pytest.fixture(autouse=True)
     def _bypass_update_busy_gate(self):
-        """#316 /review fix added an update-busy pre-check that mirrors
+        """litclock-dev#316 /review fix added an update-busy pre-check that mirrors
         wifi.reset. In the test env, update_state's systemctl probe runs
         against the dev host and may return any state — bypass it for the
         happy-path tests. The 'update in progress' branch gets its own
@@ -1074,7 +1074,7 @@ class TestPrepareForGiftRoute:
 
     @pytest.fixture(autouse=True)
     def _noop_tz_reset(self):
-        """#396 added a best-effort `sudo timedatectl set-timezone UTC` to
+        """litclock-dev#396 added a best-effort `sudo timedatectl set-timezone UTC` to
         prepare_for_gift, before the systemctl dispatch. It uses the same
         module-level subprocess.run these tests patch + count, so leaving it
         live would turn every `mock_run.assert_called_once()` (which means "the
@@ -1086,7 +1086,7 @@ class TestPrepareForGiftRoute:
 
     @pytest.fixture(autouse=True)
     def gift_env_file(self, app, tmp_path):
-        """#393: prepare_for_gift now clears the gifter's location from env.sh
+        """litclock-dev#393: prepare_for_gift now clears the gifter's location from env.sh
         synchronously before dispatching the teardown unit. Point ENV_FILE at a
         throwaway env.sh (seeded with a location) so tests exercise that write
         without clobbering the real /home/pi/litclock/env.sh create_app default.
@@ -1103,7 +1103,7 @@ class TestPrepareForGiftRoute:
         return env_file
 
     def test_clears_location_from_env_before_dispatch(self, client, tmp_path, gift_env_file):
-        """#393: the gifter's coordinates + city must be wiped from env.sh
+        """litclock-dev#393: the gifter's coordinates + city must be wiped from env.sh
         BEFORE the teardown unit is dispatched — that's the only point the PWA
         connection is still alive to report a failure, and it makes the leak
         impossible regardless of the script's later wipe. The non-allowlisted
@@ -1128,7 +1128,7 @@ class TestPrepareForGiftRoute:
         mock_run.assert_called_once()
 
     def test_lock_timeout_aborts_and_reports_to_pwa(self, client, tmp_path):
-        """#393 core: if the synchronous location clear can't get the env.sh
+        """litclock-dev#393 core: if the synchronous location clear can't get the env.sh
         flock, abort BEFORE dispatching the teardown — return 504 so the PWA
         (still connected) shows an error instead of a false 'pack and ship',
         stage no message, dispatch nothing, and restore the token for retry."""
@@ -1151,7 +1151,7 @@ class TestPrepareForGiftRoute:
         assert not msg_path.exists(), "no message must be staged when the location clear fails"
 
     def test_write_error_aborts_and_reports_to_pwa(self, client, tmp_path):
-        """#393: a disk/write error clearing location must also abort before
+        """litclock-dev#393: a disk/write error clearing location must also abort before
         dispatch with a 500 the PWA can show — never ship a stale device."""
         token = _issue_token(client, "prepare_for_gift")
         msg_path = tmp_path / "gift-message"
@@ -1172,7 +1172,7 @@ class TestPrepareForGiftRoute:
         assert not msg_path.exists()
 
     def test_unit_not_loadable_aborts_before_clearing_location(self, client, tmp_path, gift_env_file):
-        """#393/#327: if the teardown unit is missing/masked, the route must bail
+        """litclock-dev#393/litclock-dev#327: if the teardown unit is missing/masked, the route must bail
         BEFORE the destructive location clear — never wipe the owner's location
         for a gift that can't start. Asserts: location SURVIVES in env.sh, no
         message staged, no systemctl start, 500, and the token is restored so a
@@ -1198,7 +1198,7 @@ class TestPrepareForGiftRoute:
         assert cfg.get("WEATHER_LONGITUDE") == "-97.74"
 
     def test_missing_env_file_still_dispatches(self, client, tmp_path, app):
-        """#393: a missing env.sh means there's no stored location to leak, so
+        """litclock-dev#393: a missing env.sh means there's no stored location to leak, so
         the clear is a no-op and the flow proceeds (mirrors the script's
         `[[ -f env.sh ]]` guard). Pointing ENV_FILE at a nonexistent path must
         NOT block gifting."""
@@ -1215,7 +1215,7 @@ class TestPrepareForGiftRoute:
         mock_run.assert_called_once()
 
     def test_token_restored_after_lock_timeout_allows_retry(self, client, tmp_path, gift_env_file):
-        """#393 + #328 pattern: a pre-dispatch failure (lock timeout clearing
+        """litclock-dev#393 + litclock-dev#328 pattern: a pre-dispatch failure (lock timeout clearing
         location) must restore the confirm token so the operator's retry on the
         same open page works. First call 504s; second call (token still valid)
         succeeds once the lock is free."""
@@ -1277,7 +1277,7 @@ class TestPrepareForGiftRoute:
         assert msg_path.read_text() == ""
 
     def test_message_too_long_rejected(self, client, tmp_path):
-        """80-char ceiling (#319 lowered from 280 once the renderer learned
+        """80-char ceiling (litclock-dev#319 lowered from 280 once the renderer learned
         to wrap) enforced at the endpoint via the shared validator —
         defense-in-depth, the script also enforces head -c 80."""
         token = _issue_token(client, "prepare_for_gift")
@@ -1292,7 +1292,7 @@ class TestPrepareForGiftRoute:
                 json={"token": token, "message": long_message},
             )
         assert response.status_code == 400
-        # #316 /review fix: API path now routes through the same validator
+        # litclock-dev#316 /review fix: API path now routes through the same validator
         # as the PRG path (config._validate_gift_mode_message), returning
         # `invalid_message` with the validator's specific reason.
         assert response.json["error"]["code"] == "invalid_message"
@@ -1310,18 +1310,18 @@ class TestPrepareForGiftRoute:
             ("hi $(whoami)", "may not contain"),
             ("`whoami`", "may not contain"),
             ("nul\x00byte", "NUL"),
-            # #319 dropped the newline-rejection case — embedded `\n` is now
+            # litclock-dev#319 dropped the newline-rejection case — embedded `\n` is now
             # allowed end-to-end and rendered as a hard line break.
         ],
     )
     def test_message_content_validation_parity_with_settings(
         self, client, tmp_path, bad_message: str, reason_substr: str
     ) -> None:
-        """#316 /review CRITICAL fix: the API endpoint must apply the same
+        """litclock-dev#316 /review CRITICAL fix: the API endpoint must apply the same
         content validator as the PRG path. Previously only length was
         checked, so backticks / $ / NUL bytes could land in the gift-message
         file — $ / backticks violated the defense-in-depth ban documented
-        in src/config.py. (#319 narrowed the contract: newlines are now
+        in src/config.py. (litclock-dev#319 narrowed the contract: newlines are now
         allowed because the renderer word-wraps + honors them as hard breaks.)"""
         token = _issue_token(client, "prepare_for_gift")
         msg_path = tmp_path / "gift-message"
@@ -1340,12 +1340,12 @@ class TestPrepareForGiftRoute:
         assert not msg_path.exists(), "rejected message must not leave a staging file behind"
 
     def test_message_with_newline_accepted_and_written_verbatim(self, client, tmp_path):
-        """#319 contract pin: /api/system/prepare-for-gift must ACCEPT
+        """litclock-dev#319 contract pin: /api/system/prepare-for-gift must ACCEPT
         embedded newlines and write the literal ``\\n`` byte to the staging
         file (no re-encoding). Without this test, a regression that
         re-banned newlines at the endpoint — or that quietly normalised
         ``\\n`` to a space before writing — would slip past CI because the
-        old rejection-case parametrize was removed when #319 widened the
+        old rejection-case parametrize was removed when litclock-dev#319 widened the
         validator (line 273 comment).
 
         Pins the end-to-end contract that shutdown-splash.sh depends on:
@@ -1369,7 +1369,7 @@ class TestPrepareForGiftRoute:
         mock_run.assert_called_once()
 
     def test_concurrent_calls_use_unique_tmp_paths(self, client, tmp_path):
-        """#316 /review fix: two simultaneous calls must not race on a
+        """litclock-dev#316 /review fix: two simultaneous calls must not race on a
         shared `.tmp` path. Each call uses tempfile.mkstemp for a unique
         inode; without that, thread B's open(..., 'w') would truncate
         thread A's pending bytes and one of them would surface an ENOENT
@@ -1432,7 +1432,7 @@ class TestPrepareForGiftRoute:
         mock_run.assert_not_called()
 
     def test_token_is_single_use(self, client, tmp_path):
-        """#317 item 1 codex P2: duplicate POST on a consumed
+        """litclock-dev#317 item 1 codex P2: duplicate POST on a consumed
         prepare_for_gift token now returns 409 ``confirm_token_consumed``
         (was 401 ``confirm_token_invalid``). The JS path gates its
         refresh-and-retry on ``confirm_token_expired`` ONLY, so this
@@ -1502,8 +1502,8 @@ class TestPrepareForGiftRoute:
         assert ".welcome-mode" not in response.data.decode()
 
     def test_systemctl_unit_not_found_unlinks_staged_message(self, client, tmp_path):
-        """#342 I9 — when systemctl returncode is 4 (unit not found, the
-        #327 install-gap motivation), the unit provably did not dispatch.
+        """litclock-dev#342 I9 — when systemctl returncode is 4 (unit not found, the
+        litclock-dev#327 install-gap motivation), the unit provably did not dispatch.
         Unlink the staged message so a later retry with an empty body
         doesn't pick up a stale draft from a prior failed attempt."""
         token = _issue_token(client, "prepare_for_gift")
@@ -1528,7 +1528,7 @@ class TestPrepareForGiftRoute:
         assert not msg_path.exists(), "staged gift-message should be unlinked when returncode proves pre-dispatch"
 
     def test_systemctl_unit_masked_unlinks_staged_message(self, client, tmp_path):
-        """#342 I9 — returncode 5 (unit not loaded / masked) is the other
+        """litclock-dev#342 I9 — returncode 5 (unit not loaded / masked) is the other
         provably-pre-dispatch case."""
         token = _issue_token(client, "prepare_for_gift")
         msg_path = tmp_path / "gift-message"
@@ -1551,7 +1551,7 @@ class TestPrepareForGiftRoute:
         assert not msg_path.exists()
 
     def test_systemctl_ambiguous_failure_preserves_staged_message(self, client, tmp_path):
-        """#342 I9 / codex adversarial /review F3: returncode 1 (generic
+        """litclock-dev#342 I9 / codex adversarial /review F3: returncode 1 (generic
         failure) does NOT prove pre-dispatch — a narrow dbus-glitch window
         could leave the unit dispatched while the wrapper exits non-zero.
         The unit's ExecStart will then read GIFT_MESSAGE_PATH and render
@@ -1581,7 +1581,7 @@ class TestPrepareForGiftRoute:
         assert msg_path.read_text() == "user-typed-welcome"
 
     def test_returns_409_when_update_is_busy(self, client, tmp_path):
-        """#316 /review fix: pre-check that an update isn't running before
+        """litclock-dev#316 /review fix: pre-check that an update isn't running before
         triggering the gift-prep unit. The unit's Conflicts=
         litclock-update.service is bidirectional — if we kick off
         prepare-for-gift while the weekly update is in flight, systemd
@@ -1607,10 +1607,10 @@ class TestPrepareForGiftRoute:
         mock_run.assert_not_called()
         assert not msg_path.exists()
 
-    # ─── #328 — restore-on-failure regressions ──────────────────────────────
+    # ─── litclock-dev#328 — restore-on-failure regressions ──────────────────────────────
 
     def test_update_busy_restores_token_for_retry(self, client, tmp_path):
-        """#328: a 409 update_in_progress on prepare-for-gift is a pre-side-
+        """litclock-dev#328: a 409 update_in_progress on prepare-for-gift is a pre-side-
         effect failure. The user opened the confirm modal, tapped the
         destructive button, and got told to retry — but pre-fix the token
         was already consumed, so the retry hit 401 ("expired") instead of
@@ -1640,7 +1640,7 @@ class TestPrepareForGiftRoute:
         mock_run.assert_called_once()
 
     def test_validation_failure_restores_token_for_retry(self, client, tmp_path):
-        """#328: a 400 invalid_message rejection is pre-side-effect — no
+        """litclock-dev#328: a 400 invalid_message rejection is pre-side-effect — no
         file staged, no systemctl dispatched. Restoring the token lets
         the user fix the message and retry with the same open page
         instead of being told the token is expired."""
@@ -1673,7 +1673,7 @@ class TestPrepareForGiftRoute:
         mock_run.assert_called_once()
 
     def test_called_process_error_restores_token_for_retry(self, client, tmp_path):
-        """#328: when systemctl returns non-zero on the gift-prep unit,
+        """litclock-dev#328: when systemctl returns non-zero on the gift-prep unit,
         restoring the token IS safe even though the message file is
         already staged — the staging path is tmpfs, re-stage on retry
         overwrites atomically via os.replace (idempotent), and the unit
@@ -1714,7 +1714,7 @@ class TestPrepareForGiftRoute:
         mock_run.assert_called_once()
 
 
-# ─── #396 gift-flow timezone reset ──────────────────────────────────────────
+# ─── litclock-dev#396 gift-flow timezone reset ──────────────────────────────────────────
 
 
 _TZ_RESET_ARGV = ["sudo", "/usr/bin/timedatectl", "set-timezone", "UTC"]
@@ -1725,7 +1725,7 @@ def _is_gift_dispatch(argv: list[str]) -> bool:
 
 
 class TestPrepareForGiftTimezoneReset:
-    """#396: prepare_for_gift resets the system tz to UTC synchronously — AFTER
+    """litclock-dev#396: prepare_for_gift resets the system tz to UTC synchronously — AFTER
     the load-bearing coords clear, BEFORE the teardown dispatch — so the gifter's
     tz doesn't linger in /etc/localtime. Best-effort by design: a tz-reset
     failure must NOT abort the gift. A stale tz can't drive a wrong-time clock
@@ -1773,7 +1773,7 @@ class TestPrepareForGiftTimezoneReset:
 
     def test_tz_reset_failure_does_not_abort_gift(self, client, tmp_path):
         """A timedatectl failure is swallowed: the gift still dispatches + 200.
-        This is the whole point of #396's best-effort choice."""
+        This is the whole point of litclock-dev#396's best-effort choice."""
         token = _issue_token(client, "prepare_for_gift")
         msg_path = tmp_path / "gift-message"
 
@@ -1850,7 +1850,7 @@ class TestPrepareForGiftTimezoneReset:
         assert not any(c.args[0] == _TZ_RESET_ARGV for c in mock_run.call_args_list)
 
     def test_tz_reset_not_fired_when_message_staging_fails(self, client, tmp_path):
-        """#396 Codex /review: the tz reset is placed AFTER message staging so a
+        """litclock-dev#396 Codex /review: the tz reset is placed AFTER message staging so a
         staging failure (gift aborts, owner keeps the device) can't leave the
         owner's clock on UTC. Pin it: staging OSError → 500 → tz NOT reset."""
         token = _issue_token(client, "prepare_for_gift")
@@ -1874,7 +1874,7 @@ class TestPrepareForGiftTimezoneReset:
 class TestSubprocessFailure:
     @pytest.fixture(autouse=True)
     def _bypass_update_busy_gate(self, _bypass_update_busy_for_execute_action):
-        """#362 D8 — bypass the update-busy gate so we reach the destructive
+        """litclock-dev#362 D8 — bypass the update-busy gate so we reach the destructive
         subprocess.run call where these tests are exercising failure modes."""
         yield
 
@@ -1908,11 +1908,11 @@ class TestSubprocessFailure:
         assert response.status_code == 500
         assert response.json["error"]["code"] == "systemctl_failed"
 
-    # ─── #328 — restore-on-failure regressions ──────────────────────────────
+    # ─── litclock-dev#328 — restore-on-failure regressions ──────────────────────────────
 
     def test_called_process_error_restores_token_for_retry(self, client):
-        """#328: when systemctl returns non-zero BEFORE dispatching the
-        unit (e.g. #327-style missing unit), the box is still up and the
+        """litclock-dev#328: when systemctl returns non-zero BEFORE dispatching the
+        unit (e.g. litclock-dev#327-style missing unit), the box is still up and the
         user's retry should surface the real error message — not a
         spurious "token already used" 401 that masks it.
 
@@ -1935,7 +1935,7 @@ class TestSubprocessFailure:
         # already used"). Post-fix the token was restored, so subprocess.run
         # is invoked again. Mock it to succeed this time.
         #
-        # #362 — successful _execute_action now fires TWO subprocess.run
+        # litclock-dev#362 — successful _execute_action now fires TWO subprocess.run
         # calls (pre-stop + destructive). The destructive call is the last
         # one; assert by call_args_list rather than the old
         # ``assert_called_once``.
@@ -1947,7 +1947,7 @@ class TestSubprocessFailure:
         assert mock_run.call_args_list[-1].args[0] == ["sudo", "/usr/bin/systemctl", "reboot", "--no-block"]
 
     def test_timeout_does_not_restore_token(self, client):
-        """#328: TimeoutExpired is the paranoid path — systemctl --no-block
+        """litclock-dev#328: TimeoutExpired is the paranoid path — systemctl --no-block
         returns immediately on success, so a timeout means the unit may
         have actually dispatched. Keep the token consumed so we don't
         double-fire poweroff. Pin this behavior so a future "always
@@ -1963,7 +1963,7 @@ class TestSubprocessFailure:
 
         # Token must NOT be restored on timeout — second call sees the
         # tombstone hit, classified as 409 ``confirm_token_consumed``
-        # (#317 item 1 codex P2 — was 401 ``confirm_token_invalid``).
+        # (litclock-dev#317 item 1 codex P2 — was 401 ``confirm_token_invalid``).
         # The JS path will surface the "already submitted" copy and
         # refuse to refresh-and-retry, which is exactly right: a real
         # poweroff may have dispatched.
@@ -2007,7 +2007,7 @@ class TestSubprocessFailure:
 class TestRouteRateLimit:
     @pytest.fixture(autouse=True)
     def _bypass_update_busy_gate(self, _bypass_update_busy_for_execute_action):
-        """#362 D8 — bypass so the 200 spends actually land on the rate-limit
+        """litclock-dev#362 D8 — bypass so the 200 spends actually land on the rate-limit
         bucket instead of being shunted aside as 409 update_in_progress."""
         yield
 
@@ -2091,7 +2091,7 @@ class TestSystemTabPage:
         assert rules[0].endpoint == "system.system_tab"
 
     def test_renders_action_cards(self, client):
-        """Story 2.1 + M5 + #317 item 7: Restart + Power off + Reset WiFi +
+        """Story 2.1 + M5 + litclock-dev#317 item 7: Restart + Power off + Reset WiFi +
         Prepare for Gifting cards all present on /system."""
         body = client.get("/system").data
         assert b'data-action="reboot"' in body
@@ -2108,12 +2108,12 @@ class TestSystemTabPage:
         a hidden input. Story 2.2's JS will intercept submit; without JS the
         form POSTs straight through and the destructive action still gates
         on the confirm-token TTL. M5 added Reset-WiFi as the 3rd card;
-        #317 item 7 added Prepare-for-Gifting as the 4th.
+        litclock-dev#317 item 7 added Prepare-for-Gifting as the 4th.
         """
         body = client.get("/system").data.decode()
         # Reboot + poweroff hit /api/system/{action}; Reset-WiFi hits
         # /api/wifi/reset on the wifi blueprint; Prepare-for-Gifting hits
-        # /api/system/prepare-for-gift (#317 item 7 moved this card here).
+        # /api/system/prepare-for-gift (litclock-dev#317 item 7 moved this card here).
         for action in ("reboot", "poweroff"):
             assert f'action="/api/system/{action}"' in body
             assert f'data-confirm-action="{action}"' in body
@@ -2121,7 +2121,7 @@ class TestSystemTabPage:
         assert 'data-confirm-action="wifi_reset"' in body
         assert 'action="/api/system/prepare-for-gift"' in body
         assert 'data-confirm-action="prepare_for_gift"' in body
-        # #510 — Factory reset hits /api/system/reset.
+        # litclock-dev#510 — Factory reset hits /api/system/reset.
         assert 'action="/api/system/reset"' in body
         assert 'data-confirm-action="factory_reset"' in body
         # Tokens must be non-trivial strings (secrets.token_urlsafe(32) → ~43 chars).
@@ -2165,16 +2165,16 @@ class TestSystemTabPage:
             )
         assert response.status_code == 200, response.json
         assert response.json == {"ok": True, "action": "reboot"}
-        # #362 — _execute_action now fires two subprocess.run calls per
+        # litclock-dev#362 — _execute_action now fires two subprocess.run calls per
         # successful reboot (pre-stop + destructive).
         assert mock_run.call_count == 2, mock_run.call_args_list
         assert mock_run.call_args_list[-1].args[0] == ["sudo", "/usr/bin/systemctl", "reboot", "--no-block"]
 
     def test_renders_action_icons(self, client):
         """All four cards (Restart, Power off, Reset WiFi, Prepare for
-        Gifting per #317 item 7) have an inline SVG icon — test the
+        Gifting per litclock-dev#317 item 7) have an inline SVG icon — test the
         structural marker (`action-card__icon` class) not the path data,
-        so a future Phosphor swap (#255) doesn't break this test.
+        so a future Phosphor swap (litclock-dev#255) doesn't break this test.
         """
         body = client.get("/system").data
         assert body.count(b'class="action-card__icon"') == 5
@@ -2191,7 +2191,7 @@ class TestSystemTabPage:
     def test_loads_system_js_only_on_system_tab(self, client):
         """system.js follows the same per-tab scoping rule (Story 2.2).
 
-        #317 item 7 moved Prepare-for-Gifting from /settings to /system, so
+        litclock-dev#317 item 7 moved Prepare-for-Gifting from /settings to /system, so
         /settings no longer needs system.js — that exception is gone."""
         system_body = client.get("/system").data
         status_body = client.get("/").data
@@ -2199,20 +2199,20 @@ class TestSystemTabPage:
         assert b"js/system.js" in system_body
         assert b"js/system.js" not in status_body
         assert b"js/system.js" not in settings_body, (
-            "#317 item 7: settings.html.j2 must NOT load system.js anymore — "
+            "litclock-dev#317 item 7: settings.html.j2 must NOT load system.js anymore — "
             "the Prepare-for-Gifting card lives on /system now, and pulling "
             "system.js onto /settings would lazy-cache an unused script on "
             "every Settings visit."
         )
 
     def test_system_js_includes_all_hidden_inputs_in_post_body(self, client):
-        """#316 /review CRITICAL fix: fireAction must include every hidden
+        """litclock-dev#316 /review CRITICAL fix: fireAction must include every hidden
         field (not just `token`) in the JSON body. The Prepare-for-Gifting
         form carries a hidden `message` field; without this loop the JS
         path silently sent an empty message and the e-ink fell back to
         the default greeting regardless of what the user typed and saved.
 
-        #319 hardware-QA regression catch: the message field changed from
+        litclock-dev#319 hardware-QA regression catch: the message field changed from
         `<input type="hidden">` to `<textarea hidden>` (to preserve
         newlines on the no-JS path). The selector MUST match both element
         types — caught by firing the actual destructive flow on the test
@@ -2220,10 +2220,10 @@ class TestSystemTabPage:
         instead of the saved multi-line draft."""
         system_js = client.get("/static/js/system.js").data.decode()
         # The fix selector must catch BOTH hidden inputs (sibling tokens)
-        # AND hidden textareas (the message field after #319's no-JS-newline fix).
+        # AND hidden textareas (the message field after litclock-dev#319's no-JS-newline fix).
         assert 'input[type="hidden"], textarea[hidden]' in system_js, (
             "fireAction must collect both hidden inputs AND hidden textareas; "
-            "the #319 message field is a <textarea hidden> so newlines survive "
+            "the litclock-dev#319 message field is a <textarea hidden> so newlines survive "
             "the no-JS form serializer"
         )
         assert "payload[field.name] = field.value" in system_js or "payload[field.name]=field.value" in system_js, (
@@ -2247,14 +2247,14 @@ class TestConfirmSheetModal:
 
     def test_dialogs_render_one_per_action(self, client):
         body = client.get("/system").data
-        # #317 item 7 added Prepare-for-Gifting as the 4th action-card +
+        # litclock-dev#317 item 7 added Prepare-for-Gifting as the 4th action-card +
         # dialog. Each card AND each dialog carries data-action so the
         # count includes both occurrences.
         assert b'data-action="reboot"' in body
         assert b'data-action="poweroff"' in body
         assert b'data-action="wifi_reset"' in body
         assert b'data-action="prepare_for_gift"' in body
-        assert b'data-action="factory_reset"' in body  # #510
+        assert b'data-action="factory_reset"' in body  # litclock-dev#510
         # All five should be <dialog> elements with role=alertdialog per
         # DESIGN.md a11y line 290.
         assert body.count(b'role="alertdialog"') == 5
@@ -2289,7 +2289,7 @@ class TestConfirmSheetModal:
 
     def test_buttons_present_per_dialog(self, client):
         body = client.get("/system").data
-        # #510: 5 dialogs (reboot, poweroff, wifi_reset, factory_reset,
+        # litclock-dev#510: 5 dialogs (reboot, poweroff, wifi_reset, factory_reset,
         # prepare_for_gift) × (1 cancel + 1 confirm) = 10 control buttons.
         assert body.count(b"data-modal-cancel") == 5
         assert body.count(b"data-modal-confirm") == 5
@@ -2378,11 +2378,11 @@ class TestConfirmSheetModal:
         )
 
 
-# ─── Prepare-for-Gifting card (#317 item 7) ─────────────────────────────────
+# ─── Prepare-for-Gifting card (litclock-dev#317 item 7) ─────────────────────────────────
 
 
 class TestPrepareForGiftCard:
-    """#317 item 7 — Prepare-for-Gifting card markup pins. The card moved
+    """litclock-dev#317 item 7 — Prepare-for-Gifting card markup pins. The card moved
     here from /settings; these tests catch a regression where the card,
     its textarea, its counter, or the dual-form pattern silently drifts."""
 
@@ -2393,14 +2393,14 @@ class TestPrepareForGiftCard:
         assert b"data-gift-message-source" in body
         assert b"data-gift-message-sync" in body
         assert b"data-gift-counter" in body
-        # Textarea has the maxlength matching GIFT_MODE_MESSAGE_MAX_LEN (#319).
+        # Textarea has the maxlength matching GIFT_MODE_MESSAGE_MAX_LEN (litclock-dev#319).
         assert b'maxlength="80"' in body
 
     def test_gift_card_has_two_forms(self, client):
         """Draft form posts to /settings (centralised persistence); the
         destructive form posts to /api/system/prepare-for-gift. Pin the
         dual-form pattern so a future refactor doesn't accidentally
-        collapse them into one. #317 item 7."""
+        collapse them into one. litclock-dev#317 item 7."""
         body = client.get("/system").data.decode()
         assert 'action="/settings"' in body
         assert 'action="/api/system/prepare-for-gift"' in body
@@ -2424,7 +2424,7 @@ class TestPrepareForGiftCard:
         assert 'name="message" hidden data-gift-message-sync>Hello there</textarea>' in body
 
     def test_save_draft_failure_renders_on_system_with_field_error(self, client, csrf_token):
-        """#317 item 7: a gift-section POST validation failure must
+        """litclock-dev#317 item 7: a gift-section POST validation failure must
         re-render the System tab (where the textarea lives) with the
         per-field error inline. Otherwise the error message lands on a
         page that doesn't show the gift form."""
@@ -2474,7 +2474,7 @@ class TestPrepareForGiftCard:
     def test_save_draft_success_redirects_to_system_tab(self, app, client, csrf_token, tmp_path):
         """PRG destination for section=gift is /system?saved=gift, not
         /settings?saved=gift. Lands the user back on the tab they
-        submitted from (#317 item 7)."""
+        submitted from (litclock-dev#317 item 7)."""
         env = tmp_path / "env.sh"
         env.write_text("GIFT_MODE_MESSAGE=\n")
         with app.app_context():
@@ -2493,17 +2493,17 @@ class TestPrepareForGiftCard:
         assert "/system?saved=gift" in resp.headers["Location"]
 
 
-# ─── #317 item 1: TTL-expiry-mid-typing refresh-and-retry ───────────────────
+# ─── litclock-dev#317 item 1: TTL-expiry-mid-typing refresh-and-retry ───────────────────
 
 
 class TestPrepareForGiftTokenRefreshAndRetry:
-    """#317 item 1 (TTL-expiry-mid-typing half): the slow-drafter trap.
+    """litclock-dev#317 item 1 (TTL-expiry-mid-typing half): the slow-drafter trap.
 
     A user opens /system, drafts a welcome message in the textarea, and
     waits 5+ minutes before tapping "Prepare for Gifting". The hidden
     confirm token's 300s TTL expires while they type, so the JS POST
     surfaces a 401 ``confirm_token_invalid`` — the consume-on-failure half
-    is already closed (#341), but a TTL-expired token can't be restored.
+    is already closed (litclock-dev#341), but a TTL-expired token can't be restored.
 
     Fix (LOCKED — Option 1): on a 401 ``confirm_token_invalid`` for the
     prepare_for_gift action, the JS path mints a fresh token via
@@ -2516,7 +2516,7 @@ class TestPrepareForGiftTokenRefreshAndRetry:
     contract (the retry branch must exist in the shipped bundle) AND
     exercise the underlying server-side endpoint behavior the JS depends
     on. Mirrors the pattern of test_system_js_includes_all_hidden_inputs_in_post_body
-    (#316 source-pin) and test_destructive_button_class_styled_in_settings_css
+    (litclock-dev#316 source-pin) and test_destructive_button_class_styled_in_settings_css
     (markup pin)."""
 
     def test_js_source_contains_refresh_and_retry_branch(self, client):
@@ -2528,7 +2528,7 @@ class TestPrepareForGiftTokenRefreshAndRetry:
         the server-side contract is exercised in
         test_confirm_token_can_be_re_minted_after_consume below.
 
-        #317 item 1 codex P2 update: the retry branch must now gate on
+        litclock-dev#317 item 1 codex P2 update: the retry branch must now gate on
         the SPECIFIC ``confirm_token_expired`` slug — gating on
         ``confirm_token_invalid`` (the legacy ambiguous slug) would let
         a double-click / bfcached resubmit silently bypass the single-use
@@ -2536,8 +2536,8 @@ class TestPrepareForGiftTokenRefreshAndRetry:
         specific message and NOT retry."""
         system_js = client.get("/static/js/system.js").data.decode()
         # The retry branch must call out the issue number for grepability.
-        assert "#317 item 1" in system_js, (
-            "system.js must reference #317 item 1 next to the refresh-and-retry "
+        assert "litclock-dev#317 item 1" in system_js, (
+            "system.js must reference litclock-dev#317 item 1 next to the refresh-and-retry "
             "branch so a future refactor sees the load-bearing context"
         )
         # The refresh endpoint must be called from system.js.
@@ -2553,14 +2553,14 @@ class TestPrepareForGiftTokenRefreshAndRetry:
         # expired-vs-consumed) and NOT `confirm_token_consumed` (would
         # bypass single-use guard on double-submit / bfcache).
         assert "confirm_token_expired" in system_js, (
-            "refresh-and-retry must gate on error.code === 'confirm_token_expired' (#317 item 1 codex P2)"
+            "refresh-and-retry must gate on error.code === 'confirm_token_expired' (litclock-dev#317 item 1 codex P2)"
         )
         # One-retry-only enforced via a flag — pin the symbol so an
         # accidental infinite-loop regression trips this test.
         assert "retried" in system_js, (
             "system.js must carry a retried flag enforcing one-retry-only on the refresh path"
         )
-        # #317 item 1 codex P2 — explicit `confirm_token_consumed` branch
+        # litclock-dev#317 item 1 codex P2 — explicit `confirm_token_consumed` branch
         # must exist and surface a distinct message. Without this branch,
         # a duplicate POST would fall through to the generic alert path
         # AND (worse) the legacy `confirm_token_invalid` gate would have
@@ -2571,7 +2571,7 @@ class TestPrepareForGiftTokenRefreshAndRetry:
         )
 
     def test_js_does_not_retry_on_confirm_token_consumed(self, client):
-        """#317 item 1 codex P2 source-pin: the `confirm_token_consumed`
+        """litclock-dev#317 item 1 codex P2 source-pin: the `confirm_token_consumed`
         path must NEVER call `refreshTokenAndRetry`. If a refactor reflows
         the branch order so the retry trigger fires before the consumed
         check, a duplicate destructive action could double-fire.
@@ -2600,7 +2600,7 @@ class TestPrepareForGiftTokenRefreshAndRetry:
         ``confirm_token_expired`` and the user can mint a fresh one via
         /api/system/confirm-token and replay the action.
 
-        #317 item 1 codex P2: the JS retry path keys off the
+        litclock-dev#317 item 1 codex P2: the JS retry path keys off the
         ``confirm_token_expired`` slug (NOT the legacy
         ``confirm_token_invalid`` slug, which would now indicate a
         malformed token — not a TTL expiry — and would also fire on
@@ -2665,7 +2665,7 @@ class TestPrepareForGiftTokenRefreshAndRetry:
             assert retry.json["ok"] is True
 
     def test_consumed_token_returns_409_not_401(self, client, tmp_path):
-        """#317 item 1 codex P2: the single-use guard now reports 409
+        """litclock-dev#317 item 1 codex P2: the single-use guard now reports 409
         ``confirm_token_consumed`` (was 401 ``confirm_token_invalid``)
         on a duplicate POST. This is the critical-path discriminator —
         the JS gates its refresh-and-retry on ``confirm_token_expired``
@@ -2706,14 +2706,14 @@ class TestPrepareForGiftTokenRefreshAndRetry:
         assert response.json["error"]["code"] == "invalid_action"
 
 
-# ─── /api/system/reset — Factory reset (#510) ───────────────────────────────
+# ─── /api/system/reset — Factory reset (litclock-dev#510) ───────────────────────────────
 
 
 class TestFactoryResetRoute:
-    """#510: PWA-triggered Factory reset. Full-wipe sibling of /api/wifi/reset —
-    dispatches litclock-reset.service (reset-setup.sh --wipe-wifi --reboot --yes),
-    which wipes config + WiFi and reboots into first-boot setup. Same confirm-token
-    + rate-limit + update-busy gates as wifi_reset."""
+    """litclock-dev#510: PWA-triggered Factory reset. Full-wipe sibling of /api/wifi/reset —
+    dispatches litclock-reset.service (reset-setup.sh --wipe-wifi --strict-env-wipe
+    --poweroff --yes, litclock-dev#627), which wipes config + WiFi and powers off.
+    Same confirm-token + rate-limit + update-busy gates as wifi_reset."""
 
     EXPECTED_ARGV = ["sudo", "/usr/bin/systemctl", "start", "--no-block", "litclock-reset.service"]
 
@@ -2769,7 +2769,7 @@ class TestFactoryResetRoute:
         mock_run.assert_not_called()
 
     def test_failed_start_restores_token_and_500(self, client):
-        """A non-zero systemctl (masked/missing unit, the #327 class) → 500 and the
+        """A non-zero systemctl (masked/missing unit, the litclock-dev#327 class) → 500 and the
         token is restored so a retry works on the same page (idempotent unit)."""
         token = _issue_token(client, "factory_reset")
         err = subprocess.CalledProcessError(4, self.EXPECTED_ARGV, stderr=b"Unit not found")

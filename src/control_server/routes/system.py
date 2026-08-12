@@ -314,9 +314,10 @@ def _rollback_failed_shutdown_attempt() -> None:
 # reboot — fine, the welcome message is short-lived by design).
 PREPARE_FOR_GIFT_UNIT: Final[str] = "litclock-prepare-for-gift.service"
 # Issue litclock-dev#510 — Factory reset. Full-wipe sibling of wifi-reset: the unit runs
-# reset-setup.sh --wipe-wifi --reboot --yes (root-owned copy) to wipe config +
-# WiFi and reboot into first-boot setup. No message file (unlike gift), so the
-# route is the simpler wifi-reset shape.
+# reset-setup.sh --wipe-wifi --strict-env-wipe --poweroff --yes (root-owned copy)
+# to wipe config + WiFi and POWER OFF (litclock-dev#627; the next power-on runs
+# first-boot setup). No message file (unlike gift), so the route is the simpler
+# wifi-reset shape.
 RESET_UNIT: Final[str] = "litclock-reset.service"
 GIFT_MESSAGE_PATH: Final[str] = "/run/litclock/gift-message"
 # Same ceiling as M3's GIFT_MODE_MESSAGE_MAX_LEN (litclock-dev#319 dropped 280→80 once
@@ -460,7 +461,7 @@ def _execute_action(action: str) -> tuple[object, int]:
     if token is None:
         return envelope(
             "confirm_token_invalid",
-            "Confirm token is missing.",
+            "Couldn't verify that action. Reload the page and try again.",
             401,
         )
     result = _store().consume_classified(action, token)
@@ -759,7 +760,7 @@ def prepare_for_gift() -> tuple[object, int]:
     if token is None:
         return envelope(
             "confirm_token_invalid",
-            "Confirm token is missing.",
+            "Couldn't verify that action. Reload the page and try again.",
             401,
         )
     result = _store().consume_classified("prepare_for_gift", token)
@@ -1068,12 +1069,13 @@ def reset() -> tuple[object, int]:
        apply is running. The unit's Conflicts=litclock-update.service is the
        deterministic backstop; pre-checking gives a human-readable 409.
     4. `sudo systemctl start --no-block litclock-reset.service`, whose ExecStart is
-       reset-setup.sh --wipe-wifi --reboot --yes (wipes config + WiFi, reboots into
-       first-boot setup). No LoadState pre-probe (unlike gift): there's no
-       irreversible pre-dispatch side effect to guard — the unit does everything.
+       reset-setup.sh --wipe-wifi --strict-env-wipe --poweroff --yes (wipes config +
+       WiFi, then POWERS OFF — litclock-dev#627; the next power-on runs first-boot
+       setup). No LoadState pre-probe (unlike gift): there's no irreversible
+       pre-dispatch side effect to guard — the unit does everything.
 
-    On success: 200 with a "rebooting into setup" message so the PWA can render
-    handoff copy before the LAN connection drops.
+    On success: 200 with a "powering off" message so the PWA can render handoff
+    copy before the LAN connection drops.
     """
     rate_limit_response = _check_rate_limit()
     if rate_limit_response is not None:
@@ -1083,7 +1085,7 @@ def reset() -> tuple[object, int]:
     if token is None:
         return envelope(
             "confirm_token_invalid",
-            "Confirm token is missing.",
+            "Couldn't verify that action. Reload the page and try again.",
             401,
         )
     result = _store().consume_classified("factory_reset", token)
@@ -1116,7 +1118,7 @@ def reset() -> tuple[object, int]:
             stderr.decode(errors="replace").strip(),
         )
         # Restore the token so retry surfaces the real error (the litclock-dev#327 masked/missing
-        # unit case). Safe against double-fire: reset-setup.sh --wipe-wifi --reboot is
+        # unit case). Safe against double-fire: reset-setup.sh --wipe-wifi --poweroff is
         # idempotent (env.sh rewrite to defaults, WiFi delete by UUID, marker removal
         # all no-op on a second run) — mirrors the wifi-reset restore rationale. If a
         # future non-idempotent step lands in the reset ExecStart, narrow or remove this.
@@ -1147,8 +1149,8 @@ def reset() -> tuple[object, int]:
             {
                 "ok": True,
                 "message": (
-                    "Factory reset started. The clock will wipe its settings and reboot "
-                    "into setup — join LitClock-Setup from your phone's WiFi list."
+                    "Factory reset started. The clock will wipe its settings and power off. "
+                    "Power it on again and join LitClock-Setup from your phone's WiFi list."
                 ),
             }
         ),

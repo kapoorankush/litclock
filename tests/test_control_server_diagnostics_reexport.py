@@ -2,11 +2,11 @@
 
 Pins the symbols ``__init__.py`` MUST re-export so plain imports like
 ``from control_server.routes.diagnostics import collect_diagnostics``
-keep working after the #419 PR1 package split. The contract was derived
+keep working after the litclock-dev#419 PR1 package split. The contract was derived
 from grepping every existing test + production import site at split time;
 see the issue body's D3 enumeration for the rationale.
 
-NOTE (#419 D8): this test verifies PLAIN-IMPORT resolution. It does NOT
+NOTE (litclock-dev#419 D8): this test verifies PLAIN-IMPORT resolution. It does NOT
 test that ``monkeypatch.setattr(diagnostics, "X", fake)`` redirects call
 sites inside submodules — that requires patching the actual binding site
 (e.g. ``_sse.collect_diagnostics`` or ``_collectors._read_cpu_temp_c``).
@@ -65,7 +65,7 @@ EXPECTED_PUBLIC = {
     "_build_service_states",
     # Subprocess cache + lazy cache (tests clear these between cases)
     "cached_subprocess",
-    "cached_subprocess_or_empty",  # #428 PR1a CQ-1: display-caller helper
+    "cached_subprocess_or_empty",  # litclock-dev#428 PR1a CQ-1: display-caller helper
     "_lazy_cache",
     "_lazy_cache_lock",
     "_read_text_once",
@@ -102,7 +102,6 @@ EXPECTED_PUBLIC = {
     "ANOMALY_DISK_FREE_PCT",
     "ANOMALY_MEMORY_FREE_MB",
     "ANOMALY_SIGNAL_DBM",
-    "ANOMALY_DHCP_AGE_S",
     "ANOMALY_LAST_IPGEO_AGE_S",
     "ANOMALY_QUOTE_AGE_S",
     "ANOMALY_RECENT_LOG_LOOKBACK",

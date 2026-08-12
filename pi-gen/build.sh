@@ -34,14 +34,21 @@ fi
 # Copy our config
 cp "${SCRIPT_DIR}/config" "${PI_GEN_DIR}/config"
 
-# Append build-time variables to config
-cat >> "${PI_GEN_DIR}/config" << EOF
-
-# Build-time overrides (appended by build.sh)
-LITCLOCK_REF=${LITCLOCK_REF:-master}
-LITCLOCK_VERSION=${LITCLOCK_VERSION:-dev}
-LITCLOCK_SHA=${LITCLOCK_SHA:-$(cd "${REPO_DIR}" && git rev-parse --short HEAD)}
-EOF
+# Append build-time variables to config. printf %q, not a raw heredoc:
+# pi-gen SOURCES this file (stage3/04-finalize/00-run.sh), so an unquoted
+# value re-parses as shell there. These values come from the operator's own
+# environment (this is the local build path, unlike the CI workflow where the
+# ref is attacker-influenced), so this is footgun hardening rather than a
+# privilege boundary — but the injection class is identical, so it is closed
+# the same way the workflow's Configure step closes it (litclock-dev#617).
+_litclock_sha="${LITCLOCK_SHA:-$(cd "${REPO_DIR}" && git rev-parse --short HEAD)}"
+{
+    echo ""
+    echo "# Build-time overrides (appended by build.sh)"
+    printf 'LITCLOCK_REF=%q\n' "${LITCLOCK_REF:-master}"
+    printf 'LITCLOCK_VERSION=%q\n' "${LITCLOCK_VERSION:-dev}"
+    printf 'LITCLOCK_SHA=%q\n' "${_litclock_sha}"
+} >> "${PI_GEN_DIR}/config"
 
 # Copy our custom stage
 rm -rf "${PI_GEN_DIR}/stage3"

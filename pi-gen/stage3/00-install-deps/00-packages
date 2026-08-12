@@ -17,7 +17,6 @@ libharfbuzz-dev
 libfribidi-dev
 libxcb1-dev
 wireless-tools
-qrencode
 jq
 python3-gpiozero
 python3-lgpio

@@ -86,10 +86,10 @@ LITCLOCK_REF=v0.218.0 LITCLOCK_VERSION=0.218.0 ./pi-gen/build.sh
 
 The custom pi-gen stage (`pi-gen/stage3/`) provisions everything a working clock needs:
 
-1. **System packages** — Python, image libraries, fonts, wireless tools, qrencode
+1. **System packages** — Python, image libraries, fonts, wireless tools
 2. **BCM2835 library** — compiled from source for GPIO/SPI access
 3. **Application** — repo cloned to `/home/pi/litclock` with Python venv
-4. **System config** — SPI enabled, journald volatile storage, WiFi stability fixes
+4. **System config** — SPI enabled, journald persistent storage (litclock-dev#172), WiFi stability fixes
 5. **Systemd services** — splash, firstboot, timer, shutdown, wifi-watchdog
 
 Build-only dependencies (gcc, make, etc.) are removed in the finalize step to minimize image size.

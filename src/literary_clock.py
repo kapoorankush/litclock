@@ -7,6 +7,7 @@ import socket
 import sys
 import tempfile
 import time as _time
+import traceback
 from datetime import datetime
 from glob import glob
 from pathlib import Path
@@ -32,7 +33,15 @@ def signal_handler(signum, frame):
             logging.info("Display put to sleep via signal handler.")
         except Exception as e:
             logging.error(f"Failed to sleep display in signal handler: {e}")
-    sys.exit(1)
+    # os._exit, not sys.exit — litclock-dev#531. sys.exit raises SystemExit, which is a
+    # BaseException, so it is not caught by the paint's `except Exception`; it
+    # unwinds out of __main__ entirely and runs full interpreter finalization,
+    # tearing down lgpio's parked Thread-1. This path fires on every reboot,
+    # every `systemctl stop`, and the unit's TimeoutStopSec kill — so leaving it
+    # would have made the traceback rarer AND correlated with reboots, which
+    # reads as "the fix mostly worked": the worst possible diagnostic signal.
+    logging.shutdown()
+    os._exit(1)
 
 
 # Configure logging
@@ -143,9 +152,14 @@ _masthead_cache: dict = {}
 
 
 def _reset_masthead_cache() -> None:
-    """Test hook — the cache assumes FONT_PATH and the size constants are
+    """Reset hook — the cache assumes FONT_PATH and the size constants are
     immutable for the process lifetime (true in production: fresh process
-    per minute). Tests that monkeypatch them must clear it."""
+    per minute). Tests that monkeypatch them must clear it.
+
+    No callers today (litclock-dev#605 item 14): the masthead tests all run
+    against the real fonts and constants, so the cache never goes stale.
+    Kept as the documented reset point for the first test that does
+    monkeypatch FONT_PATH or the size constants."""
     _masthead_cache.clear()
 
 
@@ -256,6 +270,16 @@ RUNTIME_VALIDATED_MARKER = os.environ.get(
 from weather_providers import open_meteo, openweathermap  # noqa: E402
 
 
+def _draw_time_fallback(draw, now) -> None:
+    """The v0.1 plain-time frame: HH:MM in 144pt Literata. The last tier of
+    every degradation chain (corpus gap, unusable PNG, runtime-render
+    failure) — right time, no quote, never a stale quote. Was typed out in
+    both branches of main() (litclock-dev#605 item 13); one body means the
+    two failure paths cannot drift apart."""
+    time_font = ImageFont.truetype(FONT_PATH, 144)
+    draw.text((220, 150), now.strftime("%H:%M"), font=time_font, fill=0)
+
+
 def main():
     """Compose and return the current-minute image plus the metadata the
     __main__ block needs to publish the OV3 status file AFTER the e-ink
@@ -348,13 +372,12 @@ def main():
     draw = ImageDraw.Draw(image)
 
     if quote_meta is None:
-        # No quote image for this minute — fall back to drawing the time
-        # in 144pt Literata. Existing behavior since v0.1; preserved for
-        # corpus gaps (e.g., minutes without a literary match). Also the
-        # final tier of the runtime-render fallback chain: right time, no
-        # quote — never a stale quote.
-        time_font = ImageFont.truetype(FONT_PATH, 144)
-        draw.text((220, 150), now.strftime("%H:%M"), font=time_font, fill=0)
+        # No quote image for this minute — fall back to drawing the time.
+        # Existing behavior since v0.1; preserved for corpus gaps (e.g.,
+        # minutes without a literary match). Also the final tier of the
+        # runtime-render fallback chain: right time, no quote — never a
+        # stale quote.
+        _draw_time_fallback(draw, now)
         logging.info("Time drawn on image")
     elif "image" in quote_meta:
         image.paste(quote_meta["image"], (0, QUOTE_AREA_Y))
@@ -371,8 +394,7 @@ def main():
             # an exception here would void the "never crash-loop" contract.
             logging.error(f"quote PNG unusable ({quote_meta['image_path']}): {e}; drawing time")
             quote_meta = None
-            time_font = ImageFont.truetype(FONT_PATH, 144)
-            draw.text((220, 150), now.strftime("%H:%M"), font=time_font, fill=0)
+            _draw_time_fallback(draw, now)
 
     _compose_masthead(image, draw, now.strftime("%a, %B %d"), temp_high, temp_low, icon_path)
 
@@ -416,6 +438,32 @@ def _runtime_render_enabled() -> bool:
             f"runtime-render validation marker is for FreeType {stamped}, installed is "
             f"{current} — re-run `tools/validate_measurement.py check --stamp`; "
             "using pre-rendered images"
+        )
+        return False
+    # litclock-dev#604 — the freetype version alone is not the proof. The
+    # stamp binds to a digest of (freetype version, font bytes, expected-dump
+    # bytes); a font swap or dump regen with the SAME wheel previously left a
+    # stale marker in force and the device kept runtime-rendering against an
+    # invalid validation. Markers from before the digest existed carry no
+    # digest= token and are rejected the same way — one re-stamp re-earns it.
+    stamped_digest = next((t.split("=", 1)[1] for t in marker.split() if t.startswith("digest=")), None)
+    try:
+        from quote_renderer import runtime_validation_digest
+
+        current_digest = runtime_validation_digest()
+    except Exception as e:
+        logging.warning(
+            f"LITCLOCK_RUNTIME_RENDER set but the validation digest could not be computed ({e}); "
+            "using pre-rendered images"
+        )
+        return False
+    if stamped_digest != current_digest:
+        logging.warning(
+            "runtime-render validation marker no longer matches this device's proof inputs "
+            f"(fonts / expected-measurements dump / FreeType) — stamped "
+            f"{(stamped_digest or 'none')[:12]}, current {current_digest[:12]}. Re-run "
+            "`tools/validate_measurement.py check --stamp`; using pre-rendered images "
+            "(litclock-dev#604)"
         )
         return False
     return True
@@ -856,11 +904,34 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
-    # Hardware import is lazy — deferred until we actually need to talk to the display.
-    from display_driver import epd7in5  # noqa: E402
-
-    image, quote_meta, now = main()
     epd = None
+
+    # These two run BEFORE the paint's try/except, and both sit downstream of
+    # `import lgpio` — the display_driver import is what constructs the gpiozero
+    # objects and spawns Thread-1. So an exception here used to propagate out of
+    # __main__ entirely, skipping the os._exit below and running the very
+    # finalization this fix exists to avoid. Worse, the most likely failure here
+    # is a GPIO-busy import error from the previous minute's process, i.e. litclock-dev#531
+    # firing on precisely the path the fix targets.
+    #
+    # Exits 1, matching the previous behaviour of letting the exception escape.
+    # BaseException, not Exception: a SystemExit or KeyboardInterrupt raised in
+    # here must not slip past to normal finalization either.
+    try:
+        # Hardware import is lazy — deferred until we actually need to talk to the display.
+        from display_driver import epd7in5  # noqa: E402
+
+        image, quote_meta, now = main()
+    except BaseException:
+        # traceback.print_exc() as well as logging: logging.exception is
+        # level-gated, and this guard exists to instrument the one failure most
+        # likely to BE litclock-dev#531 (a GPIO-busy import from the previous minute).
+        # Under LOG_LEVEL=CRITICAL the process would otherwise exit 1 with
+        # nothing in journald at all. stderr goes to the journal for this unit.
+        traceback.print_exc()
+        logging.exception("Failed before the display could be initialised")
+        logging.shutdown()
+        os._exit(1)
 
     try:
         logging.info("Initializing e-Paper display...")
@@ -910,3 +981,39 @@ if __name__ == "__main__":
                 epd.sleep()
             except Exception:
                 pass
+
+    # litclock-dev#531 — exit WITHOUT running interpreter finalization.
+    #
+    # `import lgpio` (pulled in by gpiozero's LGPIOFactory, which the display
+    # driver uses) unconditionally spawns a daemon thread, `_callback_thread`.
+    # Verified on hardware: it exists before any chip is opened or pin claimed,
+    # it is named `Thread-1`, and NOTHING removes it — not closing the BUSY
+    # Button, not closing the pin factory. Its run loop parks in a blocking
+    # `self._file.read()` on the notification pipe, and its `stop()` only sets
+    # a flag, never interrupting that read.
+    #
+    # So it is a daemon thread sitting inside a syscall when Py_FinalizeEx
+    # begins. Roughly once every 4300 runs it unwinds against half-cleared
+    # module globals and raises, which journald records as
+    # `Exception in thread Thread-1:` plus a single _bootstrap_inner frame and
+    # nothing more. That is litclock-dev#531. It is an upstream property of the lgpio
+    # binding, not something this code can clean up.
+    #
+    # Since the thread cannot be prevented or joined, the fix is to never run
+    # finalization: os._exit terminates immediately, skipping atexit handlers
+    # and daemon-thread teardown. Safe here specifically because this is a
+    # Type=oneshot that is about to exit anyway, and everything durable is
+    # already committed above — the panel (epd.display), the OV3 status file,
+    # epd.sleep(), and the heartbeat. logging.shutdown() flushes the handlers
+    # that os._exit would otherwise skip.
+    #
+    # Hardware-verified 2026-07-30: three consecutive runs under this exit all
+    # reported success with the heartbeat and status file advancing, and zero
+    # `GPIO busy` / lgpio errors — the kernel releases the chardev handles on
+    # process death regardless of whether Python ran its finalizers, so the
+    # next minute's run re-acquires cleanly.
+    #
+    # Exit code stays 0 in every branch above, matching the prior behaviour of
+    # falling off the end of this block.
+    logging.shutdown()
+    os._exit(0)

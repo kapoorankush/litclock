@@ -1,19 +1,29 @@
 [Unit]
-Description=LitClock on-boot location re-resolve (#337 A2/A8)
+Description=LitClock on-boot location re-resolve (litclock-dev#337 A2/A8)
 Documentation=https://github.com/kapoorankush/litclock/issues/337
-# #337 A2: gate on the handoff-complete marker. On a fresh-flash boot, setup_server
+# litclock-dev#337 A2: gate on the handoff-complete marker. On a fresh-flash boot, setup_server
 # is still doing its own post-WiFi IP-geo resolve via _resolve_location_from_ip;
 # firing this oneshot in parallel would do a redundant ip-api.com call AND fight
 # the same env.sh flock. The marker is only written once setup + handoff fully
 # complete — by then setup_server is gone and this oneshot is the right caller.
 # On subsequent boots the marker persists, so this oneshot fires normally.
 ConditionPathExists=/etc/litclock/.handoff-complete
-# #337 A8 (deliberate): NO `Before=litclock.service`. Best-effort boot. If IP-geo
+# litclock-dev#337 A8 (deliberate): NO `Before=litclock.service`. Best-effort boot. If IP-geo
 # is slow (DNS race post-WiFi, ip-api outage), the first quote tick still fires
 # on schedule using last-boot's data; the next tick has the fresh result.
 # Blocking the first quote on a 1–33s IP-geo would be a real boot-delay regression.
+# BOTH After= AND Wants= for NetworkManager-wait-online (litclock-dev#549):
+# After= alone orders against the unit WITHOUT pulling it into the
+# transaction — if nothing else started it, the ordering would be vacuous
+# and this resolver could run before the network is genuinely up (the
+# suspected source of the "flaky reresolve QA" class). Raspberry Pi OS's
+# preset does enable NetworkManager-wait-online today (verified on-device
+# 2026-08-10), but the unit must not depend on a distro preset for its own
+# correctness. (On an NM-less network stack this Wants= would start NM via
+# the waiter's Requires= — irrelevant on this appliance, where NM is the
+# only stack, but worth knowing before reusing the unit elsewhere.)
 After=NetworkManager-wait-online.service network-online.target
-Wants=network-online.target
+Wants=NetworkManager-wait-online.service network-online.target
 
 [Service]
 Type=oneshot
@@ -40,7 +50,7 @@ User=pi
 StandardOutput=journal
 StandardError=journal
 # Tight timeout — the resolver's own retry budget caps at ~33s, plus a small
-# margin for the env.sh flock contention window (#274). Anything past 60s
+# margin for the env.sh flock contention window (litclock-dev#274). Anything past 60s
 # means something is wrong (DNS wedged?) and we want systemd to surface it.
 TimeoutStartSec=60
 

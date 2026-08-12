@@ -124,7 +124,10 @@ class TestGiftMode:
     def test_gift_mode_powers_off(self, reset_sh_content):
         """End-of-script gift-mode branch must call poweroff (not reboot) —
         poweroff is what makes the welcome splash persist on the bistable e-ink."""
-        idx = reset_sh_content.find('if [[ "$GIFT_MODE" == "true" ]]')
+        # rfind → the END-OF-SCRIPT gift branch (there's an earlier
+        # marker-write `if [[ "$GIFT_MODE" ...]]`, and litclock-dev#627 added a
+        # DO_POWEROFF elif to the hint block between them).
+        idx = reset_sh_content.rfind('if [[ "$GIFT_MODE" == "true" ]]')
         assert idx != -1, "gift-mode end-of-script branch missing"
         elif_idx = reset_sh_content.find("elif", idx)
         block = reset_sh_content[idx:elif_idx]
@@ -443,7 +446,9 @@ def test_defaults_include_weather_location_mode_and_ip_country():
     from pathlib import Path
 
     content = (Path(__file__).parent.parent / "scripts/reset-setup.sh").read_text()
-    assert "export WEATHER_LOCATION_MODE=auto" in content, "#337 A3: reset-setup.sh DEFAULTS must include MODE=auto"
+    assert "export WEATHER_LOCATION_MODE=auto" in content, (
+        "litclock-dev#337 A3: reset-setup.sh DEFAULTS must include MODE=auto"
+    )
     assert "export WEATHER_IP_COUNTRY=" in content, (
         "#337 A3: reset-setup.sh DEFAULTS must include WEATHER_IP_COUNTRY= (empty)"
     )
@@ -473,7 +478,9 @@ class TestPrivilegeHardening387:
     def test_gift_message_uses_system_python_not_venv(self, reset_sh_content):
         # Running the pi-writable venv interpreter as root is a pi->root vector;
         # the stdlib-only heredoc uses the root-owned system python instead.
-        assert "/usr/bin/python3 - " in reset_sh_content, "gift-message processing must use the system python3 (#387)"
+        assert "/usr/bin/python3 - " in reset_sh_content, (
+            "gift-message processing must use the system python3 (litclock-dev#387)"
+        )
         assert '"$INSTALL_DIR/venv/bin/python3" - "$GIFT_MESSAGE_FILE"' not in reset_sh_content, (
             "must NOT run the pi-writable venv interpreter as root (#387)"
         )
@@ -489,10 +496,12 @@ class TestPrivilegeHardening387:
         for src, name in ((self.PI_GEN, "pi-gen"), (self.UPDATE_SH, "update.sh")):
             body = src.read_text()
             assert "reset-setup.sh" in body and "/usr/local/lib/litclock" in body, (
-                f"{name} must install reset-setup.sh root-owned to /usr/local/lib/litclock (#387)"
+                f"{name} must install reset-setup.sh root-owned to /usr/local/lib/litclock (litclock-dev#387)"
             )
-            assert "/usr/local/lib/litclock/lib" in body, f"{name} must install the root-owned lib/state.sh dir (#387)"
-            assert "lib/state.sh" in body, f"{name} must install state.sh alongside (#387)"
+            assert "/usr/local/lib/litclock/lib" in body, (
+                f"{name} must install the root-owned lib/state.sh dir (litclock-dev#387)"
+            )
+            assert "lib/state.sh" in body, f"{name} must install state.sh alongside (litclock-dev#387)"
 
 
 class TestFactoryResetStrictEnvWipe:
@@ -511,12 +520,17 @@ class TestFactoryResetStrictEnvWipe:
         # Guard aborts non-zero right after the check.
         exit_idx = reset_sh_content.find("exit 1", guard_idx)
         assert exit_idx != -1 and (exit_idx - guard_idx) < 500, "strict guard must exit 1"
-        # The destructive WiFi wipe (Step 7) and the end-of-script reboot must come
-        # AFTER the guard so a failed wipe leaves WiFi up + no reboot.
+        # The destructive WiFi wipe (Step 7) and BOTH terminal actions must come
+        # AFTER the guard so a failed wipe leaves WiFi up + never powers off /
+        # reboots from a stale-config state. litclock-dev#627: the factory path
+        # now ends at `poweroff`, so pin the guard-before-poweroff invariant too
+        # — not just guard-before-reboot (the now-dev-only branch).
         wifi_idx = reset_sh_content.find("Step 7", guard_idx)
         reboot_idx = reset_sh_content.find("systemctl reboot", guard_idx)
+        poweroff_idx = reset_sh_content.find("\n    poweroff", guard_idx)
         assert wifi_idx != -1 and guard_idx < wifi_idx, "guard must precede the WiFi wipe"
         assert reboot_idx != -1 and guard_idx < reboot_idx, "guard must precede the reboot"
+        assert poweroff_idx != -1 and guard_idx < poweroff_idx, "guard must precede the poweroff (litclock-dev#627)"
 
     def test_plain_reset_stays_best_effort(self, reset_sh_content):
         """Default STRICT_ENV_WIPE=false — a plain/dev reset must NOT abort on an
@@ -526,4 +540,78 @@ class TestFactoryResetStrictEnvWipe:
     def test_reset_unit_passes_strict_env_wipe(self):
         unit = (REPO_ROOT / "systemd" / "litclock-reset.service").read_text()
         assert "--strict-env-wipe" in unit, "litclock-reset.service must pass --strict-env-wipe"
-        assert "--wipe-wifi" in unit and "--reboot" in unit
+        # litclock-dev#627: factory reset POWERS OFF, not reboots. --reboot must
+        # NOT be present, or a mover would find the clock back on in a hotspot.
+        assert "--wipe-wifi" in unit and "--poweroff" in unit
+        assert "--reboot" not in unit, "factory reset must power off (litclock-dev#627), not reboot"
+
+
+class TestPowerOffMode:
+    """litclock-dev#627 — Factory reset powers OFF instead of rebooting. After a
+    full wipe the next power-on runs first-boot regardless, so rebooting into a
+    live hotspot is wrong when the owner is packing the clock up to move or
+    handing it on. --poweroff powers off with NO gift welcome splash."""
+
+    def _shutdown_branch(self, content: str) -> str:
+        # The end-of-script terminal-action if/elif chain, from the gift branch
+        # (which powers off) through the final else.
+        start = content.rfind('if [[ "$GIFT_MODE" == "true" ]]')
+        assert start != -1, "end-of-script shutdown branch not found"
+        return content[start:]
+
+    def test_poweroff_flag_parsed(self, reset_sh_content):
+        assert "--poweroff) DO_POWEROFF=true" in reset_sh_content
+
+    def test_reboot_and_poweroff_are_mutually_exclusive(self, reset_sh_content):
+        guard = 'if [[ "$DO_REBOOT" == "true" && "$DO_POWEROFF" == "true" ]]'
+        idx = reset_sh_content.find(guard)
+        assert idx != -1, "mutual-exclusion guard missing"
+        # Must fail CLOSED, not warn-and-fall-through (branch order would then
+        # silently pick the terminal action).
+        exit_idx = reset_sh_content.find("exit 1", idx)
+        assert exit_idx != -1 and (exit_idx - idx) < 200, "mutual-exclusion guard must exit 1"
+
+    def test_poweroff_implies_strict_env_wipe(self, reset_sh_content):
+        # /review: a bare `--poweroff` must not power off best-effort — it sets
+        # STRICT_ENV_WIPE so a failed config wipe aborts before power-off.
+        assert "--poweroff) DO_POWEROFF=true; STRICT_ENV_WIPE=true" in reset_sh_content
+
+    def test_end_of_script_has_a_poweroff_branch_before_reboot(self, reset_sh_content):
+        branch = self._shutdown_branch(reset_sh_content)
+        po_idx = branch.find('elif [[ "$DO_POWEROFF" == "true" ]]')
+        assert po_idx != -1, "no --poweroff terminal branch"
+        # It must run `poweroff` (not reboot) before the DO_REBOOT branch.
+        reboot_idx = branch.find('elif [[ "$DO_REBOOT" == "true" ]]')
+        assert reboot_idx != -1 and po_idx < reboot_idx, "poweroff branch must precede the reboot branch"
+        segment = branch[po_idx:reboot_idx]
+        assert "poweroff" in segment, "poweroff branch must call poweroff"
+        assert "systemctl reboot" not in segment, "poweroff branch must NOT reboot"
+
+    def test_poweroff_clears_the_stale_reboot_hint_never_writes_one(self, reset_sh_content):
+        # The reboot-hint write (litclock-dev#282) steers shutdown-splash to 'Restarting…'.
+        # --poweroff must NEVER write it, and must actively CLEAR any stale hint
+        # (litclock-dev#627 /review) so a factory-reset power-off always paints
+        # 'Powered Off'.
+        start = reset_sh_content.find("# Issue #282:")
+        end = reset_sh_content.find("# Step 1:", start)
+        hint_block = reset_sh_content[start:end]
+        # The reboot writer stays gated on DO_REBOOT.
+        reboot_part, _, poweroff_part = hint_block.partition('elif [[ "$DO_POWEROFF" == "true" ]]')
+        assert 'if [[ "$DO_REBOOT" == "true" ]]' in reboot_part
+        assert "printf 'reboot" in reboot_part
+        # The poweroff branch CLEARS the hint and does NOT write 'reboot'.
+        assert poweroff_part, "poweroff branch missing from the hint block"
+        assert "rm -f /run/litclock/shutdown-action" in poweroff_part
+        assert "printf 'reboot" not in poweroff_part
+
+    def test_poweroff_does_not_write_the_gift_welcome_marker(self, reset_sh_content):
+        # The welcome-splash marker is written only under GIFT_MODE. A --poweroff
+        # (non-gift) reset must NOT paint a 'welcome' message — it's a
+        # relocation / non-gift handoff.
+        marker_guard = 'if [[ "$GIFT_MODE" == "true" ]]'
+        # The FIRST such guard is the early marker write (pre service-stop).
+        first = reset_sh_content.find(marker_guard)
+        assert first != -1
+        # DO_POWEROFF must not appear inside the marker-write block.
+        block = reset_sh_content[first : first + 600]
+        assert "DO_POWEROFF" not in block

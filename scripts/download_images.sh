@@ -64,7 +64,7 @@ fi
 # shellcheck source=/dev/null
 . "$_THIS_SCRIPT_DIR/lib/github_api.sh"
 
-# #293: Byte-integrity verification against the bundled `images/files.sha256`
+# litclock-dev#293: Byte-integrity verification against the bundled `images/files.sha256`
 # sidecar (produced by scripts/release_images.sh, packaged inside the tarball
 # since v5). Catches accidental corruption (partial extract, fsck, manual rm)
 # but NOT local tampering — the sidecar lives next to the PNGs and shares the
@@ -114,7 +114,7 @@ verify_byte_manifest_detail() {
     done < <( cd "$images_dir" && sha256sum --strict -c files.sha256 2>&1 | grep -E ': FAILED|: No such file|improperly formatted' )
 }
 
-# #313: completeness check — every file manifest.json references must be
+# litclock-dev#313: completeness check — every file manifest.json references must be
 # accounted for in files.sha256. Catches the partial-emission shape where
 # the byte sidecar is internally consistent but doesn't cover the file set
 # the runtime expects. Returns:
@@ -122,7 +122,7 @@ verify_byte_manifest_detail() {
 #   1 — manifest.json present and references files not in the sidecar
 # Reasoning for "manifest.json absent → OK": legacy v1-v4 releases lacked
 # both the sidecar AND the bundled manifest.json (release_images.sh only
-# started requiring manifest in #299, which post-dates the sidecar). The
+# started requiring manifest in litclock-dev#299, which post-dates the sidecar). The
 # release-time gate in release_images.sh is the primary defense; this
 # consumer-side check is defense-in-depth.
 verify_manifest_completeness() {
@@ -160,10 +160,10 @@ PY
 # Post-install verify-failure rollback. Quarantine the new (broken) content
 # under a timestamped name so the operator can debug what shipped wrong, then
 # restore OLD_DIR (if any) to $IMAGES_DIR. Shared by both byte-mismatch and
-# manifest-completeness-mismatch paths (#313) so the failure response is the
+# manifest-completeness-mismatch paths (litclock-dev#313) so the failure response is the
 # same regardless of which gate caught the bad release.
 #
-# #314: when the OLD content was ALSO corrupt (we got here via short-circuit
+# litclock-dev#314: when the OLD content was ALSO corrupt (we got here via short-circuit
 # verify-fail → re-download), DON'T roll back — restoring OLD_DIR would
 # restore the very content we were trying to escape, leaving the clock
 # rendering known-bad PNGs. Instead, quarantine OLD_DIR as `.prev` and set
@@ -201,7 +201,7 @@ _post_install_verify_failure_rollback() {
     fi
 }
 
-# #314: update-failed marker primitives. Set by quarantine paths to tell
+# litclock-dev#314: update-failed marker primitives. Set by quarantine paths to tell
 # literary_clock.py to render the corner "!" glyph; cleared on next
 # successful install. /var/lib/litclock may not exist in test environments
 # (or after a botched install) — best-effort: try to create the parent dir,
@@ -227,7 +227,7 @@ _clear_update_failed_marker() {
     fi
 }
 
-# #314: if the on-disk content was already known-corrupt (short-circuit
+# litclock-dev#314: if the on-disk content was already known-corrupt (short-circuit
 # verify-fail → fall through to download) AND the download/extract path
 # can't deliver a clean replacement (network down, GitHub down, asset
 # missing, extract failure), quarantine the corrupt $IMAGES_DIR rather
@@ -236,6 +236,54 @@ _clear_update_failed_marker() {
 #
 # No-op unless VERIFY_FAILED_AT_SHORT_CIRCUIT=1, so the normal "no marker,
 # never installed, network down" graceful-offline still exits 0 untouched.
+# litclock-dev#561 (codex review): read corpus_hash out of a manifest.json.
+# Echoes the hash on stdout. Exit status carries the case so callers can tell
+# "no claim" from "unreadable claim":
+#   0 — usable hash echoed
+#   3 — present but corpus_hash missing/null/empty/wrong-type
+#   4 — unparseable, or not a JSON object
+#   5 — no such file
+manifest_corpus_hash() {
+    local manifest="$1"
+    [ -f "$manifest" ] || return 5
+    python3 -c "
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(4)
+if not isinstance(data, dict):
+    sys.exit(4)
+value = data.get('corpus_hash')
+if not isinstance(value, str) or not value.strip():
+    sys.exit(3)
+print(value.strip())
+" "$manifest" 2>/dev/null
+}
+
+# True only when we have POSITIVE evidence that the already-installed image set
+# was built from a different corpus than the one on disk.
+#
+# Why this exists (codex review): the idempotency short-circuit trusted the
+# marker plus the byte sidecar, both of which are internally consistent for a
+# wrong-source install. A dev device that fetched the public v8 before litclock-dev#561
+# landed reports "already at v8", exits 0, and keeps the mismatched images
+# forever — the exact state this branch was written to fix. Verified.
+#
+# Deliberately conservative: an ABSENT manifest (legacy release) or an absent
+# CSV returns "no evidence", preserving the existing skip. Only a readable
+# hash that differs forces a re-download, so a broken manifest can't put the
+# device into a re-download loop.
+installed_corpus_mismatch() {
+    local images_dir="$1"
+    local installed_hash local_hash
+    [ -f "$CORPUS_FILE" ] || return 1
+    installed_hash=$(manifest_corpus_hash "$images_dir/manifest.json") || return 1
+    local_hash=$(sha1sum "$CORPUS_FILE" 2>/dev/null | awk '{print $1}')
+    [ -n "$local_hash" ] || return 1
+    [ "$installed_hash" != "$local_hash" ]
+}
+
 quarantine_if_verify_failed() {
     if [ "${VERIFY_FAILED_AT_SHORT_CIRCUIT:-0}" -ne 1 ]; then
         return 0
@@ -260,7 +308,18 @@ quarantine_if_verify_failed() {
 }
 
 # Defaults — overridable via env or flags for testing.
-REPO_SLUG="${LITCLOCK_REPO_SLUG:-kapoorankush/litclock}"
+#
+# litclock-dev#561: the version number comes from the LOCAL repo ($PIN_FILE) but the
+# tarball used to come unconditionally from the public repo. Since dev and
+# public share both a tag namespace and a version namespace, a dev device
+# pinned at v8 fetched PUBLIC's litclock-images-v8 — a different image set —
+# and succeeded silently. REPO_SLUG is now derived from the device's own git
+# remote (see derive_repo_slug below) so each device resolves against the repo
+# its code actually came from. DEFAULT_REPO_SLUG remains the fallback, which
+# is what keeps forks working: a fork has no releases of its own, so the
+# metadata fetch misses and we retry against the default.
+DEFAULT_REPO_SLUG="kapoorankush/litclock"
+REPO_SLUG="${LITCLOCK_REPO_SLUG:-}"
 API_BASE_URL="${LITCLOCK_API_BASE_URL:-https://api.github.com}"
 ASSET_NAME="${LITCLOCK_ASSET_NAME:-litclock-images.tar.gz}"
 REPO_ROOT=""
@@ -294,8 +353,45 @@ PIN_FILE="$REPO_ROOT/.images-version"
 IMAGES_DIR="$REPO_ROOT/images"
 MARKER_FILE="$IMAGES_DIR/.installed-version"
 LOCK_FILE="$REPO_ROOT/.litclock-images.lock"
+CORPUS_FILE="$REPO_ROOT/image-gen/litclock_annotated.csv"
 
-# #314: tracks whether the on-disk content was already known-bad when we
+# litclock-dev#561: read owner/repo out of the device's own `origin` remote. Handles
+# both URL forms git writes:
+#     https://github.com/owner/repo.git
+#     git@github.com:owner/repo.git
+# Prints nothing (rc 1) when there is no git repo, no origin, or the URL does
+# not look like owner/repo — every one of which falls back to the default.
+derive_repo_slug() {
+    local url rest host path slug
+    url=$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null) || return 1
+    [ -n "$url" ] || return 1
+    rest=${url%.git}
+    rest=${rest#*://}       # https://host/owner/repo -> host/owner/repo
+    rest=${rest#*@}         # git@host:owner/repo     -> host:owner/repo
+    # Host is everything up to the first ':' or '/'.
+    host=${rest%%[:/]*}
+    path=${rest#"$host"}
+    path=${path#[:/]}
+    # The derived slug is looked up against api.github.com, so a non-GitHub
+    # origin must NOT derive (litclock-dev#561 review). Otherwise a GitLab remote like
+    # gitlab.com/acme/litclock yields "acme/litclock" and, if an unrelated
+    # GitHub repo of that name exists, the device silently installs someone
+    # else's images — the very wrong-source class this change exists to close.
+    # Self-hosted/Enterprise origins fall back to the default, as before.
+    case "$host" in
+        github.com | www.github.com) ;;
+        *) return 1 ;;
+    esac
+    # Keep the LAST two path segments so nested paths still resolve.
+    slug=$(printf '%s\n' "$path" | awk -F/ 'NF>=2 {printf "%s/%s", $(NF-1), $NF}')
+    case "$slug" in
+        */*) printf '%s\n' "$slug" ;;
+        *) return 1 ;;
+    esac
+}
+
+
+# litclock-dev#314: tracks whether the on-disk content was already known-bad when we
 # entered the download path. Drives:
 #   * graceful-offline quarantine (avoid leaving corrupt PNGs rendering)
 #   * post-install double-verify-fail policy (don't restore corrupt OLD_DIR)
@@ -320,7 +416,7 @@ if ! flock -n 200; then
     exit 0
 fi
 
-# #293 idempotency: sweep orphan in-flight dirs left by previous runs that
+# litclock-dev#293 idempotency: sweep orphan in-flight dirs left by previous runs that
 # died mid-swap (SIGTERM, power loss, kernel oom). The flock above guarantees
 # no live instance owns these. Recovery rule:
 #   * If $IMAGES_DIR is MISSING and an `.old.*` orphan exists, restore it —
@@ -328,7 +424,7 @@ fi
 #     completion of the swap, leaving the appliance with no images at all.
 #   * Otherwise, treat `.old.*` / `.broken.*` orphans as dead weight and rm.
 #   * `.failed.*` siblings are kept as broken-content forensics, but bounded
-#     to the most-recent 3 (#314): a Pi offline for weeks could otherwise
+#     to the most-recent 3 (litclock-dev#314): a Pi offline for weeks could otherwise
 #     accumulate hundreds of quarantine dirs and fill the SD.
 shopt -s nullglob
 _orphans=( "${IMAGES_DIR}".old.* "${IMAGES_DIR}".broken.* )
@@ -355,7 +451,7 @@ if [ "${#_orphans[@]}" -gt 0 ]; then
     done
 fi
 
-# #314: bound `.failed.*` accumulation. UTC-timestamped names are
+# litclock-dev#314: bound `.failed.*` accumulation. UTC-timestamped names are
 # lex-sortable; keep the 3 newest for forensics, prune the rest.
 shopt -s nullglob
 _failed=( "${IMAGES_DIR}".failed.* )
@@ -372,7 +468,7 @@ if [ "${#_failed[@]}" -gt 3 ]; then
 fi
 
 # Short-circuit when marker matches, unless --force. The M7 retro incident
-# (#293, 2026-05-10) proved the marker alone can lie: tar extraction can
+# (litclock-dev#293, 2026-05-10) proved the marker alone can lie: tar extraction can
 # finish, the marker can flip to vN, while individual PNGs stay at vN-1
 # content. Spot-check the bundled byte-integrity sidecar before trusting it.
 if [ "$FORCE" -eq 0 ] && [ -f "$MARKER_FILE" ]; then
@@ -382,19 +478,34 @@ if [ "$FORCE" -eq 0 ] && [ -f "$MARKER_FILE" ]; then
         verify_rc=$?
         case "$verify_rc" in
             0)
-                log_info "Images already at ${PINNED_VERSION} — skipping download"
-                exit 0
+                # litclock-dev#561 (codex review): byte-consistency proves the PNGs are
+                # intact, NOT that they belong to this device's corpus. A
+                # wrong-source install passes this check, so ask the corpus
+                # question too before trusting the marker.
+                if installed_corpus_mismatch "$IMAGES_DIR"; then
+                    log_warn "Marker reports ${PINNED_VERSION} but the installed images were built from a different corpus — forcing re-download (litclock-dev#561)"
+                    VERIFY_FAILED_AT_SHORT_CIRCUIT=1
+                else
+                    log_info "Images already at ${PINNED_VERSION} — skipping download"
+                    exit 0
+                fi
                 ;;
             2)
                 # Legacy release (v1–v4) without files.sha256. Nothing to
                 # verify against — trust the marker so existing Pis don't
-                # re-download on every run.
-                log_info "Images already at ${PINNED_VERSION} (legacy release, marker-only check) — skipping download"
-                exit 0
+                # re-download on every run. The corpus question still applies:
+                # a legacy set from the wrong repo is still the wrong set.
+                if installed_corpus_mismatch "$IMAGES_DIR"; then
+                    log_warn "Marker reports ${PINNED_VERSION} (legacy release) but the installed images were built from a different corpus — forcing re-download (litclock-dev#561)"
+                    VERIFY_FAILED_AT_SHORT_CIRCUIT=1
+                else
+                    log_info "Images already at ${PINNED_VERSION} (legacy release, marker-only check) — skipping download"
+                    exit 0
+                fi
                 ;;
             *)
                 log_warn "Marker reports ${PINNED_VERSION} but on-disk PNGs don't match the bundled byte manifest — forcing re-download"
-                # #314: remember the on-disk content is corrupt so that:
+                # litclock-dev#314: remember the on-disk content is corrupt so that:
                 #   1. If the re-download path takes a graceful-offline exit
                 #      (network down, asset missing, etc.), we quarantine the
                 #      corrupt PNGs rather than leave them rendering.
@@ -408,6 +519,19 @@ if [ "$FORCE" -eq 0 ] && [ -f "$MARKER_FILE" ]; then
     fi
 else
     log_info "Fetching images at ${PINNED_VERSION}"
+fi
+
+# Resolve the release source LAST, after every short-circuit above has had a
+# chance to exit (litclock-dev#561 review): on the common no-op run the marker already
+# matches the pin, and deriving the slug there would spawn git + awk for a
+# value that is never read.
+# Explicit env override always wins (tests, mirrors). Otherwise derive.
+REPO_SLUG_DERIVED=0
+if [ -z "$REPO_SLUG" ]; then
+    if REPO_SLUG=$(derive_repo_slug) && [ "$REPO_SLUG" != "$DEFAULT_REPO_SLUG" ]; then
+        REPO_SLUG_DERIVED=1
+    fi
+    [ -n "$REPO_SLUG" ] || REPO_SLUG="$DEFAULT_REPO_SLUG"
 fi
 
 RELEASE_TAG="litclock-images-${PINNED_VERSION}"
@@ -430,9 +554,27 @@ SHA_FILE="$TMPDIR_ROOT/${ASSET_NAME}.sha256"
 META_FILE="$TMPDIR_ROOT/release.json"
 META_URL="${API_BASE_URL}/repos/${REPO_SLUG}/releases/tags/${RELEASE_TAG}"
 if ! github_api_curl "$META_URL" "application/vnd.github+json" "$META_FILE"; then
-    log_warn "Failed to fetch release metadata for ${RELEASE_TAG} — leaving existing images untouched"
-    quarantine_if_verify_failed
-    exit 0
+    # litclock-dev#561: a DERIVED slug that has no such release is the normal case for a
+    # fork — the fork carries the code but cuts no image releases of its own.
+    # Fall back to the default repo once so those devices keep working. An
+    # explicit LITCLOCK_REPO_SLUG is never second-guessed.
+    # Retry ONLY when the fallback actually changes the slug — retrying the
+    # identical URL would just double the metadata timeout on the offline path
+    # for every non-derived device, which is most of them.
+    if [ "$REPO_SLUG_DERIVED" -eq 1 ]; then
+        log_warn "No ${RELEASE_TAG} in ${REPO_SLUG} — falling back to ${DEFAULT_REPO_SLUG}"
+        REPO_SLUG="$DEFAULT_REPO_SLUG"
+        META_URL="${API_BASE_URL}/repos/${REPO_SLUG}/releases/tags/${RELEASE_TAG}"
+        if ! github_api_curl "$META_URL" "application/vnd.github+json" "$META_FILE"; then
+            log_warn "Failed to fetch release metadata for ${RELEASE_TAG} — leaving existing images untouched"
+            quarantine_if_verify_failed
+            exit 0
+        fi
+    else
+        log_warn "Failed to fetch release metadata for ${RELEASE_TAG} — leaving existing images untouched"
+        quarantine_if_verify_failed
+        exit 0
+    fi
 fi
 
 # Step 2: extract the two asset IDs we need from the metadata.
@@ -479,7 +621,7 @@ fi
 EXPECTED_SHA=$(awk '{print $1}' "$SHA_FILE")
 if [ -z "$EXPECTED_SHA" ]; then
     log_error "Empty SHA file downloaded from ${SHA_DL_URL} — release is malformed"
-    # #314: even though this is a publisher error (exit 1, not graceful 0),
+    # litclock-dev#314: even though this is a publisher error (exit 1, not graceful 0),
     # the on-disk content may already be known-corrupt. Quarantine it before
     # exiting so the corrupt PNGs don't keep rendering until the publisher
     # cuts a fixed release. Without this, a single bad release ships a
@@ -515,6 +657,65 @@ if [ ! -d "$UNPACKED" ]; then
     exit 0
 fi
 
+# litclock-dev#561: the downloaded images must belong to the CSV this device actually
+# renders from. manifest.json carries corpus_hash = sha1 of the corpus CSV at
+# render time (see image-gen/corpus_edit.py::corpus_file_hash), so comparing it
+# against the local CSV catches a mismatched set REGARDLESS of which repo it
+# came from — wrong repo, wrong pin, hand-copied tarball, stale mirror.
+#
+# Checked BEFORE the swap: a mismatch leaves the existing images in place
+# rather than installing a set that disagrees with the corpus.
+#
+# Skipped (not failed) when either side is unavailable: legacy releases
+# predating litclock-dev#299 bundle no manifest.json, and a slim deploy may ship no CSV.
+# Absence is not evidence of mismatch — but a present-and-differing pair is.
+# Three cases, deliberately NOT collapsed (litclock-dev#561 review — the first version
+# collapsed 2 and 3 and failed open on exactly the input the guard exists for):
+#
+#   1. manifest.json ABSENT      -> skip. Legacy pre-#299 releases bundle none,
+#                                   and a slim deploy may ship no CSV. Genuine
+#                                   absence is not evidence of mismatch.
+#   2. present but UNUSABLE      -> refuse. Unparseable, or corpus_hash missing
+#                                   /null/empty. The manifest comes out of a
+#                                   downloaded tarball, so "present but I can't
+#                                   read the field" means a corrupt or forged
+#                                   release, not a legacy one. Cannot verify
+#                                   must mean do not install.
+#   3. present and READABLE      -> compare, refuse on mismatch.
+MANIFEST_JSON="$UNPACKED/manifest.json"
+if [ -f "$MANIFEST_JSON" ] && [ -f "$CORPUS_FILE" ]; then
+    manifest_corpus=$(manifest_corpus_hash "$MANIFEST_JSON")
+    manifest_rc=$?
+    local_corpus=$(sha1sum "$CORPUS_FILE" 2>/dev/null | awk '{print $1}')
+    if [ "$manifest_rc" -ne 0 ]; then
+        log_error "Release manifest is present but its corpus_hash is unreadable — refusing to install"
+        log_error "  release ${RELEASE_TAG} from ${REPO_SLUG}"
+        log_error "  reason: $([ "$manifest_rc" -eq 4 ] && echo 'manifest.json is not valid JSON' || echo 'corpus_hash missing, null, or empty')"
+        log_error "  A release that cannot be checked against the corpus is not installed (litclock-dev#561)."
+        _set_update_failed_marker
+        quarantine_if_verify_failed
+        exit 1
+    fi
+    if [ -z "$local_corpus" ]; then
+        log_error "Could not hash ${CORPUS_FILE} — refusing to install unverifiable images"
+        _set_update_failed_marker
+        quarantine_if_verify_failed
+        exit 1
+    fi
+    if [ "$manifest_corpus" != "$local_corpus" ]; then
+        log_error "Image set does not match the local corpus — refusing to install"
+        log_error "  release ${RELEASE_TAG} from ${REPO_SLUG}"
+        log_error "  manifest corpus_hash: ${manifest_corpus}"
+        log_error "  local CSV sha1:       ${local_corpus}"
+        log_error "  Installing it would paint quotes that disagree with the corpus (litclock-dev#561)."
+        log_error "  If this is a fork with its own corpus, cut an image release for it and"
+        log_error "  set LITCLOCK_REPO_SLUG, or point .images-version at a matching release."
+        _set_update_failed_marker
+        quarantine_if_verify_failed
+        exit 1
+    fi
+fi
+
 # Stamp the marker inside the unpacked dir so the swap is atomic.
 echo "$PINNED_VERSION" > "$UNPACKED/.installed-version"
 
@@ -542,7 +743,7 @@ if ! mv "$UNPACKED" "$IMAGES_DIR"; then
     exit 1
 fi
 
-# Step 7 (#293): post-install byte-integrity verification. The tarball SHA256
+# Step 7 (litclock-dev#293): post-install byte-integrity verification. The tarball SHA256
 # check confirms the bytes we downloaded are intact; this check confirms the
 # bytes we EXTRACTED match — catching the M7-retro silent-failure mode where
 # the marker advanced but on-disk PNG content didn't. Run BEFORE rm'ing
@@ -551,7 +752,7 @@ verify_byte_manifest "$IMAGES_DIR"
 verify_rc=$?
 case "$verify_rc" in
     0)
-        # #313: bytes match the sidecar; now confirm the sidecar covers
+        # litclock-dev#313: bytes match the sidecar; now confirm the sidecar covers
         # every file referenced by manifest.json. A partial-emission bug in
         # quote_to_image.php (credits-write fails, main-write succeeds) would
         # produce a sidecar that's internally consistent but incomplete vs
@@ -584,7 +785,7 @@ if [ -n "$OLD_DIR" ] && [ -d "$OLD_DIR" ]; then
     rm -rf "$OLD_DIR"
 fi
 
-# #314: successful install — clear the update-failed glyph so the e-ink
+# litclock-dev#314: successful install — clear the update-failed glyph so the e-ink
 # returns to clean rendering on next tick.
 _clear_update_failed_marker
 

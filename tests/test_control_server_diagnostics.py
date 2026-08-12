@@ -163,7 +163,7 @@ class TestAnomalyDetector:
         # A "clean" values dict where every section is healthy.
         # last_dhcp_at is anchored to "1h ago" rather than a hardcoded
         # timestamp; the original hardcoded "2026-06-07T00:00:00+00:00"
-        # silently rotted past the ANOMALY_DHCP_AGE_S=24h window on
+        # silently rotted past the old 24h DHCP-age window (removed in litclock-dev#552) on
         # 2026-06-08, tripping a spurious network anomaly. Drive-by fix
         # in #419 PR1 alongside the package split.
         from datetime import UTC as _UTC
@@ -330,12 +330,13 @@ class TestAnomalyDetector:
         v["signal_dbm"] = True  # would be < -75? no, 1 > -75; but pin it
         assert "network" not in diagnostics._compute_anomalies(v)
 
-    def test_stale_dhcp_triggers_network(self):
+    def test_stale_dhcp_does_not_trigger_network(self):
+        """litclock-dev#552 — lease age is not reachability; see _anomalies.py."""
         from datetime import UTC, datetime, timedelta
 
         v = self._baseline()
-        v["last_dhcp_at"] = (datetime.now(tz=UTC) - timedelta(hours=25)).isoformat()
-        assert "network" in diagnostics._compute_anomalies(v)
+        v["last_dhcp_at"] = (datetime.now(UTC) - timedelta(hours=25)).isoformat()
+        assert "network" not in diagnostics._compute_anomalies(v)
 
     def test_malformed_dhcp_iso_does_not_raise(self):
         v = self._baseline()
@@ -1423,9 +1424,17 @@ class TestRenderModeInSupportPayload:
     def test_runtime_mode_is_printed(self):
         assert "Rendered by: runtime" in self._payload(render_mode="runtime")
 
-    def test_image_fallback_is_printed(self):
-        # the condition the bundle exists to reveal
+    def test_image_mode_is_printed(self):
+        # Renamed from test_image_fallback_is_printed (litclock-dev#605 item 5): it fed
+        # render_mode="image", so it tested the image tier, not the alarm.
         assert "Rendered by: image" in self._payload(render_mode="image")
+
+    def test_image_fallback_is_printed(self):
+        # litclock-dev#605 item 5: the alarm condition the bundle exists to reveal —
+        # runtime attempted and lost. Assert the FULL value: "Rendered by:
+        # image" is a substring of "image-fallback" and would not distinguish
+        # them, which is exactly how the old test's name and body diverged.
+        assert "Rendered by: image-fallback" in self._payload(render_mode="image-fallback")
 
     def test_absent_on_legacy_clocks(self):
         assert "Rendered by:" not in self._payload()
