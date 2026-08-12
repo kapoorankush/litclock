@@ -136,7 +136,7 @@ class TestGiftMode:
     @staticmethod
     def _ssh_gate_body(reset_sh_content):
         """Extract disable_ssh_for_handoff()'s body (litclock-dev#636 moved the
-        #528 gate into a shared function so gift mode and the non-gift
+        litclock-dev#528 gate into a shared function so gift mode and the non-gift
         factory-reset poweroff enforce the same posture)."""
         idx = reset_sh_content.find("disable_ssh_for_handoff() {")
         assert idx != -1, "disable_ssh_for_handoff() definition missing"
@@ -153,7 +153,7 @@ class TestGiftMode:
         return reset_sh_content[idx : reset_sh_content.find("elif", idx)]
 
     def test_ssh_gate_disables_every_layer(self, reset_sh_content):
-        """#528: the handoff gate must force SSH off across every layer: the
+        """litclock-dev#528: the handoff gate must force SSH off across every layer: the
         SOCKET (Bookworm socket-activates sshd — disabling only ssh.service
         leaves port 22 open, caught by hardware QA 2026-07-16), the classic
         service, raspi-config posture, and the boot-partition re-enable
@@ -170,7 +170,7 @@ class TestGiftMode:
         assert "/boot/firmware/ssh" in body and "/boot/ssh" in body
 
     def test_ssh_gate_verifies_port_22_closed(self, reset_sh_content):
-        """#528 /review: the SSH-off step is a security gate, not best-effort.
+        """litclock-dev#528 /review: the SSH-off step is a security gate, not best-effort.
         After disabling, it must verify port 22 is actually closed (the
         disables are all `|| true`, and socket-activation means unit state
         alone doesn't prove the port is shut) and refuse to power off
@@ -185,7 +185,7 @@ class TestGiftMode:
         assert disable_idx < verify_idx < exit_idx
 
     def test_gift_mode_calls_ssh_gate_before_poweroff(self, reset_sh_content):
-        """#528: gift mode must run the gate, after the ENV_WIPE_FAILED fatal
+        """litclock-dev#528: gift mode must run the gate, after the ENV_WIPE_FAILED fatal
         gate (on a FAILED prep the device stays on and the owner may need
         SSH to fix it) and before the poweroff command."""
         block = self._gift_block(reset_sh_content)
@@ -205,7 +205,11 @@ class TestGiftMode:
         idx = content.rfind('elif [[ "$DO_POWEROFF" == "true" ]]')
         assert idx != -1, "poweroff end-of-script branch missing"
         block = content[idx : content.find("elif", idx + 1)]
-        call_idx = block.find("disable_ssh_for_handoff")
+        # Anchor on the CALL (line-leading), not a bare substring: a later
+        # comment mentioning the function, or the call being commented out,
+        # must not keep this test green with the gate gone (matches the
+        # gift-mode test's anchoring).
+        call_idx = block.find("\n    disable_ssh_for_handoff")
         poweroff_idx = block.rfind("\n    poweroff")
         assert call_idx != -1, "poweroff branch must run the SSH handoff gate"
         assert call_idx < poweroff_idx
@@ -218,6 +222,78 @@ class TestGiftMode:
         assert idx != -1
         tail = content[idx:]
         assert "disable_ssh_for_handoff" not in tail
+
+    # --- Behavioral gate tests (litclock-dev#636 /review) ------------------
+    # The structural tests above prove the gate is WIRED; these RUN it. A
+    # security gate that is only pattern-matched is unverified: the whole
+    # point is that port-22-still-open aborts the poweroff, and that only the
+    # exact port 22 (not :2222) triggers it, and that an ss that can't verify
+    # never silently passes. Extract the function and execute it under bash
+    # with systemctl/raspi-config/rm and a scripted `ss` stubbed on PATH.
+
+    @staticmethod
+    def _run_ssh_gate(tmp_path, ss_script):
+        """Execute disable_ssh_for_handoff() with a stubbed environment.
+
+        ss_script is the body of a fake `ss` on PATH. Returns the completed
+        process (rc 0 = gate passed/proceeded, rc 1 = gate aborted).
+        """
+        import subprocess
+
+        content = RESET_SH.read_text()
+        start = content.find("disable_ssh_for_handoff() {")
+        # Match the function's closing brace on its own line — a bare find("}")
+        # would truncate at the first ${VAR:-default} or awk block.
+        end = content.find("\n}", start)
+        assert start != -1 and end != -1, "could not extract disable_ssh_for_handoff()"
+        func = content[start : end + 2]
+
+        stubs = tmp_path / "bin"
+        stubs.mkdir()
+        for name in ("systemctl", "raspi-config", "rm"):
+            (stubs / name).write_text("#!/bin/sh\nexit 0\n")
+        (stubs / "ss").write_text("#!/bin/sh\n" + ss_script)
+        for f in stubs.iterdir():
+            f.chmod(0o755)
+
+        # `local` is only valid inside a function, so the extracted body must
+        # run as a function call, not top-level. Colors are referenced inside.
+        harness = f"RED=''; GREEN=''; YELLOW=''; NC=''\n{func}\ndisable_ssh_for_handoff\n"
+        return subprocess.run(
+            ["bash", "-c", harness],
+            capture_output=True,
+            text=True,
+            env={"PATH": f"{stubs}:/usr/bin:/bin"},
+            timeout=10,
+        )
+
+    def test_gate_aborts_when_port_22_still_listening(self, tmp_path):
+        """The load-bearing promise: sshd still on :22 → exit 1 (poweroff
+        never reached)."""
+        proc = self._run_ssh_gate(tmp_path, 'echo "LISTEN 0 128 0.0.0.0:22 0.0.0.0:*"\n')
+        assert proc.returncode == 1, proc.stderr
+        assert "still listening" in proc.stdout.lower() or "still listening" in proc.stderr.lower()
+
+    def test_gate_proceeds_when_only_high_ports_listen(self, tmp_path):
+        """grep -qx 22 must not false-hit :2222 / :220 — a device with only
+        those open must pass the gate (rc 0)."""
+        ss = 'echo "LISTEN 0 128 0.0.0.0:2222 0.0.0.0:*"\necho "LISTEN 0 128 0.0.0.0:220 0.0.0.0:*"\n'
+        proc = self._run_ssh_gate(tmp_path, ss)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    def test_gate_proceeds_when_no_ports_listen(self, tmp_path):
+        """Port 22 verified closed → gate passes."""
+        proc = self._run_ssh_gate(tmp_path, "exit 0\n")  # no output = nothing listening
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    def test_gate_does_not_fail_open_when_ss_errors(self, tmp_path):
+        """litclock-dev#636 /review: an `ss` that ERRORS (nonzero, no output)
+        must NOT read as 'verified closed'. It warns and proceeds (can't
+        verify), exactly like an absent ss — never a silent pass that a
+        pipe-to-grep would have produced."""
+        proc = self._run_ssh_gate(tmp_path, "exit 3\n")  # ss present but fails
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "could not verify" in proc.stdout.lower() or "could not verify" in proc.stderr.lower()
 
     def test_gift_mode_marker_written_before_shutdown_service_stop(self, reset_sh_content):
         """CRITICAL ordering invariant: the .welcome-mode marker must be written

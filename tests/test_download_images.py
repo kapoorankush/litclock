@@ -1557,10 +1557,12 @@ class TestDerivedSlugCharacterAllowlist:
         hostile_origins = [
             "https://github.com/kapoorankush/litclock?tab=readme.git",
             "https://github.com/kapoorankush/litclock#frag.git",
+            "https://github.com/kapoorankush/lit&clock.git",
             "https://github.com/kapoorankush/lit%2fclock.git",
             "https://github.com/kapoorankush/lit clock.git",
             "https://github.com/.hidden/litclock.git",
-            "https://github.com/kapoorankush/...git",
+            "https://github.com/kapoorankush/...git",  # '..' repo segment
+            "https://github.com/kapoorankush/..git",  # bare '.' repo segment
         ]
         for i, origin in enumerate(hostile_origins):
             subdir = tmp_path / str(i)
@@ -1569,7 +1571,7 @@ class TestDerivedSlugCharacterAllowlist:
             assert len(hits) == 1, (origin, hits)
             assert "/kapoorankush/litclock/releases" in hits[0], (origin, hits)
             slug_part = hits[0].split("/releases")[0].removeprefix("/repos/")
-            for bad in ("?", "#", "%", " ", ".hidden"):
+            for bad in ("?", "#", "&", "%", " ", ".hidden"):
                 assert bad not in slug_part, (origin, bad, hits)
             assert not slug_part.endswith(("/.", "/..")), (origin, hits)
 
