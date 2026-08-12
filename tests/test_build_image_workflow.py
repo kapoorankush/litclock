@@ -5,6 +5,7 @@ Validates workflow structure, triggers, and build configuration.
 
 import os
 import re
+import subprocess
 
 import yaml
 
@@ -151,7 +152,7 @@ class TestVersionStampProvenance:
         step = _step("Configure pi-gen")
         run = _strip_comments(step["run"])
         env = step.get("env") or {}
-        assigns = re.findall(r"^\s*echo\s+\"LITCLOCK_SHA=([^\"]*)\"", run, re.MULTILINE)
+        assigns = re.findall(r"^\s*printf\s+'LITCLOCK_SHA=%q\\n'\s+\"([^\"]*)\"", run, re.MULTILINE)
         assert len(assigns) == 1, f"LITCLOCK_SHA is written {len(assigns)} times: {assigns}"
         var = re.fullmatch(r"\$\{(\w+)\}", assigns[0])
         assert var, f"LITCLOCK_SHA={assigns[0]!r}; expected a shell variable bound via env:"
@@ -314,9 +315,7 @@ class TestBuildIsGatedOnTests:
         runs = [s.get("run", "") for s in self._steps()]
         test_idx = next(i for i, r in enumerate(runs) if "pytest" in r)
         build_idx = next(i for i, n in enumerate(names) if n == "Build image")
-        assert test_idx < build_idx, (
-            f"test step (index {test_idx}) runs after Build image (index {build_idx})"
-        )
+        assert test_idx < build_idx, f"test step (index {test_idx}) runs after Build image (index {build_idx})"
 
 
 class TestReleaseTargetCommitish:
@@ -413,23 +412,133 @@ class TestCheckoutDoesNotShipCredentials:
         """Anchors WHY the above matters. If the copy step is ever removed or
         renamed, this test should be revisited rather than silently passing."""
         wf = _load_workflow()
-        scripts = " ".join(
-            s.get("run", "") for s in wf["jobs"]["build"]["steps"] if isinstance(s.get("run"), str)
-        )
+        scripts = " ".join(s.get("run", "") for s in wf["jobs"]["build"]["steps"] if isinstance(s.get("run"), str))
         assert "cp -a . /tmp/pi-gen/litclock-src" in scripts, (
-            "the tree-copy step changed — re-check whether .git still reaches "
-            "the image rootfs (litclock-dev#551)"
+            "the tree-copy step changed — re-check whether .git still reaches the image rootfs (litclock-dev#551)"
         )
 
     def test_no_step_strips_dot_git_so_the_guard_is_load_bearing(self):
         """If someone later strips .git from the staged tree, persist-credentials
         stops being the only defence and this suite should say so."""
         wf = _load_workflow()
-        scripts = " ".join(
-            s.get("run", "") for s in wf["jobs"]["build"]["steps"] if isinstance(s.get("run"), str)
-        )
+        scripts = " ".join(s.get("run", "") for s in wf["jobs"]["build"]["steps"] if isinstance(s.get("run"), str))
         strips = re.search(r"rm -rf\s+[^\s]*litclock-src/\.git\b", scripts)
         assert not strips, (
             "a step now strips .git from the staged tree — persist-credentials "
             "is no longer the sole defence; update litclock-dev#551's reasoning"
         )
+
+
+class TestConfigSourcingInjection:
+    """The pi-gen config file is SOURCED (stage3/04-finalize/00-run.sh), so a
+    ref-derived value appended to it unquoted re-parses as shell — the same
+    injection class `env:` closed for `${{ }}` splicing, reintroduced one layer
+    down at the config-file boundary (litclock-dev#617). Git ref names legitimately
+    allow `;`, `$`, `(` and `)`, and the build job holds contents:write +
+    id-token:write + attestations:write.
+
+    These tests execute the actual workflow script text, not a description of
+    it: reverting `printf %q` to a bare echo, or deleting the allowlist, fails
+    them functionally.
+    """
+
+    BASH = ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c"]
+
+    def _run(self, script, env_overrides, cwd=REPO_ROOT):
+        env = dict(os.environ, **env_overrides)
+        return subprocess.run(self.BASH + [script], env=env, cwd=cwd, capture_output=True, text=True)
+
+    def _run_version_step(self, tmp_path, ref_type, ref_name, dispatch, name="gh_output"):
+        """Run the Determine version step with a given ref shape.
+
+        Returns (proc, gh_output_text). Both allowlist tests thread the same
+        four env vars through here so a new variable added to the step lands in
+        one place, not two.
+        """
+        out = tmp_path / name
+        out.touch()
+        proc = self._run(
+            _version_step_script(),
+            {"REF_TYPE": ref_type, "REF_NAME": ref_name, "DISPATCH_REF": dispatch, "GITHUB_OUTPUT": str(out)},
+        )
+        return proc, out.read_text()
+
+    def test_config_appends_survive_sourcing_with_a_hostile_ref(self, tmp_path):
+        """Extract the append lines from Configure pi-gen, run them with a
+        ref name that is valid to git but hostile to a sourced file, source
+        the result, and check nothing executed and the value round-tripped."""
+        run_body = _strip_comments(_step("Configure pi-gen")["run"])
+        config = tmp_path / "config"
+        appends = "\n".join(
+            ln.replace("/tmp/pi-gen/config", str(config))
+            for ln in run_body.splitlines()
+            if ">> /tmp/pi-gen/config" in ln
+        )
+        for var in ("LITCLOCK_REF", "LITCLOCK_VERSION", "LITCLOCK_SHA"):
+            assert var in appends, f"config append for {var} not found in Configure pi-gen"
+
+        pwned = tmp_path / "pwned"
+        hostile = f"v1.0$(touch {pwned});id"
+        proc = self._run(appends, {"REF": hostile, "VERSION": hostile, "SHA": hostile})
+        assert proc.returncode == 0, proc.stderr
+
+        # Sourcing the config must neither execute anything nor mangle the value.
+        proc = self._run(f'. "{config}" && printf %s "$LITCLOCK_REF"', {})
+        assert not pwned.exists(), (
+            "sourcing the pi-gen config executed a command embedded in the ref "
+            "name — the append lines are no longer shell-quoted (litclock-dev#617)"
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == hostile, f"value did not round-trip through the sourced config: {proc.stdout!r}"
+
+    def test_version_step_rejects_hostile_tag(self, tmp_path):
+        """A tag like v1.0$(id) must fail the build in Determine version,
+        before it can become a release title, asset name, or config line."""
+        proc, text = self._run_version_step(tmp_path, "tag", "v1.0$(id)", "master")
+        assert proc.returncode != 0, "hostile tag name passed Determine version"
+        assert "characters outside" in proc.stderr
+        assert "version=" not in text, "outputs were written before the validation failed"
+
+    def test_version_step_rejects_hostile_dispatch_ref(self, tmp_path):
+        """The workflow_dispatch litclock_ref is free attacker text (a branch
+        that exists checks out fine), and on the branch path REF=DISPATCH_REF.
+        It must be validated too — not just the tag path."""
+        proc, text = self._run_version_step(tmp_path, "branch", "master", "master$(id)")
+        assert proc.returncode != 0, "hostile dispatch ref passed Determine version"
+        assert "characters outside" in proc.stderr
+        assert "ref=" not in text, "outputs were written before the validation failed"
+
+    def test_version_step_rejects_a_slashed_tag_at_the_version_field(self, tmp_path):
+        """VERSION becomes the image filename litclock-<VERSION>.img and the
+        release tag, so it must reject '/' even though REF (branch names) allows
+        it. A tag v1.0/x strips to VERSION=1.0/x and must fail closed."""
+        proc, text = self._run_version_step(tmp_path, "tag", "v1.0/x", "master")
+        assert proc.returncode != 0, "slashed tag produced a slashed VERSION"
+        assert "version" in proc.stderr
+        assert "version=" not in text
+
+    def test_version_step_rejects_a_bare_v_tag(self, tmp_path):
+        """The '+' in the allowlist is deliberate: a tag literally named 'v'
+        (matched by the v* trigger) strips to an empty VERSION, which would
+        ship an image named litclock-.img. Empty must fail closed."""
+        proc, text = self._run_version_step(tmp_path, "tag", "v", "master")
+        assert proc.returncode != 0, "empty VERSION from a bare 'v' tag was accepted"
+        assert "version=" not in text
+
+    def test_version_step_accepts_our_real_ref_shapes_with_exact_outputs(self, tmp_path):
+        """The allowlist must not reject anything we actually name, AND the
+        outputs must carry the right values — asserting presence alone let a
+        dropped `#v` strip or a REF/DISPATCH_REF swap pass silently."""
+        # Tag path: VERSION is REF_NAME with the leading v stripped; REF == REF_NAME.
+        proc, text = self._run_version_step(tmp_path, "tag", "v0.223.0", "master", name="gh_tag")
+        assert proc.returncode == 0, proc.stderr
+        assert "version=0.223.0" in text.splitlines(), text
+        assert "ref=v0.223.0" in text.splitlines(), text
+
+        # Branch (dispatch) path: REF == DISPATCH_REF (slashed branches allowed);
+        # VERSION is a dev- stamp. Pin REF exactly and VERSION's shape.
+        proc, text = self._run_version_step(tmp_path, "branch", "master", "feat/runtime-render-release", name="gh_br")
+        assert proc.returncode == 0, proc.stderr
+        assert "ref=feat/runtime-render-release" in text.splitlines(), text
+        version_line = next(ln for ln in text.splitlines() if ln.startswith("version="))
+        assert re.fullmatch(r"version=dev-\d{8}-[0-9a-f]{7}", version_line), version_line

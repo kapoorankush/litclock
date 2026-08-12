@@ -1,4 +1,4 @@
-"""GET /api/update/check, POST /api/update/apply, GET /api/update/status (#245 M5).
+"""GET /api/update/check, POST /api/update/apply, GET /api/update/status (litclock-dev#245 M5).
 
 The Updates tab calls all three. The /api/update/check route returns the
 6h-cached "is there a newer release" answer. /api/update/apply triggers
@@ -8,7 +8,7 @@ job queue serializes against the existing Sunday 03:00 + 7d-jitter timer).
 helper at /run/litclock/update.status (D2/D9), or returns ``{state:'idle'}``
 when no update has run yet.
 
-Error envelopes follow the project-wide #254 contract (control_server.errors).
+Error envelopes follow the project-wide litclock-dev#254 contract (control_server.errors).
 Two new slugs land here: ``update_in_progress`` (409 — applies during a busy
 unit) and ``already_up_to_date`` (409 — applies when cache says we're current).
 Both are deterministic via D10's threading.Lock around the gate-check + start
@@ -47,6 +47,57 @@ SYSTEMCTL_TIMEOUT_S: Final[int] = 5
 # instead of the 409 D10 promises. Module-level Lock makes the gate +
 # dispatch deterministic across all worker threads.
 _apply_lock = threading.Lock()
+
+# litclock-dev#607 review — update_is_busy() forks systemctl twice (5s-capped each), and
+# /api/update/status is an unauthenticated LAN endpoint the PWA polls every
+# 2s. The memo caps subprocess spawn rate no matter how hard the endpoint is
+# hit (Codex: "unauthenticated subprocess amplifier"). 2s TTL: one systemctl
+# pair per poll interval worst case, and the apply route's status-file seed
+# (seed_status_running) means a stale-False memo can never hide a fresh
+# dispatch — the file already says running by the time it matters.
+_BUSY_MEMO_TTL_S: Final[float] = 2.0
+_busy_memo_lock = threading.Lock()
+_busy_memo: dict = {"at": float("-inf"), "value": False}
+
+
+def _unit_busy_memoized() -> bool:
+    import time as _time  # noqa: PLC0415
+
+    now = _time.monotonic()
+    with _busy_memo_lock:
+        if now - _busy_memo["at"] < _BUSY_MEMO_TTL_S:
+            return _busy_memo["value"]
+    value = update_state.update_is_busy()
+    with _busy_memo_lock:
+        _busy_memo["at"] = _time.monotonic()
+        _busy_memo["value"] = value
+    return value
+
+
+def _reset_busy_memo() -> None:
+    """Test hook — the memo is module state and must not leak across tests."""
+    with _busy_memo_lock:
+        _busy_memo["at"] = float("-inf")
+        _busy_memo["value"] = False
+
+
+def _live_run(status_payload: dict) -> bool:
+    """Is an update run live, per file + unit combined (litclock-dev#607 review)?
+
+    The unit is the authority; the file supplies the phase. Two directions:
+    - ``idle`` file + busy unit = the dispatch window before update.sh's
+      first write (belt to the apply-route seed's suspenders, and the only
+      signal for timer-fired runs).
+    - ``running`` file + idle unit = a dead updater (SIGKILL/OOM skips the
+      EXIT trap) — the file lies until reboot clears tmpfs, and trusting it
+      would strand every page load on a frozen in-progress view.
+    ``stale`` (torn/corrupt read) is NOT inferred either way: it self-corrects
+    within one atomic-write tick, and inventing phase 1 for it would visually
+    regress a mid-run reading list.
+    Terminal states are never consulted against the unit — the updater's tail
+    legitimately has a terminal file + a still-busy unit.
+    """
+    return status_payload.get("state") in ("running", "idle") and _unit_busy_memoized()
 
 
 # ─── Helpers (mirroring routes/system.py patterns) ─────────────────────────
@@ -128,12 +179,30 @@ def updates_tab() -> str:
             cached = {**cached, "fetched_at_relative": None}
         else:
             cached = {**cached, "fetched_at_relative": _format_relative(ts_iso, _time_now())}
+    # litclock-dev#607 — if a run is live when the page renders (user navigated away and
+    # back, or the updater's own Phase-7 restart of litclock-control forced a
+    # reload), serve the in-progress view instead of the Apply card. The card
+    # invites a double-tap at the exact moment one is most tempting; the
+    # reading list is the truthful surface, and it degrades for no-JS users
+    # (a static phase snapshot, kept live-ish by a <noscript> meta-refresh).
+    # _live_run checks the file AND the unit in both directions — see its
+    # docstring for the dispatch-window and dead-updater cases.
+    status_payload = update_state.read_status_file()
+    update_running = _live_run(status_payload)
+    raw_phase = status_payload.get("phase_index")
+    # bool is an int subclass — a corrupted `true` must not become phase 1.
+    if isinstance(raw_phase, int) and not isinstance(raw_phase, bool) and 1 <= raw_phase <= 7:
+        update_phase_index = raw_phase
+    else:
+        update_phase_index = 1
     return render_template(
         "updates.html.j2",
         active_tab="updates",
         token=token,
         current_version=current_version,
         cached_check=cached,
+        update_running=update_running,
+        update_phase_index=update_phase_index,
     )
 
 
@@ -198,7 +267,7 @@ def apply_update() -> tuple[object, int]:
     if token is None:
         return envelope(
             "confirm_token_invalid",
-            "Confirm token is missing.",
+            "Couldn't verify that action. Reload the page and try again.",
             401,
         )
     result = _store().consume_classified("update_apply", token)
@@ -211,7 +280,7 @@ def apply_update() -> tuple[object, int]:
     with _apply_lock:
         # Busy gate (D5/F7): is-active OR has a queued job.
         if update_state.update_is_busy():
-            # Issue #328 — pre-side-effect failure: no systemctl dispatched.
+            # Issue litclock-dev#328 — pre-side-effect failure: no systemctl dispatched.
             # Restore the token so two PWA tabs racing on the same token
             # can sequentially succeed (tab A wins, tab B sees 409, then
             # tab B can retry with the same token once tab A's run completes).
@@ -227,7 +296,7 @@ def apply_update() -> tuple[object, int]:
         if cached and update_state.cache_is_fresh(cached):
             available = cached.get("available")
             if available is False:
-                # Issue #328 — pre-side-effect failure: no dispatch happened.
+                # Issue litclock-dev#328 — pre-side-effect failure: no dispatch happened.
                 # Restore so the user can re-tap after a new release lands
                 # without a page reload.
                 _store().restore("update_apply", token, expiry)
@@ -245,7 +314,7 @@ def apply_update() -> tuple[object, int]:
             payload = update_state.build_check_payload(current_version)
             update_state.write_cache(payload)
             if payload.get("available") is False:
-                # Issue #328 — pre-side-effect failure: same as the cached
+                # Issue litclock-dev#328 — pre-side-effect failure: same as the cached
                 # branch above. Restore the token.
                 _store().restore("update_apply", token, expiry)
                 return envelope(
@@ -276,10 +345,10 @@ def apply_update() -> tuple[object, int]:
                 "systemctl start litclock-update.service failed: %s",
                 stderr.decode(errors="replace").strip(),
             )
-            # Issue #328 — pre-side-effect failure: systemctl returned non-zero
+            # Issue litclock-dev#328 — pre-side-effect failure: systemctl returned non-zero
             # BEFORE the unit started, so the box is still up. Restore the
             # token so the user's retry surfaces the underlying error
-            # instead of a spurious "token already used" 401. The #327-style
+            # instead of a spurious "token already used" 401. The litclock-dev#327-style
             # missing-unit / sudoers-misconfig case is the live motivation.
             #
             # Review D1 caveat: a non-zero exit from `systemctl --no-block`
@@ -307,7 +376,7 @@ def apply_update() -> tuple[object, int]:
                 "systemctl start litclock-update.service timed out: %s",
                 stderr.decode(errors="replace").strip(),
             )
-            # Issue #328 — DON'T restore on timeout. systemctl --no-block
+            # Issue litclock-dev#328 — DON'T restore on timeout. systemctl --no-block
             # returns immediately on success; a timeout means the unit may
             # have actually dispatched. Paranoid: keep the token consumed
             # so we don't double-fire the update flow.
@@ -316,6 +385,16 @@ def apply_update() -> tuple[object, int]:
                 "The update could not be started.",
                 500,
             )
+        else:
+            # litclock-dev#607 review F1 — pre-seed the status file so no poll between
+            # this dispatch and update.sh's first write can read the
+            # PREVIOUS run's terminal verdict (second Apply in the same
+            # boot: the stale `complete` ticked all phases done and
+            # reloaded onto the Apply card mid-update). Inside the lock so
+            # a concurrent apply can't interleave; after the successful
+            # start so a failed dispatch never plants a running file that
+            # nothing will ever update.
+            update_state.seed_status_running()
 
     # Lock released; response flushes outside the critical section.
     import time as _time
@@ -339,4 +418,20 @@ def status() -> tuple[object, int]:
         stale               — file existed but couldn't be parsed
     """
     payload = update_state.read_status_file()
+    if payload.get("state") == "idle" and _unit_busy_memoized():
+        # litclock-dev#607 — the status file lags the unit at both ends of a run: after
+        # Apply dispatches (--no-block) there's a systemd-activation +
+        # update.sh-startup window before Phase 1 writes the file, and a
+        # freshly restarted control server can catch the same gap. A poll
+        # landing in that window used to see `idle`, and the PWA read that
+        # as "nothing running" and fell back to the stale Apply card while
+        # the update marched on. The unit state is the authority: if
+        # litclock-update.service is active or queued, report running.
+        # `stale` is deliberately NOT inferred (review): a torn read
+        # self-corrects within one atomic-write tick, and inventing phase 1
+        # for it would visually regress a mid-run reading list. A `running`
+        # file also passes through un-checked here — the dead-updater
+        # cross-check lives on the page render only, where a wrong answer
+        # costs a reload instead of a terminal verdict mid-poll-loop.
+        payload = {"state": "running", "phase_index": 1, "inferred": "unit-busy"}
     return jsonify({"ok": True, **payload}), 200

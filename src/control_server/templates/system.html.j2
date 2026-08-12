@@ -124,9 +124,11 @@
   </article>
 
   {# litclock-dev#510 — Factory reset card. Full-wipe sibling of Reset WiFi: erases ALL
-     settings AND WiFi and reboots into first-boot setup. Modal copy MUST make
-     the "everything, not just WiFi" distinction so a mover reaching for
-     Reset WiFi doesn't nuke their preferences by mistake. #}
+     settings AND WiFi and powers off (litclock-dev#627 — a mover packing the
+     clock up or handing it on wants it OFF, and the next power-on runs
+     first-boot setup anyway). Modal copy MUST make the "everything, not just
+     WiFi" distinction so a mover reaching for Reset WiFi doesn't nuke their
+     preferences by mistake. #}
   <article class="action-card action-card--destructive" data-action="factory_reset">
     <header class="action-card__header">
       {# rotate-ccw — a circular reset arrow #}
@@ -139,8 +141,9 @@
       <h2 class="action-card__title">Factory reset</h2>
     </header>
     <p class="action-card__consequence">
-      Erases <strong>everything</strong> — all settings and WiFi — and reboots
-      into first-time setup. Use this to start completely fresh.
+      Erases <strong>everything</strong> — all settings and WiFi — and powers
+      off. Power it on again to set it up fresh. Use this before you move or
+      pass the clock on.
     </p>
     <form class="action-card__form"
           method="POST"
@@ -325,7 +328,7 @@
     <h2 id="confirm-factory-reset-title" class="confirm-sheet__title">Factory reset?</h2>
     <p id="confirm-factory-reset-body" class="confirm-sheet__body">
       <strong>Everything</strong> will be erased — all settings and WiFi — and the clock
-      reboots into setup. This can’t be undone. You’ll set it up again by joining the
+      powers off. This can’t be undone. Power it on again to set it up fresh, joining the
       <strong>LitClock-Setup</strong> network from your phone’s WiFi list.
     </p>
     <div class="confirm-sheet__actions">

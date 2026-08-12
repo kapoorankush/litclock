@@ -1,5 +1,5 @@
 {% extends "base.html.j2" %}
-{# Updates tab — single-card layout (#245 M5).
+{# Updates tab — single-card layout (litclock-dev#245 M5).
 
    Server-renders the up-to-date / available pill from the cached check.
    The Apply button POSTs to /api/update/apply with a hidden confirm
@@ -26,6 +26,13 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/updates.css') }}">
   {# M7 OV-2 — shared confirm-sheet partial; /system also loads it. #}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/confirm-sheet.css') }}">
+  {% if update_running %}
+  {# litclock-dev#607 — keep the no-JS in-progress snapshot live-ish: with JS the poll
+     loop owns the view and this never fires; without it the page reloads
+     itself every 15s until the run leaves the running state and the server
+     renders the card again. #}
+  <noscript><meta http-equiv="refresh" content="15"></noscript>
+  {% endif %}
 {% endblock %}
 
 {% block extra_body %}
@@ -37,7 +44,7 @@
    via GET /api/update/check shortly after load to catch a 6h-cache miss
    without bothering the user with a synchronous fetch on render. #}
 {% set available = cached_check and cached_check.available %}
-{# #381 — split the unknown state into "checking" (no cache yet — JS is about
+{# litclock-dev#381 — split the unknown state into "checking" (no cache yet — JS is about
    to fire /api/update/check) and "check_failed" (cache exists but the GH
    call returned a null result, e.g. private repo without auth). Both stay
    under data-state="unknown" so the existing JS/CSS keeps working, but the
@@ -49,10 +56,16 @@
 {% set latest_tag = cached_check.latest_tag if cached_check else None %}
 {% set release_notes = cached_check.release_notes if cached_check else None %}
 
+{# litclock-dev#607 — when a run is live at render time (navigated back mid-update, or
+   the updater restarted litclock-control under the PWA), the card is the
+   WRONG surface: it shows a stale "Apply update" button while an update is
+   already running. Hide it and open the reading list instead; updates.js
+   sees the open reading list on load and resumes polling. #}
 <section id="updates-card"
          class="updates-card"
          data-current-version="{{ current_version }}"
-         data-state="{% if available %}available{% elif unknown %}unknown{% else %}up_to_date{% endif %}">
+         data-state="{% if available %}available{% elif unknown %}unknown{% else %}up_to_date{% endif %}"
+         {% if update_running %}hidden{% endif %}>
 
   <header class="updates-card__header">
     {% if available %}
@@ -60,7 +73,7 @@
     {% elif checking %}
       <span class="updates-pill updates-pill--unknown" role="status">checking…</span>
     {% elif check_failed %}
-      {# #381 — terminal-unknown state: the GH /tags call returned null
+      {# litclock-dev#381 — terminal-unknown state: the GH /tags call returned null
          (commonly: private repo + missing PAT). Was "checking…" before,
          which left users staring at a spinner that wasn't spinning. #}
       <span class="updates-pill updates-pill--unknown" role="status">couldn't check</span>
@@ -136,38 +149,31 @@
    /api/update/status reports state=running. The 7 rows match D3's lock;
    updates.js sets data-state on each row to {completed, active, upcoming}
    based on the polled phase_index, and updates.css renders the icon +
-   typography per DESIGN.md "Phase reading-list (during update apply)". #}
-<section class="phase-reading-list" id="phase-reading-list" hidden aria-live="polite">
+   typography per DESIGN.md "Phase reading-list (during update apply)".
+
+   litclock-dev#607 — when update_running, the section renders OPEN with the rows
+   pre-set from the status file's phase snapshot, so a mid-update page
+   load (or the post-restart reload) shows live progress instead of the
+   stale card. Markup is byte-identical to the old hand-written rows;
+   only the loop and the conditional data-state are new. #}
+<section class="phase-reading-list" id="phase-reading-list" {% if not update_running %}hidden {% endif %}aria-live="polite">
   <h2 class="phase-reading-list__title">Updating LitClock</h2>
   <ol class="phase-reading-list__rows" role="list">
-    <li class="phase-row" data-phase-index="1" data-state="upcoming">
+    {% for phase_name in ['Checking for updates', 'Pulling new code', 'Syncing quote images',
+                          'Updating Python packages', 'Verifying clock starts',
+                          'Installing services', 'Restarting'] %}
+    {%- if update_running and loop.index < update_phase_index %}
+      {%- set row_state = 'completed' %}
+    {%- elif update_running and loop.index == update_phase_index %}
+      {%- set row_state = 'active' %}
+    {%- else %}
+      {%- set row_state = 'upcoming' %}
+    {%- endif %}
+    <li class="phase-row" data-phase-index="{{ loop.index }}" data-state="{{ row_state }}">
       <span class="phase-row__icon" aria-hidden="true"></span>
-      <span class="phase-row__name">Checking for updates</span>
+      <span class="phase-row__name">{{ phase_name }}</span>
     </li>
-    <li class="phase-row" data-phase-index="2" data-state="upcoming">
-      <span class="phase-row__icon" aria-hidden="true"></span>
-      <span class="phase-row__name">Pulling new code</span>
-    </li>
-    <li class="phase-row" data-phase-index="3" data-state="upcoming">
-      <span class="phase-row__icon" aria-hidden="true"></span>
-      <span class="phase-row__name">Syncing quote images</span>
-    </li>
-    <li class="phase-row" data-phase-index="4" data-state="upcoming">
-      <span class="phase-row__icon" aria-hidden="true"></span>
-      <span class="phase-row__name">Updating Python packages</span>
-    </li>
-    <li class="phase-row" data-phase-index="5" data-state="upcoming">
-      <span class="phase-row__icon" aria-hidden="true"></span>
-      <span class="phase-row__name">Verifying clock starts</span>
-    </li>
-    <li class="phase-row" data-phase-index="6" data-state="upcoming">
-      <span class="phase-row__icon" aria-hidden="true"></span>
-      <span class="phase-row__name">Installing services</span>
-    </li>
-    <li class="phase-row" data-phase-index="7" data-state="upcoming">
-      <span class="phase-row__icon" aria-hidden="true"></span>
-      <span class="phase-row__name">Restarting</span>
-    </li>
+    {%- endfor %}
   </ol>
   <p class="phase-reading-list__terminal" id="phase-terminal-message" hidden></p>
 </section>

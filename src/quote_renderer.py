@@ -121,6 +121,40 @@ def _font_path(name: str) -> str:
     return str(FONTS_DIR / name)
 
 
+# Default location of the GD ground-truth measurement dump that
+# `tools/validate_measurement.py check` proves this environment against.
+EXPECTED_DUMP_PATH = _PROJECT_ROOT / "tools" / "gd-expected-measurements.json.gz"
+
+
+def runtime_validation_digest(dump_path: Path | None = None) -> str:
+    """Digest binding a validation marker to its proof inputs (litclock-dev#604).
+
+    sha256 over: the freetype-py runtime version, each render font's bytes,
+    and the expected-measurements dump. A `check --stamp` pass proves THIS
+    freetype reproduces THAT dump using THESE fonts — change any one and the
+    proof the marker records is stale, even when the freetype version string
+    is unchanged (a font swap or dump regen with the same wheel was
+    previously invisible to the reader). The writer
+    (validate_measurement check --stamp) embeds this; the reader
+    (_runtime_render_enabled) recomputes and compares every start.
+
+    Raises on any unreadable input — callers must treat failure as "cannot
+    prove validity" and fall back to the pre-rendered tier.
+    """
+    import hashlib  # noqa: PLC0415
+
+    import freetype  # noqa: PLC0415
+
+    h = hashlib.sha256()
+    h.update(".".join(map(str, freetype.version())).encode())
+    for name in sorted({FONT_REGULAR, FONT_BOLD, FONT_CREDITS}):
+        h.update(name.encode())
+        h.update(hashlib.sha256((FONTS_DIR / name).read_bytes()).digest())
+    dump = Path(dump_path) if dump_path is not None else EXPECTED_DUMP_PATH
+    h.update(hashlib.sha256(dump.read_bytes()).digest())
+    return h.hexdigest()
+
+
 @lru_cache(maxsize=8)
 def _pil_font(name: str, ptsize: int) -> ImageFont.FreeTypeFont:
     # GD renders at 96 DPI: pixel size = ptsize * 4/3 (PIL sizes are px @72).
@@ -182,7 +216,7 @@ def find_timestring(quote_bytes: bytes, timestring_bytes: bytes) -> int:
 def _word_char_at(qb: bytes, i: int) -> bool:
     # One UTF-8 char starting at byte i (i is always at a char boundary);
     # decode-with-ignore drops any trailing partial char in the 4-byte
-    # window (#27 semantics). Corpus-quality use only.
+    # window (litclock-dev#27 semantics). Corpus-quality use only.
     if i >= len(qb):
         return False
     ch = qb[i : i + 4].decode("utf-8", "ignore")[:1]
@@ -287,6 +321,34 @@ def fit(words: list[bytes], ts_start: int, ts_end: int) -> tuple[Layout, int] | 
     return best
 
 
+# litclock-dev#539 fitted-font-size floors — corpus POLICY, colocated with the
+# measuring instrument so corpus_edit and render_invariants can't drift.
+# Below the hard floor the body text is ~15px cap height on a panel read
+# from 1-3m. Defined in FITTED SIZE, not characters: identical char counts
+# land 1-2 sizes apart depending on word breaks — measure, never count.
+FS_HARD_FLOOR = 22
+FS_SOFT_FLOOR = 24
+
+
+def fitted_font_size(quote: str, timestring: str) -> int | None:
+    """Fitted font size for a raw corpus quote — the size render_quote would
+    use — without drawing. Returns None when the timestring is absent from
+    the quote or no size fits (both are corpus-defect states the caller
+    reports). The litclock-dev#539 fs-floor gate measures with THIS so the floor can
+    never drift from what actually renders. Needs freetype-py (gd_measure)
+    at call time; import of this module stays freetype-free."""
+    qb = preprocess_quote(quote).encode("utf-8")
+    # PHP-trim, not Python .strip(): iter_corpus trims fields with
+    # PHP_TRIM_CHARS, and Python's strip also eats NBSP-class whitespace
+    # that production preserves (review finding).
+    tsb = timestring.strip(PHP_TRIM_CHARS).encode("utf-8")
+    idx = find_timestring(qb, tsb)
+    if idx < 0:
+        return None
+    fitted = fit(qb.split(b" "), idx, idx + len(tsb))
+    return None if fitted is None else fitted[1]
+
+
 def _draw_segment(draw: ImageDraw.ImageDraw, font_name: str, font_size: int, x: int, y: int, text: str) -> None:
     # imagettftext's y is the baseline; PIL anchor "ls" = left-baseline.
     # Each glyph lands at GD's own integer pen position.
@@ -367,6 +429,21 @@ def add_credits(img: Image.Image, title: str, author: str) -> None:
         )
 
 
+def corpus_basename(hhmm: str, image_number: int, is_nsfw: bool) -> str:
+    """The PHP filename stem for a row: quote_{HHMM}_{n}[_nsfw]
+    (append .png / _credits.png). One expression, used by both corpus
+    walks — iter_corpus and rows_for_time built it independently before
+    (litclock-dev#605 item 16), which is exactly the drifting-copy shape
+    the basename identity checks exist to prevent.
+
+    Known remaining independent builders (PHP-parity side, deliberately
+    untouched by the item-16 cleanup): corpus_edit.per_row_filenames and
+    generate_images.py build the same stem with their own f-strings —
+    they mirror quote_to_image.php's namer directly and carry their own
+    parity tests."""
+    return f"quote_{hhmm}_{image_number}{'_nsfw' if is_nsfw else ''}"
+
+
 @dataclass(frozen=True)
 class CorpusRow:
     """One renderable corpus row with its PHP-derived identity.
@@ -422,7 +499,7 @@ def iter_corpus(
                 hhmm=key,
                 image_number=image_number,
                 is_nsfw=is_nsfw,
-                basename=f"quote_{key}_{image_number}{'_nsfw' if is_nsfw else ''}",
+                basename=corpus_basename(key, image_number, is_nsfw),
                 timestring=row[1].strip(PHP_TRIM_CHARS),
                 quote=preprocess_quote(row[2]),
                 title=row[3].strip(PHP_TRIM_CHARS),
@@ -458,7 +535,7 @@ def rows_for_time(csv_path: str | os.PathLike | None, hhmm: str) -> list[CorpusR
             hhmm=hhmm,
             image_number=e["idx"],
             is_nsfw=e["is_nsfw"],
-            basename=f"quote_{hhmm}_{e['idx']}{'_nsfw' if e['is_nsfw'] else ''}",
+            basename=corpus_basename(hhmm, e["idx"], e["is_nsfw"]),
             timestring=e["timestring"],
             quote=preprocess_quote(e["quote_raw"]),
             title=e["title"],
@@ -481,9 +558,15 @@ def render_row(row: CorpusRow) -> tuple[Image.Image, Image.Image, int, Layout]:
 
 
 def reset_caches() -> None:
-    """Test hook — clear the PIL font cache AND quote_corpus's index cache
+    """Reset hook — clear the PIL font cache AND quote_corpus's index cache
     (rows_for_time depends on it since litclock-dev#590; without this, a
     test rewriting the same CSV path within one mtime tick could serve a
-    stale index). gd_measure has its own reset_caches."""
+    stale index). gd_measure has its own reset_caches.
+
+    No callers today (litclock-dev#605 item 14): tests that rewrite corpora
+    call quote_corpus.reset_cache() directly, and nothing monkeypatches the
+    font path, so the PIL half has never needed clearing. Kept as the one
+    documented reset point for this module — a test that DOES repoint fonts
+    should call this rather than reach into _pil_font."""
     _pil_font.cache_clear()
     quote_corpus.reset_cache()

@@ -1,4 +1,4 @@
-// Behavior coverage for the #329 optimistic-tick rule in updates.js (#338).
+// Behavior coverage for the litclock-dev#329 optimistic-tick rule in updates.js (litclock-dev#338).
 //
 // The rule (lifted verbatim from updates.js:34-41):
 //
@@ -21,7 +21,7 @@
 // 2. Negative (the rule): cold page load with no apply → first probe rejects
 //    → seenRunning stays false → no phantom tick.
 //
-// 3. Probe-running (#342 I10): cold-load probe SEES state=running →
+// 3. Probe-running (litclock-dev#342 I10): cold-load probe SEES state=running →
 //    enterReadingList AND schedulePoll fire → a subsequent /api/update/status
 //    poll happens (proves the probe path arms the cycle, not just fireApply).
 //
@@ -36,7 +36,7 @@ import { loadScript, installFetchMock, stubDialog } from "./helpers/loadScript.j
 // markup) + the form/dialog hooks updates.js queries. If a future template
 // rename or restructure breaks the production card, this test's synthetic
 // DOM will stay green — keep this scaffold in lockstep with the template
-// hooks. (#338, codex maintainability finding.)
+// hooks. (litclock-dev#338, codex maintainability finding.)
 function buildDom() {
   document.body.innerHTML = `
     <section id="updates-card" data-state="available" data-current-version="0.211.4">
@@ -79,7 +79,7 @@ function phaseState(idx) {
     .getAttribute("data-state");
 }
 
-describe("updates.js #329 optimistic-tick", () => {
+describe("updates.js litclock-dev#329 optimistic-tick", () => {
   let mock;
   // No-op default so afterEach can't crash if beforeEach throws before
   // stubDialog() runs — the original error would otherwise be masked by
@@ -145,9 +145,19 @@ describe("updates.js #329 optimistic-tick", () => {
     expect(document.getElementById("phase-reading-list").hidden).toBe(false);
     expect(phaseState(1)).toBe("active");
 
-    // Advance the 2s status poll. Status fetch will reject → cb(null) →
-    // handleStatusPayload(null). seenRunning is true so updateRowStates(7,
-    // false) fires AND cancelPolling + enterReconnectMode → /api/health.
+    // Advance three 2s status polls. Each fetch rejects → cb(null) →
+    // handleStatusPayload(null). litclock-dev#607 raised the bar from one failed poll
+    // to POLL_FAILURE_THRESHOLD (3) consecutive failures, so the first two
+    // misses just re-arm the poll; the third crosses the threshold and —
+    // seenRunning being true — updateRowStates(7, false) fires AND
+    // cancelPolling + enterReconnectMode → /api/health.
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    // After one miss: retrying, NOT reconnecting — no phantom tick yet.
+    expect(phaseState(1)).toBe("active");
+    expect(mock.calls.filter((c) => c.path === "/api/health").length).toBe(0);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(2000);
     await flushMicrotasks();
 
@@ -198,7 +208,7 @@ describe("updates.js #329 optimistic-tick", () => {
     }
   });
 
-  it("probe-running (#342 I10): cold-load probe sees state=running → reading list + poll cycle armed", async () => {
+  it("probe-running (litclock-dev#342 I10): cold-load probe sees state=running → reading list + poll cycle armed", async () => {
     mock.register(/\/api\/update\/check$/, { status: 200, body: { ok: true, available: true } });
 
     // Multi-shot: first /api/update/status call (cold-load probe) returns

@@ -1,4 +1,4 @@
-"""Tests for image-gen/corpus_edit.py — the one-command corpus-edit orchestrator (issue #211)."""
+"""Tests for image-gen/corpus_edit.py — the one-command corpus-edit orchestrator (issue litclock-dev#211)."""
 
 from __future__ import annotations
 
@@ -179,7 +179,7 @@ class TestDirtyBuckets:
 
 class TestValidate:
     def test_ten_ten_pm_tagged_as_21_10_fails(self):
-        """The exact bug that motivated issue #211."""
+        """The exact bug that motivated issue litclock-dev#211."""
         rows = corpus_edit.parse_corpus(
             _csv([["21:10", "10.10pm.", "10.10pm. When you turn your recorder", "BJD", "HF", "NO"]])
         )
@@ -202,6 +202,72 @@ class TestValidate:
         ]
         rows = corpus_edit.parse_corpus(_csv(clean))
         assert corpus_edit.validate_rows(rows) == []
+
+
+class TestMidwordEdges:
+    """litclock-dev#540's WARN tier had zero coverage (litclock-dev#605 item 6) —
+    notably, validate_midword_edges bootstraps sys.path and imports the
+    production renderer at call time, so an ImportError there would crash
+    `corpus_edit ship` mid-flow. These tests run that real import."""
+
+    def test_midword_edge_is_flagged(self):
+        """'noon' ending inside 'noonday' is the canonical half-bold bug."""
+        rows = corpus_edit.parse_corpus(_csv([["12:00", "noon", "It was noonday", "T", "A", "NO"]]))
+        warns = corpus_edit.validate_midword_edges(rows)
+        assert len(warns) == 1
+        assert "mid-word" in warns[0]
+
+    def test_clean_edges_produce_no_warns(self):
+        rows = corpus_edit.parse_corpus(_csv([["12:00", "noon", "It was noon when", "T", "A", "NO"]]))
+        assert corpus_edit.validate_midword_edges(rows) == []
+
+    def test_warn_helper_prints_to_stderr(self, capsys):
+        rows = corpus_edit.parse_corpus(_csv([["12:00", "noon", "It was noonday", "T", "A", "NO"]]))
+        corpus_edit.warn_midword_edges(rows)
+        err = capsys.readouterr().err
+        assert "WARN:" in err
+        assert "mid-word" in err
+
+    def test_warn_helper_silent_on_clean_rows(self, capsys):
+        rows = corpus_edit.parse_corpus(_csv([["12:00", "noon", "It was noon when", "T", "A", "NO"]]))
+        corpus_edit.warn_midword_edges(rows)
+        assert capsys.readouterr().err == ""
+
+    def test_both_command_paths_call_the_warn(self):
+        """litclock-dev#540: a warn only in `validate` is bypassable by never running
+        it — ship is the primary workflow. Pin that BOTH paths call the one
+        shared helper (litclock-dev#605 item 16 collapsed the two copies).
+        AST Call nodes, not source-substring (/review on litclock-dev#614): a substring
+        match is satisfied by a comment containing the call text."""
+        import ast
+        import inspect
+        import textwrap
+
+        def calls_warn(fn):
+            tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+            return any(
+                isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "warn_midword_edges"
+                for node in ast.walk(tree)
+            )
+
+        assert calls_warn(corpus_edit.cmd_validate)
+        # cmd_ship only dispatches; the CSV-edit path is where changed rows
+        # exist (generator ship regen-only mode has none by definition).
+        assert calls_warn(corpus_edit._cmd_ship_csv)
+
+    def test_cmd_validate_emits_the_warn_end_to_end(self, sandbox, monkeypatch, capsys):
+        """Behavioral pin for the validate path (/review on litclock-dev#614): a mid-word
+        row driven through the real cmd_validate must reach stderr as a WARN
+        and stay non-fatal (rc 0) — litclock-dev#540's contract, previously pinned
+        only structurally. The fs-floor stage is stubbed out so the test
+        runs without freetype (the floor has its own gated tests)."""
+        monkeypatch.setattr(corpus_edit, "read_head_corpus", lambda: "")
+        monkeypatch.setattr(corpus_edit, "validate_fs_floor", lambda *a, **k: ([], []))
+        sandbox.corpus.write_text(_csv([["12:00", "noon", "It was noonday", "T", "A", "NO"]]))
+        rc = corpus_edit.cmd_validate(argparse.Namespace(allow_small=None))
+        err = capsys.readouterr().err
+        assert "mid-word" in err
+        assert rc == 0
 
 
 class TestBucketContiguity:
@@ -349,6 +415,16 @@ def shipping(sandbox, monkeypatch):
 
 
 class TestShip:
+    @pytest.fixture(autouse=True)
+    def _stub_fs_floor(self, monkeypatch):
+        # These tests exercise ship-pipeline mechanics, not the fs gate
+        # (which has its own tests and needs freetype-py). Stubbing keeps
+        # them green on freetype-less interpreters — the documented
+        # pre-commit pytest command runs under system python3 (review F1).
+        # **kwargs so the stub survives signature growth (litclock-dev#559 added
+        # head_rows); a positional stub silently breaks every ship test.
+        monkeypatch.setattr(corpus_edit, "validate_fs_floor", lambda rows, **kwargs: ([], []))
+
     def test_ship_dry_run_has_no_side_effects(self, shipping):
         sandbox, calls = shipping
         before_images = {p.name for p in sandbox.images.glob("quote_*.png")}
@@ -532,7 +608,7 @@ class TestShip:
         assert corpus_edit.read_head_corpus() == ""
 
 
-# ── generator-awareness (#502) ────────────────────────────────────────
+# ── generator-awareness (litclock-dev#502) ────────────────────────────────────────
 
 
 def _cp(cmd, code=0, out="", err=""):
@@ -602,7 +678,7 @@ class TestPrepareForRegen:
         assert not corpus_edit.MANIFEST_BAK.exists()
 
     def test_generator_dominates_dirty(self, sandbox):
-        # R1 + #503 review P1: a renderer change forces a full regen (manifest aside)
+        # R1 + litclock-dev#503 review P1: a renderer change forces a full regen (manifest aside)
         # AND still wipes the dirty buckets — that clears orphaned PNGs from
         # removed/renumbered rows, which a content-hash full regen would otherwise
         # leave for the release tarball to ship.
@@ -745,7 +821,7 @@ class TestGeneratorShip:
         assert corpus_edit.cmd_ship(_ship_args(message="fix(images): renderer")) == 2
 
     def test_generator_ship_rejected_when_version_already_bumped(self, sandbox, monkeypatch):
-        # Rerun-safety (#503 review P1): .images-version already bumped vs base means a
+        # Rerun-safety (litclock-dev#503 review P1): .images-version already bumped vs base means a
         # prior ship cut the release — re-running must NOT double-bump.
         sandbox.write_corpus(HEAD_ROWS)
         calls: list[list[str]] = []
@@ -756,7 +832,7 @@ class TestGeneratorShip:
 
     def test_generator_ship_rejected_on_mixed_committed_csv(self, sandbox, monkeypatch):
         # A branch with BOTH a committed renderer change and a committed CSV edit is
-        # not supported by the in-place generator flow (#503 review P1) — fail loud
+        # not supported by the in-place generator flow (litclock-dev#503 review P1) — fail loud
         # rather than skip CSV validation + orphan clearing.
         sandbox.write_corpus(HEAD_ROWS)
         calls: list[list[str]] = []
@@ -850,7 +926,7 @@ def _label(cmd: list[str]) -> str:
     return " ".join(cmd[:2])
 
 
-# ── manifest helpers (#299) ───────────────────────────────────────────
+# ── manifest helpers (litclock-dev#299) ───────────────────────────────────────────
 
 
 class TestImageContentHash:
@@ -870,7 +946,7 @@ class TestImageContentHash:
         )
 
     def test_pipe_in_field_is_unambiguous(self):
-        # #299/F: pipe-in-field used to collide under the old `|`-joined
+        # litclock-dev#299/F: pipe-in-field used to collide under the old `|`-joined
         # preimage. With JSON-array encoding these two MUST hash differently.
         a = corpus_edit.image_content_hash("a|b", "c", "d", "e")
         b = corpus_edit.image_content_hash("a", "b|c", "d", "e")
@@ -1015,6 +1091,438 @@ class TestDiffWithManifest:
         assert "per-row content-hash mismatch" not in out
 
 
+# ── fitted-fs floor validator (litclock-dev#539) ───────────────────────────────
+
+try:
+    import freetype  # noqa: F401
+
+    _HAVE_FREETYPE = True
+except ImportError:
+    _HAVE_FREETYPE = False
+
+needs_freetype = pytest.mark.skipif(not _HAVE_FREETYPE, reason="freetype-py required to measure fitted size")
+
+
+def _row(quote: str, match: str, time: str = "12:00") -> corpus_edit.Row:
+    return corpus_edit.Row(time=time, match=match, quote=quote, title="T", author="A", is_nsfw=False)
+
+
+@needs_freetype
+class TestFsFloor:
+    SHORT = _row("It was noon and the bells rang out over the quiet town.", "noon")
+    # Long enough to fit only below the hard floor; filler deliberately
+    # avoids any substring of the match so find_timestring can't hit early.
+    LONG = _row(
+        (
+            "The keeper counted his coins and muttered about the heat while dust settled over the crowded "
+            "shelves of the shop, and outside the carts rolled by one after another, their drivers calling "
+            "greetings to the women at the well, who answered without looking up from their buckets. " * 2
+        )
+        + "It was noon.",
+        "noon",
+    )
+
+    def test_short_row_passes_clean(self):
+        errors, warns = corpus_edit.validate_fs_floor([self.SHORT])
+        assert errors == []
+        assert warns == []
+
+    def test_absent_timestring_is_error(self):
+        errors, warns = corpus_edit.validate_fs_floor([_row("No time in this quote.", "midnight")])
+        assert len(errors) == 1
+        assert "won't render" in errors[0]
+
+    def test_long_row_fails_hard_floor(self):
+        errors, warns = corpus_edit.validate_fs_floor([self.LONG])
+        assert len(errors) == 1
+        assert "hard floor" in errors[0]
+
+    def test_acknowledging_the_token_demotes_to_warn(self):
+        token = corpus_edit.violation_token(self.LONG)
+        errors, warns = corpus_edit.validate_fs_floor([self.LONG], acknowledged=[token])
+        assert errors == []
+        assert len(warns) == 1
+        assert "hard floor" in warns[0]
+
+
+@needs_freetype
+class TestFsFloorAcknowledgement:
+    """litclock-dev#559 — the floor is absolute; exactly one relaxation is automatic,
+    and everything else is reported for an explicit, content-bound accept.
+
+    An earlier version of this change tried to INFER intent (pair a row with
+    its pre-edit self, pass anything no worse). Cross-model review found it
+    unfixably bypassable: deleting a sub-floor row and adding a different one
+    at the same identity produces exactly the diff an edit produces. The tool
+    now stops guessing and asks.
+    """
+
+    BEFORE = TestFsFloor.LONG  # 562 chars, fits fs20, below the hard floor of 22
+
+    def _edited(self, **kw):
+        d = dict(
+            time=self.BEFORE.time,
+            match=self.BEFORE.match,
+            quote=self.BEFORE.quote,
+            title=self.BEFORE.title,
+            author=self.BEFORE.author,
+            is_nsfw=False,
+        )
+        d.update(kw)
+        return corpus_edit.Row(**d)
+
+    @staticmethod
+    def _as_csv(row: corpus_edit.Row) -> str:
+        return "|".join([row.time, row.match, row.quote, row.title, row.author, "YES" if row.is_nsfw else "NO"]) + "\n"
+
+    # ── the automatic relaxation: provably-safe metadata edits ───────
+
+    def test_retag_of_a_sub_floor_row_passes_with_no_flag(self):
+        """Retagging is the workflow this tool was built for (litclock-dev#211)."""
+        errors, warns = corpus_edit.validate_fs_floor([self._edited(time="13:00")], head_rows=[self.BEFORE])
+        assert not errors, f"a retag changes no rendered text; got {errors}"
+        assert any("unchanged at HEAD" in w for w in warns), warns
+
+    def test_title_and_author_fixes_pass_with_no_flag(self):
+        for field in ("title", "author"):
+            row = self._edited(**{field: "Corrected"})
+            errors, _ = corpus_edit.validate_fs_floor([row], head_rows=[self.BEFORE])
+            assert not errors, f"a {field} fix changes no rendered text; got {errors}"
+
+    def test_changing_the_match_is_NOT_metadata_only(self):
+        """(quote, match) is the render pair — the shortcut must key on BOTH."""
+        assert "It was noon" in self.BEFORE.quote
+        errors, _ = corpus_edit.validate_fs_floor([self._edited(match="It was noon")], head_rows=[self.BEFORE])
+        assert errors, "a changed match moves the bold span; it is not metadata-only"
+
+    # ── everything else is reported, then explicitly accepted ────────
+
+    def test_sub_floor_row_errors_and_names_its_token(self):
+        errors, _ = corpus_edit.validate_fs_floor([self.BEFORE], head_rows=[])
+        assert errors
+        assert corpus_edit.violation_token(self.BEFORE) in errors[0], errors
+
+    def test_acknowledging_the_token_lets_it_through(self):
+        token = corpus_edit.violation_token(self.BEFORE)
+        errors, warns = corpus_edit.validate_fs_floor([self.BEFORE], acknowledged=[token], head_rows=[])
+        assert not errors, errors
+        assert any(token in w for w in warns), warns
+
+    def test_token_is_content_bound_so_a_further_edit_invalidates_it(self):
+        """The key property. Acknowledge a row, then change it again — the old
+        approval must stop applying rather than silently carry over."""
+        token = corpus_edit.violation_token(self.BEFORE)
+        changed_again = self._edited(quote=self.BEFORE.quote.replace("muttered", "murmured", 1))
+        assert corpus_edit.violation_token(changed_again) != token
+        errors, _ = corpus_edit.validate_fs_floor([changed_again], acknowledged=[token], head_rows=[])
+        assert errors, "a stale token must not authorise the edited row"
+
+    def test_two_rows_at_the_same_minute_get_different_tokens(self):
+        """A minute holds many rows, so the time alone cannot be the key."""
+        a = self.BEFORE
+        b = self._edited(quote=self.BEFORE.quote + " A second quote at the same minute.")
+        assert a.time == b.time
+        assert corpus_edit.violation_token(a) != corpus_edit.violation_token(b)
+
+    def test_stale_acknowledgement_is_an_error_not_a_no_op(self):
+        """A list pasted from an old PR body must not look like it still
+        authorises something."""
+        ghost = "12:00#deadbeef"
+        errors, _ = corpus_edit.validate_fs_floor(
+            [self._edited(time="13:00")], acknowledged=[ghost], head_rows=[self.BEFORE]
+        )
+        assert any("stale acknowledgement" in e and ghost in e for e in errors), errors
+
+    def test_no_acknowledgement_can_excuse_a_row_that_will_not_render(self):
+        broken = self._edited(match="nowhere-in-this-text")
+        token = corpus_edit.violation_token(broken)
+        errors, _ = corpus_edit.validate_fs_floor([broken], acknowledged=[token], head_rows=[])
+        assert errors, "a non-rendering row must never be acceptable"
+        assert any("won't render" in e for e in errors), errors
+
+    # ── the wiring: both entry points must honour it ─────────────────
+
+    def test_cmd_validate_rejects_then_accepts_with_the_token(self, sandbox, monkeypatch):
+        monkeypatch.setattr(corpus_edit, "read_head_corpus", lambda: "")
+        sandbox.corpus.write_text(self._as_csv(self.BEFORE))
+        assert corpus_edit.cmd_validate(argparse.Namespace(allow_small=None)) == 2
+        token = corpus_edit.violation_token(self.BEFORE)
+        assert corpus_edit.cmd_validate(argparse.Namespace(allow_small=[token])) == 0
+
+    def test_cmd_validate_passes_a_metadata_edit_with_no_flag(self, sandbox, monkeypatch):
+        """End-to-end cover for the automatic relaxation.
+
+        Uses a byline fix rather than a retag: this fixture's match is "noon",
+        which time-tag validation (correctly, and BEFORE the fs gate) only
+        accepts at 12:00, so it cannot be retagged. The retag path is covered
+        by the direct-call test above.
+        """
+        head_csv = self._as_csv(self.BEFORE)
+        monkeypatch.setattr(corpus_edit, "read_head_corpus", lambda: head_csv)
+        sandbox.corpus.write_text(self._as_csv(self._edited(author="Corrected Author")))
+        assert corpus_edit.cmd_validate(argparse.Namespace(allow_small=None)) == 0
+
+    def test_bare_flag_no_longer_blankets(self, sandbox, monkeypatch):
+        """`--allow-small` with no tokens used to excuse everything."""
+        monkeypatch.setattr(corpus_edit, "read_head_corpus", lambda: "")
+        sandbox.corpus.write_text(self._as_csv(self.BEFORE))
+        assert corpus_edit.cmd_validate(argparse.Namespace(allow_small=[])) == 2
+
+    def test_cmd_ship_honours_the_same_semantics(self, sandbox, monkeypatch):
+        """A gate only in validate is bypassable by never running it."""
+        monkeypatch.setattr(corpus_edit, "read_head_corpus", lambda: "")
+        sandbox.corpus.write_text(self._as_csv(self.BEFORE))
+        sandbox.write_manifest(
+            {"corpus_hash": "stale", "generator_hash": corpus_edit.generator_file_hash(), "files": {}}
+        )
+        monkeypatch.setattr(
+            corpus_edit,
+            "run",
+            lambda cmd, **kw: subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=(f"{corpus_edit.CORPUS_REL}\n" if cmd[:3] == ["git", "diff", "--name-only"] else ""),
+                stderr="",
+            ),
+        )
+        args = argparse.Namespace(
+            message="m",
+            dry_run=True,
+            no_release=True,
+            no_push=True,
+            branch=None,
+            allow_small=None,
+            skip_validate=False,
+        )
+        assert corpus_edit.cmd_ship(args) == 2, "ship must reject an unacknowledged sub-floor row"
+
+    def test_hint_prints_a_copy_pasteable_command(self, capsys):
+        token = corpus_edit.violation_token(self.BEFORE)
+        errors, _ = corpus_edit.validate_fs_floor([self.BEFORE], head_rows=[])
+        corpus_edit._print_allow_small_hint(errors)
+        captured = capsys.readouterr().err
+        assert f"--allow-small {token}" in captured, captured
+
+    def test_a_token_accepts_only_its_own_row(self):
+        """Two sub-floor rows, one acknowledged. The other must still fail.
+
+        test_a_token_for_a_different_row_does_not_help does NOT cover this: its
+        token belongs to no changed row, so the stale-acknowledgement check
+        fires and the test passes without the per-row match ever being
+        exercised. Caught by mutation — replacing `token in ack` with a bare
+        `ack` truthiness test left the whole suite green.
+        """
+        row_a = self.BEFORE
+        row_b = self._edited(quote=self.BEFORE.quote + " A second long quote at this minute.")
+        errors, warns = corpus_edit.validate_fs_floor(
+            [row_a, row_b], acknowledged=[corpus_edit.violation_token(row_a)], head_rows=[]
+        )
+        assert not any("stale" in e for e in errors), f"neither token should be stale: {errors}"
+        assert any(corpus_edit.violation_token(row_a) in w for w in warns), warns
+        assert errors, "row_b was never acknowledged and must still fail"
+        assert corpus_edit.violation_token(row_b) in errors[0], errors
+
+    # ── the exemption needs both sides, not set membership ───────────
+    #
+    # 235 (quote, match) pairs in the live corpus are carried by more than one
+    # row, so "this text exists somewhere at HEAD" is not evidence that THIS
+    # row is an edit of it. Found in self-review: the first version exempted a
+    # brand-new row that merely duplicated existing text, and the warning even
+    # claimed "this edit cannot have moved the fit" when there was no edit.
+
+    def test_new_row_duplicating_existing_text_is_still_gated(self):
+        newcomer = self._edited(title="A Different Book", author="Someone Else")
+        errors, warns = corpus_edit.validate_fs_floor(
+            [newcomer], head_rows=[self.BEFORE], work_rows=[self.BEFORE, newcomer]
+        )
+        assert errors, "a NEW sub-floor row must be gated even if its text already exists"
+        assert not any("unchanged at HEAD" in w for w in warns), warns
+
+    def test_metadata_edit_still_exempt_when_the_copy_count_holds(self):
+        """The counterpart — a byline fix keeps the count level and stays exempt."""
+        fixed = self._edited(author="Corrected Author")
+        errors, warns = corpus_edit.validate_fs_floor([fixed], head_rows=[self.BEFORE], work_rows=[fixed])
+        assert not errors, errors
+        assert any("unchanged at HEAD" in w for w in warns), warns
+
+    def test_deleting_one_of_two_copies_stays_exempt(self):
+        """Count falling is fine — nothing new entered the corpus."""
+        twin = self._edited(title="Other Book")
+        edited = self._edited(author="Corrected")
+        errors, _ = corpus_edit.validate_fs_floor([edited], head_rows=[self.BEFORE, twin], work_rows=[edited])
+        assert not errors, errors
+
+    def test_cmd_validate_gates_a_new_duplicate_text_row(self, sandbox, monkeypatch):
+        """End-to-end: the call sites must pass work_rows or this is inert."""
+        newcomer = self._edited(title="A Different Book", author="Someone Else")
+        head_csv = self._as_csv(self.BEFORE)
+        monkeypatch.setattr(corpus_edit, "read_head_corpus", lambda: head_csv)
+        sandbox.corpus.write_text(head_csv + self._as_csv(newcomer))
+        assert corpus_edit.cmd_validate(argparse.Namespace(allow_small=None)) == 2
+
+    def test_hint_converges_when_a_stale_token_is_also_present(self, capsys):
+        """The suggested command must never re-include a token just rejected.
+
+        Before this, the hint regex-scraped every error line including the
+        stale-acknowledgement line, so it suggested the stale token back. An
+        operator pasting it verbatim would be rejected again on every run —
+        the remediation advice could not converge.
+        """
+        errors, _ = corpus_edit.validate_fs_floor(
+            [self.BEFORE], acknowledged=["12:00#deadbeef"], head_rows=[], work_rows=[self.BEFORE]
+        )
+        assert any("stale" in e for e in errors), errors
+        corpus_edit._print_allow_small_hint(errors)
+        hint = capsys.readouterr().err
+        assert "deadbeef" not in hint, f"hint re-suggests the stale token: {hint}"
+        assert corpus_edit.violation_token(self.BEFORE) in hint, hint
+        assert "do not re-pass" in hint, hint
+
+    def test_hint_says_something_useful_when_only_stale_tokens_remain(self, capsys):
+        """No real failures, just a leftover token — don't print an empty command."""
+        errors, _ = corpus_edit.validate_fs_floor(
+            [self._edited(author="Corrected")],
+            acknowledged=["12:00#deadbeef"],
+            head_rows=[self.BEFORE],
+            work_rows=[self._edited(author="Corrected")],
+        )
+        corpus_edit._print_allow_small_hint(errors)
+        hint = capsys.readouterr().err
+        assert "no longer match a failing row" in hint, hint
+        assert "--allow-small 12:00#deadbeef" not in hint, hint
+
+    def test_token_for_an_exempted_row_is_unnecessary_not_stale(self):
+        """A correct token for a row the metadata rule already exempts must not
+        block the run. It reports as unnecessary, not as a stale acknowledgement."""
+        fixed = self._edited(author="Corrected Author")
+        errors, warns = corpus_edit.validate_fs_floor(
+            [fixed],
+            acknowledged=[corpus_edit.violation_token(fixed)],
+            head_rows=[self.BEFORE],
+            work_rows=[fixed],
+        )
+        assert not errors, f"an exempted row's own token must not block: {errors}"
+        assert any("was not needed" in w for w in warns), warns
+
+    def test_token_naming_nothing_in_the_edit_is_still_stale(self):
+        """The property that makes tokens more than decoration is kept."""
+        errors, _ = corpus_edit.validate_fs_floor(
+            [self.BEFORE], acknowledged=["23:59#deadbeef"], head_rows=[], work_rows=[self.BEFORE]
+        )
+        assert any("stale acknowledgement" in e for e in errors), errors
+
+    # ── ship must be wired identically to validate ───────────────────
+    #
+    # The ship call site had NO coverage of its head_rows/work_rows wiring: the
+    # only ship test stubbed HEAD to empty, so head_rows was always [] and
+    # work_rows never load-bearing. Dropping both from the ship path left the
+    # whole suite green — the third instance of that hole on this branch, and
+    # ship is the primary workflow.
+
+    def _ship_args(self, **kw):
+        d = dict(
+            message="m", dry_run=True, no_release=True, no_push=True, branch=None, allow_small=None, skip_validate=False
+        )
+        d.update(kw)
+        return argparse.Namespace(**d)
+
+    def _stub_git(self, monkeypatch, head_csv):
+        def fake_run(cmd, **kw):
+            out = ""
+            if cmd[:3] == ["git", "show", f"HEAD:{corpus_edit.CORPUS_REL}"]:
+                out = head_csv
+            elif cmd[:3] == ["git", "diff", "--name-only"]:
+                out = f"{corpus_edit.CORPUS_REL}\n"
+            return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+        monkeypatch.setattr(corpus_edit, "run", fake_run)
+        monkeypatch.setattr(corpus_edit, "read_head_corpus", lambda: head_csv)
+
+    def test_cmd_ship_exempts_a_metadata_edit_like_validate_does(self, sandbox, monkeypatch):
+        head_csv = self._as_csv(self.BEFORE)
+        self._stub_git(monkeypatch, head_csv)
+        sandbox.corpus.write_text(self._as_csv(self._edited(author="Corrected Author")))
+        sandbox.write_manifest(
+            {"corpus_hash": "stale", "generator_hash": corpus_edit.generator_file_hash(), "files": {}}
+        )
+        assert corpus_edit.cmd_ship(self._ship_args()) != 2, (
+            "ship must honour the metadata-only exemption; head_rows is not reaching it"
+        )
+
+    def test_cmd_ship_gates_a_new_duplicate_text_row_like_validate_does(self, sandbox, monkeypatch):
+        newcomer = self._edited(title="A Different Book", author="Someone Else")
+        head_csv = self._as_csv(self.BEFORE)
+        self._stub_git(monkeypatch, head_csv)
+        sandbox.corpus.write_text(head_csv + self._as_csv(newcomer))
+        sandbox.write_manifest(
+            {"corpus_hash": "stale", "generator_hash": corpus_edit.generator_file_hash(), "files": {}}
+        )
+        assert corpus_edit.cmd_ship(self._ship_args()) == 2, (
+            "ship must gate a new duplicate-text row; work_rows is not reaching it"
+        )
+
+    def test_unrenderable_row_is_not_told_its_token_was_unnecessary(self):
+        """A row that will not render is a hard error. Telling the operator the
+        token 'was not needed' is false and points away from the real problem."""
+        broken = self._edited(match="nowhere-in-this-text")
+        errors, warns = corpus_edit.validate_fs_floor(
+            [broken],
+            acknowledged=[corpus_edit.violation_token(broken)],
+            head_rows=[],
+            work_rows=[broken],
+        )
+        assert any("won't render" in e for e in errors), errors
+        assert not any("was not needed" in w for w in warns), warns
+
+    def test_hint_marker_is_anchored_to_the_line_start(self, capsys):
+        """The marker is prose; an error line can quote a row's timestring
+        verbatim. Anchoring means a quoted value cannot pose as a stale line."""
+        evil = self._edited(match=corpus_edit._STALE_MARKER + "x")
+        errors, _ = corpus_edit.validate_fs_floor([evil], head_rows=[], work_rows=[evil])
+        assert any("won't render" in e for e in errors), errors
+        corpus_edit._print_allow_small_hint(errors)
+        hint = capsys.readouterr().err
+        assert "no longer match a failing row" not in hint, f"a quoted timestring was mistaken for a stale line: {hint}"
+
+
+class TestDuplicateAddIsAChangedRow:
+    """litclock-dev#559 review / litclock-dev#565 — a second exact copy of an existing row must reach
+    the per-row validators.
+
+    With set semantics it produced no changed row at all, so the time-tag,
+    mid-word and fitted-fs checks were all skipped for it, while
+    compute_dirty_buckets still regenerated the bucket.
+    """
+
+    R = corpus_edit.Row(time="12:00", match="noon", quote="It was noon.", title="T", author="A", is_nsfw=False)
+
+    def test_exact_duplicate_add_is_reported_as_changed(self):
+        changed = corpus_edit.diff_changed_rows([self.R], [self.R, self.R])
+        assert len(changed) == 1, f"the extra copy must be validated: {changed}"
+
+    def test_unchanged_corpus_still_reports_nothing(self):
+        assert corpus_edit.diff_changed_rows([self.R], [self.R]) == []
+
+    def test_three_copies_where_head_had_two_reports_one(self):
+        changed = corpus_edit.diff_changed_rows([self.R, self.R], [self.R, self.R, self.R])
+        assert len(changed) == 1, changed
+
+    def test_deleting_a_duplicate_reports_nothing(self):
+        assert corpus_edit.diff_changed_rows([self.R, self.R], [self.R]) == []
+
+    def test_retag_still_reported(self):
+        moved = corpus_edit.Row(
+            time="13:00",
+            match=self.R.match,
+            quote=self.R.quote,
+            title=self.R.title,
+            author=self.R.author,
+            is_nsfw=False,
+        )
+        changed = corpus_edit.diff_changed_rows([self.R], [moved])
+        assert len(changed) == 1 and changed[0].time == "13:00", changed
+
+
 class TestSweepOrphans:
     """litclock-dev#584 review: `_prepare_for_regen` wipes only DIRTY buckets, but a
     GENERATOR change can renumber files in a bucket whose CSV rows never
@@ -1046,7 +1554,7 @@ class TestSweepOrphans:
         images, metadata = self._tree(tmp_path, monkeypatch, {"quote_0000_0.png": "h0"})
         (images / "quote_0000_0.png").write_bytes(b"keep")
         (metadata / "quote_0000_0_credits.png").write_bytes(b"keep")
-        (images / "quote_0000_72.png").write_bytes(b"orphan")           # the litclock-dev#584 leftover
+        (images / "quote_0000_72.png").write_bytes(b"orphan")  # the litclock-dev#584 leftover
         (metadata / "quote_0000_72_credits.png").write_bytes(b"orphan")
 
         removed = corpus_edit._sweep_orphans()
@@ -1081,8 +1589,9 @@ class TestSweepOrphans:
                 assert (images / "quote_0230_5_nsfw.png").exists()
                 assert (metadata / "quote_0230_5_nsfw_credits.png").exists()
             finally:
-                (corpus_edit.IMAGES_DIR, corpus_edit.METADATA_DIR,
-                 corpus_edit.MANIFEST_PATH, corpus_edit.REPO_ROOT) = orig
+                (corpus_edit.IMAGES_DIR, corpus_edit.METADATA_DIR, corpus_edit.MANIFEST_PATH, corpus_edit.REPO_ROOT) = (
+                    orig
+                )
 
     def test_an_empty_or_missing_manifest_deletes_NOTHING(self, tmp_path, monkeypatch):
         """The safety property. If the manifest is absent or has no files, the

@@ -34,6 +34,13 @@ _THIS_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$_THIS_SCRIPT_DIR/lib/state.sh"
 AUTO_YES=false
 DO_REBOOT=false
+# litclock-dev#627 — power OFF after the reset instead of rebooting. The PWA
+# Factory reset uses this: after a full wipe the next power-on runs first-boot
+# regardless, so rebooting into a live hotspot is wrong when the owner is
+# packing the clock up to move house or hand it on (a non-gift handoff). Unlike
+# --gift-mode this writes NO welcome-splash marker, so the shutdown splash paints
+# the plain "Powered Off" screen.
+DO_POWEROFF=false
 WIPE_WIFI=false
 GIFT_MODE=false
 # #510: --strict-env-wipe makes a Step 3 env.sh wipe failure FATAL *before* any
@@ -58,6 +65,12 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --yes|-y) AUTO_YES=true; shift ;;
         --reboot) DO_REBOOT=true; shift ;;
+        # --poweroff implies --strict-env-wipe (litclock-dev#627 /review): a
+        # power-off is a "clean slate then gone" signal, so a failed config wipe
+        # must abort BEFORE powering off — never ship / relocate a device that
+        # powered off with stale config. The factory-reset unit passes both
+        # explicitly; this makes a bare manual `--poweroff` safe too.
+        --poweroff) DO_POWEROFF=true; STRICT_ENV_WIPE=true; shift ;;
         --wipe-wifi) WIPE_WIFI=true; shift ;;
         --strict-env-wipe) STRICT_ENV_WIPE=true; shift ;;
         --gift-mode)
@@ -76,6 +89,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --wipe-wifi         Also delete saved WiFi networks (full fresh-flash simulation)"
             echo "  --strict-env-wipe   Abort (before WiFi wipe / reboot) if the env.sh wipe fails (#510)"
             echo "  --reboot            Reboot after reset"
+            echo "  --poweroff          Power off after reset (no gift splash; implies --strict-env-wipe; litclock-dev#627). Excludes --reboot"
             echo "  --gift-mode         Prepare for shipping: wipe WiFi, write welcome-splash marker, power off"
             echo "  --message-file FILE Read welcome message from FILE; persisted to /etc/litclock/.welcome-message"
             echo "                      (only meaningful with --gift-mode; #280)"
@@ -87,6 +101,14 @@ done
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}This script must be run as root (sudo)${NC}"
+    exit 1
+fi
+
+# --reboot and --poweroff are mutually exclusive (litclock-dev#627): they pick
+# the terminal action, and the end-of-script branch can only do one. Fail
+# closed rather than silently letting the branch order decide.
+if [[ "$DO_REBOOT" == "true" && "$DO_POWEROFF" == "true" ]]; then
+    echo -e "${RED}--reboot and --poweroff are mutually exclusive${NC}"
     exit 1
 fi
 
@@ -214,6 +236,14 @@ if [[ "$DO_REBOOT" == "true" ]]; then
         mv -T -- "$HINT_TMP" /run/litclock/shutdown-action 2>/dev/null \
             || rm -f -- "$HINT_TMP" 2>/dev/null
     fi
+elif [[ "$DO_POWEROFF" == "true" ]]; then
+    # litclock-dev#627 — actively clear any stale "reboot" hint so
+    # shutdown-splash paints "Powered Off", not "Restarting…", on a
+    # factory-reset power-off. A prior manual `--reboot` run SIGTERM'd before
+    # its EXIT trap fired (e.g. by the Conflicts=litclock-update.service kill)
+    # could leave one this boot. `rm -f` removes the link itself, never a
+    # symlink target, so this is safe against a pi-planted symlink.
+    rm -f /run/litclock/shutdown-action 2>/dev/null || true
 fi
 
 # Step 1: Stop all litclock services that may be running or stuck.
@@ -381,7 +411,7 @@ country=US
 EOF
     fi
     echo -e "${GREEN}done${NC}"
-    if [[ "$DO_REBOOT" != "true" ]]; then
+    if [[ "$DO_REBOOT" != "true" && "$DO_POWEROFF" != "true" ]]; then
         echo -e "${YELLOW}Note: WiFi is wiped but NetworkManager is still holding the active${NC}"
         echo -e "${YELLOW}      connection in memory. Reboot (or add --reboot) to actually drop it.${NC}"
     fi
@@ -476,6 +506,16 @@ if [[ "$GIFT_MODE" == "true" ]]; then
     # painted the welcome screen by now. Just power off.
     echo "Gift mode: powering off."
     echo "On next power-on, recipient will see the welcome splash and first-boot setup."
+    poweroff
+elif [[ "$DO_POWEROFF" == "true" ]]; then
+    # litclock-dev#627 — non-gift factory reset. No reboot-hint was written
+    # above, so shutdown-splash paints the plain "Powered Off" screen (no
+    # welcome message — this is a relocation / non-gift handoff, not a gift).
+    # The --strict-env-wipe guard (used by litclock-reset.service) has already
+    # aborted before here if the config wipe failed, so a clean slate is
+    # guaranteed by the time we power off. On next power-on the wiped config
+    # makes first-boot run into the setup hotspot.
+    echo "Powering off. Power the clock on again to set it up fresh."
     poweroff
 elif [[ "$DO_REBOOT" == "true" ]]; then
     echo "Rebooting now..."

@@ -316,6 +316,38 @@ def test_layout_ops_bold_is_exact_span():
         bold_bytes = b"".join(sb for _, _, sb, bold in lay.ops if bold)
         assert bold_bytes == ts.encode(), (quote, bold_bytes)
 
+
+# ----------------------------------------------- fitted_font_size (litclock-dev#539)
+
+
+def test_fs_floor_constants_sane():
+    # Policy constants live HERE (single source — corpus_edit and
+    # render_invariants import them); the floor must sit at or above the
+    # renderer's start size or the gate could never trip.
+    assert qr.START_FONT_SIZE <= qr.FS_HARD_FLOOR < qr.FS_SOFT_FLOOR
+
+
+@needs_freetype
+def test_fitted_font_size_matches_fit():
+    quote = "It was almost midnight when the church bells finally stopped ringing across the empty square."
+    qb = qr.preprocess_quote(quote).encode()
+    idx = qr.find_timestring(qb, b"midnight")
+    fitted = qr.fit(qb.split(b" "), idx, idx + len(b"midnight"))
+    assert fitted is not None
+    assert qr.fitted_font_size(quote, "midnight") == fitted[1]
+
+
+@needs_freetype
+def test_fitted_font_size_none_when_timestring_absent():
+    assert qr.fitted_font_size("No matching phrase in here at all.", "midnight") is None
+
+
+@needs_freetype
+def test_fitted_font_size_strips_timestring_like_render_row():
+    quote = "It was almost midnight when the church bells finally stopped ringing across the empty square."
+    assert qr.fitted_font_size(quote, "  midnight  ") == qr.fitted_font_size(quote, "midnight")
+
+
 class TestRowsForTimeParity:
     """litclock-dev#590: rows_for_time is served from quote_corpus's index, not
     its own iter_corpus walk. These pin that the rewiring changed the COST
@@ -361,3 +393,54 @@ class TestRowsForTimeParity:
         csv_path.write_text("00:00|midnight|only row|T|A|NO\n", encoding="utf-8")
         assert qr.rows_for_time(csv_path, "1234") == []
         assert qr.rows_for_time(tmp_path / "absent.csv", "0000") == []
+
+
+# ── litclock-dev#604: validation digest ──────────────────────────────
+
+
+@needs_freetype
+def test_validation_digest_is_deterministic(tmp_path):
+    dump = tmp_path / "dump.gz"
+    dump.write_bytes(b"payload-A")
+    a = qr.runtime_validation_digest(dump)
+    b = qr.runtime_validation_digest(dump)
+    assert a == b
+    assert len(a) == 64  # sha256 hex
+
+
+@needs_freetype
+def test_validation_digest_changes_when_the_dump_changes(tmp_path):
+    """The proof binds to the dump bytes: a regenerated dump with the same
+    freetype wheel must produce a different digest, or a stale stamp would
+    keep validating an environment the new dump was never checked against."""
+    dump_a = tmp_path / "a.gz"
+    dump_b = tmp_path / "b.gz"
+    dump_a.write_bytes(b"payload-A")
+    dump_b.write_bytes(b"payload-B")
+    assert qr.runtime_validation_digest(dump_a) != qr.runtime_validation_digest(dump_b)
+
+
+@needs_freetype
+def test_validation_digest_changes_when_a_font_changes(tmp_path, monkeypatch):
+    """Same freetype, same dump, different font bytes — the exact
+    invisible-to-the-version-check case litclock-dev#604 exists for."""
+    import shutil
+
+    dump = tmp_path / "dump.gz"
+    dump.write_bytes(b"payload")
+    baseline = qr.runtime_validation_digest(dump)
+
+    fonts_copy = tmp_path / "fonts"
+    shutil.copytree(qr.FONTS_DIR, fonts_copy)
+    with open(fonts_copy / qr.FONT_REGULAR, "ab") as fh:
+        fh.write(b"\x00")  # one appended byte — metrics-identical, proof-different
+    monkeypatch.setattr(qr, "FONTS_DIR", fonts_copy)
+    assert qr.runtime_validation_digest(dump) != baseline
+
+
+@needs_freetype
+def test_validation_digest_raises_on_missing_input(tmp_path):
+    """Unreadable inputs must RAISE (callers fall back to the PNG tier),
+    never silently hash an empty proof."""
+    with pytest.raises(OSError):
+        qr.runtime_validation_digest(tmp_path / "missing.gz")

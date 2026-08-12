@@ -100,7 +100,7 @@ def reset() -> tuple[object, int]:
     if token is None:
         return envelope(
             "confirm_token_invalid",
-            "Confirm token is missing.",
+            "Couldn't verify that action. Reload the page and try again.",
             401,
         )
     result = _store().consume_classified("wifi_reset", token)

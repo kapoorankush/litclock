@@ -1,4 +1,4 @@
-"""Shared state helpers for /api/update/* (#245 M5).
+"""Shared state helpers for /api/update/* (litclock-dev#245 M5).
 
 This module owns three plumbing concerns the route handlers in
 ``routes/updates.py`` share:
@@ -7,7 +7,7 @@ This module owns three plumbing concerns the route handlers in
    (D6, F11, F13). 6h TTL. Cache shape: ``{tag, fetched_at_unix, etag,
    release_notes}``. Atomic mv-tmp writes; corrupt-JSON readers refetch.
    update.sh Phase 7 invalidates by deleting the file (D6). Lives on tmpfs
-   (#434): it's a purely derived 6h-TTL cache, so keeping it off the SD card
+   (litclock-dev#434): it's a purely derived 6h-TTL cache, so keeping it off the SD card
    costs nothing but a single refetch after a reboot clears it.
 2. **`systemctl is-active` + `systemctl list-jobs` busy gate** for
    litclock-update.service (D5, F7). Returns True if the unit is in
@@ -40,7 +40,7 @@ from typing import Any, Final
 logger = logging.getLogger(__name__)
 
 # Defaults — every constant overridable via env so tests can isolate.
-# #434 — the update-check cache is a purely derived 6h-TTL blob, so it lives on
+# litclock-dev#434 — the update-check cache is a purely derived 6h-TTL blob, so it lives on
 # the /run/litclock tmpfs (pi-owned, created at boot by tmpfiles.d) rather than
 # the SD-backed /var/lib/litclock. A reboot clears it; the next /api/update/check
 # just refetches once. The must-persist state (lkg-sha, update-failed, grace,
@@ -70,7 +70,7 @@ RELEASE_TAG_RE: Final[re.Pattern[str]] = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 DEFAULT_GIT_CREDENTIALS: Final[Path] = Path.home() / ".git-credentials"
 _GH_HOST_RE: Final[re.Pattern[str]] = re.compile(r"^https://[^:/\s]+:([^@\s]+)@github\.com(?:/.*)?$")
 
-# #336 — DoS / hardening byte caps for status-file readers.
+# litclock-dev#336 — DoS / hardening byte caps for status-file readers.
 # These files are produced by jq on the bash side and are typically a few
 # hundred bytes; a 1MB junk file appearing at any of these paths must NOT
 # be loaded into memory or fed to json.load. The caps below are 1-2 orders
@@ -80,7 +80,7 @@ MAX_STATUS_FILE_BYTES: Final[int] = 8192
 MAX_LAST_UPDATE_FILE_BYTES: Final[int] = 8192
 MAX_LKG_SHA_FILE_BYTES: Final[int] = 64
 MAX_GH_API_CACHE_BYTES: Final[int] = 8192
-# #342 I1 — release_notes byte cap applied BEFORE write_cache. Keeps the
+# litclock-dev#342 I1 — release_notes byte cap applied BEFORE write_cache. Keeps the
 # cached payload comfortably under MAX_GH_API_CACHE_BYTES (the read-side
 # cap) regardless of how verbose a future CHANGELOG entry gets. Without
 # this, a release with a long-form notes section (>~7KB after the rest
@@ -92,7 +92,7 @@ MAX_GH_API_CACHE_BYTES: Final[int] = 8192
 MAX_RELEASE_NOTES_BYTES: Final[int] = 4096
 
 
-# ─── #336 shared bounded readers ───────────────────────────────────────────
+# ─── litclock-dev#336 shared bounded readers ───────────────────────────────────────────
 
 
 # Open-flag bundle for safe_read_*. Kept at module scope so the rationale
@@ -277,7 +277,7 @@ def read_cache(cache_file: Path | None = None) -> dict[str, Any] | None:
     F13 — corrupt JSON tolerated: log a warning, return None so caller
     refetches and overwrites. NEVER raises.
 
-    #336 — bounded via ``safe_read_json`` (8KB cap, lstat-rejects symlinks /
+    litclock-dev#336 — bounded via ``safe_read_json`` (8KB cap, lstat-rejects symlinks /
     FIFOs / dirs). A pathological 1MB cache file or a symlink swap can no
     longer pull garbage into memory or hang the route handler.
     """
@@ -319,11 +319,11 @@ def write_cache(payload: dict[str, Any], cache_file: Path | None = None) -> bool
     # Suffix with thread id too so each refresh writes to its own tmp;
     # os.replace() at the end is atomic, so the final file is one of the
     # racing payloads (whichever wins the rename), never a torn mix.
-    # /review caught this; see PR #284 review notes.
+    # /review caught this; see PR litclock-dev#284 review notes.
     tmp = target.with_suffix(target.suffix + f".tmp.{os.getpid()}.{threading.get_ident()}")
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
-            # #342 I1 follow-up (codex adversarial /review): ensure_ascii=False
+            # litclock-dev#342 I1 follow-up (codex adversarial /review): ensure_ascii=False
             # so the on-disk JSON byte length matches the UTF-8 byte length we
             # capped release_notes against. The default ensure_ascii=True
             # inflates each non-ASCII codepoint to a \uXXXX escape (6 bytes for
@@ -353,7 +353,7 @@ def fetch_latest_release_tag(
     Returns the tag string on success, ``None`` on any failure (network,
     HTTP, parse, no candidates). Mirrors scripts/lib/github_api.sh's
     resolver — uses /tags rather than /releases/latest because of the
-    long-standing GH PAT-vs-private-repo bug (issue #247).
+    long-standing GH PAT-vs-private-repo bug (issue litclock-dev#247).
 
     Auth resolution order (mirrors the bash helper): GH_TOKEN env var,
     GITHUB_TOKEN env var, then ``~/.git-credentials``. Public repos
@@ -401,7 +401,7 @@ def fetch_release_notes(
 ) -> str | None:
     """D13 — fetch CHANGELOG.md at ``tag`` from raw.githubusercontent.com.
 
-    Sidesteps the /releases/* PAT-404 issue (#247) by reading the file
+    Sidesteps the /releases/* PAT-404 issue (litclock-dev#247) by reading the file
     directly from the public raw host. Returns the first 10 non-empty
     lines under the section heading for ``tag``, or None if no section
     matches / fetch fails.
@@ -475,7 +475,7 @@ def build_check_payload(current_version: str) -> dict[str, Any]:
     """
     tag = fetch_latest_release_tag()
     notes = fetch_release_notes(tag) if tag else None
-    # #342 I1 — cap release_notes byte length so write_cache always
+    # litclock-dev#342 I1 — cap release_notes byte length so write_cache always
     # produces a payload readable by the bounded read side. Truncate at
     # the last newline before the cap so we don't slice mid-bullet, then
     # fall back to a hard byte slice if no newline is within range.
@@ -611,7 +611,7 @@ def read_status_file(status_file: Path | None = None) -> dict[str, Any]:
     1MB junk file or symlink lands at the path, mark it stale so the PWA
     can render a degraded state instead of a 500 (or, worse, OOM).
 
-    #336 — bounded via ``safe_read_json`` (8KB cap, lstat-rejects symlinks /
+    litclock-dev#336 — bounded via ``safe_read_json`` (8KB cap, lstat-rejects symlinks /
     FIFOs / dirs). Distinguishes "file absent" (idle) from "file present
     but unreadable / oversize" (stale) by an explicit lstat check up front.
     """
@@ -627,3 +627,34 @@ def read_status_file(status_file: Path | None = None) -> dict[str, Any]:
     if data is None:
         return {"state": "stale", "error": "status payload was not loadable"}
     return data
+
+
+def seed_status_running(status_file: Path | None = None) -> None:
+    """Pre-seed the status file at Apply dispatch (litclock-dev#607 review F1).
+
+    /run is tmpfs, so between reboots the status file retains the PREVIOUS
+    run's terminal verdict until the next run's first write — which happens
+    only after systemd activation + update.sh startup + a network call. On a
+    second Apply in the same boot, a poll in that window read the stale
+    ``complete``, and the PWA ticked all phases done and reloaded onto the
+    Apply card mid-update — the exact litclock-dev#607 bug through another door.
+
+    Called under the apply route's dispatch lock, immediately after a
+    successful ``systemctl start``. update.sh's update_status_init overwrites
+    this moments later; both writes are atomic same-filesystem renames, so
+    either ordering is safe. Best-effort: a failure to seed only re-opens the
+    original race window, so log and continue rather than failing the apply.
+    """
+    target = status_file or status_path()
+    payload = {"state": "running", "phase_index": 1, "inferred": "dispatch"}
+    tmp = Path(f"{target}.seed.tmp")  # distinct from update.sh's .tmp.$$ names
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(payload))
+        os.replace(tmp, target)
+    except OSError as exc:
+        logger.warning("could not seed update status at dispatch: %s", exc)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass

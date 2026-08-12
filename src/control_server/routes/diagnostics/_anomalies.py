@@ -33,15 +33,21 @@ ANOMALY_CPU_TEMP_C = 78.0
 ANOMALY_DISK_FREE_PCT = 10.0
 ANOMALY_MEMORY_FREE_MB = 50.0
 ANOMALY_SIGNAL_DBM = -75
-ANOMALY_DHCP_AGE_S = 24 * 3600
+# Settling grace for a missing LAN IP (litclock-dev#596). The last-rendered-ip
+# marker lives in /run (tmpfs, wiped on reboot) and nm-dispatcher writes it only
+# on an actual IP change — so for the first minutes after boot/provisioning it is
+# cold even though the box already has a working address (it is serving this very
+# page). Below this uptime a missing LAN IP is "still settling", not a fault; at
+# or above it, a genuinely absent marker means no IP was ever acquired and trips.
+ANOMALY_LAN_IP_SETTLE_S = 300
 ANOMALY_LAST_IPGEO_AGE_S = 7 * 24 * 3600
 ANOMALY_QUOTE_AGE_S = 90
 ANOMALY_RECENT_LOG_LOOKBACK = 50  # last N entries scanned for ERROR-level
 
 __all__ = [
     "ANOMALY_CPU_TEMP_C",
-    "ANOMALY_DHCP_AGE_S",
     "ANOMALY_DISK_FREE_PCT",
+    "ANOMALY_LAN_IP_SETTLE_S",
     "ANOMALY_LAST_IPGEO_AGE_S",
     "ANOMALY_MEMORY_FREE_MB",
     "ANOMALY_QUOTE_AGE_S",
@@ -77,7 +83,16 @@ def _compute_anomalies(values: dict[str, Any]) -> list[str]:
 
     - ``build-version`` — NEVER (info-only).
     - ``system`` — CPU > 78 °C OR disk < 10 % free OR memory < 50 MB free.
-    - ``network`` — signal < -75 dBm OR LAN IP missing OR last DHCP > 24 h.
+    - ``network`` — signal < -75 dBm OR (LAN IP missing AND uptime past the
+      settling grace). DHCP age was a third trigger until litclock-dev#552; it fired on
+      healthy clocks because a stable lease freezes ``last_dhcp_at`` at boot.
+      The LAN-IP settling grace is litclock-dev#596: the /run marker is cold for the
+      first minutes after boot/provisioning, so a brand-new owner opening
+      Diagnostics over the very connection it serves would otherwise see a
+      false "Connection issue". Note this leaves no signal for "has an IP but
+      nothing works" — ``gateway`` is collected but never consulted, and there
+      is no reachability probe. Accepted gap: the DHCP heuristic never caught
+      that state either.
     - ``time-location`` — weather enabled AND (city empty OR mode=specific
       with empty place OR last IP-geo > 7 days).
     - ``services`` — ANY non-oneshot unit non-active. ``DIAG_ONESHOT_UNITS``
@@ -117,18 +132,27 @@ def _compute_anomalies(values: dict[str, Any]) -> list[str]:
     if _is_numeric(signal) and signal < ANOMALY_SIGNAL_DBM:
         net_anomaly = True
     if not values.get("lan_ip"):
-        net_anomaly = True
-    dhcp_iso = values.get("last_dhcp_at")
-    if isinstance(dhcp_iso, str) and dhcp_iso:
-        try:
-            dhcp_dt = datetime.fromisoformat(dhcp_iso)
-            if dhcp_dt.tzinfo is None:
-                dhcp_dt = dhcp_dt.replace(tzinfo=UTC)
-            age = (now - dhcp_dt).total_seconds()
-            if age > ANOMALY_DHCP_AGE_S:
-                net_anomaly = True
-        except ValueError:
-            pass
+        # litclock-dev#596 — suppress the missing-IP trigger during the post-boot
+        # settling window. The /run marker (tmpfs, dispatcher-written on IP
+        # change) is briefly cold right after provisioning while the box already
+        # has a working address. Past the grace, a still-absent marker is a real
+        # "never acquired an IP" fault and trips. Every non-sane uptime fails
+        # SAFE (surfaces the fault): absent (/proc/uptime unreadable → None),
+        # bool (rejected like the file's other numeric reads, litclock-dev#372), negative,
+        # and NaN/inf (which are never < grace). Only a real 0 ≤ uptime < grace
+        # counts as settling.
+        raw_uptime = values.get("uptime_s")
+        uptime = None if isinstance(raw_uptime, bool) else _coerce_float(raw_uptime)
+        settling = uptime is not None and 0 <= uptime < ANOMALY_LAN_IP_SETTLE_S
+        if not settling:
+            net_anomaly = True
+    # DHCP age is deliberately NOT an anomaly trigger (litclock-dev#552). The NM
+    # dispatcher short-circuits on an unchanged IP, so a stable lease freezes
+    # last_dhcp_at at boot: the longer the network works perfectly, the older
+    # this looks. Measured on the test Pi — signal -37 dBm, lan_ip present,
+    # nmcli CONNECTIVITY full, and a 291-hour-old timestamp was the sole
+    # complaint. Age here measures lease stability, not reachability.
+    # `Last DHCP` stays a displayed row; it is useful when debugging.
     if net_anomaly:
         anomalies.append("network")
 
@@ -322,22 +346,12 @@ def _compute_uncollected(values: dict[str, Any]) -> list[str]:
         signal_is_anomalous = (
             isinstance(signal, (int, float)) and not isinstance(signal, bool) and signal < ANOMALY_SIGNAL_DBM
         )
-        # Carve-out 2: stale DHCP age. If last_dhcp_at parses to a real
-        # timestamp older than 24h, that's a real DHCP-renewal failure —
-        # not "data was never collected."
-        dhcp_is_anomalous = False
-        dhcp_iso = values.get("last_dhcp_at")
-        if isinstance(dhcp_iso, str) and dhcp_iso:
-            try:
-                dhcp_dt = datetime.fromisoformat(dhcp_iso)
-                if dhcp_dt.tzinfo is None:
-                    dhcp_dt = dhcp_dt.replace(tzinfo=UTC)
-                age = (datetime.now(tz=UTC) - dhcp_dt).total_seconds()
-                if age > ANOMALY_DHCP_AGE_S:
-                    dhcp_is_anomalous = True
-            except ValueError:
-                pass
-        if not signal_is_anomalous and not dhcp_is_anomalous:
+        # The former carve-out 2 (stale DHCP age keeps the section un-muted)
+        # is gone with the trigger it mirrored (litclock-dev#552). Keeping it would
+        # assert a fault the anomaly logic no longer recognises: a
+        # never-collected section with an old lease would stay un-muted while
+        # producing no anomaly, which reads as healthy rather than grey.
+        if not signal_is_anomalous:
             out.append("network")
 
     # time-location — gate per D3. Fix C: legacy / pre-#337 env files don't

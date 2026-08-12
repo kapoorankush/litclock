@@ -1,4 +1,4 @@
-/* Updates tab interactivity (#245 M5 D3, D4, D9, D10).
+/* Updates tab interactivity (litclock-dev#245 M5 D3, D4, D9, D10).
  *
  * Progressive enhancement: the Apply form posts to /api/update/apply with
  * a hidden confirm token — without JS, the no-JS path goes straight
@@ -19,7 +19,10 @@
   'use strict';
 
   var STATUS_POLL_INTERVAL_MS = 2000;
-  var STATUS_POLL_TIMEOUT_MS = 1000;
+  // litclock-dev#607 review — 2s, not 1s: in the dispatch window the server may consult
+  // systemctl while the Pi is at its busiest, and a too-tight abort turns
+  // real-but-slow answers into counted failures.
+  var STATUS_POLL_TIMEOUT_MS = 2000;
   var HEALTH_POLL_INTERVAL_MS = 3000;
   var HEALTH_POLL_TIMEOUT_MS = 1000;
   var SETTLE_DELAY_MS = 1000;
@@ -31,7 +34,7 @@
   var dialog = document.querySelector('dialog.confirm-sheet[data-action="update_apply"]');
   var form = document.querySelector('form[data-confirm-action="update_apply"]');
 
-  // #329: track whether we've ever seen state=running in this session. When a
+  // litclock-dev#329: track whether we've ever seen state=running in this session. When a
   // single /api/update/status poll fails after we've seen running, Phase 7's
   // litclock-control restart is the most likely cause — optimistically tick
   // all 7 phases visually before entering reconnect mode, instead of leaving
@@ -64,10 +67,10 @@
     dialog.addEventListener('click', function (event) {
       if (event.target === dialog) dialog.close('cancel');
     });
-    // #305: strip the `.is-opening` class on close so re-opens re-trigger
+    // litclock-dev#305: strip the `.is-opening` class on close so re-opens re-trigger
     // the slide-up keyframe. Without this the keyframe only fires once.
     //
-    // #354 codex P2 follow-up — if the page-load probe arrived while the
+    // litclock-dev#354 codex P2 follow-up — if the page-load probe arrived while the
     // confirm sheet was open, its payload was deferred (the modal guard
     // dropped the only cold-load sample). On CANCEL, replay through
     // handleProbePayload so the page transitions to the running / failed
@@ -91,13 +94,13 @@
     });
   }
 
-  // #354 codex P2 — stash for a probe payload that landed while the
+  // litclock-dev#354 codex P2 — stash for a probe payload that landed while the
   // confirm sheet was open. Replayed on modal close (cancel path); cleared
   // without replay on confirm (fireApply takes over). null when no probe
   // is pending.
   var deferredProbePayload = null;
 
-  // #305: see system.js openConfirmSheet for the full doc — iOS Safari
+  // litclock-dev#305: see system.js openConfirmSheet for the full doc — iOS Safari
   // pre-17.5 doesn't fire keyframes gated on `[open]` because top-layer
   // promotion + display flip happen in the same paint as the attribute
   // toggle. Adding `.is-opening` after two rAFs lets the keyframe observe
@@ -116,16 +119,36 @@
     });
   }
 
+  // litclock-dev#607 — the server renders the reading list OPEN when a run is live at
+  // page load (mid-update navigation, or the reload forced by the updater
+  // restarting litclock-control under the PWA). The cold-load probe below
+  // deliberately refuses to touch a visible reading list (litclock-dev#345), so it
+  // will never arm the poll loop for this state. The actual arming
+  // (seenRunning + schedulePoll) happens at the BOTTOM of this IIFE —
+  // schedulePoll captures pollGeneration, whose `var` initializer hasn't
+  // run yet at this point in the file; calling it here would capture
+  // undefined, fail the generation check on fire, and never poll.
+  var serverRenderedInProgress = readingList && !readingList.hidden;
+
   // Auto-refresh the cached check on page load — the server-rendered card
   // shows whatever the cache had at render time, which can be stale up to
   // 6h. /api/update/check returns a fresh value if the cache TTL has
   // expired, otherwise it serves the same cached payload (cheap).
-  refreshCheck();
+  //
+  // litclock-dev#607 — but NOT while an update is in progress: refreshCheck reloads the
+  // page when the fresh check disagrees with the card's rendered state, and
+  // mid-update the card is hidden with the check answer actively changing
+  // under us — reload here would loop (each reload re-renders in-progress,
+  // re-fires refreshCheck, re-disagrees). The post-update reconcile happens
+  // on the reload that reconnect mode issues once the run completes.
+  if (!serverRenderedInProgress) {
+    refreshCheck();
+  }
 
   // If the user navigates back to /updates while an update is mid-flight
   // (left the tab during apply), bring the reading-list up immediately.
   //
-  // #342 #345 — the probe must NOT clobber a reading-list that fireApply
+  // litclock-dev#342 litclock-dev#345 — the probe must NOT clobber a reading-list that fireApply
   // has already entered. The fetch can sit in flight 3-5s on a slow LAN;
   // if it lands AFTER the user tapped Apply and the first scheduled poll
   // already advanced the visual to phase 2+, replaying enterReadingList
@@ -133,7 +156,7 @@
   // Guard on readingList.hidden — true only when no reading list is
   // showing yet, so the probe can safely take over on a true cold load.
   //
-  // #342 I10 — when the probe DOES legitimately enter the reading-list
+  // litclock-dev#342 I10 — when the probe DOES legitimately enter the reading-list
   // mid-update (cold load while an update is in flight), it must also
   // arm `seenRunning` AND start `schedulePoll`. Pre-fix the probe only
   // called enterReadingList — no follow-up polls fired, so the reading
@@ -143,8 +166,8 @@
 
   function handleProbePayload(payload) {
     if (!payload) return;
-    if (!readingList || !readingList.hidden) return;  // #345 — don't race fireApply
-    // #354 Race 2 + Race 3 — if the user has the confirm modal open when this
+    if (!readingList || !readingList.hidden) return;  // litclock-dev#345 — don't race fireApply
+    // litclock-dev#354 Race 2 + Race 3 — if the user has the confirm modal open when this
     // probe lands (3-5s slow-LAN window), DEFER for ANY state transition.
     // The guard must live ABOVE the state switch so it covers BOTH the
     // failed_* path (Race 2: stale failed_* snapshot yanks card surface to
@@ -155,7 +178,7 @@
     // POST then returns 409). Both paths break the modal's "stage and
     // confirm against THIS card" contract identically.
     //
-    // #354 codex P2 follow-up — DEFER the payload instead of dropping it.
+    // litclock-dev#354 codex P2 follow-up — DEFER the payload instead of dropping it.
     // The probe is one-shot; if we discard the only cold-load sample and
     // the user cancels the modal, the page stays on the stale card until
     // manual reload. Stash now; the dialog close listener replays through
@@ -165,12 +188,12 @@
       return;
     }
     if (payload.state === 'running') {
-      seenRunning = true;                              // #342 I10 — arm phantom-tick + reconnect-mode
+      seenRunning = true;                              // litclock-dev#342 I10 — arm phantom-tick + reconnect-mode
       enterReadingList(payload);
-      schedulePoll();                                  // #342 I10 — keep advancing
+      schedulePoll();                                  // litclock-dev#342 I10 — keep advancing
     } else if (payload.state === 'failed_reverted' || payload.state === 'failed_unrecovered') {
       enterReadingList(payload);
-      // #352 — also render the terminal copy on cold load. Without this,
+      // litclock-dev#352 — also render the terminal copy on cold load. Without this,
       // a user who navigates to /updates AFTER a failed update sees a
       // frozen phase reading-list with no banner — looks like a stuck
       // in-flight update instead of a finished failure. Mirror the exact
@@ -194,7 +217,7 @@
     if (!form) return;
     var tokenInput = form.querySelector('input[name="token"]');
     if (!tokenInput || !tokenInput.value) {
-      window.alert('Confirm token missing. Reload the page and try again.');
+      window.alert('Couldn\'t verify that action. Reload the page and try again.');
       return;
     }
     fetch(form.action, {
@@ -207,18 +230,18 @@
           // 202 Accepted — kick the reading list. First /api/update/status
           // poll fires after the standard interval; the server-side
           // status file is already populated by Phase 1's update_status_set_phase 1.
-          // #329 (review C2): arm seenRunning at user-action time so the
+          // litclock-dev#329 (review C2): arm seenRunning at user-action time so the
           // optimistic-tick branch fires even if the very first scheduled
           // poll times out (e.g. Phase 7 restart racing the 2s interval).
           seenRunning = true;
-          // #354 codex P2 follow-up — fireApply owns the new running
+          // litclock-dev#354 codex P2 follow-up — fireApply owns the new running
           // state on success; the deferred probe (if any) is now stale.
           deferredProbePayload = null;
           enterReadingList({ state: 'running', phase_index: 1 });
           schedulePoll();
           return;
         }
-        // #354 codex P2 follow-up — non-OK (typically 409 concurrent
+        // litclock-dev#354 codex P2 follow-up — non-OK (typically 409 concurrent
         // update) means an update is ALREADY running from another tab or
         // an auto-update timer. If we deferred a probe payload while the
         // modal was open, it captured exactly that state — replay it so
@@ -230,6 +253,24 @@
           handleProbePayload(stashed);
         }
         return response.json().then(function (body) {
+          var code = body && body.error && body.error.code;
+          // litclock-dev#597 — a stale/unrecognised confirmation is recoverable by
+          // reloading (which mints fresh tokens). Offer that instead of a
+          // dead-end OK button, matching the System tab's destructive actions.
+          // update_apply has no auto-retry path, so both expired and invalid
+          // land here.
+          if (
+            response.status === 401 &&
+            (code === 'confirm_token_expired' || code === 'confirm_token_invalid')
+          ) {
+            var recoverMsg = (body && body.error && body.error.message)
+              ? body.error.message
+              : 'This confirmation timed out for safety. Reload the page and try again.';
+            if (window.confirm(recoverMsg)) {
+              window.location.reload();
+            }
+            return;
+          }
           var msg = (body && body.error && body.error.message)
             ? body.error.message
             : 'Request failed (HTTP ' + response.status + ').';
@@ -242,11 +283,11 @@
         // Network glitch (rare on LAN). Try once more by entering the
         // reading-list optimistically; if no update is actually running,
         // the first poll will report state=idle and we exit cleanly.
-        // #329 (review C2): arm seenRunning here too — the user clicked
+        // litclock-dev#329 (review C2): arm seenRunning here too — the user clicked
         // Apply, so we're in a "running" intent for the duration regardless
         // of whether the POST round-tripped cleanly.
         seenRunning = true;
-        // #354 codex P2 follow-up — optimistic enterReadingList here
+        // litclock-dev#354 codex P2 follow-up — optimistic enterReadingList here
         // claims the running state; drop any deferred probe so it can't
         // overwrite the optimistic phase_index when the close listener
         // would otherwise have replayed.
@@ -267,7 +308,7 @@
         var renderedState = card && card.dataset.state;
         var freshState = body.available ? 'available'
                        : (body.available === null ? 'unknown' : 'up_to_date');
-        // #381 codex post-review fix: when we rendered as 'unknown' (i.e.,
+        // litclock-dev#381 codex post-review fix: when we rendered as 'unknown' (i.e.,
         // initial-load "checking…" with no cache) AND the API confirms
         // available === null (terminal unknown — typically private repo +
         // no PAT), the data-state values match so the equality check
@@ -301,14 +342,14 @@
 
   // ─── Status polling ────────────────────────────────────────────────
 
-  // #348 + codex adversarial review (findings 1+2) — the polling state machine
+  // litclock-dev#348 + codex adversarial review (findings 1+2) — the polling state machine
   // has TWO scheduled units that can each re-arm the cycle:
   //
   //   1. A pending setTimeout (pollTimer)
   //   2. An in-flight pollStatusOnce fetch whose .then/.catch lands later
   //      and calls handleStatusPayload → schedulePoll (or enterReconnectMode)
   //
-  // The original #348 sentinel only covered (1). A delayed `fireApply.catch()`
+  // The original litclock-dev#348 sentinel only covered (1). A delayed `fireApply.catch()`
   // that lands while a poll is in flight slips past `if (pollTimer)` (it's
   // null mid-fetch) and arms a NEW timer. The original in-flight fetch then
   // resolves and may transition to a terminal/reconnect state, which doesn't
@@ -327,6 +368,16 @@
   var pollTimer = null;
   var pollGeneration = 0;
   var reconnectArmed = false;
+
+  // litclock-dev#607 — a SINGLE failed status poll used to flip straight into
+  // reconnect mode (phantom-ticking all 7 phases on the way). A one-off
+  // blip — waitress worker briefly saturated, a dropped WiFi frame — thus
+  // reset the whole progress view. Retry the poll a few times first;
+  // only a sustained failure (the real Phase-7 restart signature) enters
+  // reconnect mode. 3 misses ≈ 6-9s of silence, comfortably inside the
+  // restart window and far beyond any single-poll hiccup.
+  var POLL_FAILURE_THRESHOLD = 3;
+  var consecutivePollFailures = 0;
 
   function cancelPolling() {
     // Bump the generation so any captured-by-closure callback (pending
@@ -359,7 +410,7 @@
   }
 
   function schedulePoll() {
-    // #348 + codex finding 1 — guard against double-arming. The pollTimer
+    // litclock-dev#348 + codex finding 1 — guard against double-arming. The pollTimer
     // check coalesces two callers in the same 2s window (page-load probe +
     // fireApply.catch on a transient network error). The generation-counter
     // mechanism (see cancelPolling) handles the harder case where a stale
@@ -378,10 +429,17 @@
 
   function handleStatusPayload(payload) {
     if (!payload) {
-      // Network failure during apply — control_server is probably mid-
+      // litclock-dev#607 — retry before declaring the backend gone. One failed poll is
+      // not a restart; three in a row is.
+      consecutivePollFailures++;
+      if (consecutivePollFailures < POLL_FAILURE_THRESHOLD) {
+        schedulePoll();
+        return;
+      }
+      // Sustained network failure during apply — control_server is mid-
       // restart in Phase 7. Switch to health-poll mode.
-      // #329: if we've previously seen state=running this session, the
-      // failed poll is almost certainly the Phase 7 systemctl restart of
+      // litclock-dev#329: if we've previously seen state=running this session, the
+      // failed polls are almost certainly the Phase 7 systemctl restart of
       // litclock-control killing waitress mid-fetch. Tick all 7 phases
       // visually before reconnecting so the user doesn't stare at the
       // mid-update spinner while /api/health races to detect the new
@@ -391,18 +449,28 @@
       if (seenRunning) {
         updateRowStates(7, false);
       }
-      // #348 codex finding 1+2 — invalidate any pending/in-flight poll
+      // litclock-dev#348 codex finding 1+2 — invalidate any pending/in-flight poll
       // before transitioning out of the status-polling loop, so a stale
       // callback can't fork a competing pollHealth cycle.
       cancelPolling();
       enterReconnectMode();
       return;
     }
+    consecutivePollFailures = 0;
     if (payload.state === 'idle') {
       // Either no update has run, or one finished and the file was
       // wiped. Restore the card view.
       cancelPolling();
       exitReadingList();
+      // litclock-dev#607 review F4 — a session that STARTED on the server-rendered
+      // in-progress view skipped refreshCheck at load (its reload-on-
+      // mismatch would loop mid-update). If that session ends here — the
+      // inferred-busy render's queued job evaporated, or the file was
+      // wiped — the restored card never got its check refreshed; reconcile
+      // it now that no update is in flight.
+      if (serverRenderedInProgress) {
+        refreshCheck();
+      }
       return;
     }
     if (payload.state === 'running') {
@@ -415,7 +483,7 @@
       updateRowStates(7, false);
       // A8 — version-mismatch reload. Wait for /api/health to report
       // a different version than the card's data-current-version.
-      // #348 codex finding 1+2 — terminal state must cancel any in-flight
+      // litclock-dev#348 codex finding 1+2 — terminal state must cancel any in-flight
       // poll so it can't re-enter handleStatusPayload after reconnect arms.
       cancelPolling();
       enterReconnectMode();
@@ -423,7 +491,7 @@
     }
     if (payload.state === 'failed_reverted') {
       updateRowStates(payload.phase_index || 5, true);
-      // #348 codex finding 1+2 — terminal state cancels pending work.
+      // litclock-dev#348 codex finding 1+2 — terminal state cancels pending work.
       cancelPolling();
       showTerminal(
         payload.error || 'Update failed verification — rolled back. Your clock is running normally.',
@@ -433,7 +501,7 @@
     }
     if (payload.state === 'failed_unrecovered') {
       updateRowStates(payload.phase_index || 0, true);
-      // #348 codex finding 1+2 — terminal state cancels pending work.
+      // litclock-dev#348 codex finding 1+2 — terminal state cancels pending work.
       cancelPolling();
       showTerminal(
         payload.error || 'Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab.',
@@ -454,14 +522,14 @@
 
   function enterReadingList(payload) {
     if (!readingList) return;
-    // #354 Race 1 — clear any stale terminal banner from a prior failed run
+    // litclock-dev#354 Race 1 — clear any stale terminal banner from a prior failed run
     // when starting fresh. Sequence: prior run left `failed_*` copy in
     // terminalMsg (hidden underneath the hidden reading list — the DOM
     // node persists; only the visible card surface is restored on idle).
     // User taps Apply → fireApply.then calls
     // enterReadingList({state:'running', phase_index:1}). Without this
     // clear, the OLD failure banner sits inside the freshly-revealed
-    // reading list (#345's existing `readingList.hidden` probe guard
+    // reading list (litclock-dev#345's existing `readingList.hidden` probe guard
     // blocks the cold-load probe from clobbering this entry path, so
     // the banner can only come from in-DOM residue, not a racing probe).
     // exitReadingList already clears the banner on idle transitions;
@@ -519,7 +587,7 @@
   // ─── Reconnect mode (mirrors system.js A8 reconnect probe) ─────────
 
   function enterReconnectMode() {
-    // #348 codex finding 2 — idempotence guard. Without this, a stray late
+    // litclock-dev#348 codex finding 2 — idempotence guard. Without this, a stray late
     // status-poll callback that survives the generation check (defense-in-
     // depth: shouldn't happen by construction, but cheap belt-and-suspenders)
     // could call enterReconnectMode a second time → fork a parallel
@@ -560,14 +628,70 @@
           window.setTimeout(function () { window.location.reload(); }, SETTLE_DELAY_MS);
           return;
         }
-        // Same version still — service hadn't restarted yet OR the update
-        // went through with no version change (same SHA timer fire).
-        // Either way, give it another beat.
-        window.setTimeout(function () { pollHealth(deadline, currentVersion); }, HEALTH_POLL_INTERVAL_MS);
+        // Same version — service hadn't restarted yet, OR the update ran
+        // with no version change (same-SHA timer fire, content-only
+        // release), OR it failed and reverted. litclock-dev#607 — the old code beat
+        // on /api/health until the 90s deadline and then showed
+        // "Couldn't reconnect" for ALL of those, which reads as a failed
+        // update when the clock is fine. The backend is answering, so ask
+        // it what actually happened.
+        pollStatusOnce(function (statusBody) {
+          if (statusBody && statusBody.state === 'running') {
+            // Backend restarted under us mid-update (or the restart never
+            // happened and the blip was transient) — resume the live
+            // progress view instead of waiting for a version flip that
+            // may never come.
+            reconnectArmed = false;
+            consecutivePollFailures = 0;
+            enterReadingList(statusBody);
+            schedulePoll();
+            return;
+          }
+          if (statusBody && statusBody.state === 'complete') {
+            // Same-version completion — reload so the server re-renders
+            // the reconciled card (and the fresh check clears the badge).
+            window.setTimeout(function () { window.location.reload(); }, SETTLE_DELAY_MS);
+            return;
+          }
+          if (statusBody && statusBody.state === 'failed_reverted') {
+            // litclock-dev#607 review — mirror the running branch's flag hygiene so the
+            // state machine stays re-enterable from a terminal render (a
+            // future retry affordance calling enterReconnectMode must not
+            // no-op on a stale reconnectArmed).
+            reconnectArmed = false;
+            consecutivePollFailures = 0;
+            updateRowStates(statusBody.phase_index || 5, true);
+            showTerminal(
+              statusBody.error || 'Update failed verification — rolled back. Your clock is running normally.',
+              'reverted'
+            );
+            return;
+          }
+          if (statusBody && statusBody.state === 'failed_unrecovered') {
+            reconnectArmed = false;
+            consecutivePollFailures = 0;
+            updateRowStates(statusBody.phase_index || 0, true);
+            showTerminal(
+              statusBody.error || 'Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab.',
+              'error'
+            );
+            return;
+          }
+          // idle / stale / poll failure — no verdict yet; keep beating.
+          window.setTimeout(function () { pollHealth(deadline, currentVersion); }, HEALTH_POLL_INTERVAL_MS);
+        });
       })
       .catch(function () {
         if (timeoutId) window.clearTimeout(timeoutId);
         window.setTimeout(function () { pollHealth(deadline, currentVersion); }, HEALTH_POLL_INTERVAL_MS);
       });
+  }
+
+  // litclock-dev#607 — resume a server-rendered in-progress view (see the comment at
+  // serverRenderedInProgress's declaration for why this must sit below
+  // every `var` initializer in the IIFE).
+  if (serverRenderedInProgress) {
+    seenRunning = true;
+    schedulePoll();
   }
 })();

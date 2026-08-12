@@ -212,7 +212,7 @@
     var tokenInput = form.querySelector('input[name="token"]');
     if (!tokenInput || !tokenInput.value) {
       // No token — nothing useful to do; surface the issue.
-      window.alert('Confirm token missing. Reload the page and try again.');
+      window.alert('Couldn\'t verify that action. Reload the page and try again.');
       return;
     }
     postAction(form, action, tokenInput, false);
@@ -318,6 +318,32 @@
               window.alert(consumedMsg);
               return;
             }
+            // litclock-dev#597 — a stale/unrecognised confirmation is recoverable by
+            // reloading (which mints fresh tokens), so offer that instead of a
+            // dead-end OK button. Covers `confirm_token_expired` for actions
+            // NOT auto-retried above AND `confirm_token_invalid` (the
+            // sat-past-TTL-then-swept case litclock-dev#597 reclassifies as expired now,
+            // but a genuinely unknown token still lands here). window.confirm's
+            // OK reloads; Cancel dismisses.
+            //
+            // prepare_for_gift is EXCLUDED (litclock-dev#597 /review): reloading discards
+            // the typed gift message. Its expired case already auto-retries
+            // above (preserving the draft); its rare invalid case falls to the
+            // generic alert below, whose de-jargoned copy still tells the user
+            // to reload — without throwing their draft away for them.
+            if (
+              response.status === 401 &&
+              action !== 'prepare_for_gift' &&
+              (code === 'confirm_token_expired' || code === 'confirm_token_invalid')
+            ) {
+              var recoverMsg = (body && body.error && body.error.message)
+                ? body.error.message
+                : 'This confirmation timed out for safety. Reload the page and try again.';
+              if (window.confirm(recoverMsg)) {
+                window.location.reload();
+              }
+              return;
+            }
             var msg = (body && body.error && body.error.message)
               ? body.error.message
               : 'Request failed (HTTP ' + response.status + ').';
@@ -346,7 +372,7 @@
   function refreshTokenAndRetry(form, action, tokenInput, originalErrorBody) {
     var fallbackMsg = (originalErrorBody && originalErrorBody.error && originalErrorBody.error.message)
       ? originalErrorBody.error.message
-      : 'Confirm token expired. Reload the page and try again.';
+      : 'This confirmation timed out for safety. Reload the page and try again.';
     fetch('/api/system/confirm-token', {
       method: 'POST',
       headers: {
@@ -417,9 +443,10 @@
 
     if (action === 'factory_reset') {
       // litclock-dev#510 — Factory reset handoff. litclock-reset.service wipes config +
-      // WiFi and reboots into first-boot (the LitClock-Setup hotspot). Like
-      // wifi_reset, the LAN drops and control_server goes down, so show
-      // terminal handoff copy rather than polling /api/health.
+      // WiFi and POWERS OFF (litclock-dev#627). The box is going away for good
+      // this session, so — like prepare_for_gift — show terminal handoff copy
+      // and NEVER poll /api/health (it will never come back; a Retry button
+      // would be dead).
       renderFactoryResetCard(main);
       return;
     }
@@ -473,18 +500,18 @@
   }
 
   function renderFactoryResetCard(main) {
-    // litclock-dev#510 — terminal handoff copy. No health-poll: litclock-reset.service is
-    // wiping config + WiFi and rebooting into setup, so the LAN is going away.
-    // Distinct from wifi-reset — this wiped EVERYTHING, so no "settings stay
-    // saved" reassurance line.
+    // litclock-dev#510 + litclock-dev#627 — terminal handoff copy. No health-poll: the box
+    // is wiping config + WiFi and POWERING OFF, so it is not coming back this
+    // session. Distinct from wifi-reset — this wiped EVERYTHING, so no
+    // "settings stay saved" reassurance line.
     main.innerHTML =
       '<section class="reconnect-state" role="status" aria-live="polite" data-state="factory-reset">' +
       '  <h2 class="reconnect-state__title"><em>Factory reset in progress…</em></h2>' +
       '  <p class="reconnect-state__body">' +
-      '    The clock is erasing its settings and rebooting into setup.' +
+      '    The clock is erasing its settings and powering off.' +
       '  </p>' +
       '  <p class="reconnect-state__body">' +
-      '    Join <strong>LitClock-Setup</strong> from your phone&rsquo;s WiFi list to set it up again.' +
+      '    Wait for the screen to go blank before unplugging. Then power it on again and join <strong>LitClock-Setup</strong> from your phone&rsquo;s WiFi list to set it up fresh.' +
       '  </p>' +
       '</section>';
   }

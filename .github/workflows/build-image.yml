@@ -98,6 +98,11 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
           DISPATCH_REF: ${{ github.event.inputs.litclock_ref || 'master' }}
+          # Pin the allowlist bracket ranges below to literal ASCII. Under a
+          # UTF-8 locale glibc collation admits accented letters into [A-Za-z],
+          # so the "ASCII only" contract would silently leak non-ASCII into tag
+          # names and release titles. C locale makes the ranges codepoint-ordered.
+          LC_ALL: C
         run: |
           # Use the SHA actually CHECKED OUT, not GITHUB_SHA. On a
           # workflow_dispatch, GITHUB_SHA is the SHA of the ref the workflow
@@ -130,6 +135,33 @@ jobs:
             # dev tags stay invisible to fielded clocks.
             VERSION="dev-$(date +%Y%m%d)-${RESOLVED_SHA}"
             REF="${DISPATCH_REF}"
+          fi
+          # Fail closed on ref/version text that could not have come from our
+          # own naming. Git ref names legitimately allow ;, $, ( and ), and
+          # both REF and VERSION end up as shell assignments in a config file
+          # that pi-gen SOURCES (stage3/04-finalize/00-run.sh) — so a tag named
+          # v1.0$(id) would execute on a runner holding contents:write +
+          # id-token:write + attestations:write. The Configure step also
+          # %q-quotes the write; this check keeps the garbage out of tag names,
+          # asset names and release titles as well.
+          #
+          # REF allows '/' (slashed branch names are real: feat/x). VERSION does
+          # NOT — it becomes the image filename litclock-<VERSION>.img and the
+          # release tag, so a slashed tag must not introduce path components
+          # there. The patterns are bound once so the error message can't drift
+          # from what is actually checked. `=~` needs the pattern UNQUOTED.
+          # Whole-string [[ =~ ]] (no REG_NEWLINE) also rejects embedded
+          # newlines, which blocks GITHUB_OUTPUT line-injection below — do NOT
+          # swap this for a line-oriented tool like grep.
+          ref_ok='^[A-Za-z0-9._/-]+$'
+          version_ok='^[A-Za-z0-9._-]+$'
+          if [[ ! "${REF}" =~ $ref_ok ]]; then
+            echo "ERROR: ref '${REF}' contains characters outside ${ref_ok}" >&2
+            exit 1
+          fi
+          if [[ ! "${VERSION}" =~ $version_ok ]]; then
+            echo "ERROR: version '${VERSION}' contains characters outside ${version_ok}" >&2
+            exit 1
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "ref=${REF}" >> "$GITHUB_OUTPUT"
@@ -174,10 +206,13 @@ jobs:
           # Copy base config
           cp pi-gen/config /tmp/pi-gen/config
 
-          # Append build-time variables
-          echo "LITCLOCK_REF=${REF}" >> /tmp/pi-gen/config
-          echo "LITCLOCK_VERSION=${VERSION}" >> /tmp/pi-gen/config
-          echo "LITCLOCK_SHA=${SHA}" >> /tmp/pi-gen/config
+          # Append build-time variables. %q, not a bare echo: this file is
+          # SOURCED by pi-gen (stage3/04-finalize/00-run.sh), so an unquoted
+          # value re-parses as shell there — the same injection class the env:
+          # binding above closes, one layer down at the config-file boundary.
+          printf 'LITCLOCK_REF=%q\n' "${REF}" >> /tmp/pi-gen/config
+          printf 'LITCLOCK_VERSION=%q\n' "${VERSION}" >> /tmp/pi-gen/config
+          printf 'LITCLOCK_SHA=%q\n' "${SHA}" >> /tmp/pi-gen/config
 
           # Replace pi-gen's default stage3 with our custom stage
           rm -rf /tmp/pi-gen/stage3

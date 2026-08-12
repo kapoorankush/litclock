@@ -12,6 +12,18 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# litclock-dev#607 review — control_server routes consult systemctl (via
+# update_state.update_is_busy) on /updates renders and idle status polls.
+# Several test modules exercise those routes without stubbing the gate, so
+# without this, test outcomes would depend on the HOST's systemd state (a
+# box where litclock-update.service is active would flip /updates into the
+# in-progress render under unrelated tests). Point SYSTEMCTL_BIN at a path
+# that cannot exist so the real gate fails fast and returns False. Must be
+# set BEFORE any test module imports control_server (the module reads the
+# env at import time) — conftest import order guarantees that. setdefault so
+# a deliberate override still wins.
+os.environ.setdefault("LITCLOCK_SYSTEMCTL", str(REPO_ROOT / "tests" / ".no-such-systemctl"))
+
 
 @pytest.fixture
 def tmp_env_file(tmp_path):
@@ -161,12 +173,12 @@ def clean_env():
 
 @pytest.fixture(autouse=True)
 def _reset_setup_server_state():
-    """Clear setup_server's module-level connect-flow state between tests (#355).
+    """Clear setup_server's module-level connect-flow state between tests (litclock-dev#355).
 
     The WiFi connect handler spawns a daemon thread that writes
     ``WIFI_CONNECT_ERROR`` / ``WIFI_CONNECT_IN_FLIGHT`` asynchronously, so
     a late write from a prior test can leak into the next test's assertions
-    under specific pytest orderings (caught on PR #353 CI run 25968703096).
+    under specific pytest orderings (caught on PR litclock-dev#353 CI run 25968703096).
 
     We import setup_server lazily and skip cleanly on ModuleNotFoundError
     so this fixture is a no-op when ``src`` is off ``sys.path`` (e.g. running

@@ -167,16 +167,17 @@ def _make_release(
     tamper_byte_manifest: bool = False,
     bundle_corpus_manifest: bool = False,
     manifest_files: dict[str, str] | None = None,
+    corpus_hash: str = "0",
 ) -> dict:
     """Build a release dict the mock server can serve.
 
     bundle_byte_manifest: include `files.sha256` inside the tarball (new
-        release flow as of #293). Set False to simulate a legacy release.
+        release flow as of litclock-dev#293). Set False to simulate a legacy release.
     tamper_byte_manifest: include `files.sha256` but with an entry whose
         hash does not match the tarballed PNG bytes. Simulates the M7-retro
         silent-failure mode where extracted content diverges from manifest.
     bundle_corpus_manifest: include `manifest.json` (the corpus manifest, not
-        the byte sidecar) inside the tarball. Drives the #313 consumer-side
+        the byte sidecar) inside the tarball. Drives the litclock-dev#313 consumer-side
         completeness check.
     manifest_files: when set, populate manifest.json's `files` map with the
         given {name: hash} pairs (use to ship a manifest claiming files NOT
@@ -204,7 +205,7 @@ def _make_release(
                 if rel.endswith(".png") and not rel.startswith("metadata/")
             }
         (staging / "manifest.json").write_text(
-            json.dumps({"corpus_hash": "0", "generator_hash": "0", "files": manifest_files}) + "\n"
+            json.dumps({"corpus_hash": corpus_hash, "generator_hash": "0", "files": manifest_files}) + "\n"
         )
     if bundle_byte_manifest:
         _write_byte_manifest(staging)
@@ -232,15 +233,19 @@ def _run(
     script_repo: Path,
     *,
     base_url: str,
-    slug: str = "kapoorankush/litclock",
+    slug: str | None = "kapoorankush/litclock",
     extra_args: list[str] | None = None,
     env_extra: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         "PATH": "/usr/bin:/bin:/usr/local/bin",
         "LITCLOCK_API_BASE_URL": base_url,
-        "LITCLOCK_REPO_SLUG": slug,
     }
+    # slug=None omits LITCLOCK_REPO_SLUG entirely so the script's own
+    # derive_repo_slug path runs (litclock-dev#561). Every pre-existing test passes an
+    # explicit slug, which is deliberately never second-guessed.
+    if slug is not None:
+        env["LITCLOCK_REPO_SLUG"] = slug
     if env_extra:
         env.update(env_extra)
     cmd = [str(script_repo / "scripts" / "download_images.sh"), "--repo-root", str(script_repo)]
@@ -505,7 +510,7 @@ class TestAtomicSwap:
         """A tarball with a symlink pointing outside the repo must not allow
         the script to overwrite files outside REPO_ROOT. The previous version
         of this test asserted `not Path('/etc/passwd.litclock_escaped').exists()`
-        which always passes regardless of script behavior (#293 testing
+        which always passes regardless of script behavior (litclock-dev#293 testing
         review). Replace with a real canary outside the repo.
         """
         canary = tmp_path / "canary_outside_repo"
@@ -554,7 +559,7 @@ class TestArgumentParsing:
 
 
 class TestByteIntegrityVerification:
-    """Issue #293: download_images.sh must verify on-disk PNG bytes match the
+    """Issue litclock-dev#293: download_images.sh must verify on-disk PNG bytes match the
     bundled files.sha256 sidecar before trusting either the version marker
     (short-circuit) or a fresh install. The M7-retro production incident
     showed both the marker and `Installed images at vN` log can lie when
@@ -724,7 +729,7 @@ class TestByteIntegrityVerification:
 
     def test_failed_filenames_logged_on_verify_failure(self, tmp_path):
         """When verification fails, the operator log must list which files
-        diverged — at least one FAILED line. Without this, #293 silently
+        diverged — at least one FAILED line. Without this, litclock-dev#293 silently
         recreates the M7-retro debugging gap (operator can't tell what's
         wrong, just that something is).
         """
@@ -849,7 +854,7 @@ class TestByteIntegrityVerification:
 
 
 class TestManifestCompletenessVerification:
-    """Issue #313: download_images.sh's defense-in-depth completeness check.
+    """Issue litclock-dev#313: download_images.sh's defense-in-depth completeness check.
     release_images.sh is the primary gate, but if a publisher somehow bypasses
     it (forced asset re-upload, manifest edit between regen and release), the
     consumer must catch a release whose `files.sha256` is internally consistent
@@ -932,7 +937,7 @@ class TestManifestCompletenessVerification:
 
 
 class TestOfflineFailQuarantine:
-    """Issue #314: when short-circuit verify-fail meets re-download-offline,
+    """Issue litclock-dev#314: when short-circuit verify-fail meets re-download-offline,
     the corrupt content must NOT keep rendering. Quarantine + degrade to
     time-only is the honest UX signal.
     """
@@ -1009,7 +1014,7 @@ class TestOfflineFailQuarantine:
     def test_verify_fail_plus_sha_mismatch_quarantines(self, tmp_path):
         """Marker matches, on-disk verify fails, mock server returns a
         tarball with corrupt SHA. Today's behavior: log mismatch and exit 0.
-        Under #314: quarantine the corrupt $IMAGES_DIR too."""
+        Under litclock-dev#314: quarantine the corrupt $IMAGES_DIR too."""
         root = self._seed_clean_v1(tmp_path)
         (root / "images" / "quote_0000_0.png").write_bytes(b"tampered")
         # Serve a release with corrupt SHA so the tarball download succeeds
@@ -1088,7 +1093,7 @@ class TestOfflineFailQuarantine:
         """The subtle interaction: verify-fail-at-short-circuit drives us
         into the download path, the freshly-downloaded content ALSO fails
         post-install verify. Today's rollback would restore OLD_DIR (the
-        original corrupt content). Under #314 the rollback must NOT do that —
+        original corrupt content). Under litclock-dev#314 the rollback must NOT do that —
         quarantine OLD_DIR too, leave $IMAGES_DIR empty, set marker.
         """
         root = self._seed_clean_v1(tmp_path)
@@ -1126,7 +1131,7 @@ class TestOfflineFailQuarantine:
         assert marker_file.exists(), "update-failed marker must be set after double-verify-fail"
 
     def test_verify_fail_plus_empty_sha_asset_quarantines(self, tmp_path):
-        """#314 F2: when the publisher uploads an empty SHA file AND the
+        """litclock-dev#314 F2: when the publisher uploads an empty SHA file AND the
         on-disk content is already known-corrupt, the script must quarantine
         before exit 1. Without this, a single bad release would leave the
         fleet rendering corrupt PNGs with no "!" glyph signal until the
@@ -1154,7 +1159,7 @@ class TestOfflineFailQuarantine:
         assert marker_file.exists()
 
     def test_marker_set_when_parent_dir_does_not_exist(self, tmp_path):
-        """#314 F10: _set_update_failed_marker must create the parent dir
+        """litclock-dev#314 F10: _set_update_failed_marker must create the parent dir
         if missing, not silently no-op. A botched install that didn't
         create /var/lib/litclock would otherwise swallow every glyph signal
         forever."""
@@ -1173,3 +1178,546 @@ class TestOfflineFailQuarantine:
         assert list(root.glob("images.failed.*")), "quarantine should have fired"
         assert marker_dir.exists(), "parent dir must have been created"
         assert marker_file.exists(), "marker must have been written even though parent dir was missing"
+
+
+# ── litclock-dev#561: release source derivation + corpus/image correspondence ──────
+
+
+def _git_repo_with_origin(root: Path, origin_url: str) -> None:
+    """Turn `root` into a git repo whose `origin` is origin_url.
+
+    derive_repo_slug() shells out to `git -C $REPO_ROOT remote get-url origin`,
+    so the sandbox needs to be a real repo for the derivation path to run.
+    """
+    env = {"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(root)}
+    subprocess.run(["git", "init", "-q"], cwd=root, env=env, check=True)
+    subprocess.run(["git", "remote", "add", "origin", origin_url], cwd=root, env=env, check=True)
+
+
+def _write_corpus(root: Path, body: bytes) -> str:
+    """Write the corpus CSV the script hashes. Returns its sha1."""
+    csv = root / "image-gen" / "litclock_annotated.csv"
+    csv.parent.mkdir(parents=True, exist_ok=True)
+    csv.write_bytes(body)
+    return hashlib.sha1(body).hexdigest()  # noqa: S324 — matches corpus_file_hash
+
+
+class TestReleaseSourceDerivation:
+    """litclock-dev#561 — the version comes from the local repo, so the tarball must too."""
+
+    def test_derives_slug_from_https_origin(self, tmp_path):
+        """A dev-flashed device must resolve against ITS OWN repo, not the public one."""
+        repo = _make_repo(tmp_path, version="v8")
+        _git_repo_with_origin(repo, "https://github.com/kapoorankush/litclock-dev.git")
+        release = _make_release(tmp_path, version="v8")
+        server = _MockServer(release, slug="kapoorankush/litclock-dev")
+        server.start()
+        try:
+                # slug=None → no env override, so derivation decides.
+                proc = _run(repo, base_url=server.base_url, slug=None)
+        finally:
+            server.stop()
+        assert proc.returncode == 0, proc.stderr
+        assert (repo / "images" / ".installed-version").read_text().strip() == "v8"
+
+    def test_derives_slug_from_ssh_origin(self, tmp_path):
+        """git@host:owner/repo.git is the other form git writes."""
+        repo = _make_repo(tmp_path, version="v8")
+        _git_repo_with_origin(repo, "git@github.com:kapoorankush/litclock-dev.git")
+        release = _make_release(tmp_path, version="v8")
+        server = _MockServer(release, slug="kapoorankush/litclock-dev")
+        server.start()
+        try:
+                proc = _run(repo, base_url=server.base_url, slug=None)
+        finally:
+            server.stop()
+        assert proc.returncode == 0, proc.stderr
+        assert (repo / "images" / ".installed-version").read_text().strip() == "v8"
+
+    def test_fork_falls_back_to_default_repo(self, tmp_path):
+        """A fork carries the code but cuts no image releases — it must keep working.
+
+        This is the regression the naive 'just derive it' fix would cause.
+        """
+        repo = _make_repo(tmp_path, version="v8")
+        _git_repo_with_origin(repo, "https://github.com/somebody/litclock.git")
+        # Bundle a manifest whose corpus_hash MATCHES the fork's CSV. Every real
+        # release ships manifest.json (litclock-dev#299), so a fixture without one would
+        # skip the corpus guard entirely and prove nothing about the real path
+        # (red-team finding).
+        digest = _write_corpus(repo, b"00:00|midnight|local corpus\n")
+        release = _make_release(
+            tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash=digest
+        )
+        # Server only knows the DEFAULT slug; the derived somebody/litclock 404s.
+        server = _MockServer(release, slug="kapoorankush/litclock")
+        server.start()
+        try:
+                proc = _run(repo, base_url=server.base_url, slug=None)
+        finally:
+            server.stop()
+        assert proc.returncode == 0, proc.stderr
+        assert (repo / "images" / ".installed-version").read_text().strip() == "v8"
+        assert "falling back" in proc.stderr or "falling back" in proc.stdout
+
+    def test_no_git_repo_uses_default(self, tmp_path):
+        """A tarball deploy with no .git must behave exactly as before."""
+        repo = _make_repo(tmp_path, version="v8")  # deliberately NOT a git repo
+        release = _make_release(tmp_path, version="v8")
+        server = _MockServer(release, slug="kapoorankush/litclock")
+        server.start()
+        try:
+                proc = _run(repo, base_url=server.base_url, slug=None)
+        finally:
+            server.stop()
+        assert proc.returncode == 0, proc.stderr
+        assert (repo / "images" / ".installed-version").read_text().strip() == "v8"
+
+    def test_explicit_env_slug_is_never_second_guessed(self, tmp_path):
+        """An operator-set LITCLOCK_REPO_SLUG must not silently fall back."""
+        repo = _make_repo(tmp_path, version="v8")
+        _git_repo_with_origin(repo, "https://github.com/kapoorankush/litclock-dev.git")
+        release = _make_release(tmp_path, version="v8")
+        server = _MockServer(release, slug="kapoorankush/litclock")
+        server.start()
+        try:
+                # Explicit slug points somewhere with no release → graceful no-op,
+                # NOT a silent fallback to the default that does have one.
+                proc = _run(repo, base_url=server.base_url, slug="someone/elsewhere")
+        finally:
+            server.stop()
+        assert proc.returncode == 0, proc.stderr
+        assert not (repo / "images" / ".installed-version").exists()
+
+
+class TestCorpusImageCorrespondence:
+    """litclock-dev#561 — installed images must belong to the CSV this device renders from."""
+
+    def test_corpus_hash_mismatch_refuses_to_install(self, tmp_path):
+        """The core guard: wrong image set must be loud, not silent."""
+        repo = _make_repo(tmp_path, version="v8")
+        _write_corpus(repo, b"00:00|midnight|local corpus\n")
+        # Manifest claims a DIFFERENT corpus — exactly the dev-v8/public-v8 case.
+        release = _make_release(
+            tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash="deadbeef" * 5
+        )
+        server = _MockServer(release)
+        server.start()
+        try:
+                proc = _run(repo, base_url=server.base_url)
+        finally:
+            server.stop()
+        assert proc.returncode == 1, f"expected hard failure, got {proc.returncode}"
+        combined = proc.stdout + proc.stderr
+        assert "does not match the local corpus" in combined
+        # Existing images left alone — nothing installed.
+        assert not (repo / "images" / ".installed-version").exists()
+
+    def test_corpus_hash_match_installs(self, tmp_path):
+        """The guard must not fire on the correct set — otherwise it's useless."""
+        repo = _make_repo(tmp_path, version="v8")
+        digest = _write_corpus(repo, b"00:00|midnight|local corpus\n")
+        release = _make_release(
+            tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash=digest
+        )
+        server = _MockServer(release)
+        server.start()
+        try:
+                proc = _run(repo, base_url=server.base_url)
+        finally:
+            server.stop()
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert (repo / "images" / ".installed-version").read_text().strip() == "v8"
+
+    def test_mismatch_preserves_previously_good_images(self, tmp_path):
+        """A bad update must not destroy a working image set."""
+        repo = _make_repo(tmp_path, version="v7")
+        _write_corpus(repo, b"00:00|midnight|local corpus\n")
+        good = _make_release(tmp_path, version="v7")
+        server = _MockServer(good)
+        server.start()
+        try:
+                assert _run(repo, base_url=server.base_url).returncode == 0
+        finally:
+            server.stop()
+        assert (repo / "images" / ".installed-version").read_text().strip() == "v7"
+
+        (repo / ".images-version").write_text("v8\n")
+        bad = _make_release(
+            tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash="cafe" * 10
+        )
+        server = _MockServer(bad)
+        server.start()
+        try:
+                proc = _run(repo, base_url=server.base_url)
+        finally:
+            server.stop()
+        assert proc.returncode == 1
+        # v7 images still in place and still marked v7.
+        assert (repo / "images" / ".installed-version").read_text().strip() == "v7"
+
+    def test_legacy_release_without_manifest_still_installs(self, tmp_path):
+        """Releases predating litclock-dev#299 bundle no manifest.json — absence is not mismatch."""
+        repo = _make_repo(tmp_path, version="v8")
+        _write_corpus(repo, b"00:00|midnight|local corpus\n")
+        release = _make_release(tmp_path, version="v8", bundle_corpus_manifest=False)
+        server = _MockServer(release)
+        server.start()
+        try:
+                proc = _run(repo, base_url=server.base_url)
+        finally:
+            server.stop()
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert (repo / "images" / ".installed-version").read_text().strip() == "v8"
+
+    def test_deploy_without_local_csv_still_installs(self, tmp_path):
+        """A slim deploy may ship no CSV; the check skips rather than fails."""
+        repo = _make_repo(tmp_path, version="v8")  # no image-gen/ at all
+        release = _make_release(
+            tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash="beef" * 10
+        )
+        server = _MockServer(release)
+        server.start()
+        try:
+                proc = _run(repo, base_url=server.base_url)
+        finally:
+            server.stop()
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert (repo / "images" / ".installed-version").read_text().strip() == "v8"
+
+
+class TestNoRedundantMetadataRequest:
+    """litclock-dev#561 — the fallback must not re-request an identical URL.
+
+    Regression guard: guarding the retry on "slug is now the default" instead
+    of "we actually fell back" made every non-derived device fire the same
+    metadata request twice, doubling the timeout on the offline path.
+    """
+
+    @staticmethod
+    def _tag_requests(tmp_path, origin_url: str | None) -> list[str]:
+        hits: list[str] = []
+        original = _FakeApiHandler.do_GET
+
+        def counting(self):
+            if "/releases/tags/" in self.path:
+                hits.append(self.path)
+            return original(self)
+
+        repo = _make_repo(tmp_path, version="v9")  # pin a version the server lacks
+        if origin_url:
+            _git_repo_with_origin(repo, origin_url)
+        release = _make_release(tmp_path, version="v1")
+        _FakeApiHandler.do_GET = counting
+        server = _MockServer(release)
+        server.start()
+        try:
+            _run(repo, base_url=server.base_url, slug=None)
+        finally:
+            server.stop()
+            _FakeApiHandler.do_GET = original
+        return hits
+
+    def test_non_derived_miss_makes_exactly_one_request(self, tmp_path):
+        """No git remote -> default slug -> a miss must cost ONE request, not two."""
+        assert len(self._tag_requests(tmp_path, None)) == 1
+
+    def test_derived_miss_makes_two_requests_against_different_repos(self, tmp_path):
+        """A derived slug legitimately tries its own repo, then the default."""
+        hits = self._tag_requests(tmp_path, "https://github.com/kapoorankush/litclock-dev.git")
+        assert len(hits) == 2, hits
+        # Two DIFFERENT repos — that is the point of the fallback.
+        assert "litclock-dev/releases" in hits[0]
+        assert "/kapoorankush/litclock/releases" in hits[1]
+
+
+class TestManifestUnverifiableFailsClosed:
+    """litclock-dev#561 review — 'present but I cannot read it' must refuse, not skip.
+
+    The first version collapsed 'manifest absent' (legit legacy skip) with
+    'manifest present but corpus_hash unreadable'. Since the manifest arrives
+    inside the downloaded tarball, the second case means a corrupt or forged
+    release, and it silently installed. Verified bypassed before this fix.
+    """
+
+    @staticmethod
+    def _release_with_manifest_body(tmp_path, body: str) -> dict:
+        contents = {
+            "metadata/quote_0000_0_credits.png": b"fake credits",
+            "quote_0000_0.png": b"fake quote",
+        }
+        staging = tmp_path / "hostile_staging"
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir()
+        for rel, data in contents.items():
+            f = staging / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(data)
+        (staging / "manifest.json").write_text(body)
+        _write_byte_manifest(staging)
+        tar = tmp_path / "hostile.tar.gz"
+        raw = _build_tarball(staging, tar)
+        digest = hashlib.sha256(raw).hexdigest()
+        return {
+            "tag": "litclock-images-v8",
+            "assets": {
+                "litclock-images.tar.gz": (1, raw),
+                "litclock-images.tar.gz.sha256": (
+                    2,
+                    f"{digest}  litclock-images.tar.gz\n".encode(),
+                ),
+            },
+        }
+
+    def _assert_refused(self, tmp_path, body: str):
+        repo = _make_repo(tmp_path, version="v8")
+        _write_corpus(repo, b"00:00|midnight|local corpus\n")
+        server = _MockServer(self._release_with_manifest_body(tmp_path, body))
+        server.start()
+        try:
+            proc = _run(repo, base_url=server.base_url)
+        finally:
+            server.stop()
+        assert proc.returncode == 1, f"expected refusal, got rc={proc.returncode}"
+        assert not (repo / "images" / ".installed-version").exists(), "images were installed anyway"
+        return proc
+
+    def test_corpus_hash_key_missing_refuses(self, tmp_path):
+        self._assert_refused(tmp_path, json.dumps({"generator_hash": "0", "files": {}}))
+
+    def test_corpus_hash_null_refuses(self, tmp_path):
+        self._assert_refused(tmp_path, json.dumps({"corpus_hash": None, "files": {}}))
+
+    def test_corpus_hash_empty_string_refuses(self, tmp_path):
+        self._assert_refused(tmp_path, json.dumps({"corpus_hash": "   ", "files": {}}))
+
+    def test_corpus_hash_wrong_type_refuses(self, tmp_path):
+        self._assert_refused(tmp_path, json.dumps({"corpus_hash": 12345, "files": {}}))
+
+    def test_manifest_not_a_dict_refuses(self, tmp_path):
+        self._assert_refused(tmp_path, json.dumps(["not", "a", "dict"]))
+
+    def test_unparseable_manifest_refuses(self, tmp_path):
+        proc = self._assert_refused(tmp_path, "{{{ not json at all")
+        assert "not valid JSON" in (proc.stdout + proc.stderr)
+
+
+class TestNonGitHubOriginDoesNotDerive:
+    """litclock-dev#561 review — the slug is looked up on api.github.com, so only a
+    github.com origin may derive.
+
+    A gitlab.com/acme/litclock origin would otherwise yield "acme/litclock"
+    and query GitHub for it. If an unrelated GitHub repo of that name exists,
+    the device installs someone else's images.
+    """
+
+    @staticmethod
+    def _requests_for_origin(tmp_path, origin_url: str) -> list[str]:
+        hits: list[str] = []
+        original = _FakeApiHandler.do_GET
+
+        def counting(self):
+            if "/releases/tags/" in self.path:
+                hits.append(self.path)
+            return original(self)
+
+        repo = _make_repo(tmp_path, version="v8")
+        _git_repo_with_origin(repo, origin_url)
+        release = _make_release(tmp_path, version="v8")
+        _FakeApiHandler.do_GET = counting
+        server = _MockServer(release, slug="kapoorankush/litclock")
+        server.start()
+        try:
+            _run(repo, base_url=server.base_url, slug=None)
+        finally:
+            server.stop()
+            _FakeApiHandler.do_GET = original
+        return hits
+
+    def test_gitlab_origin_never_queries_its_slug(self, tmp_path):
+        hits = self._requests_for_origin(tmp_path, "https://gitlab.com/acme/litclock.git")
+        # Exactly one request, straight to the default — never acme/litclock.
+        assert len(hits) == 1, hits
+        assert "/kapoorankush/litclock/releases" in hits[0]
+        assert not any("acme" in h for h in hits), f"queried a non-GitHub slug: {hits}"
+
+    def test_selfhosted_origin_never_queries_its_slug(self, tmp_path):
+        hits = self._requests_for_origin(tmp_path, "git@git.example.com:acme/litclock.git")
+        assert len(hits) == 1, hits
+        assert not any("acme" in h for h in hits), f"queried a non-GitHub slug: {hits}"
+
+    def test_github_ssh_origin_still_derives(self, tmp_path):
+        """Guard must not over-reject: real github.com SSH origins still derive."""
+        hits = self._requests_for_origin(tmp_path, "git@github.com:kapoorankush/litclock-dev.git")
+        assert any("litclock-dev/releases" in h for h in hits), hits
+
+
+class TestRefusalIsOperatorVisible:
+    """litclock-dev#561 red-team — a permanent refusal must raise the '!' glyph.
+
+    The network/404 exits beside this guard are transient and self-heal, so
+    they intentionally stay quiet. A corpus mismatch does NOT self-heal: it
+    needs a human. It was the only failure giving no signal at all, and on a
+    first install `quarantine_if_verify_failed` cannot provide one (it no-ops
+    without VERIFY_FAILED_AT_SHORT_CIRCUIT and an existing images/).
+    """
+
+    def _run_mismatch(self, tmp_path, origin_url=None):
+        repo = _make_repo(tmp_path, version="v8")
+        _write_corpus(repo, b"00:00|minuit|un corpus traduit\n")
+        if origin_url:
+            _git_repo_with_origin(repo, origin_url)
+        marker = tmp_path / "state" / "update-failed"
+        release = _make_release(
+            tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash="ab" * 20
+        )
+        server = _MockServer(release)
+        server.start()
+        try:
+            proc = _run(
+                repo,
+                base_url=server.base_url,
+                slug=None if origin_url else "kapoorankush/litclock",
+                env_extra={"LITCLOCK_UPDATE_FAILED_MARKER": str(marker)},
+            )
+        finally:
+            server.stop()
+        return proc, repo, marker
+
+    def test_first_install_mismatch_raises_the_marker(self, tmp_path):
+        """No images/ dir yet — the marker must still be set."""
+        proc, repo, marker = self._run_mismatch(tmp_path)
+        assert proc.returncode == 1
+        assert not (repo / "images").exists(), "nothing should have been installed"
+        assert marker.exists(), "permanent failure left no operator-visible signal"
+
+    def test_divergent_fork_is_refused_and_flagged(self, tmp_path):
+        """A fork whose corpus diverges falls back to the default repo, whose
+        images legitimately do NOT match. Refusing is correct; being silent is not."""
+        proc, repo, marker = self._run_mismatch(
+            tmp_path, "https://github.com/somebody/litclock.git"
+        )
+        assert proc.returncode == 1
+        assert marker.exists()
+        combined = proc.stdout + proc.stderr
+        # The message must tell the operator what to actually do about it.
+        assert "LITCLOCK_REPO_SLUG" in combined or "image release" in combined
+
+    def test_unverifiable_manifest_also_raises_the_marker(self, tmp_path):
+        repo = _make_repo(tmp_path, version="v8")
+        _write_corpus(repo, b"00:00|midnight|local corpus\n")
+        marker = tmp_path / "state" / "update-failed"
+        release = _make_release(
+            tmp_path, version="v8", bundle_corpus_manifest=True, corpus_hash=""
+        )
+        server = _MockServer(release)
+        server.start()
+        try:
+            proc = _run(
+                repo,
+                base_url=server.base_url,
+                env_extra={"LITCLOCK_UPDATE_FAILED_MARKER": str(marker)},
+            )
+        finally:
+            server.stop()
+        assert proc.returncode == 1
+        assert marker.exists()
+
+
+class TestAlreadyInstalledWrongSource:
+    """litclock-dev#561 codex review — the idempotency short-circuit trusted the marker
+    plus the byte sidecar, both of which are internally consistent for a
+    wrong-source install.
+
+    A dev device that fetched the PUBLIC v8 before litclock-dev#561 landed reported
+    'already at v8', exited 0, and kept the mismatched images forever — the
+    exact state this branch exists to fix. Verified bypassed before the fix.
+    """
+
+    @staticmethod
+    def _install_wrong_set(repo: Path, version: str, installed_corpus_hash: str) -> Path:
+        imgs = repo / "images"
+        imgs.mkdir(exist_ok=True)
+        (imgs / "quote_0000_0.png").write_bytes(b"WRONG-SOURCE image")
+        (imgs / "metadata").mkdir(exist_ok=True)
+        (imgs / "metadata" / "quote_0000_0_credits.png").write_bytes(b"WRONG credits")
+        (imgs / "manifest.json").write_text(
+            json.dumps(
+                {"corpus_hash": installed_corpus_hash, "generator_hash": "0", "files": {}}
+            )
+        )
+        _write_byte_manifest(imgs)  # bytes ARE self-consistent
+        (imgs / ".installed-version").write_text(f"{version}\n")
+        return imgs
+
+    def test_same_version_wrong_corpus_is_replaced(self, tmp_path):
+        repo = _make_repo(tmp_path, version="v8")
+        digest = _write_corpus(repo, b"00:00|midnight|LOCAL corpus\n")
+        imgs = self._install_wrong_set(repo, "v8", "ff" * 20)
+        # A correct release IS available for this pin.
+        release = _make_release(
+            tmp_path,
+            version="v8",
+            contents={
+                "metadata/quote_0000_0_credits.png": b"RIGHT credits",
+                "quote_0000_0.png": b"RIGHT image",
+            },
+            bundle_corpus_manifest=True,
+            corpus_hash=digest,
+        )
+        server = _MockServer(release)
+        server.start()
+        try:
+            proc = _run(repo, base_url=server.base_url)
+        finally:
+            server.stop()
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert (imgs / "quote_0000_0.png").read_bytes() == b"RIGHT image", (
+            "wrong-source images were left in place"
+        )
+
+    def test_same_version_matching_corpus_still_short_circuits(self, tmp_path):
+        """Guard must not force a 124MB re-download on every correct device."""
+        repo = _make_repo(tmp_path, version="v8")
+        digest = _write_corpus(repo, b"00:00|midnight|LOCAL corpus\n")
+        self._install_wrong_set(repo, "v8", digest)  # hash MATCHES -> correct set
+        hits: list[str] = []
+        original = _FakeApiHandler.do_GET
+
+        def counting(self):
+            hits.append(self.path)
+            return original(self)
+
+        release = _make_release(tmp_path, version="v8")
+        _FakeApiHandler.do_GET = counting
+        server = _MockServer(release)
+        server.start()
+        try:
+            proc = _run(repo, base_url=server.base_url)
+        finally:
+            server.stop()
+            _FakeApiHandler.do_GET = original
+        assert proc.returncode == 0
+        assert hits == [], f"short-circuit broken — device re-downloaded: {hits}"
+
+    def test_legacy_install_without_manifest_still_short_circuits(self, tmp_path):
+        """No installed manifest -> no evidence of mismatch -> keep skipping."""
+        repo = _make_repo(tmp_path, version="v8")
+        _write_corpus(repo, b"00:00|midnight|LOCAL corpus\n")
+        imgs = repo / "images"
+        imgs.mkdir()
+        (imgs / "quote_0000_0.png").write_bytes(b"legacy image")
+        (imgs / "metadata").mkdir()
+        (imgs / "metadata" / "quote_0000_0_credits.png").write_bytes(b"legacy credits")
+        _write_byte_manifest(imgs)
+        (imgs / ".installed-version").write_text("v8\n")
+        release = _make_release(tmp_path, version="v8")
+        server = _MockServer(release)
+        server.start()
+        try:
+            proc = _run(repo, base_url=server.base_url)
+        finally:
+            server.stop()
+        assert proc.returncode == 0
+        assert (imgs / "quote_0000_0.png").read_bytes() == b"legacy image"

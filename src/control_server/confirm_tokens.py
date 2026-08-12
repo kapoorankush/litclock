@@ -1,7 +1,7 @@
 """In-memory single-use confirm-token store.
 
-The Control PWA's destructive system actions — reboot, poweroff (#245 M4),
-update_apply, wifi_reset (#245 M5) — are gated by a per-action confirm
+The Control PWA's destructive system actions — reboot, poweroff (litclock-dev#245 M4),
+update_apply, wifi_reset (litclock-dev#245 M5) — are gated by a per-action confirm
 token. A token is issued when the user opens the confirm modal and
 consumed when they tap the primary button. Single-use + 300s TTL means
 a stale tab can't replay the action hours later (or a refresh-on-action
@@ -37,12 +37,12 @@ import time
 from typing import Final, Literal, NamedTuple
 
 # All destructive actions that can mint + consume a token. M4 shipped the
-# first two; M5 (#245) added `update_apply` for /api/update/apply and
-# `wifi_reset` for /api/wifi/reset. Issue #280 adds `prepare_for_gift` for
+# first two; M5 (litclock-dev#245) added `update_apply` for /api/update/apply and
+# `wifi_reset` for /api/wifi/reset. Issue litclock-dev#280 adds `prepare_for_gift` for
 # /api/system/prepare-for-gift (wipes WiFi + paints welcome splash + powers
 # off, similar blast radius to wifi_reset). Each action's route handler
 # binds its consume() call to its own action string so a token issued for
-# one action cannot be replayed against another. Issue #510 adds
+# one action cannot be replayed against another. Issue litclock-dev#510 adds
 # `factory_reset` for /api/system/reset (wipes config + WiFi, reboots into
 # setup — full-wipe sibling of wifi_reset, which is WiFi-only).
 VALID_ACTIONS: Final[tuple[str, ...]] = (
@@ -66,12 +66,40 @@ TTL_SECONDS: Final[int] = 300
 # `_consumed` shadow dict so a duplicate POST (double-click, bfcached
 # reload, re-submit-on-back) can be classified as "already used" instead
 # of being misread as "expired" and silently re-fired by a refresh-and-retry
-# client (#317 item 1 codex /review P2). 600s covers realistic double-submit
+# client (litclock-dev#317 item 1 codex /review P2). 600s covers realistic double-submit
 # / bfcache windows; after the tombstone expires we fall back to the
 # pre-#317-followup behavior (no tombstone → "invalid" rather than
 # "consumed"), which is acceptable because that window is 2x the TTL and
 # the consumed-token hash space is collision-resistant.
 TOMBSTONE_TTL_SECONDS: Final[int] = 600
+
+# Expired-token tombstone TTL (litclock-dev#597). When _sweep_locked() drops a
+# token whose TTL passed WITHOUT being consumed, it parks the hash here so a
+# later consume of that same token classifies as "expired" (client mints a
+# fresh token and retries) instead of "invalid" (a dead-end "confirm token
+# unrecognised" alert with no recovery). Without this, whether a sat-on token
+# reports "expired" or "invalid" depended on sweep timing: consume_classified
+# looks up before sweeping, but ANY intervening issue/consume (a second action
+# card's modal, a re-mint) would already have swept the record, collapsing it to
+# "invalid". A user who opens the System tab and taps a destructive action a few
+# minutes later hit exactly that. Horizon is long and generous — the only cost
+# of classifying a genuinely-issued-then-stale token as "expired" is a client
+# remint (which still requires the user to re-confirm), and an attacker's guessed
+# token was never issued so never lands here. Bounded by tokens issued per day on
+# a single-user device; swept lazily like the other two dicts.
+EXPIRED_TTL_SECONDS: Final[int] = 24 * 60 * 60
+
+# Hard cap on the expired-tombstone dict (litclock-dev#597 /review). Unlike the
+# live store (300s TTL) and the consumed tombstone (fed only by rate-limited
+# POSTs), _expired is fed by token ISSUANCE — GET /system mints one token per
+# action card per render, and page GETs are NOT rate-limited on this
+# unauthenticated-on-LAN PWA. Without a cap, a polling dashboard or a hostile
+# LAN client hammering /system would accrete hash entries for the full 24h
+# horizon and could OOM a 512MB Pi Zero. The cap bounds memory regardless of
+# request rate; eviction is oldest-first and only ever degrades a very stale tap
+# back to the pre-#597 "invalid" dead-end — never to anything unsafe. 4096 is
+# orders of magnitude above a real single-user device's daily issuance.
+EXPIRED_MAX_ENTRIES: Final[int] = 4096
 
 # Outcome of consume_classified(). The route handler maps each outcome to
 # a distinct HTTP response so the client can distinguish them:
@@ -115,10 +143,14 @@ def envelope_for_consume_outcome(outcome: ConsumeOutcome):
     """
     from .errors import envelope  # noqa: PLC0415 — lazy to keep test surface light
 
+    # User-facing copy carries NO "confirm token" jargon (litclock-dev#597):
+    # a non-technical owner should read what to do, not what broke internally.
+    # The machine-readable `code` slugs are the stable contract the client
+    # branches on and are unchanged.
     if outcome == "expired":
         return envelope(
             "confirm_token_expired",
-            "Confirm token has expired. Reload and try again.",
+            "This confirmation timed out for safety. Reload the page and try again.",
             401,
         )
     if outcome == "consumed":
@@ -130,7 +162,7 @@ def envelope_for_consume_outcome(outcome: ConsumeOutcome):
     # outcome == "invalid"
     return envelope(
         "confirm_token_invalid",
-        "Confirm token is missing or unrecognised.",
+        "Couldn't verify that action. Reload the page and try again.",
         401,
     )
 
@@ -154,25 +186,34 @@ class ConfirmTokenStore:
     Sweeps expired entries on every issue/consume call — no background
     thread (waitress single-process makes lazy GC sufficient). All
     mutations run under ``self._lock`` so concurrent worker threads
-    can't double-consume the same token (#245 M5 codex F10).
+    can't double-consume the same token (litclock-dev#245 M5 codex F10).
     """
 
     def __init__(
         self,
         ttl_seconds: int = TTL_SECONDS,
         tombstone_ttl_seconds: int = TOMBSTONE_TTL_SECONDS,
+        expired_ttl_seconds: int = EXPIRED_TTL_SECONDS,
+        expired_max_entries: int = EXPIRED_MAX_ENTRIES,
     ) -> None:
         self._ttl_seconds = ttl_seconds
         self._tombstone_ttl_seconds = tombstone_ttl_seconds
+        self._expired_ttl_seconds = expired_ttl_seconds
+        self._expired_max_entries = expired_max_entries
         # token -> (action, expires_at_monotonic)
         self._tokens: dict[str, tuple[str, float]] = {}
-        # #317 item 1 codex P2 — shadow dict of recently-consumed tokens
+        # litclock-dev#317 item 1 codex P2 — shadow dict of recently-consumed tokens
         # (hashed, so a tombstone-only memory disclosure cannot replay).
         # Lets consume_classified() distinguish "consumed" from "expired"
         # so the JS refresh-and-retry only fires on real TTL expiry — a
         # double-click / bfcached resubmit hits "consumed" instead of
         # silently bypassing the single-use guard. hashed_token -> tombstone_expiry_monotonic.
         self._consumed: dict[str, float] = {}
+        # litclock-dev#597 — shadow dict of tokens that expired UNCONSUMED
+        # (swept for TTL, not for use). Lets consume_classified() report
+        # "expired" (→ client remint) rather than "invalid" (→ dead-end alert)
+        # for a token the sweep already dropped. hashed_token -> expiry_monotonic.
+        self._expired: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def issue(self, action: str) -> tuple[str, int]:
@@ -202,13 +243,13 @@ class ConfirmTokenStore:
         raising) for unknown or invalid tokens — callers map ``None`` to a
         401 confirm_token_invalid response.
 
-        Issue #328: returning the expiry instead of a bare bool lets the
+        Issue litclock-dev#328: returning the expiry instead of a bare bool lets the
         caller pass it back to ``restore()`` if a pre-side-effect failure
         path (gate, validation, subprocess error before dispatch) needs to
         un-consume the token so the user's retry doesn't hit a spurious
         "token already used" 401 that masks the real underlying error.
 
-        #317 item 1 codex P2: prefer ``consume_classified()`` in route
+        litclock-dev#317 item 1 codex P2: prefer ``consume_classified()`` in route
         handlers — it distinguishes "expired" from "consumed" so the JS
         refresh-and-retry only fires on real TTL expiry. This method is
         retained as a backward-compatibility wrapper for tests / non-route
@@ -218,7 +259,7 @@ class ConfirmTokenStore:
         return result.expiry
 
     def consume_classified(self, action: str, token: str) -> ConsumeResult:
-        """Categorical variant of ``consume()``. #317 item 1 codex P2.
+        """Categorical variant of ``consume()``. litclock-dev#317 item 1 codex P2.
 
         Returns a :class:`ConsumeResult` with one of four outcomes:
 
@@ -256,17 +297,23 @@ class ConfirmTokenStore:
             record = self._tokens.pop(token, None)
             if record is None:
                 # Token not in live store. Could be:
-                #   (a) consumed recently (tombstone hit) → "consumed"
-                #   (b) expired and already swept → "invalid"
+                #   (a) consumed recently (consumed tombstone) → "consumed"
+                #   (b) expired unconsumed and swept (expired tombstone,
+                #       litclock-dev#597) → "expired" so the client remints
+                #       instead of dead-ending on "invalid"
                 #   (c) never existed / malformed → "invalid"
                 #
-                # The tombstone discriminates (a). For (b) vs (c) we can't
-                # reconstruct the history (a previous sweep dropped any
-                # forensic state), so we fold them both into "invalid" —
-                # both branches map to a 401 client-side and the JS
-                # refresh-and-retry path gates on "expired" only, so
-                # neither outcome is critical-path security.
-                outcome = "consumed" if _hash_token(token) in self._consumed else "invalid"
+                # The two tombstones discriminate (a) and (b); (c) is the
+                # residual "invalid". consumed takes precedence over expired
+                # (a token is one or the other, never both, but check consumed
+                # first so a real replay is never misread as a stale sit).
+                h = _hash_token(token)
+                if h in self._consumed:
+                    outcome = "consumed"
+                elif h in self._expired:
+                    outcome = "expired"
+                else:
+                    outcome = "invalid"
                 self._sweep_locked()
                 return ConsumeResult(outcome, None)
             bound_action, expires_at = record
@@ -278,12 +325,12 @@ class ConfirmTokenStore:
                 self._sweep_locked()
                 return ConsumeResult("invalid", None)
             if expires_at < now:
-                # TTL passed. Do NOT add a tombstone — the user didn't
-                # consume it, they just sat on it. A retry on the same
-                # expired token will fall into the `record is None` path
-                # above and report "invalid" (the consume just dropped the
-                # record). Acceptable: the JS retry gate fires on "expired"
-                # exactly once, then the retry uses a fresh token.
+                # TTL passed unconsumed — the user sat on it. Park an EXPIRED
+                # tombstone (litclock-dev#597) so a retry on this same token
+                # (record now popped) still classifies "expired" via the
+                # `record is None` path above, instead of collapsing to
+                # "invalid". NOT a consumed tombstone — the action never ran.
+                self._park_expired_locked(_hash_token(token), now)
                 self._sweep_locked()
                 return ConsumeResult("expired", None)
             # Successful consume. Record in the tombstone so a duplicate
@@ -297,7 +344,7 @@ class ConfirmTokenStore:
     def restore(self, action: str, token: str, expires_at_monotonic: float) -> None:
         """Atomically re-add a token previously returned by ``consume``.
 
-        Issue #328: when a destructive route consumes a token but then fails
+        Issue litclock-dev#328: when a destructive route consumes a token but then fails
         BEFORE any side effect (busy gate, validation, subprocess error
         pre-dispatch), restoring the token at the original expiry lets the
         user retry with the same token in their open page. Without this,
@@ -313,7 +360,7 @@ class ConfirmTokenStore:
         ``consume()`` call on this store; passing arbitrary floats is not a
         supported use case.
 
-        Issue #342 I8 — defense-in-depth: clamp ``expires_at_monotonic`` to
+        Issue litclock-dev#342 I8 — defense-in-depth: clamp ``expires_at_monotonic`` to
         at most ``time.monotonic() + self._ttl_seconds``. Today's callers
         always pass an expiry straight back from ``consume()`` under the
         same action, so the clamp is a no-op on the happy path. A future
@@ -330,13 +377,30 @@ class ConfirmTokenStore:
                 return
             clamped_expiry = min(expires_at_monotonic, time.monotonic() + self._ttl_seconds)
             self._tokens[token] = (action, clamped_expiry)
-            # #317 item 1 codex P2 — drop any tombstone for this token so
+            # litclock-dev#317 item 1 codex P2 — drop any tombstone for this token so
             # the restored token can be consumed again. Without this, the
             # consume() that follows restore() would short-circuit to
             # "consumed" via the tombstone hit and the retry would 409
             # instead of running the action. Tombstone hashes the raw
-            # token; pop by the same hash.
-            self._consumed.pop(_hash_token(token), None)
+            # token; pop by the same hash. Clear the expired tombstone too
+            # (litclock-dev#597 /review): unreachable today (restore only
+            # follows an "ok" consume, which never parks _expired), but keeps
+            # the "a live token has no stale tombstone" invariant complete.
+            h = _hash_token(token)
+            self._consumed.pop(h, None)
+            self._expired.pop(h, None)
+
+    def _park_expired_locked(self, token_hash: str, now: float) -> None:
+        # Caller MUST hold self._lock. Record an expired-token tombstone and
+        # enforce the size cap (litclock-dev#597 /review). dict is
+        # insertion-ordered, so the oldest live entry is first; evict it when
+        # over the cap. Re-parking an existing hash keeps its original position
+        # (dict assignment does not reorder), which is fine — a token is only
+        # ever parked once (it leaves _tokens on the same call).
+        self._expired[token_hash] = now + self._expired_ttl_seconds
+        while len(self._expired) > self._expired_max_entries:
+            oldest = next(iter(self._expired))
+            del self._expired[oldest]
 
     def _sweep_locked(self) -> None:
         # Caller MUST hold self._lock. Method name keeps that contract loud.
@@ -344,7 +408,12 @@ class ConfirmTokenStore:
         expired = [t for t, (_, exp) in self._tokens.items() if exp < now]
         for t in expired:
             del self._tokens[t]
-        # #317 item 1 codex P2 — sweep stale tombstones. Same lazy-GC
+            # litclock-dev#597 — a token swept for TTL (never consumed) leaves
+            # an expired tombstone so a later consume reports "expired" (client
+            # remints) rather than "invalid" (dead-end alert). This is what
+            # makes the classification independent of sweep timing.
+            self._park_expired_locked(_hash_token(t), now)
+        # litclock-dev#317 item 1 codex P2 — sweep stale tombstones. Same lazy-GC
         # pattern as the live token store. After the tombstone TTL elapses,
         # a duplicate POST on the same (now-collapsed) token will be
         # classified as "invalid" instead of "consumed" — that's the 11+
@@ -355,3 +424,10 @@ class ConfirmTokenStore:
         stale_tombstones = [h for h, exp in self._consumed.items() if exp < now]
         for h in stale_tombstones:
             del self._consumed[h]
+        # litclock-dev#597 — GC expired tombstones on the same lazy pattern.
+        # After EXPIRED_TTL_SECONDS a sat-on token finally falls back to
+        # "invalid"; the horizon is a full day, far longer than any realistic
+        # open-modal-then-tap window.
+        stale_expired = [h for h, exp in self._expired.items() if exp < now]
+        for h in stale_expired:
+            del self._expired[h]

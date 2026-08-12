@@ -121,10 +121,9 @@ class TestPackageList:
         # floor replacing it did not, so deleting any of them stayed green.
         # (item 18 also proposed qrencode, but its stated why — "renders the
         # setup/handoff QRs" — is false: every QR is drawn by the pip
-        # `qrcode` library, and nothing invokes the qrencode binary.
-        # Deliberately NOT pinned; it is a removal candidate — see the litclock-dev#605
-        # thread. If removed, docs/building-image.md's package inventory
-        # line must drop it too.)
+        # `qrcode` library, and nothing invokes the qrencode binary. It was
+        # REMOVED from 00-packages + docs/building-image.md as the litclock-dev#605
+        # remainder; test_qrencode_is_not_installed below pins its absence.)
         # Secondary Pillow build deps. The primary four above are what the
         # import needs today; these are what pip compiles AGAINST when a
         # Pillow bump rebuilds the wheel on-device (update.sh venv path) —
@@ -146,6 +145,12 @@ class TestPackageList:
     def test_package_list_is_non_empty_and_parses(self):
         pkgs = self._parse_pi_gen_packages()
         assert len(pkgs) > 10, f"00-packages looks truncated: {sorted(pkgs)}"
+
+    def test_qrencode_is_not_installed(self):
+        """litclock-dev#605: qrencode was removed — every QR is drawn by the pip
+        `qrcode` library and nothing invokes the qrencode binary. Pin its
+        absence so a future edit doesn't re-add an unused apt package."""
+        assert "qrencode" not in self._parse_pi_gen_packages()
 
     def test_rpi_gpio_apt_package_not_reintroduced(self):
         """#214 removed python3-rpi.gpio — the runtime chain

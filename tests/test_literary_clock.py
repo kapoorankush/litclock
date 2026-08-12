@@ -743,6 +743,62 @@ class TestRuntimeRender:
         monkeypatch.setattr(builtins, "__import__", failing_import)
         assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0)) is None
 
+    def test_flag_on_with_marker_but_broken_freetype(self, monkeypatch, tmp_path) -> None:
+        """litclock-dev#605 item 2: the post-OTA-venv-rebuild state — flag on, marker
+        present, but the freetype-py wheel won't import. _runtime_render_enabled
+        must fall back to images (return False), not raise. Distinct from the
+        version-MISMATCH branch (test_flag_off_values) and the missing-marker
+        branch (test_flag_requires_validation_marker)."""
+        import builtins
+
+        marker = tmp_path / ".runtime-render-validated"
+        marker.write_text("freetype=99.9.9\n")
+        monkeypatch.setattr(literary_clock, "RUNTIME_VALIDATED_MARKER", str(marker))
+        monkeypatch.setenv("LITCLOCK_RUNTIME_RENDER", "true")
+
+        real_import = builtins.__import__
+
+        def failing_import(name, *a, **kw):
+            if name == "freetype":
+                raise ImportError("freetype-py wheel broken after venv rebuild")
+            return real_import(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", failing_import)
+        assert literary_clock._runtime_render_enabled() is False
+
+    def test_runtime_quote_none_on_corpus_read_failure(self, monkeypatch, tmp_path) -> None:
+        """litclock-dev#605 item 3: rows_for_time raising (torn/corrupt CSV) must degrade
+        to the PNG path — the runtime tier's equivalent of get_current_quote's
+        corpus-lookup guard, which WAS tested while this side was not. One bad
+        minute, never a crash-loop. Injects a fake renderer so the corpus branch
+        is reached without a real freetype-py."""
+        import sys
+        import types
+
+        fake = types.ModuleType("quote_renderer")
+
+        def boom(*a, **kw):
+            raise RuntimeError("corpus torn mid-read")
+
+        fake.rows_for_time = boom
+        monkeypatch.setitem(sys.modules, "quote_renderer", fake)
+        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0)) is None
+
+    def test_persist_runtime_frame_cleans_up_temp_on_write_failure(self, monkeypatch, tmp_path) -> None:
+        """litclock-dev#605 item 4: a save() failure mid-write must unlink the mkstemp
+        temp file, not litter tmpfs (/run/litclock is small and written every
+        minute). test_persist_runtime_frame_swallows_failure pins the None
+        return via a missing dir; this pins the cleanup on the post-mkstemp
+        failure path specifically."""
+        monkeypatch.setattr(literary_clock, "RUNTIME_RENDER_DIR", str(tmp_path))
+
+        class BoomFrame:
+            def save(self, *a, **kw):
+                raise OSError("disk full mid-write")
+
+        assert literary_clock._persist_runtime_frame(BoomFrame()) is None
+        assert list(tmp_path.iterdir()) == [], "temp file leaked after a failed write"
+
 
 try:
     import freetype  # noqa: F401
@@ -750,6 +806,20 @@ try:
     _HAVE_FREETYPE = True
 except ImportError:
     _HAVE_FREETYPE = False
+
+
+def _write_marker_with_the_real_tool(marker):
+    """Stamp via tools/validate_measurement.write_validation_marker — the
+    writer→parser e2e seam (litclock-dev#605 item 1, litclock-dev#604)."""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    tools_dir = str(_Path(__file__).resolve().parents[1] / "tools")
+    if tools_dir not in _sys.path:
+        _sys.path.insert(0, tools_dir)
+    import validate_measurement
+
+    validate_measurement.write_validation_marker(_Path(marker), validate_measurement.DUMP_PATH, "test-gd", 0)
 
 
 @pytest.mark.skipif(not _HAVE_FREETYPE, reason="freetype-py required for runtime render tests")
@@ -845,9 +915,12 @@ class TestMainRuntimeWiring:
             encoding="utf-8",
         )
         marker = tmp_path / ".runtime-render-validated"
-        import freetype
-
-        marker.write_text(f"freetype={'.'.join(map(str, freetype.version()))}\n")
+        # litclock-dev#605 item 1 — write the marker with the ACTUAL tool
+        # writer, not a hand-typed format: every prior fixture hand-wrote
+        # the line, so a writer/reader format drift shipped green. This is
+        # the end-to-end contract, exercised by every test that arms the
+        # runtime path.
+        _write_marker_with_the_real_tool(marker)
         # litclock-dev#601: redirect quote_corpus's default — the knob the runtime path
         # actually reads (literary_clock.CORPUS_CSV was a dead no-op here).
         monkeypatch.setattr(quote_corpus, "_CORPUS_PATH", csv_path)
@@ -948,6 +1021,33 @@ class TestMainRuntimeWiring:
     def test_marker_freetype_mismatch_disables_runtime(self, monkeypatch, tmp_path) -> None:
         self._arm(monkeypatch, tmp_path)
         (tmp_path / ".runtime-render-validated").write_text("freetype=9.9.9\n")
+        assert literary_clock._runtime_render_enabled() is False
+
+    def test_marker_digest_mismatch_disables_runtime(self, monkeypatch, tmp_path) -> None:
+        """litclock-dev#604 — the digest is the proof, not the freetype
+        version string. A marker whose digest no longer matches this
+        device's (fonts, dump, freetype) must be rejected even though the
+        freetype token still matches."""
+        self._arm(monkeypatch, tmp_path)
+        marker = tmp_path / ".runtime-render-validated"
+        stamped = marker.read_text()
+        assert "digest=" in stamped  # the real writer emits it
+        import re as _re
+
+        marker.write_text(_re.sub(r"digest=\S+", "digest=" + "0" * 64, stamped))
+        assert literary_clock._runtime_render_enabled() is False
+
+    def test_pre_digest_marker_is_rejected(self, monkeypatch, tmp_path) -> None:
+        """litclock-dev#604 — the exact gap this issue closes: a marker
+        stamped before the digest existed (freetype version only, and the
+        version MATCHES) previously stayed valid forever through font swaps
+        and dump regens. It now forces one re-stamp."""
+        self._arm(monkeypatch, tmp_path)
+        import freetype
+
+        (tmp_path / ".runtime-render-validated").write_text(
+            f"freetype={'.'.join(map(str, freetype.version()))} dump_gd=x measurements=1\n"
+        )
         assert literary_clock._runtime_render_enabled() is False
 
 
@@ -1190,7 +1290,11 @@ class TestRenderModeSignal:
         }
         assert self._write_and_read(monkeypatch, tmp_path, meta)["render_mode"] == "runtime"
 
-    def test_image_fallback_mode_recorded(self, monkeypatch, tmp_path):
+    def test_image_mode_recorded(self, monkeypatch, tmp_path):
+        # Renamed from test_image_fallback_mode_recorded (litclock-dev#605 item 5): it
+        # fed render_mode="image" and asserted "image", so it tested the image
+        # tier, not the image-fallback alarm. The alarm value is now covered
+        # separately below.
         meta = {
             "quote": "q",
             "author": "a",
@@ -1200,6 +1304,21 @@ class TestRenderModeSignal:
             "render_mode": "image",
         }
         assert self._write_and_read(monkeypatch, tmp_path, meta)["render_mode"] == "image"
+
+    def test_image_fallback_mode_recorded(self, monkeypatch, tmp_path):
+        """litclock-dev#605 item 5: 'image-fallback' — runtime was ATTEMPTED and lost,
+        the ONE alarm value the images-retirement decision rests on — must
+        traverse _write_status_file to the status payload verbatim, not be
+        collapsed to 'image'. Previously untested at this seam."""
+        meta = {
+            "quote": "q",
+            "author": "a",
+            "title": "t",
+            "image_path": "/x/quote_1200_0_credits.png",
+            "picked_at": 1.0,
+            "render_mode": "image-fallback",
+        }
+        assert self._write_and_read(monkeypatch, tmp_path, meta)["render_mode"] == "image-fallback"
 
     def test_no_quote_is_time_only(self, monkeypatch, tmp_path):
         assert self._write_and_read(monkeypatch, tmp_path, None)["render_mode"] == "time-only"
@@ -1238,3 +1357,48 @@ def test_png_tier_survives_corrupt_corpus_lookup(monkeypatch, tmp_path):
     assert meta is not None
     assert meta["quote"] == ""  # degraded, not dead
     assert meta["image_path"].endswith("quote_1200_0_credits.png")
+
+
+@pytest.mark.skipif(not _HAVE_FREETYPE, reason="freetype-py required")
+class TestValidationMarkerTooling:
+    """litclock-dev#611 review — the stamp tooling's own edges."""
+
+    def _vm(self):
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        tools_dir = str(_Path(__file__).resolve().parents[1] / "tools")
+        if tools_dir not in _sys.path:
+            _sys.path.insert(0, tools_dir)
+        import validate_measurement
+
+        return validate_measurement
+
+    def test_stamp_refuses_a_non_committed_dump(self, tmp_path, capsys):
+        """`check --stamp --dump candidate.gz` used to print 'may be
+        enabled' and then be rejected by the reader on every start — a lie
+        the operator only discovered in journald. Refused up front now."""
+        import argparse
+
+        vm = self._vm()
+        candidate = tmp_path / "candidate.gz"
+        candidate.write_bytes(b"not the committed dump")
+        marker = tmp_path / "marker"
+        args = argparse.Namespace(stamp=True, dump=str(candidate), marker=str(marker))
+        assert vm.cmd_check(args) == 2
+        assert not marker.exists()
+        assert "refusing --stamp" in capsys.readouterr().err
+
+    def test_restamp_replaces_an_unwritable_marker(self, tmp_path):
+        """A previous sudo-run stamp leaves a root-owned marker a pi re-stamp
+        cannot truncate — but CAN replace via rename (parent-dir perms).
+        Simulated with a read-only file in a writable dir."""
+        vm = self._vm()
+        marker = tmp_path / ".runtime-render-validated"
+        marker.write_text("stale")
+        marker.chmod(0o444)
+        vm.write_validation_marker(marker, vm.DUMP_PATH, "test-gd", 0)
+        content = marker.read_text()
+        assert "digest=" in content and "stale" not in content
+        # No orphaned tmp files left behind.
+        assert [p.name for p in tmp_path.iterdir()] == [marker.name]

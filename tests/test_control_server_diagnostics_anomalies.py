@@ -13,7 +13,9 @@ freezegun dependency per #419 D6) and asserts behavior at:
 - 1 ms over (anomaly trips),
 - 1 ms under (anomaly does NOT trip).
 
-Each test covers one anomaly path: DHCP age, IP-geo age, quote age.
+Each test covers one anomaly path: IP-geo age, quote age. DHCP age is no
+longer a threshold at all (litclock-dev#552) — its suite asserts the trigger never
+fires, at any lease age, rather than walking a boundary.
 The clock is pinned at a fixed instant ``T0``; payload timestamps are
 computed from T0 ± offset so the test math is deterministic.
 """
@@ -80,33 +82,121 @@ def _baseline(frozen_now: datetime) -> dict:
     }
 
 
-class TestDhcpAgeThreshold:
-    """ANOMALY_DHCP_AGE_S = 24 h. Pin clock + walk the boundary."""
+class TestDhcpAgeIsNotAnAnomaly:
+    """litclock-dev#552 — DHCP age must never drive the network anomaly.
+
+    The NM dispatcher short-circuits on an unchanged IP, so a stable lease
+    freezes ``last_dhcp_at`` at boot: the longer the network works perfectly,
+    the older it looks. The old 24h threshold therefore reported a fault on
+    exactly the healthiest clocks. Measured on the test Pi: signal -37 dBm,
+    lan_ip present, nmcli CONNECTIVITY full, and a 291-hour-old timestamp was
+    the only complaint.
+    """
 
     def _baseline_with_dhcp(self, frozen_now: datetime, age: timedelta) -> dict:
         v = _baseline(frozen_now)
         v["last_dhcp_at"] = (frozen_now - age).isoformat()
         return v
 
-    def test_below_threshold_no_anomaly(self, frozen_clock):
-        v = self._baseline_with_dhcp(frozen_clock, timedelta(hours=23, minutes=59))
+    @pytest.mark.parametrize(
+        "age",
+        [
+            timedelta(hours=23, minutes=59),
+            timedelta(hours=24),
+            timedelta(hours=24, milliseconds=1),
+            timedelta(days=12),  # the reported case
+            timedelta(days=365),
+        ],
+        ids=["under-24h", "at-24h", "just-over-24h", "12-days", "a-year"],
+    )
+    def test_no_network_anomaly_at_any_lease_age(self, frozen_clock, age):
+        """An otherwise-healthy clock never reports a network fault, however
+        long its lease has been stable."""
+        v = self._baseline_with_dhcp(frozen_clock, age)
         assert "network" not in _anomalies._compute_anomalies(v)
 
-    def test_one_ms_under_threshold(self, frozen_clock):
-        # Exactly 24h MINUS 1ms — must not trip (strict >).
-        v = self._baseline_with_dhcp(frozen_clock, timedelta(seconds=_anomalies.ANOMALY_DHCP_AGE_S, milliseconds=-1))
-        assert "network" not in _anomalies._compute_anomalies(v)
+    def test_real_faults_still_trip_regardless_of_lease_age(self, frozen_clock):
+        """Removing the trigger must not blunt the checks that do work."""
+        v = self._baseline_with_dhcp(frozen_clock, timedelta(days=12))
+        v["lan_ip"] = ""
+        assert "network" in _anomalies._compute_anomalies(v), "missing lan_ip must still trip"
 
-    def test_at_threshold_no_anomaly(self, frozen_clock):
-        # Exactly at the boundary — condition is ``age > ANOMALY_DHCP_AGE_S``
-        # so equality does NOT trip.
-        v = self._baseline_with_dhcp(frozen_clock, timedelta(seconds=_anomalies.ANOMALY_DHCP_AGE_S))
-        assert "network" not in _anomalies._compute_anomalies(v)
+        v = self._baseline_with_dhcp(frozen_clock, timedelta(days=12))
+        v["signal_dbm"] = -90
+        assert "network" in _anomalies._compute_anomalies(v), "weak signal must still trip"
 
-    def test_one_ms_over_threshold_trips(self, frozen_clock):
-        # Exactly 24h PLUS 1ms — anomaly fires.
-        v = self._baseline_with_dhcp(frozen_clock, timedelta(seconds=_anomalies.ANOMALY_DHCP_AGE_S, milliseconds=1))
+
+class TestMissingLanIpSettlingWindow:
+    """litclock-dev#596 — a missing LAN IP inside the post-boot settling window is not a
+    fault. The /run marker (tmpfs, dispatcher-written on IP change) is briefly
+    cold right after provisioning, and a brand-new owner opens Diagnostics over
+    the very connection it would falsely flag as broken. Past the grace, a
+    still-absent marker is a real 'never acquired an IP' fault and trips.
+    """
+
+    def _no_ip(self, frozen_now: datetime, uptime_s) -> dict:
+        v = _baseline(frozen_now)
+        v["lan_ip"] = None
+        if uptime_s is not None:
+            v["uptime_s"] = uptime_s
+        return v
+
+    def test_missing_ip_during_settling_is_not_a_network_fault(self, frozen_clock):
+        v = self._no_ip(frozen_clock, uptime_s=_anomalies.ANOMALY_LAN_IP_SETTLE_S - 1)
+        assert "network" not in _anomalies._compute_anomalies(v), (
+            "a cold /run marker within the settling window must not amber-banner a connection that is serving the page"
+        )
+
+    def test_missing_ip_after_settling_trips(self, frozen_clock):
+        v = self._no_ip(frozen_clock, uptime_s=_anomalies.ANOMALY_LAN_IP_SETTLE_S + 1)
+        assert "network" in _anomalies._compute_anomalies(v), "past the grace, a still-absent LAN IP is a real fault"
+
+    def test_missing_ip_at_the_grace_boundary_trips(self, frozen_clock):
+        # Boundary is inclusive-fault: settling is strictly `< grace`.
+        v = self._no_ip(frozen_clock, uptime_s=_anomalies.ANOMALY_LAN_IP_SETTLE_S)
         assert "network" in _anomalies._compute_anomalies(v)
+
+    def test_missing_ip_with_unknown_uptime_trips(self, frozen_clock):
+        # uptime absent (/proc/uptime unreadable) must NOT silently suppress a
+        # real fault — settling requires a known, small uptime.
+        v = self._no_ip(frozen_clock, uptime_s=None)
+        assert "network" in _anomalies._compute_anomalies(v)
+
+    def test_weak_signal_trips_even_within_the_settling_window(self, frozen_clock):
+        # The grace only covers the missing-IP trigger, never a genuinely weak
+        # radio — a -90 dBm link is a real problem regardless of uptime.
+        v = self._no_ip(frozen_clock, uptime_s=1)
+        v["signal_dbm"] = -90
+        assert "network" in _anomalies._compute_anomalies(v)
+
+    @pytest.mark.parametrize("bad_uptime", [True, False, -1, -0.001])
+    def test_non_sane_uptime_does_not_suppress_the_fault(self, frozen_clock, bad_uptime):
+        # bool and negative uptime must NOT count as settling — a garbage value
+        # can't silently hide a real missing-IP fault. Unreachable in production
+        # (_read_appliance_uptime_s returns int|None ≥ 0) but pinned so it stays
+        # fail-safe. NaN/inf are covered by the strict `< grace` comparison.
+        v = self._no_ip(frozen_clock, uptime_s=bad_uptime)
+        assert "network" in _anomalies._compute_anomalies(v)
+
+    def test_reported_scenario_through_the_precedence_layer(self, frozen_clock):
+        # End-to-end via _compute_section_states (the effective route/template
+        # state, uncollected-wins precedence), reproducing the RC report: SSID +
+        # signal present, LAN IP missing (cold /run marker). SSID present means
+        # the section is NOT "uncollected", so within the grace the fix must keep
+        # 'network' out of BOTH anomalies and uncollected (grey/quiet, no amber),
+        # and surface it as a real anomaly once settled.
+        v = _baseline(frozen_clock)
+        v["ssid"] = "HomeWiFi"
+        v["lan_ip"] = None
+
+        v["uptime_s"] = _anomalies.ANOMALY_LAN_IP_SETTLE_S - 1
+        anomalies, uncollected = _anomalies._compute_section_states(v)
+        assert "network" not in anomalies, "no amber 'Connection issue' during the settling window"
+        assert "network" not in uncollected
+
+        v["uptime_s"] = _anomalies.ANOMALY_LAN_IP_SETTLE_S + 1
+        anomalies, uncollected = _anomalies._compute_section_states(v)
+        assert "network" in anomalies, "a still-absent IP past the grace is a real fault"
 
 
 class TestIpGeoAgeThreshold:
