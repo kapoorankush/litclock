@@ -1291,12 +1291,25 @@ class TestUpdatesJsSeenRunningArmed:
         assert depth == 0, f"unbalanced braces while scanning {name}"
         return src[match.end() : i - 1]
 
-    def test_seen_running_armed_in_fire_apply(self) -> None:
+    def test_seen_running_armed_via_fire_apply_claim(self) -> None:
+        # litclock-dev#636 refactor: both fireApply arms now claim the run
+        # through claimOptimisticRun(), which is where seenRunning is armed.
+        # Guard both halves — fireApply must call the claim, and the claim
+        # must arm the flag — so a refactor dropping either still fails.
         src = self.UPDATES_JS.read_text()
-        body = self._extract_function_body(src, "fireApply")
-        assert "seenRunning = true" in body, (
-            "fireApply() must arm seenRunning at user-action time so the optimistic "
-            "Phase-7 tick still fires when the first scheduled poll times out (#329 review C2)"
+        fire_body = self._extract_function_body(src, "fireApply")
+        assert "claimOptimisticRun()" in fire_body, (
+            "fireApply() must claim the run via claimOptimisticRun() so seenRunning "
+            "is armed at user-action time (litclock-dev#329 review C2)"
+        )
+        claim_body = self._extract_function_body(src, "claimOptimisticRun")
+        assert "seenRunning = true" in claim_body, (
+            "claimOptimisticRun() must arm seenRunning so the optimistic Phase-7 tick "
+            "still fires when the first scheduled poll times out (litclock-dev#329 review C2)"
+        )
+        assert "deadUpdaterPolls = 0" in claim_body, (
+            "claimOptimisticRun() must zero the dead-updater counter so a prior "
+            "corpse verdict can't false-terminal the new run (litclock-dev#636)"
         )
 
     def test_seen_running_armed_in_handle_status_payload(self) -> None:

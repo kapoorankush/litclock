@@ -223,6 +223,29 @@
     }
   }
 
+  // litclock-dev#636 — claim a fresh, live update run. Both fireApply arms
+  // (202 success and the network-glitch catch) transition into the same
+  // optimistic in-progress state, and BOTH must zero deadUpdaterPolls: a
+  // corpse-evidence count left over from a prior dead-updater verdict would
+  // otherwise false-terminal the new run on its first memo-lag idle sample
+  // (the Codex-P1 class). Kept as one helper so a future run-claiming site
+  // can't silently omit the reset. Invariant (see DEAD_UPDATER_POLL_THRESHOLD
+  // declaration): the counter resets to 0 at EVERY transition that claims a
+  // fresh or resumed live run.
+  function claimOptimisticRun() {
+    // litclock-dev#329 (review C2): arm seenRunning at claim time so the
+    // optimistic-tick branch fires even if the first scheduled poll times
+    // out (e.g. a Phase-7 restart racing the 2s interval).
+    seenRunning = true;
+    deadUpdaterPolls = 0;
+    // litclock-dev#354 codex P2 follow-up — this claim owns the running
+    // state; drop any deferred probe so it can't overwrite the optimistic
+    // phase_index when the modal close listener would otherwise replay it.
+    deferredProbePayload = null;
+    enterReadingList({ state: 'running', phase_index: 1 });
+    schedulePoll();
+  }
+
   function fireApply() {
     if (!form) return;
     var tokenInput = form.querySelector('input[name="token"]');
@@ -238,18 +261,9 @@
       .then(function (response) {
         if (response.ok) {
           // 202 Accepted — kick the reading list. First /api/update/status
-          // poll fires after the standard interval; the server-side
-          // status file is already populated by Phase 1's update_status_set_phase 1.
-          // litclock-dev#329 (review C2): arm seenRunning at user-action time so the
-          // optimistic-tick branch fires even if the very first scheduled
-          // poll times out (e.g. Phase 7 restart racing the 2s interval).
-          seenRunning = true;
-          deadUpdaterPolls = 0;  // litclock-dev#636 — a fresh Apply is a fresh corpse-evidence window
-          // litclock-dev#354 codex P2 follow-up — fireApply owns the new running
-          // state on success; the deferred probe (if any) is now stale.
-          deferredProbePayload = null;
-          enterReadingList({ state: 'running', phase_index: 1 });
-          schedulePoll();
+          // poll fires after the standard interval; the server-side status
+          // file is already populated by Phase 1's update_status_set_phase 1.
+          claimOptimisticRun();
           return;
         }
         // litclock-dev#354 codex P2 follow-up — non-OK (typically 409 concurrent
@@ -293,19 +307,11 @@
       .catch(function () {
         // Network glitch (rare on LAN). Try once more by entering the
         // reading-list optimistically; if no update is actually running,
-        // the first poll will report state=idle and we exit cleanly.
-        // litclock-dev#329 (review C2): arm seenRunning here too — the user clicked
-        // Apply, so we're in a "running" intent for the duration regardless
-        // of whether the POST round-tripped cleanly.
-        seenRunning = true;
-        deadUpdaterPolls = 0;  // litclock-dev#636 — same: new run, stale corpse count must not carry
-        // litclock-dev#354 codex P2 follow-up — optimistic enterReadingList here
-        // claims the running state; drop any deferred probe so it can't
-        // overwrite the optimistic phase_index when the close listener
-        // would otherwise have replayed.
-        deferredProbePayload = null;
-        enterReadingList({ state: 'running', phase_index: 1 });
-        schedulePoll();
+        // the first poll will report state=idle and we exit cleanly. Same
+        // claim as the success arm — the user clicked Apply, so we're in a
+        // "running" intent for the duration regardless of whether the POST
+        // round-tripped cleanly.
+        claimOptimisticRun();
       });
   }
 
@@ -398,6 +404,14 @@
   // consecutive ones — at the 2s poll interval the threshold spans ~10s,
   // comfortably past any memo/activation gap. The verdict is deliberately
   // NOT a reload: the dead file persists, so a reload would loop.
+  //
+  // INVARIANT: deadUpdaterPolls resets to 0 at every transition that
+  // re-establishes the polling relationship — claimOptimisticRun() (both
+  // fireApply arms), a healthy running poll (unit_busy!==false in
+  // handleStatusPayload), and any reconnect resume (which re-establishes it
+  // regardless of the resumed status's liveness). A site that omits the
+  // reset inherits up to THRESHOLD-1 stale corpse ticks and can false-verdict
+  // the run on its first memo-lag sample.
   var DEAD_UPDATER_POLL_THRESHOLD = 5;
   var deadUpdaterPolls = 0;
 
@@ -702,8 +716,20 @@
             // may never come.
             reconnectArmed = false;
             consecutivePollFailures = 0;
-            deadUpdaterPolls = 0;  // litclock-dev#636 — resuming a live run is fresh evidence
-            enterReadingList(statusBody);
+            // litclock-dev#636 — resume re-establishes the polling relationship,
+            // so the corpse count from before the disconnect is stale
+            // evidence: reset it unconditionally (a pre-disconnect count of 4
+            // plus one post-resume idle sample must not sum to a false
+            // verdict). But a `running` status after a reconnect can still be
+            // a corpse file that outlived the Phase-7 restart, so only ENTER
+            // the live reading list on unit_busy!==false — a unit_busy===false
+            // resume hands back to the poll loop, which re-accumulates from
+            // zero and stops on the corpse via the quiet cold-verdict path
+            // instead of showing a live view for it.
+            deadUpdaterPolls = 0;
+            if (statusBody.unit_busy !== false) {
+              enterReadingList(statusBody);
+            }
             schedulePoll();
             return;
           }

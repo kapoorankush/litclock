@@ -417,7 +417,7 @@ EOF
     fi
 fi
 
-# #528 + litclock-dev#636: force SSH off before the device leaves the owner's
+# litclock-dev#528 + litclock-dev#636: force SSH off before the device leaves the owner's
 # hands, shared by BOTH handoff paths — gift mode (ships to a recipient) and
 # the non-gift factory-reset poweroff (the PWA copy invites "move or pass the
 # clock on"). The image ships SSH off, but an owner who enabled it (QA,
@@ -452,7 +452,7 @@ disable_ssh_for_handoff() {
     rm -f /boot/ssh /boot/ssh.txt /boot/firmware/ssh /boot/firmware/ssh.txt 2>/dev/null || true
     echo -e "${GREEN}done${NC}"
 
-    # #528 /review: SSH-off is a security GATE, so verify port 22 is
+    # litclock-dev#528 /review: SSH-off is a security GATE, so verify port 22 is
     # actually closed rather than trusting the best-effort disables above
     # (each is `|| true`, and socket-activation means the service state
     # alone doesn't prove the port is shut). If sshd still listens, refuse
@@ -462,9 +462,22 @@ disable_ssh_for_handoff() {
     # can't run we can't verify, so warn and proceed rather than
     # hard-block a handoff on missing tooling.
     if command -v ss >/dev/null 2>&1; then
+        # Capture ss's output AND exit status separately, rather than piping
+        # `ss 2>/dev/null | grep` (litclock-dev#636 /review): a suppressed-stderr
+        # pipe conflates two very different outcomes — "ss ran, port 22 is
+        # closed" (empty output) and "ss itself errored" (also empty output).
+        # A verification gate that reads an ss failure as "verified closed" is
+        # fail-OPEN, the exact posture this gate exists to forbid. Treat an ss
+        # error like an absent ss: warn and proceed (we can't verify), never
+        # silently pass.
+        local ss_out ss_rc
+        ss_out=$(ss -H -ltn 2>/dev/null)
+        ss_rc=$?
+        if [[ "$ss_rc" -ne 0 ]]; then
+            echo -e "${YELLOW}Note: 'ss' failed to run — could not verify port 22 is closed.${NC}"
         # Extract the local port (last colon-field of the Local Address
         # column) and match EXACTLY 22 — avoids false hits on :2222, :220…
-        if ss -H -ltn 2>/dev/null | awk '{n=split($4,a,":"); print a[n]}' | grep -qx 22; then
+        elif printf '%s\n' "$ss_out" | awk '{n=split($4,a,":"); print a[n]}' | grep -qx 22; then
             echo -e "${RED}========================================${NC}"
             echo -e "${RED}  SSH still listening — do NOT hand this device over${NC}"
             echo -e "${RED}========================================${NC}"
@@ -507,7 +520,7 @@ if [[ "$GIFT_MODE" == "true" ]]; then
         echo -e "${YELLOW}  sudo $0 --gift-mode${NC}"
         exit 1
     fi
-    # #528 — shared handoff gate; see disable_ssh_for_handoff above.
+    # litclock-dev#528 — shared handoff gate; see disable_ssh_for_handoff above.
     # Deliberately AFTER the env-wipe-failed gate: on a failed prep the
     # device stays on and the owner may still need SSH to fix it.
     disable_ssh_for_handoff

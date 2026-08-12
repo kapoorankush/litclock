@@ -690,6 +690,19 @@ class TestApiUpdateStatus:
         assert body["state"] == "idle"
         assert "unit_busy" not in body
 
+    def test_stale_state_carries_no_unit_busy_key(self, client):
+        """litclock-dev#636 — the unit_busy field is scoped to `running`; a torn
+        or oversize file (state=stale) must not carry it either, even when the
+        unit is busy. The JS stale branch just re-polls; a stray unit_busy
+        there would be meaningless."""
+        status_file = Path(os.environ.get("LITCLOCK_UPDATE_STATUS_FILE"))
+        status_file.parent.mkdir(parents=True, exist_ok=True)
+        status_file.write_text("{ corrupt")
+        with patch("control_server.routes.updates.update_state.update_is_busy", return_value=True):
+            body = client.get("/api/update/status").json
+        assert body["state"] == "stale"
+        assert "unit_busy" not in body
+
     def test_oversize_status_file_returns_stale(self, client):
         """litclock-dev#336 — 1MB junk at update.status (above 8KB cap) must be rejected
         by the shared bounded reader and reported as state=stale, NOT a 500

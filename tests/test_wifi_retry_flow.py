@@ -1854,7 +1854,23 @@ class TestManualSsidReviewHardening(_ManualSsidHarness):
         Storage=persistent and is collected into support bundles, and the
         same string reaches the e-ink connecting splash. `.strip()` only
         trims the ends, so it is no defence."""
-        for bad in ("Home\nFORGED: authentication failure", "Home\r\nx", "Home\x00x", "Home\x1b[2Jx"):
+        # litclock-dev#636 — U+2028/U+2029 (line/paragraph separators) and the
+        # C1 controls (\x80-\x9f, e.g. \x85 NEL) are rejected too: str.splitlines
+        # and some terminals treat them as line breaks, so the same
+        # journal-forge / splash-injection reach applies. They are unprintable
+        # by isprintable() but sit outside the C0 range, so SSID_FORBIDDEN
+        # names them explicitly — pin that here so a regression narrowing the
+        # set back to C0/C1-only ranges ships red.
+        bad_ssids = (
+            "Home\nFORGED: authentication failure",
+            "Home\r\nx",
+            "Home\x00x",
+            "Home\x1b[2Jx",
+            "Home\u2028x",  # LINE SEPARATOR
+            "Home\u2029x",  # PARAGRAPH SEPARATOR
+            "Home\x85x",  # C1 NEL
+        )
+        for bad in bad_ssids:
             calls = []
             response = self._post(
                 monkeypatch,

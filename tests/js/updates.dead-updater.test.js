@@ -149,6 +149,18 @@ describe("updates.js litclock-dev#636 dead-updater detection", () => {
     expect(terminalEl().textContent).toMatch(/stopped before finishing/i);
     expect(terminalEl().textContent).toMatch(/previous version/i);
 
+    // The in-flight phase row must be frozen FAILED, not left spinning: a
+    // spinner animating above "the updater is no longer running" is the
+    // exact contradiction the verdict's updateRowStates(..., true) fixes.
+    expect(
+      document.querySelector('.phase-row[data-phase-index="4"]').getAttribute("data-state"),
+      "the active phase must freeze failed under the verdict copy"
+    ).toBe("failed");
+    expect(
+      document.querySelector('.phase-row[data-phase-index="1"]').getAttribute("data-state"),
+      "earlier phases stay completed"
+    ).toBe("completed");
+
     // Polling stopped — and no reload was issued (the dead file persists;
     // a reload would loop). jsdom throws on navigation, so reaching this
     // point without an error is itself the no-reload proof; pin the
@@ -280,5 +292,112 @@ describe("updates.js litclock-dev#636 dead-updater detection", () => {
     await vi.advanceTimersByTimeAsync(10000);
     await flushMicrotasks();
     expect(statusCalls(mock), "polling stops on the confirmed corpse").toBe(settled);
+  });
+
+  it("rule 5b: the fireApply network-error catch path also resets the corpse counter", async () => {
+    // The second reset site (fireApply's .catch → optimistic reading list on
+    // a failed POST). A corpse-era count carried into that optimistic run
+    // would false-terminal it on the first memo-lag sample, same as rule 5's
+    // success-path scenario.
+    buildDom();
+    mock.register(/\/api\/update\/check$/, { status: 200, body: { ok: true, available: true } });
+    // The apply POST rejects (network glitch) → catch path claims the run.
+    // A throwing function (not Promise.reject at registration time, which
+    // would reject before anything awaits it) — the mock turns the throw
+    // into a rejected fetch, exercising fireApply's real .catch branch.
+    mock.register(/\/api\/update\/apply$/, () => {
+      throw new TypeError("network glitch");
+    });
+    let phase2 = false;
+    mock.register(/\/api\/update\/status$/, () => {
+      const body = phase2 ? running(2, true) : running(1, false);
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+    });
+
+    loadScript("updates.js");
+    await flushMicrotasks();
+    for (let k = 0; k < 7; k++) {
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushMicrotasks();
+    }
+    const settled = statusCalls(mock);
+    await vi.advanceTimersByTimeAsync(4000);
+    await flushMicrotasks();
+    expect(statusCalls(mock), "corpse confirmed, polling stopped").toBe(settled);
+
+    // Apply → POST rejects → catch → claimOptimisticRun resets the counter.
+    phase2 = true;
+    const form = document.querySelector("form[data-confirm-action='update_apply']");
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    document.querySelector("[data-modal-confirm]").click();
+    await flushMicrotasks();
+    expect(readingListEl().hidden, "catch path enters the optimistic reading list").toBe(false);
+    // The counter is fresh, so the run advances normally, no false verdict.
+    await vi.advanceTimersByTimeAsync(4000);
+    await flushMicrotasks();
+    expect(terminalEl().hidden, "fresh optimistic run must not false-verdict").toBe(true);
+  });
+
+  it("rule 6: the dialog-open guard defers promotion, then promotes after the sheet closes", async () => {
+    // updates.js:!(dialog && dialog.open) — yanking the card into the reading
+    // list under an open confirm sheet is the litclock-dev#354 race the guard
+    // mirrors. Rule 4 only covers promotion with the sheet closed.
+    buildDom();
+    mock.register(/\/api\/update\/check$/, { status: 200, body: { ok: true, available: true } });
+    mock.register(/\/api\/update\/apply$/, { status: 202, body: { ok: true } });
+    // Probe sees a corpse candidate (card kept); every later poll is
+    // confirmed-busy, which would normally promote.
+    mock.register(/\/api\/update\/status$/, sequencedStatus([running(1, false), running(2, true)]));
+
+    loadScript("updates.js");
+    await flushMicrotasks();
+    expect(readingListEl().hidden, "probe keeps the card").toBe(true);
+
+    // Open the confirm sheet, THEN let a confirmed-busy poll land.
+    const form = document.querySelector("form[data-confirm-action='update_apply']");
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    const dialog = document.querySelector("dialog.confirm-sheet[data-action='update_apply']");
+    expect(dialog.open).toBe(true);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    expect(readingListEl().hidden, "must NOT yank the card under an open sheet").toBe(true);
+
+    // Cancel the sheet; the next poll promotes.
+    document.querySelector("[data-modal-cancel]").click();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    expect(readingListEl().hidden, "promotes once the sheet is closed").toBe(false);
+  });
+
+  it("rule 7: a reconnect resume resets the corpse counter (a pre-disconnect count can't false-verdict)", async () => {
+    // updates.js reconnect-resume: the count from before the Phase-7 restart
+    // is stale evidence. Accumulate 4 idle readings, drop into reconnect via
+    // poll failures, resume on a live status, then one more idle sample —
+    // without the reset that lone sample would be the 5th and false-verdict.
+    buildDom({ inProgress: true, phase: 3 });
+    mock.register(/\/api\/update\/check$/, { status: 200, body: { ok: true, available: true } });
+    mock.register(/\/api\/health$/, { status: 200, body: { version: "0.223.0" } }); // same version → status consult
+    let n = 0;
+    mock.register(/\/api\/update\/status$/, () => {
+      n++;
+      // 1: cold-load probe (idle, harmless). 2-5: four idle readings in the
+      // list (count → 4). 6-8: three network failures → reconnect. 9: the
+      // pollHealth status consult — a LIVE resume (unit_busy:true). 10+: idle.
+      if (n >= 6 && n <= 8) throw new TypeError("restart window");
+      const body = n === 9 ? running(3, true) : running(3, false);
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+    });
+
+    loadScript("updates.js");
+    await flushMicrotasks();
+    // Drive: 4 idle (count→4), 3 failures (reconnect), health+resume, then idle.
+    for (let i = 0; i < 9; i++) {
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushMicrotasks();
+    }
+    // Resume reset the counter; a handful of post-resume idle samples must
+    // not have summed with the pre-disconnect 4 to reach the threshold.
+    expect(terminalEl().hidden, "pre-disconnect count must not carry across a resume").toBe(true);
+    expect(readingListEl().hidden, "the live resume shows the reading list").toBe(false);
   });
 });
