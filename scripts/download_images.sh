@@ -384,10 +384,15 @@ derive_repo_slug() {
     esac
     # Keep the LAST two path segments so nested paths still resolve.
     slug=$(printf '%s\n' "$path" | awk -F/ 'NF>=2 {printf "%s/%s", $(NF-1), $NF}')
-    case "$slug" in
-        */*) printf '%s\n' "$slug" ;;
-        *) return 1 ;;
-    esac
+    # Anchored allowlist (litclock-dev#636, mirrors build-image.yml's ref_ok): the slug is
+    # spliced into api.github.com URLs, so a crafted origin URL carrying '?',
+    # '#', '&', '%', or whitespace could reshape the request path/query.
+    # GitHub owner/repo names never need characters outside this set.
+    [[ "$slug" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$ ]] || return 1
+    # Pure-dot repo segments pass the allowlist but curl squashes dot
+    # segments, remapping the API path ('owner/..' resolves outside /repos).
+    case "${slug##*/}" in .|..) return 1 ;; esac
+    printf '%s\n' "$slug"
 }
 
 

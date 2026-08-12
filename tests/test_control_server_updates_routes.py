@@ -638,6 +638,58 @@ class TestApiUpdateStatus:
         body = client.get("/api/update/status").json
         assert body["state"] == "idle"
 
+    def _write_running_file(self):
+        status_file = Path(os.environ.get("LITCLOCK_UPDATE_STATUS_FILE"))
+        status_file.parent.mkdir(parents=True, exist_ok=True)
+        status_file.write_text(json.dumps({"state": "running", "phase_index": 3}))
+
+    def test_running_with_busy_unit_reports_unit_busy_true(self, client):
+        """litclock-dev#636 — a live run carries unit_busy=True so the poll loop's
+        dead-updater counter stays at zero for the whole run."""
+        self._write_running_file()
+        with patch("control_server.routes.updates.update_state.update_is_busy", return_value=True):
+            body = client.get("/api/update/status").json
+        assert body["state"] == "running"
+        assert body["unit_busy"] is True
+
+    def test_running_with_idle_unit_keeps_state_but_reports_unit_busy_false(self, client):
+        """litclock-dev#636 — the dead-updater case (SIGKILL/OOM skipped the EXIT trap;
+        the file lies until reboot clears tmpfs). The route must NOT flip
+        the state itself — one sample can be the 2s memo lagging the
+        dispatch window, and a false 'dead' mid-run would resurrect the
+        litclock-dev#607 stale-card bug. It reports the evidence and the JS requires
+        several consecutive idle readings before acting."""
+        self._write_running_file()
+        body = client.get("/api/update/status").json
+        assert body["state"] == "running"
+        assert body["phase_index"] == 3
+        assert body["unit_busy"] is False
+
+    def test_inferred_running_reports_unit_busy_true(self, client):
+        """litclock-dev#636 — the litclock-dev#607 inferred-busy payload exists only because the
+        unit IS busy, so its unit_busy must be exactly True (a False here
+        would mean the inference and the evidence contradict each other)."""
+        with patch("control_server.routes.updates.update_state.update_is_busy", return_value=True):
+            body = client.get("/api/update/status").json
+        assert body["state"] == "running"
+        assert body["inferred"] == "unit-busy"
+        assert body["unit_busy"] is True
+
+    def test_non_running_states_carry_no_unit_busy_key(self, client):
+        """litclock-dev#636 — the evidence field is scoped to the one state whose
+        truthfulness it qualifies; terminal and idle payloads stay
+        byte-compatible with pre-#636 clients."""
+        status_file = Path(os.environ.get("LITCLOCK_UPDATE_STATUS_FILE"))
+        status_file.parent.mkdir(parents=True, exist_ok=True)
+        for state in ("complete", "failed_reverted", "failed_unrecovered"):
+            status_file.write_text(json.dumps({"state": state, "phase_index": 7}))
+            body = client.get("/api/update/status").json
+            assert "unit_busy" not in body, state
+        status_file.unlink()
+        body = client.get("/api/update/status").json
+        assert body["state"] == "idle"
+        assert "unit_busy" not in body
+
     def test_oversize_status_file_returns_stale(self, client):
         """litclock-dev#336 — 1MB junk at update.status (above 8KB cap) must be rejected
         by the shared bounded reader and reported as state=stale, NOT a 500

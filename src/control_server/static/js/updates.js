@@ -188,6 +188,16 @@
       return;
     }
     if (payload.state === 'running') {
+      if (payload.unit_busy === false) {
+        // litclock-dev#636 — cold load onto a dead-updater candidate: the server-rendered
+        // card is the truthful surface, so don't swap in a reading list on
+        // the file's word alone. Poll instead — if the idle reading was the
+        // unit memo lagging a real run, the next poll flips unit_busy true
+        // and the poll loop promotes the page into the reading list; if it
+        // was a real corpse, the loop confirms and stops quietly.
+        schedulePoll();
+        return;
+      }
       seenRunning = true;                              // litclock-dev#342 I10 — arm phantom-tick + reconnect-mode
       enterReadingList(payload);
       schedulePoll();                                  // litclock-dev#342 I10 — keep advancing
@@ -234,6 +244,7 @@
           // optimistic-tick branch fires even if the very first scheduled
           // poll times out (e.g. Phase 7 restart racing the 2s interval).
           seenRunning = true;
+          deadUpdaterPolls = 0;  // litclock-dev#636 — a fresh Apply is a fresh corpse-evidence window
           // litclock-dev#354 codex P2 follow-up — fireApply owns the new running
           // state on success; the deferred probe (if any) is now stale.
           deferredProbePayload = null;
@@ -287,6 +298,7 @@
         // Apply, so we're in a "running" intent for the duration regardless
         // of whether the POST round-tripped cleanly.
         seenRunning = true;
+        deadUpdaterPolls = 0;  // litclock-dev#636 — same: new run, stale corpse count must not carry
         // litclock-dev#354 codex P2 follow-up — optimistic enterReadingList here
         // claims the running state; drop any deferred probe so it can't
         // overwrite the optimistic phase_index when the close listener
@@ -378,6 +390,16 @@
   // restart window and far beyond any single-poll hiccup.
   var POLL_FAILURE_THRESHOLD = 3;
   var consecutivePollFailures = 0;
+  // litclock-dev#636 — dead-updater detection. A `running` status file with an idle
+  // unit means the updater died without its EXIT trap (SIGKILL/OOM) and the
+  // file lies until reboot clears tmpfs; without this, an already-open page
+  // polls a corpse forever. One idle reading proves nothing (the server's
+  // 2s unit memo can lag the dispatch window), so require several
+  // consecutive ones — at the 2s poll interval the threshold spans ~10s,
+  // comfortably past any memo/activation gap. The verdict is deliberately
+  // NOT a reload: the dead file persists, so a reload would loop.
+  var DEAD_UPDATER_POLL_THRESHOLD = 5;
+  var deadUpdaterPolls = 0;
 
   function cancelPolling() {
     // Bump the generation so any captured-by-closure callback (pending
@@ -474,7 +496,44 @@
       return;
     }
     if (payload.state === 'running') {
+      if (payload.unit_busy === false) {
+        // litclock-dev#636 — dead-updater candidate. Keep polling (and keep the list
+        // as-is) until the evidence is sustained, then stop with honest
+        // terminal copy instead of spinning forever. seenRunning stays
+        // untouched here: arming phantom-tick off a corpse file would
+        // paint 7 green phases for an update that never finished.
+        deadUpdaterPolls++;
+        if (deadUpdaterPolls >= DEAD_UPDATER_POLL_THRESHOLD) {
+          cancelPolling();
+          if (readingList && !readingList.hidden) {
+            // Freeze the reading list honestly: mark the in-flight phase
+            // failed so a spinner doesn't keep animating above copy that
+            // says the updater is gone (review).
+            updateRowStates(payload.phase_index || 0, true);
+            showTerminal(
+              'The update stopped before finishing (the updater is no longer running). ' +
+              'Your clock may still be on its previous version. Reload this page and try Apply again.',
+              'error'
+            );
+          }
+          return;
+        }
+        updateRowStates(payload.phase_index || 0, false);
+        schedulePoll();
+        return;
+      }
+      deadUpdaterPolls = 0;
       seenRunning = true;
+      if (readingList && readingList.hidden && !(dialog && dialog.open)) {
+        // litclock-dev#636 — the cold-load probe deferred entry on a dead-updater
+        // candidate; the unit is confirmed busy now, so promote the page
+        // into the in-progress view it would normally have entered. The
+        // dialog guard mirrors the litclock-dev#354 probe deferral: yanking the
+        // card into the reading list under an open confirm sheet is the
+        // exact race that guard exists for — skip this tick and let the
+        // next poll promote after the sheet closes.
+        enterReadingList(payload);
+      }
       updateRowStates(payload.phase_index || 0, false);
       schedulePoll();
       return;
@@ -643,6 +702,7 @@
             // may never come.
             reconnectArmed = false;
             consecutivePollFailures = 0;
+            deadUpdaterPolls = 0;  // litclock-dev#636 — resuming a live run is fresh evidence
             enterReadingList(statusBody);
             schedulePoll();
             return;
