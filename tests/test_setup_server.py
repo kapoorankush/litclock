@@ -733,6 +733,7 @@ class TestWifiScanCaching:
         # Reset cache state before each test
         setup_server._WIFI_SCAN_CACHE = None
         setup_server._WIFI_SCAN_TIME = 0
+        setup_server._WIFI_SCAN_SSIDS = frozenset()
 
     def test_cache_returns_cached_result(self, monkeypatch):
         """Second call within TTL returns cached result without scanning."""
@@ -747,10 +748,11 @@ class TestWifiScanCaching:
         monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
 
-        result1 = setup_server._wifi_network_options()
-        result2 = setup_server._wifi_network_options()
+        result1, empty1 = setup_server._wifi_network_options()
+        result2, empty2 = setup_server._wifi_network_options()
 
         assert result1 == result2
+        assert (empty1, empty2) == (False, False)
         assert len(scan_count) == 1  # Only scanned once
         assert "TestNet" in result1
 
@@ -788,9 +790,109 @@ class TestWifiScanCaching:
         mock_wifi.scan_wifi_networks = lambda: []
         monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
 
-        result = setup_server._wifi_network_options()
+        result, was_empty = setup_server._wifi_network_options()
         assert "No networks found" in result
+        assert was_empty is True
         assert setup_server._WIFI_SCAN_CACHE is None
+
+    def test_page_build_empty_scan_preserves_scan_evidence(self, monkeypatch):
+        """The item-7 decision, pinned at the SECOND scan site (/review on
+        litclock-dev#614): the /scan-wifi handler test alone would stay green if this
+        function's empty branch started clearing _WIFI_SCAN_SSIDS — flipping
+        a previously-seen typed SSID to a permanent `hidden yes` profile."""
+        import sys
+        from unittest.mock import MagicMock
+
+        setup_server._WIFI_SCAN_SSIDS = frozenset({"homewifi"})
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: []
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+
+        result, was_empty = setup_server._wifi_network_options()
+        assert was_empty is True
+        assert setup_server._WIFI_SCAN_SSIDS == frozenset({"homewifi"})
+
+    def test_scan_exception_returns_empty_flag_and_touches_nothing(self, monkeypatch):
+        """The except branch (nmcli dying) merges into the empty path today;
+        pin that it stays flagged empty and leaves cache + evidence alone
+        (/review on litclock-dev#614 — this branch had no direct test)."""
+        import sys
+        from unittest.mock import MagicMock
+
+        setup_server._WIFI_SCAN_SSIDS = frozenset({"homewifi"})
+        mock_wifi = MagicMock()
+
+        def boom():
+            raise RuntimeError("nmcli died")
+
+        mock_wifi.scan_wifi_networks = boom
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+
+        result, was_empty = setup_server._wifi_network_options()
+        assert was_empty is True
+        assert setup_server._WIFI_SCAN_CACHE is None
+        assert setup_server._WIFI_SCAN_SSIDS == frozenset({"homewifi"})
+
+    def test_concurrent_page_builds_scan_once_under_the_lock(self, monkeypatch):
+        """litclock-dev#615: _wifi_network_options must serialize scans under
+        _SCAN_CACHE_LOCK like /scan-wifi does. Two concurrent GET / builds at a
+        cold cache previously each fired their own nmcli rescan on the single
+        hotspot radio. With the lock, the second thread blocks, finds the fresh
+        cache on the recheck, and skips its scan — exactly one scan total.
+
+        The test forces overlap: both threads rendezvous at a barrier, then the
+        scan blocks briefly so the second thread is guaranteed to be waiting on
+        the lock (or the cache-hit recheck) while the first is mid-scan. Without
+        the lock this reliably records 2 scans; with it, 1.
+        """
+        import sys
+        import threading
+        import time
+        from unittest.mock import MagicMock
+
+        scan_count = []
+        count_lock = threading.Lock()
+        start = threading.Barrier(2)
+
+        def slow_scan():
+            # Each scan returns a DISTINCT SSID so the equality assertion below
+            # is meaningful: with the lock the waiter serves thread A's cached
+            # snapshot (identical results); a lockless mutant scans a second
+            # time and returns a different SSID (results differ AND count == 2).
+            with count_lock:
+                n = len(scan_count)
+                scan_count.append(1)
+            time.sleep(0.2)  # hold the radio long enough for the other thread to pile up
+            return [{"ssid": f"TestNet{n}", "signal": 80, "security": "WPA2"}]
+
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = slow_scan
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+
+        results = []
+        res_lock = threading.Lock()
+
+        def worker():
+            start.wait()
+            r, _ = setup_server._wifi_network_options()
+            with res_lock:
+                results.append(r)
+
+        # daemon=True so a genuine deadlock (thread stuck on the lock) surfaces as
+        # a test failure via the is_alive assert instead of hanging interpreter exit.
+        threads = [threading.Thread(target=worker, daemon=True) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert all(not t.is_alive() for t in threads), "a page build deadlocked on the scan lock"
+        assert len(scan_count) == 1, f"expected one serialized scan, got {len(scan_count)}"
+        assert len(results) == 2
+        assert "TestNet0" in results[0] and "TestNet0" in results[1], (
+            "the waiter did not serve the first scan's cached snapshot"
+        )
 
     def test_own_hotspot_ssid_filtered_out(self, monkeypatch):
         """The clock's own setup-hotspot SSID is never offered as a join target.
@@ -812,9 +914,10 @@ class TestWifiScanCaching:
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
         monkeypatch.setattr(setup_server, "HOTSPOT_SSID", "LitClock-Setup")
 
-        result = setup_server._wifi_network_options()
+        result, was_empty = setup_server._wifi_network_options()
         assert "LitClock-Setup" not in result
         assert "HomeWiFi" in result
+        assert was_empty is False
 
     def test_no_filter_when_hotspot_ssid_unset(self, monkeypatch):
         """In normal (non-provisioning) mode HOTSPOT_SSID is None — filter is a
@@ -828,7 +931,7 @@ class TestWifiScanCaching:
         monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
         monkeypatch.setattr(setup_server, "HOTSPOT_SSID", None)
 
-        result = setup_server._wifi_network_options()
+        result, _ = setup_server._wifi_network_options()
         assert "LitClock-Setup" in result
 
     def test_filter_emptying_list_returns_no_networks_uncached(self, monkeypatch):
@@ -845,9 +948,10 @@ class TestWifiScanCaching:
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
         monkeypatch.setattr(setup_server, "HOTSPOT_SSID", "LitClock-Setup")
 
-        result = setup_server._wifi_network_options()
+        result, was_empty = setup_server._wifi_network_options()
         assert "No networks found" in result
         assert "LitClock-Setup" not in result
+        assert was_empty is True
         assert setup_server._WIFI_SCAN_CACHE is None
 
     def test_scan_wifi_endpoint_filters_own_hotspot(self, monkeypatch):
@@ -884,6 +988,98 @@ class TestWifiScanCaching:
         assert setup_server._WIFI_SCAN_CACHE is not None
         assert "LitClock-Setup" not in setup_server._WIFI_SCAN_CACHE
         assert "HomeWiFi" in setup_server._WIFI_SCAN_CACHE
+
+    def test_scan_wifi_endpoint_updates_scan_evidence(self, monkeypatch):
+        """litclock-dev#605 item 7: _WIFI_SCAN_SSIDS was only ever asserted
+        by monkeypatching it directly — nothing pinned that the /scan-wifi
+        HANDLER feeds it. It must: the wifi_hidden decision in do_POST reads
+        this set, and a Refresh tap is how a user proves a typed name is
+        visible."""
+        import sys
+        from unittest.mock import MagicMock
+
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: [{"ssid": "HomeWiFi", "signal": 70, "security": "WPA2"}]
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+
+        handler = _make_handler()
+        handler.path = "/scan-wifi"
+        handler.headers = {"Host": "litclock.setup"}
+        handler.send_json = lambda payload: None
+        handler.do_GET()
+
+        assert "homewifi" in setup_server._WIFI_SCAN_SSIDS
+
+    def test_empty_rescan_preserves_scan_evidence(self, monkeypatch):
+        """Pins the litclock-dev#605 item 7 decision: an empty rescan must
+        NOT clear _WIFI_SCAN_SSIDS. Evidence accumulated from non-empty scans
+        stays valid across empty rescans — clearing it would flip a typed,
+        previously-seen name to `hidden yes`, which nmcli writes into the saved
+        profile as a PERMANENT probe-request leak. Stale visibility evidence is
+        transient; the leak is not."""
+        import sys
+        from unittest.mock import MagicMock
+
+        setup_server._WIFI_SCAN_SSIDS = frozenset({"homewifi"})
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: []
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+
+        handler = _make_handler()
+        handler.path = "/scan-wifi"
+        handler.headers = {"Host": "litclock.setup"}
+        sent = {}
+        handler.send_json = lambda payload: sent.update(networks=payload)
+        handler.do_GET()
+
+        assert sent["networks"] == []
+        assert setup_server._WIFI_SCAN_SSIDS == frozenset({"homewifi"})
+        # Empty results are also never cached — the next call retries.
+        assert setup_server._WIFI_SCAN_CACHE is None
+
+    def test_non_empty_scan_unions_into_evidence_not_replaces(self, monkeypatch):
+        """litclock-dev#615: scan evidence accumulates (UNION), it does not
+        replace. A network genuinely visible earlier this session can be absent
+        from a later scan (radio flicker); a replace would drop it and flip a
+        typed, previously-seen name to a permanent `hidden yes` probe leak. The
+        later scan's SSID must be ADDED, and the earlier one must SURVIVE."""
+        import sys
+        from unittest.mock import MagicMock
+
+        # 'homewifi' was seen in an earlier scan; this scan sees only 'neighbor'.
+        setup_server._WIFI_SCAN_SSIDS = frozenset({"homewifi"})
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: [{"ssid": "Neighbor", "signal": 60, "security": "WPA2"}]
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+
+        handler = _make_handler()
+        handler.path = "/scan-wifi"
+        handler.headers = {"Host": "litclock.setup"}
+        handler.send_json = lambda payload: None
+        handler.do_GET()
+
+        # Union: the flickered-away 'homewifi' survives, 'neighbor' is added.
+        assert setup_server._WIFI_SCAN_SSIDS == frozenset({"homewifi", "neighbor"})
+
+    def test_page_build_scan_unions_into_evidence(self, monkeypatch):
+        """The union write in the OTHER scan site (_wifi_network_options / the
+        page build) must accumulate too, not just the /scan-wifi handler."""
+        import sys
+        from unittest.mock import MagicMock
+
+        setup_server._WIFI_SCAN_CACHE = None
+        setup_server._WIFI_SCAN_TIME = 0
+        setup_server._WIFI_SCAN_SSIDS = frozenset({"homewifi"})
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: [{"ssid": "Neighbor", "signal": 60, "security": "WPA2"}]
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+
+        setup_server._wifi_network_options()
+        assert setup_server._WIFI_SCAN_SSIDS == frozenset({"homewifi", "neighbor"})
 
 
 # ── HTML_ERROR template ────────────────────────────────────────────
@@ -1000,13 +1196,28 @@ class TestWifiErrorBanner:
         EPIC litclock-dev#383 dropped the 'home' qualifier (which was scary jargon for
         non-tech users — issue litclock-dev#384); litclock-dev#555 dropped "hotspot"
         for the same reason. The disambiguation itself is still
-        load-bearing copy — only the word for it changed."""
+        load-bearing copy — only the word for it changed.
+
+        litclock-dev#610 review: this test used to pass a plain string and
+        match "wifi password" anywhere on the page — which the form's own
+        helper text satisfies, so it pinned nothing about the banner. The
+        disambiguation advice now renders only for the bad_password class,
+        and the assertions slice the banner region."""
+        import wifi_provision
+
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
-        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", "wrong password")
+        monkeypatch.setattr(
+            setup_server,
+            "WIFI_CONNECT_ERROR",
+            wifi_provision.WifiFailure("Incorrect WiFi password", wifi_provision.WIFI_FAIL_BAD_PASSWORD),
+        )
         html = setup_server._build_setup_html()
-        assert "wifi password" in html.lower()
-        assert "password shown on the clock" in html.lower()
+        banner_start = html.index("Couldn&rsquo;t join your WiFi")
+        banner_end = html.index("</div>", banner_start)
+        banner = html[banner_start:banner_end].lower()
+        assert "wifi password" in banner
+        assert "password shown on the clock" in banner
         # Regression: the dropped "home" qualifier must not creep back in.
         assert "home wifi" not in html.lower()
 
@@ -1597,27 +1808,63 @@ class TestRestoreHotspot:
     a failed-WiFi-password retry. These tests pin the behavior so a future
     refactor doesn't silently regress the UX."""
 
-    def test_restore_hotspot_refreshes_display_with_retry_reason(self, monkeypatch):
-        """Happy path: hotspot restore succeeds, display_hotspot_info is
-        called with retry_reason=HOTSPOT_RETRY_WIFI_PASSWORD."""
+    def _mock_eink(self, monkeypatch):
         import sys
+        from unittest.mock import MagicMock
+
+        mock_eink = MagicMock()
+        mock_eink.HOTSPOT_RETRY_WIFI_PASSWORD = "wifi_password"
+        mock_eink.HOTSPOT_RETRY_CONNECT_FAILED = "connect_failed"
+        monkeypatch.setitem(sys.modules, "eink_display", mock_eink)
+        return mock_eink
+
+    def test_restore_hotspot_bad_password_selects_the_password_variant(self, monkeypatch):
+        """litclock-dev#603: the wrong-password steps render only when the
+        failure actually WAS the password."""
         from unittest.mock import MagicMock
 
         monkeypatch.setattr(setup_server, "HOTSPOT_SSID", "LitClock-Setup")
         monkeypatch.setattr(setup_server, "HOTSPOT_PASSWORD", "abc12345")
 
         create_hotspot = MagicMock(return_value={"ssid": "x", "password": "y", "ip": "z"})
+        mock_eink = self._mock_eink(monkeypatch)
 
-        mock_eink = MagicMock()
-        mock_eink.HOTSPOT_RETRY_WIFI_PASSWORD = "wifi_password"
-        monkeypatch.setitem(sys.modules, "eink_display", mock_eink)
-
-        setup_server._restore_hotspot(create_hotspot)
+        setup_server._restore_hotspot(create_hotspot, failure_class="bad_password")
 
         create_hotspot.assert_called_once_with(ssid="LitClock-Setup", password="abc12345")
         mock_eink.display_hotspot_info.assert_called_once()
         kwargs = mock_eink.display_hotspot_info.call_args.kwargs
         assert kwargs.get("retry_reason") == "wifi_password"
+
+    @pytest.mark.parametrize("failure_class", ["timeout", "not_found", "other", "no_ip", None])
+    def test_restore_hotspot_non_password_failures_select_the_neutral_variant(self, monkeypatch, failure_class):
+        """litclock-dev#603 — the bug this closes: a timeout painted
+        wrong-password guidance. Every non-password class (and the
+        no-evidence None) gets the class-neutral connect-failed steps;
+        telling a user to retype a password that was never the problem
+        sends them fixing the one thing known-least-likely broken."""
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(setup_server, "HOTSPOT_SSID", "LitClock-Setup")
+        monkeypatch.setattr(setup_server, "HOTSPOT_PASSWORD", "abc12345")
+
+        create_hotspot = MagicMock(return_value={"ssid": "x", "password": "y", "ip": "z"})
+        mock_eink = self._mock_eink(monkeypatch)
+
+        setup_server._restore_hotspot(create_hotspot, failure_class=failure_class)
+
+        kwargs = mock_eink.display_hotspot_info.call_args.kwargs
+        assert kwargs.get("retry_reason") == "connect_failed"
+
+    def test_bad_password_literal_is_in_lockstep_with_wifi_provision(self):
+        """_restore_hotspot and the banner compare against the literal
+        'bad_password' (a lazy constant import would be swallowed by the
+        ImportError arm under the fake wifi_provision the retry tests
+        inject). This pins the literal to the real constant so they can't
+        drift apart."""
+        import wifi_provision
+
+        assert wifi_provision.WIFI_FAIL_BAD_PASSWORD == "bad_password"
 
     def test_restore_hotspot_swallows_eink_display_failure(self, monkeypatch):
         """If the e-ink display call raises (dev machine without hardware,
@@ -2016,9 +2263,10 @@ class TestWifiPickerPlaceholderAndSort:
         mock_wifi.scan_wifi_networks = lambda: []
         monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
 
-        result = setup_server._wifi_network_options()
+        result, was_empty = setup_server._wifi_network_options()
         assert setup_server.MANUAL_SSID_VALUE in result
         assert setup_server.WIFI_PLACEHOLDER_EMPTY_TEXT in result
+        assert was_empty is True
         assert setup_server._WIFI_SCAN_CACHE is None
 
     def test_ssid_is_escaped_in_both_value_and_label(self):
@@ -2182,6 +2430,20 @@ class TestWifiPickerReviewHardening:
         script = self._script()
         assert script.count("appendManualOption(select)") >= 3
 
+    def test_ajax_empty_refresh_opens_the_manual_disclosure(self):
+        """litclock-dev#615: the server-rendered empty-scan path force-opens the
+        manual-SSID <details>, but a Refresh returning [] only swapped the
+        placeholder — the hidden-network user who taps Refresh into an empty
+        scan was left with the type-it-in field folded away. The empty branch
+        must now open it too. (Reverting the one JS line left the suite green.)"""
+        script = self._script()
+        empty_branch = script[script.index("networks.length === 0") :]
+        empty_branch = empty_branch[
+            : empty_branch.index("} else {") if "} else {" in empty_branch else len(empty_branch)
+        ]
+        assert "getElementById('manual-ssid')" in empty_branch
+        assert "details.open = true" in empty_branch
+
     def test_onssidchange_is_defined_and_wired(self):
         """Deleting the onchange attribute left every test green while
         silently killing the one path this feature exists to add: the
@@ -2255,20 +2517,26 @@ class TestWifiPickerReviewHardening:
     # ── Byte budget, stated in bytes ──
 
     def test_manual_input_carries_a_client_side_length_guard(self):
-        """maxlength counts UTF-16 code units; SSID_MAX_BYTES counts bytes.
-        The two are decoupled in the source so a future change to the byte
-        budget doesn't silently move a character limit.
-
-        Honest limitation: this cannot distinguish the literal from the
-        constant, because SSID_MAX_BYTES is 32 today and both render
-        `maxlength="32"`. Mutation confirms it — that swap is an equivalent
-        mutant at the HTML level. What IS pinned here is that the attribute
-        exists and sits on the manual SSID input; the decoupling itself rests
-        on the comment at SSID_MAX_BYTES and on the server-side byte check,
-        which its own tests do pin."""
+        """The attribute interpolates SSID_MAX_BYTES (litclock-dev#605 item
+        12 — it was a re-typed literal before, exactly the drift the
+        constant exists to prevent). maxlength counts UTF-16 code units
+        while the budget is bytes, so for multi-byte names the client guard
+        is looser than the server's — deliberate: it stops the all-ASCII
+        case early, and the do_POST byte check (pinned by its own tests) is
+        the real gate."""
         html = setup_server._build_setup_html()
-        at = html.index('maxlength="32"')
+        at = html.index(f'maxlength="{setup_server.SSID_MAX_BYTES}"')
         assert setup_server.MANUAL_SSID_FIELD in html[at - 400 : at], "maxlength must sit on the manual SSID input"
+
+    def test_maxlength_actually_interpolates_the_constant(self, monkeypatch):
+        """Kills the equivalent mutant the assertion above cannot: with
+        SSID_MAX_BYTES = 32, a re-typed literal renders identically. A
+        sentinel value proves the attribute reads the constant at build
+        time (/review on litclock-dev#614 — the item-12 fix was otherwise untestable)."""
+        monkeypatch.setattr(setup_server, "SSID_MAX_BYTES", 48)
+        html = setup_server._build_setup_html()
+        assert 'maxlength="48"' in html
+        assert 'maxlength="32"' not in html
 
 
 class TestScannedSsids:
@@ -2483,3 +2751,52 @@ class TestNoHotspotJargonAcrossSurfaces:
             script = (self.REPO / "scripts" / name).read_text()
             for echoed in re.findall(r'echo\s+(?:-e\s+)?"([^"]*)"', script):
                 assert "hotspot" not in echoed.lower(), f"{name}: {echoed}"
+
+
+# ── litclock-dev#603: retry instruction variants ────────────────────
+
+
+class TestRetryInstructionVariants:
+    """The connect-failed retry steps. Importable on dev machines:
+    eink_display needs Pillow at import time, not the waveshare driver,
+    so this copy is testable outside tests/test_eink_display.py."""
+
+    def test_connect_failed_variant_has_no_password_step(self):
+        import eink_display
+
+        lines = eink_display.setup_instruction_lines(
+            "10.42.0.1", is_retry=True, retry_reason=eink_display.HOTSPOT_RETRY_CONNECT_FAILED
+        )
+        joined = " ".join(lines)
+        # The whole point: no password guidance when the password wasn't
+        # the failure. Radio-physical causes lead instead.
+        assert "password" not in joined.lower()
+        assert any("2.4GHz" in ln for ln in lines)
+        assert lines[0].startswith("1. Rescan the QR code")
+        # Fallback URLs keep the explicit scheme (litclock-dev#588 rules).
+        assert "http://" in lines[-1]
+
+    def test_password_variant_copy_is_unchanged(self):
+        import eink_display
+
+        lines = eink_display.setup_instruction_lines(
+            "10.42.0.1", is_retry=True, retry_reason=eink_display.HOTSPOT_RETRY_WIFI_PASSWORD
+        )
+        assert any("WiFi password" in ln for ln in lines)
+
+    def test_retry_without_reason_keeps_the_password_copy(self):
+        """Backward compat: is_retry=True with no reason is the pre-#603
+        call shape — it must keep rendering what it always rendered."""
+        import eink_display
+
+        lines = eink_display.setup_instruction_lines("10.42.0.1", is_retry=True)
+        assert any("WiFi password" in ln for ln in lines)
+
+    def test_both_retry_reasons_render_the_retry_title(self):
+        """display_hotspot_info's is_retry gate must accept BOTH variants —
+        a connect_failed reason that fell through to the non-retry splash
+        would paint first-boot setup copy over a failed join."""
+        import eink_display
+
+        assert eink_display.HOTSPOT_RETRY_CONNECT_FAILED == "connect_failed"
+        assert eink_display.HOTSPOT_RETRY_WIFI_PASSWORD == "wifi_password"

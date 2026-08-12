@@ -39,6 +39,11 @@ FONT_PATH_BOLD = os.path.join(PROJECT_ROOT, "fonts", "Literata72pt-Black.ttf")
 # baseline. Promoted from function-local vars so future layout tweaks have
 # one place to change.
 HOTSPOT_INFO_LINE_HEIGHT = 28
+# Point size of the setup splash's small text (framing line + numbered steps).
+# Hoisted so the step-line clamp tests measure with the SAME size production
+# draws at — a hardcoded 18 in the test would silently validate the wrong
+# font after a size tweak here (litclock-dev#629 review).
+SETUP_SMALL_FONT_PT = 18
 HOTSPOT_INFO_BOTTOM_PADDING = 20
 
 # QR block geometry for the setup splash. Module level for the same reason
@@ -130,11 +135,12 @@ def create_qr_display_image(url: str, title: str = None, caption: str = None, qr
         title_font = ImageFont.truetype(FONT_PATH_BOLD, 36)
         caption_font = ImageFont.truetype(FONT_PATH, 24)
         small_font = ImageFont.truetype(FONT_PATH, 18)
-    except Exception:
-        # Fallback to default font
-        title_font = ImageFont.load_default()
-        caption_font = ImageFont.load_default()
-        small_font = ImageFont.load_default()
+    except Exception as e:
+        # size= + log, never a silent 10px collapse (litclock-dev#589 item 3).
+        logging.error("fonts unavailable (%s); using scaled default", e)
+        title_font = ImageFont.load_default(size=36)
+        caption_font = ImageFont.load_default(size=24)
+        small_font = ImageFont.load_default(size=18)
 
     # Calculate positions
     qr_x = (DISPLAY_SIZE[0] - qr_size) // 2
@@ -288,15 +294,19 @@ def _fit_title(text: str, font_path: str, max_width: int) -> tuple[list[str], "I
     if not text:
         try:
             return [], ImageFont.truetype(font_path, TITLE_FIT_TIERS[0][0])
-        except Exception:
-            return [], ImageFont.load_default()
+        except Exception as e:
+            # size=, never a silent 10px collapse (litclock-dev#589 item 3).
+            logging.error("title font unavailable (%s); using scaled default", e)
+            return [], ImageFont.load_default(size=TITLE_FIT_TIERS[0][0])
 
     last: tuple[list[str], ImageFont.FreeTypeFont, int] | None = None
     for size, max_lines in TITLE_FIT_TIERS:
         try:
             font = ImageFont.truetype(font_path, size)
-        except Exception:
-            font = ImageFont.load_default()
+        except Exception as e:
+            # size=, matching this tier, never the silent 10px (litclock-dev#589 item 3).
+            logging.error("title font unavailable at %dpt (%s); using scaled default", size, e)
+            font = ImageFont.load_default(size=size)
         # Natural wrap: max_lines=len(text)+1 can never truncate, so this is the
         # untruncated line count at this font size.
         natural = _wrap_title(text, font, max_width, len(text) + 1)
@@ -329,9 +339,11 @@ def create_status_image(title: str, message: str = None, submessage: str = None)
     try:
         message_font = ImageFont.truetype(FONT_PATH, 28)
         small_font = ImageFont.truetype(FONT_PATH, 20)
-    except Exception:
-        message_font = ImageFont.load_default()
-        small_font = ImageFont.load_default()
+    except Exception as e:
+        # size= + log, never a silent 10px collapse (litclock-dev#589 item 3).
+        logging.error("fonts unavailable (%s); using scaled default", e)
+        message_font = ImageFont.load_default(size=28)
+        small_font = ImageFont.load_default(size=20)
 
     # litclock-dev#319 + litclock-dev#280 gift-message fix: word-wrap the title at the TITLE_SIDE_MARGIN
     # gutter, AUTO-FITTING the font so a long personalized welcome shrinks to
@@ -420,6 +432,12 @@ def display_image(image: Image.Image, epd=None):
 
 
 HOTSPOT_RETRY_WIFI_PASSWORD = "wifi_password"
+# litclock-dev#603 — the retry splash for every NON-password failure class
+# (timeout, network not found, anything else). The old behavior painted the
+# wrong-password variant for all of them, and its "select your network from
+# the list" step is exactly wrong for a hidden network that failed on
+# reachability. Same class-neutral title; the steps differ.
+HOTSPOT_RETRY_CONNECT_FAILED = "connect_failed"
 
 
 # ── Setup-splash copy ────────────────────────────────────────────────
@@ -469,8 +487,58 @@ SETUP_LABEL_PASSWORD = "LitClock's WiFi password:"
 SETUP_FRAMING_LINE = "The clock makes its own WiFi for setup."
 
 
-def setup_instruction_lines(ip: str, is_retry: bool = False) -> list[str]:
+def _sanitize_render_text(value: str | None, field: str) -> str:
+    """Strip control characters (including newlines) from a credential before
+    it is drawn on the setup splash (litclock-dev#589). This renderer treats
+    its args as constants, but wifi_provision honours ``--ssid`` and a newline
+    in the SSID would render multiline and collide with the password label.
+    Logs when it changes the value so a misconfigured credential is never
+    silently mangled."""
+    if not value:
+        return ""
+    text = str(value)
+    # str.isprintable() keeps ASCII space and every genuinely-printable glyph
+    # (accented letters, emoji) while dropping ALL Unicode Other/Separator code
+    # points — C0 AND C1 controls, DEL, NEL, the line/paragraph separators
+    # U+2028/U+2029, zero-width and bidi format chars. A plain `32 <= ord < 127`
+    # range would miss the C1 + Unicode-separator class (/review).
+    cleaned = "".join(ch for ch in text if ch == " " or ch.isprintable())
+    if cleaned != text:
+        logging.warning("setup splash %s contained control characters; stripped for rendering", field)
+    return cleaned
+
+
+def _wifi_qr_escape(value: str) -> str:
+    r"""Backslash-escape the ``WIFI:`` QR payload's reserved characters
+    ``\ ; , : "`` per the de-facto WIFI-QR format (litclock-dev#589).
+    Unreachable with the alnum password generator and the constant SSID, but a
+    varying input would otherwise silently encode the WRONG network onto the
+    phone that scans it."""
+    return "".join("\\" + ch if ch in '\\;,:"' else ch for ch in value)
+
+
+def _clamp_to_width(text: str, font, draw, max_w: int, field: str) -> str:
+    """Single-line fit-with-ellipsis at ``max_w`` px, logging when it truncates
+    so a clipped credential is never silent (litclock-dev#589). Reuses the
+    handoff splash's fit logic (_fit_ssid_to_band)."""
+    fitted = _fit_ssid_to_band(text, font, draw, max_w, max_lines=1)
+    result = fitted[0] if fitted else ""
+    if result != text:
+        logging.warning("setup splash %s too wide for the panel; truncated to fit", field)
+    return result
+
+
+def setup_instruction_lines(
+    ip: str, ssid: str = "LitClock-Setup", is_retry: bool = False, retry_reason: str | None = None
+) -> list[str]:
     """Bottom instruction block for the setup splash.
+
+    ``ssid`` names the network in the numbered steps. It MUST be the same value
+    create_hotspot_display_image paints in the credential block — a step that
+    says "join LitClock-Setup" while the credential block shows a different
+    network name is unreadable to the very audience (litclock-dev#588) that cannot tell two
+    networks apart (litclock-dev#589 item 2). Defaults to the hotspot's own
+    DEFAULT_SSID for any direct caller.
 
     dnsmasq's wildcard on the setup network resolves every hostname to `ip`,
     and nftables redirects 80->8080, so SETUP_HOSTNAME lands on the real
@@ -502,15 +570,28 @@ def setup_instruction_lines(ip: str, is_retry: bool = False) -> list[str]:
       and on an e-ink panel a stray mark is entirely plausible.
     """
     if is_retry:
+        if retry_reason == HOTSPOT_RETRY_CONNECT_FAILED:
+            # litclock-dev#603 — the join failed for a reason that is NOT
+            # the password: a timeout, an unreachable/hidden network, or an
+            # unclassified nmcli error. Password advice here would send the
+            # reader retyping a password that was never the problem; the
+            # likely fixes are radio-physical (band, range). The setup page
+            # shows the specific cause once they're back on it.
+            return [
+                f"1. Rescan the QR code to rejoin {ssid}",
+                "2. Check your WiFi is 2.4GHz and in range of the clock",
+                "3. On the setup page, pick your network and try again",
+                f"4. No page? Open a browser: http://{SETUP_HOSTNAME} or http://{ip}",
+            ]
         return [
-            "1. Rescan the QR code to rejoin LitClock-Setup",
+            f"1. Rescan the QR code to rejoin {ssid}",
             "2. Select your internet WiFi network, type your WiFi password",
             f"3. No page? Open a browser: http://{SETUP_HOSTNAME} or http://{ip}",
         ]
     return [
-        "1. Scan the QR code to join LitClock-Setup",
+        f"1. Scan the QR code to join {ssid}",
         "2. Wait about 20 seconds for a setup page",
-        "3. No page? Join LitClock-Setup in your WiFi settings",
+        f"3. No page? Join {ssid} in your WiFi settings",
         f"4. Then open a browser: http://{SETUP_HOSTNAME} or http://{ip}",
     ]
 
@@ -526,35 +607,50 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
         ssid: Hotspot network name
         password: Hotspot password
         ip: Hotspot gateway IP (shown as absolute-fallback URL)
-        retry_reason: If set, renders a retry-specific variant. Currently
-            supports HOTSPOT_RETRY_WIFI_PASSWORD ("wifi_password") — used
-            when the user submitted a wrong WiFi password and the setup
-            server has restored the hotspot for another attempt. The user
+        retry_reason: If set, renders a retry-specific variant:
+            HOTSPOT_RETRY_WIFI_PASSWORD ("wifi_password") when the user
+            submitted a wrong WiFi password, HOTSPOT_RETRY_CONNECT_FAILED
+            ("connect_failed") for every other failure class — timeout,
+            network not found, unclassified (litclock-dev#603). The user
             needs distinct signal on the e-ink (not just the browser
             banner) because phones auto-disconnect from the hotspot during
             the failed connection attempt and may not see the banner until
-            they've rescanned the QR.
+            they've rescanned the QR. Both variants share the class-neutral
+            title; the numbered steps differ.
 
     Returns:
         PIL Image ready for display
     """
-    is_retry = retry_reason == HOTSPOT_RETRY_WIFI_PASSWORD
+    is_retry = retry_reason in (HOTSPOT_RETRY_WIFI_PASSWORD, HOTSPOT_RETRY_CONNECT_FAILED)
+
+    # Validate the credentials at the boundary (litclock-dev#589): strip
+    # control chars / newlines that would break the single-line layout. Logs
+    # loudly on any change; the render still proceeds best-effort because a
+    # blank splash on THE setup screen is a worse failure than a cleaned one.
+    ssid = _sanitize_render_text(ssid, "network name")
+    password = _sanitize_render_text(password, "password")
 
     # Create white background
     image = Image.new("1", DISPLAY_SIZE, 255)
     draw = ImageDraw.Draw(image)
 
-    # Load fonts
+    # Load fonts. On failure (missing fonts/ dir) DON'T fall to a bare
+    # load_default(): on Pillow >= 12 that is a 10px bitmap, which collapses the
+    # 36/22/24/18px hierarchy to ~1.4mm cap height — a fully-painted but
+    # unreadable panel with a clean journal (litclock-dev#589 item 3). Pass
+    # size= (Pillow >= 10.1 returns scalable Aileron) and log an ERROR so a
+    # broken fonts/ dir is never silent.
     try:
         title_font = ImageFont.truetype(FONT_PATH_BOLD, 36)
         label_font = ImageFont.truetype(FONT_PATH_BOLD, 22)
         value_font = ImageFont.truetype(FONT_PATH, 24)
-        small_font = ImageFont.truetype(FONT_PATH, 18)
-    except Exception:
-        title_font = ImageFont.load_default()
-        label_font = ImageFont.load_default()
-        value_font = ImageFont.load_default()
-        small_font = ImageFont.load_default()
+        small_font = ImageFont.truetype(FONT_PATH, SETUP_SMALL_FONT_PT)
+    except Exception as e:
+        logging.error("setup splash fonts unavailable (%s); using scaled default — legible but off-brand", e)
+        title_font = ImageFont.load_default(size=36)
+        label_font = ImageFont.load_default(size=22)
+        value_font = ImageFont.load_default(size=24)
+        small_font = ImageFont.load_default(size=SETUP_SMALL_FONT_PT)
 
     # Title — swap to a distinct retry title so the user's eye immediately
     # registers "something changed, read this." E-ink is monochrome so we
@@ -593,7 +689,7 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
     # WiFi QR code (standard format that phones auto-recognize). Same QR in
     # the retry state — the hotspot credentials are unchanged, only the
     # user-facing instructions differ.
-    wifi_qr_data = f"WIFI:T:WPA;S:{ssid};P:{password};;"
+    wifi_qr_data = f"WIFI:T:WPA;S:{_wifi_qr_escape(ssid)};P:{_wifi_qr_escape(password)};;"
     qr_size = SETUP_QR_SIZE
     qr_image = generate_qr_image(wifi_qr_data)
     qr_image = qr_image.resize((qr_size, qr_size), Image.Resampling.NEAREST)
@@ -607,13 +703,30 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
     text_x = qr_x + qr_size + 30
     text_y = qr_y + 10
 
+    # Clamp the values to the right-column budget so a long SSID/password can't
+    # clip silently at x=800 with no ellipsis (litclock-dev#589 item 1). The
+    # budget is the panel width minus the value's left edge.
+    value_budget = DISPLAY_SIZE[0] - text_x
+    ssid_line = _clamp_to_width(ssid, value_font, draw, value_budget, "network name")
+    password_line = _clamp_to_width(password, value_font, draw, value_budget, "password")
+
     draw.text((text_x, text_y), SETUP_LABEL_NETWORK, font=label_font, fill=0)
-    draw.text((text_x, text_y + 30), ssid, font=value_font, fill=0)
+    draw.text((text_x, text_y + 30), ssid_line, font=value_font, fill=0)
 
     draw.text((text_x, text_y + 80), SETUP_LABEL_PASSWORD, font=label_font, fill=0)
-    draw.text((text_x, text_y + 110), password, font=value_font, fill=0)
+    draw.text((text_x, text_y + 110), password_line, font=value_font, fill=0)
 
-    lines = setup_instruction_lines(ip, is_retry=is_retry)
+    lines = setup_instruction_lines(ip, ssid=ssid, is_retry=is_retry, retry_reason=retry_reason)
+
+    # Per-line clamp (litclock-dev#626, the litclock-dev#589-review Q4 gap): the credential
+    # block clamps its values, but the STEP lines interpolate the same ssid
+    # (and ip) with no width guard of their own. Clamping each line to the
+    # panel width means an over-long value ellipsizes here the same way it
+    # does in the credential block, instead of clipping at x=800 — and it
+    # keeps `widest` <= panel so the block_x centring below never degrades.
+    lines = [
+        _clamp_to_width(line, small_font, draw, DISPLAY_SIZE[0], f"setup step {i + 1}") for i, line in enumerate(lines)
+    ]
 
     # Stack the lines bottom-up so both 3-line and 4-line layouts sit flush
     # with the bottom edge at a consistent padding.
@@ -758,8 +871,14 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
         label_font = ImageFont.truetype(FONT_PATH_BOLD, 22)
         row_font = ImageFont.truetype(FONT_PATH, 22)
         small_font = ImageFont.truetype(FONT_PATH, 18)
-    except Exception:
-        brand_font = heading_font = label_font = row_font = small_font = ImageFont.load_default()
+    except Exception as e:
+        # size= + log, never a silent 10px collapse (litclock-dev#589 item 3).
+        logging.error("handoff splash fonts unavailable (%s); using scaled default", e)
+        brand_font = ImageFont.load_default(size=26)
+        heading_font = ImageFont.load_default(size=40)
+        label_font = ImageFont.load_default(size=22)
+        row_font = ImageFont.load_default(size=22)
+        small_font = ImageFont.load_default(size=18)
 
     # Brand wordmark + hairline rule, top-left.
     draw.text((HANDOFF_LEFT_MARGIN, 28), "LITCLOCK", font=brand_font, fill=0)

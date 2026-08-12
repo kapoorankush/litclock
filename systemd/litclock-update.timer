@@ -12,8 +12,10 @@ OnCalendar=Sun 03:00
 Persistent=true
 # 7-day randomization spreads load across the fleet so a bad release
 # can only reach devices at a rate proportional to time since cut.
-# Maintainer has up to 7 days to mark a bad release `prerelease: true`
-# before most devices have pulled it.
+# The reaction lever inside that window is the TAG, not the Release:
+# devices resolve the /tags API (github_api.sh, litclock-dev#247), so marking a
+# Release `prerelease` hides nothing — delete the bad tag or push a
+# higher one (litclock-dev#605).
 RandomizedDelaySec=7d
 
 [Install]

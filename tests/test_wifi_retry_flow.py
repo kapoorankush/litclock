@@ -119,6 +119,49 @@ class TestWiFiBanners:
         banner_region = html[banner_start:banner_end]
         assert "<script>" not in banner_region
 
+    def test_error_banner_password_advice_only_for_bad_password_class(self, monkeypatch):
+        """litclock-dev#603 — the advice line branches on the failure class
+        carried by the WifiFailure error string."""
+        import wifi_provision
+
+        monkeypatch.setattr(
+            setup_server,
+            "WIFI_CONNECT_ERROR",
+            wifi_provision.WifiFailure("Incorrect WiFi password", wifi_provision.WIFI_FAIL_BAD_PASSWORD),
+        )
+        html = setup_server._build_setup_html()
+        assert "Double-check your <strong>WiFi password</strong>" in html
+
+    def test_error_banner_neutral_advice_for_timeout_class(self, monkeypatch):
+        """The bug litclock-dev#603 closes: 'the network didn't answer in
+        time' followed by 'double-check your WiFi password' is the page
+        arguing with itself."""
+        import wifi_provision
+
+        monkeypatch.setattr(
+            setup_server,
+            "WIFI_CONNECT_ERROR",
+            wifi_provision.WifiFailure(
+                "Couldn't reach 'Net' — the network didn't answer in time.",
+                wifi_provision.WIFI_FAIL_TIMEOUT,
+            ),
+        )
+        html = setup_server._build_setup_html()
+        assert "Double-check your" not in html
+        assert "Check the message above, then try again." in html
+        # The reconnection hint survives on every class — the hotspot DID
+        # restart out from under the phone regardless of why the join failed.
+        assert "rescan the QR code" in html
+
+    def test_error_banner_classless_string_gets_neutral_advice(self, monkeypatch):
+        """A plain-str error (legacy caller, unknown source) has no evidence
+        the password was the problem — neutral advice, per the same
+        no-evidence rule the e-ink variant uses."""
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", "Setup error: something odd")
+        html = setup_server._build_setup_html()
+        assert "Double-check your" not in html
+        assert "Check the message above, then try again." in html
+
     def test_error_banner_with_literal_braces_in_error(self, monkeypatch):
         """Curly braces in error messages pass through verbatim — the
         banner is interpolated into an f-string template, not .format(),
@@ -1475,14 +1518,19 @@ class TestNoWiFiBranchSigterm:
         )
 
 
-class TestManualSsidEntry:
-    """litclock-dev#554: the hidden-SSID path through do_POST.
+class _ManualSsidHarness:
+    """Shared rig for the manual/hidden-SSID POST tests: fake
+    wifi_provision module, POST driver, thread drain. Deliberately holds no
+    tests — TestManualSsidEntry and TestManualSsidReviewHardening both
+    subclass THIS rather than each other, so neither re-runs the other's
+    cases under a second name for no coverage (litclock-dev#605 item 8 —
+    the same rule the entry class already applied to TestConnectAndTeardown,
+    then broke for its own subclass).
 
     Same fake-wifi_provision-in-sys.modules discipline as
     TestConnectAndTeardown — the background thread imports it at runtime, so
     the fake has to be installed before the POST and kept alive until the
-    thread drains. Not a subclass of it: pytest would re-run every inherited
-    test under this name for no coverage.
+    thread drains.
     """
 
     def _make_post_body(self, **overrides):
@@ -1519,10 +1567,21 @@ class TestManualSsidEntry:
         fake_wp.create_hotspot = lambda ssid=None, password=None: None
         return fake_wp
 
-    def _post(self, monkeypatch, tmp_env_file, connect_calls, scanned=None, **body):
+    def _post(
+        self,
+        monkeypatch,
+        tmp_env_file,
+        connect_calls,
+        scanned=None,
+        provisioning=True,
+        in_flight=False,
+        last_manual="",
+        connect_result=(True, None),
+        **body,
+    ):
         import sys
 
-        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", provisioning)
         monkeypatch.setattr(setup_server, "ENV_FILE", tmp_env_file)
         monkeypatch.setattr(setup_server, "HOTSPOT_SSID", "LitClock-Setup")
         monkeypatch.setattr(setup_server, "_show_connecting_splash", lambda ssid: None)
@@ -1532,17 +1591,51 @@ class TestManualSsidEntry:
         # `hidden` is now decided against what the radio actually saw, so the
         # scan set is part of the fixture rather than incidental state.
         monkeypatch.setattr(setup_server, "_WIFI_SCAN_SSIDS", frozenset(scanned or ()))
-        monkeypatch.setattr(setup_server, "WIFI_LAST_MANUAL_SSID", "")
+        monkeypatch.setattr(setup_server, "WIFI_LAST_MANUAL_SSID", last_manual)
+        if in_flight:
+            # Simulate a live connect attempt: the CAS in do_POST must turn
+            # this request away before it stores or joins anything. No thread
+            # is spawned, so skip the wait below (IN_FLIGHT never clears).
+            monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", True)
 
         sys.modules.pop("wifi_provision", None)
-        sys.modules["wifi_provision"] = self._fake_wp(connect_calls)
+        sys.modules["wifi_provision"] = self._fake_wp(connect_calls, result=connect_result)
         try:
             req = FakeRequest("POST", "/setup", self._make_post_body(**body))
             response = post_setup(make_handler(req))
-            self._wait_for_thread()
+            if not in_flight:
+                self._wait_for_thread()
             return response
         finally:
             sys.modules.pop("wifi_provision", None)
+
+
+class TestManualSsidEntry(_ManualSsidHarness):
+    """litclock-dev#554: the hidden-SSID path through do_POST."""
+
+    def test_failure_class_reaches_restore_hotspot_end_to_end(self, monkeypatch, tmp_env_file):
+        """litclock-dev#610 review: every other flow test fakes the connect
+        with a plain-string error, so the new contract at the important call
+        site — the thread assigning a WifiFailure to WIFI_CONNECT_ERROR and
+        extracting failure_class for _restore_hotspot — was pinned by
+        nothing. Drive the real object through the real thread."""
+        import wifi_provision
+
+        restore_calls = []
+        monkeypatch.setattr(
+            setup_server,
+            "_restore_hotspot",
+            lambda create_fn, failure_class=None: restore_calls.append(failure_class),
+        )
+        failure = wifi_provision.WifiFailure(
+            "Couldn't reach 'TestNetwork' — the network didn't answer in time.",
+            wifi_provision.WIFI_FAIL_TIMEOUT,
+        )
+        calls = []
+        self._post(monkeypatch, tmp_env_file, calls, connect_result=(False, failure))
+        assert calls, "connect must have been attempted"
+        assert restore_calls == ["timeout"]
+        assert setup_server.WIFI_CONNECT_ERROR is failure  # stored object, class intact
 
     def test_sentinel_plus_typed_name_joins_as_hidden(self, monkeypatch, tmp_env_file):
         """The sentinel is a form-transport artefact, never a network name.
@@ -1595,7 +1688,7 @@ class TestManualSsidEntry:
         assert calls == [("HomeWiFi", "secret123", False)]
 
     def test_sentinel_with_empty_field_is_rejected_with_a_specific_message(self, monkeypatch, tmp_env_file):
-        """"Please select a WiFi network" is wrong here — they did select
+        """ "Please select a WiFi network" is wrong here — they did select
         one. Tell them the thing they actually have to do."""
         calls = []
         response = self._post(
@@ -1667,12 +1760,12 @@ class TestManualSsidEntry:
         assert calls == [("N" * 32, "secret123", True)]
 
 
-class TestManualSsidReviewHardening(TestManualSsidEntry):
+class TestManualSsidReviewHardening(_ManualSsidHarness):
     """Second-round findings from the litclock-dev#580 review, on the POST path.
 
-    Subclasses TestManualSsidEntry only to reuse `_post` / `_fake_wp`; pytest
-    re-running the parent's cases here is accepted because these share the
-    same fixture surface and the parent class is small.
+    Subclasses the test-free harness for `_post` / `_fake_wp` — previously
+    this subclassed TestManualSsidEntry itself, re-running its nine
+    thread-spawning cases under a second name (litclock-dev#605 item 8).
     """
 
     def test_typed_name_the_radio_can_see_is_NOT_flagged_hidden(self, monkeypatch, tmp_env_file):
@@ -1823,3 +1916,85 @@ class TestManualSsidReviewHardening(TestManualSsidEntry):
         calls = []
         self._post(monkeypatch, tmp_env_file, calls, scanned={"homewifi"}, wifi_ssid="HomeWiFi")
         assert setup_server.WIFI_LAST_MANUAL_SSID == ""
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        ["Evil\x00Net", "x" * 200, "LitClock-Setup", "litclock-setup"],
+        ids=["control-char", "over-long", "own-hotspot", "own-hotspot-casefold"],
+    )
+    def test_a_rejected_typed_name_is_never_stored(self, monkeypatch, tmp_env_file, bad_value):
+        """litclock-dev#605 item 10: the remembered name is a module global
+        echoed into every captive-portal client's render. A value the server
+        just REFUSED must not land there — that includes the own-hotspot
+        refusal (which sits BELOW the shape validations), so storage happens
+        only for a join actually launched. Each rejection class is its own
+        case so one regressing can't mask another."""
+        monkeypatch.setattr(setup_server, "WIFI_LAST_MANUAL_SSID", "")
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            scanned=set(),
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: bad_value},
+        )
+        assert setup_server.WIFI_LAST_MANUAL_SSID == ""
+        assert calls == []
+
+    def test_a_rejection_preserves_the_previously_stored_name(self, monkeypatch, tmp_env_file):
+        """Behavior change pinned deliberately: before litclock-dev#606 the
+        store ran ahead of the rejections, so an empty typed submit BLANKED a
+        previously remembered good name. Post-move the rejection returns
+        first and the prior value survives — the hidden-network user who
+        fat-fingers a resubmit keeps their echo."""
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            scanned=set(),
+            last_manual="OldNet",
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: ""},
+        )
+        assert setup_server.WIFI_LAST_MANUAL_SSID == "OldNet"
+        assert calls == []
+
+    def test_normal_mode_post_never_stores_a_typed_name(self, monkeypatch, tmp_env_file):
+        """The shape validations are all PROVISIONING_MODE-gated, so a
+        normal-mode POST reaches the old store site having passed ZERO
+        checks — unbounded bytes, control characters and all (adversarial
+        /review on litclock-dev#606). The store now lives inside the
+        provisioning-only connect branch, so normal mode cannot write the
+        global at all."""
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            scanned=set(),
+            provisioning=False,
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "Evil\x00Net" + "x" * 100},
+        )
+        assert setup_server.WIFI_LAST_MANUAL_SSID == ""
+        assert calls == []
+
+    def test_a_post_that_loses_the_in_flight_race_does_not_store(self, monkeypatch, tmp_env_file):
+        """A POST that arrives while a connect attempt is live is turned away
+        by the CAS and never joins — its typed name must not become the
+        retry echo for an attempt it never made (Codex /review on
+        litclock-dev#606)."""
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            scanned=set(),
+            in_flight=True,
+            wifi_ssid=setup_server.MANUAL_SSID_VALUE,
+            **{setup_server.MANUAL_SSID_FIELD: "RacingNet"},
+        )
+        assert setup_server.WIFI_LAST_MANUAL_SSID == ""
+        assert calls == []

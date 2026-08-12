@@ -535,3 +535,100 @@ class TestSetupIncompletePoweroff:
         it was added for is complete."""
         assert 'wait_for_setup "$SERVER_PID" 1800' in content
         assert "FIRSTBOOT_SETUP_TIMEOUT" not in content
+
+
+class TestIssueBoxAlignment:
+    """litclock-dev#589 item 4 + litclock-dev#626: the /etc/issue console box
+    border must align with its content lines for EVERY credential pair the
+    create_hotspot boundary validation admits, not just the shipped defaults.
+    The box is now sized dynamically at runtime, so this test RUNS the real
+    update_issue_hotspot under bash (sudo/log/cp stubbed) instead of statically
+    re-deriving widths from the script text — a static check re-derived from
+    the template is blind to the exact runtime overflow it exists to catch."""
+
+    def _render(self, tmp_path, ssid, password, ip):
+        text = open(FIRST_BOOT_SH).read()
+        m = re.search(r"^update_issue_hotspot\(\) \{.*?^\}", text, re.S | re.M)
+        assert m, "update_issue_hotspot() not found in first-boot.sh"
+        # The regex stops at the first column-0 `}` — if the body ever gains
+        # one (or the closer is re-indented), the extraction truncates
+        # mid-heredoc and bash fails with a misattributed syntax error. The
+        # heredoc terminator inside the capture proves we got the whole
+        # function (/review).
+        assert "ISSUEEOF" in m.group(0), "extraction truncated before the heredoc terminator"
+        out = tmp_path / "issue.out"
+        harness = (
+            "log() { :; }\n"
+            "cp() { :; }\n"
+            'sudo() { if [[ "$1" == "tee" ]]; then cat > "$OUT"; else :; fi; }\n'
+            f"{m.group(0)}\n"
+            'update_issue_hotspot "$1" "$2" "$3"\n'
+        )
+        subprocess.run(
+            ["bash", "-c", harness, "issue-box-test", ssid, password, ip],
+            check=True,
+            env={**os.environ, "OUT": str(out)},
+            timeout=10,
+        )
+        return out.read_text()
+
+    def _assert_box_aligned(self, rendered):
+        box_lines = [ln for ln in rendered.splitlines() if ln.strip()[:1] in tuple("╔╠╚║")]
+        assert len(box_lines) == 7, f"expected a 7-line box, got {len(box_lines)}: {box_lines}"
+        widths = {len(ln) for ln in box_lines}
+        assert len(widths) == 1, f"box lines are not equal width: {sorted(widths)} in\n{rendered}"
+
+    def test_default_credentials_box_is_aligned_and_45_wide(self, tmp_path):
+        # The shipped path (14-char default SSID, 8-char password, IPv4 URL)
+        # must render the historical 45-col interior byte-for-byte.
+        rendered = self._render(tmp_path, "LitClock-Setup", "Ab3xYz9q", "10.42.0.1")
+        self._assert_box_aligned(rendered)
+        assert "║  LitClock's WiFi network: LitClock-Setup" in rendered
+        border = re.search(r"╔(═+)╗", rendered)
+        assert border and len(border.group(1)) == 45
+
+    def test_max_valid_credentials_grow_the_box_without_breaking_it(self, tmp_path):
+        # The widest pair validate_hotspot_credentials admits: a 32-char SSID
+        # and a 63-char password. The old fixed %-16s/%-15s fields overflowed
+        # the right border on exactly these; the box must grow instead —
+        # untruncated, because this banner exists so a tester can read the
+        # EXACT credentials.
+        ssid = "S" * 32
+        password = "p" * 63
+        rendered = self._render(tmp_path, ssid, password, "10.42.0.1")
+        self._assert_box_aligned(rendered)
+        assert ssid in rendered
+        assert password in rendered
+
+    def test_odd_width_title_centering_stays_aligned(self, tmp_path):
+        # A 62-char password makes interior 92 and interior-title 73 (odd), so
+        # pad_r = pad_l + 1 — the asymmetric centering branch no other case
+        # exercises. A refactor to symmetric padding would misalign the title
+        # row only on odd diffs and pass every even-diff test (/review).
+        rendered = self._render(tmp_path, "LitClock-Setup", "p" * 62, "10.42.0.1")
+        self._assert_box_aligned(rendered)
+
+    def test_first_growth_step_past_the_floor(self, tmp_path):
+        # 17-char SSID -> content 44 + 2 = 46, one past the 45 floor: the
+        # boundary between "floor holds" and "box grows" (/review).
+        rendered = self._render(tmp_path, "S" * 17, "Ab3xYz9q", "10.42.0.1")
+        self._assert_box_aligned(rendered)
+        border = re.search(r"╔(═+)╗", rendered)
+        assert border and len(border.group(1)) == 46
+
+    def test_long_ip_grows_the_box_via_the_url_line(self, tmp_path):
+        # The old %-30s URL field was the one surface with NO overflow guard
+        # (litclock-dev#626 item 3). Growth must also be drivable by the ip
+        # argument alone, not just the credential lines.
+        rendered = self._render(tmp_path, "LitClock-Setup", "Ab3xYz9q", "fe80::1234:5678:9abc:def0")
+        self._assert_box_aligned(rendered)
+        assert "http://fe80::1234:5678:9abc:def0:8080" in rendered
+
+    def test_backslash_password_is_doubled_for_agetty(self, tmp_path):
+        # agetty expands \d, \l, \e... in /etc/issue, so a backslash-bearing
+        # credential (printable ASCII — validator admits it) must be written
+        # DOUBLED or the console displays a different password than the AP
+        # uses, and \e is terminal-escape injection (/review, three passes).
+        rendered = self._render(tmp_path, "LitClock-Setup", "pa\\ss\\word1", "10.42.0.1")
+        assert "pa\\\\ss\\\\word1" in rendered, "backslashes must be doubled so getty shows the literal"
+        self._assert_box_aligned(rendered)
