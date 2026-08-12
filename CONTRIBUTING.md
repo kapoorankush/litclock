@@ -2,6 +2,54 @@
 
 This document outlines the development workflow and practices for this project.
 
+## Licensing of contributions
+
+LitClock's files do not all carry the same license, so a contribution arrives
+under whichever one covers the material it touches:
+
+- **Code, scripts, tests, configuration, and documentation prose** — the
+  [MIT License](LICENSE).
+- **The quote corpus (`image-gen/litclock_annotated.csv`), the tooling sample
+  `image-gen/gold_set_192.csv`, the images generated from the corpus, and any
+  other corpus-derived material** — [CC BY-NC-SA
+  4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/), because the corpus
+  derives from CC BY-NC-SA material and ShareAlike carries forward.
+- **Bundled third-party assets keep the license they arrived with** — the case
+  STLs in `3d-models/` (CC BY), the weather icons in `icons/` (CC BY-SA 4.0),
+  the fonts (OFL-1.1), and documentation that reproduces material from those
+  sources. Changing one of those means contributing under that asset's
+  license, not MIT. [NOTICE.md](NOTICE.md) is the full inventory.
+
+By opening a pull request you confirm that you have the right to contribute the
+material in it, and you license it under the terms above — to the project and
+to everyone who receives the project. Nothing here transfers your copyright:
+you keep it, and the license you grant is non-exclusive.
+
+### Quote and translation contributions
+
+Translations are welcome — the corpus is built to be localized, and
+[#19](https://github.com/kapoorankush/litclock/issues/19) tracks that work. Two things are worth getting right before
+you start, because both are cheap to check once and effectively unauditable
+across thousands of rows later.
+
+**Name the edition you took a quote from, in the pull request.** Which edition
+a row came from is the one fact nobody can recover from a CSV diff.
+
+**A quote's copyright status is not the book's.** A translation is protected
+separately from the work it translates, and is usually owned by the translator
+or their publisher — so a public-domain novel does not put a modern translation
+of it into the public domain, and permission from a translator may not be
+theirs to give. A row quoting an old novel is a short excerpt of a long
+out-of-copyright work; a row taken from a modern translation is the whole of
+that translator's work on that passage, which is why the two are not the same
+ask. Contribute a translation you made yourself from a source you may lawfully
+translate, or one from a public-domain or openly-licensed edition.
+
+**The project's limit on in-copyright works:** short attributed excerpts are
+what this corpus is built on and what gets accepted; whole passages do not.
+That is a house rule rather than a legal safe harbour — no jurisdiction makes
+length alone the test.
+
 ## Current Practices (Tier 1)
 
 ### Branching Strategy
