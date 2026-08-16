@@ -123,7 +123,8 @@ sudo rm -f /etc/litclock/.setup-complete && sudo systemctl enable litclock-first
 | 1 | `sudo ./scripts/prepare-for-cloning.sh` on a fully working Pi, answer "n" to WiFi prompt | env.sh defaults restored, certs + cache + history cleared, WiFi preserved | [ ] |
 | 2 | `sudo ./scripts/prepare-for-cloning.sh`, answer "y" to WiFi prompt | Same as above, plus all NM connections removed | [ ] |
 | 3 | After running: clone SD with `dd`, write to a new card, boot the new card | New card goes through first-boot setup (welcome screen, hotspot, captive portal) | [ ] |
-| 4 | After running: original Pi still boots cleanly into setup mode | First-boot service runs on next boot | [ ] |
+| 4 | After running WITHOUT `--no-poweroff`: the Pi powers itself off | litclock-dev#660 — no boot can occur between the key removal and imaging | [ ] |
+| 5 | Do NOT boot the prepared master to "check" it. A single boot re-mints the setup-WiFi key the script just removed, and every clone taken afterwards carries it (litclock-dev#660). Use `--no-poweroff` when you need to inspect. | Key stays absent | [ ] |
 
 ---
 

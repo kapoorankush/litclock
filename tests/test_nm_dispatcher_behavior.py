@@ -416,6 +416,121 @@ class TestAddressesThatMustNotBeBelieved:
         assert harness.recorded_ip is None
         assert LINK_LOCAL_IP not in harness.journal
 
+    @pytest.mark.parametrize("addr", [LINK_LOCAL_IP, ""], ids=["link-local", "no-address-at-all"])
+    def test_a_repeated_unusable_address_coalesces_like_a_real_one(self, harness, addr):
+        """litclock-dev#667 — the guard that was missing, and why the bug shipped.
+
+        The test above asserts `recorded_ip is None` and never looks at
+        `rendered`, so its observation window did not contain the behaviour
+        that regressed. Blanking the address removed it from the same-IP
+        short-circuit's coverage (that gate reads `[ -n "$CURRENT_IP" ]`), so
+        every repeat event fell through to a full e-ink render.
+
+        A clock whose DHCP is permanently broken sits in exactly this state and
+        NM keeps retrying, so this is the #309 /review A4 failure -- unbounded
+        litclock.service starts, each holding the SPI bus and burning panel
+        cycles -- on a device with a finite panel budget and no UPS.
+
+        Three identical events must render at most once, the same as three
+        identical events at a real address.
+        """
+        harness.complete_handoff()
+
+        for _ in range(3):
+            result = harness.run_dispatcher(action="dhcp4-change", ip=addr)
+            assert result.returncode == 0, result.stderr
+
+        # `rendered` is derived from the systemctl log, so count invocations
+        # across the three events rather than resetting a flag.
+        n = harness.systemctl_invocations.count("litclock.service")
+        assert n == 1, (
+            f"litclock-dev#667: three identical events at {addr!r} queued {n} renders. "
+            "0 means coalescing swallowed the transition (the first event after a "
+            "change must repaint); >1 means it did not coalesce at all."
+        )
+        assert harness.recorded_ip is None, "and it still must not be recorded as a believable address"
+
+    @pytest.mark.parametrize("addr", [LINK_LOCAL_IP, ""], ids=["link-local", "no-address-at-all"])
+    def test_recovering_to_the_same_address_still_repaints(self, harness, addr):
+        """litclock-dev#667 — regaining the address is as much news as losing it.
+
+        The panel spent the outage advertising a QR for an address that did not
+        work; the dispatcher render exists to close that window rather than
+        wait up to 60s for the next minute tick. An earlier version of this fix
+        skipped the observed write on an empty address, so the marker kept the
+        stale pre-outage IP and the recovery event matched it and was swallowed
+        — for the no-address flavour only, while link-local recovered correctly.
+        """
+        harness.complete_handoff()
+        harness.run_dispatcher(action="dhcp4-change", ip=LAN_IP)
+        harness.run_dispatcher(action="dhcp4-change", ip=addr)
+        before = harness.systemctl_invocations.count("litclock.service")
+
+        harness.run_dispatcher(action="dhcp4-change", ip=LAN_IP)
+
+        after = harness.systemctl_invocations.count("litclock.service")
+        assert after == before + 1, "recovering to the previous address must repaint"
+
+    def test_a_planted_observed_marker_cannot_suppress_the_diagnostics_write(self, harness):
+        """litclock-dev#667 — /run/litclock is 0755 pi pi, so an unprivileged writer can
+        drop a plain (non-symlink) file at the coalescing marker. The #387 C2
+        symlink guards do not address CONTENT, and this file gates an early
+        exit that now sits above the $MARKER write.
+
+        Without the second clause in that exit, planting the current LAN IP
+        here suppresses the last-rendered-ip write for the life of the boot,
+        read_lan_ip returns nothing, and the clock shows a permanent false
+        "Connection issue" — litclock-dev#645's exact symptom, reachable by a file write.
+        """
+        harness.complete_handoff()
+        (harness.run / "last-observed-ip").write_text(f"{LAN_IP}\n")
+
+        for _ in range(3):
+            harness.run_dispatcher(action="dhcp4-change", ip=LAN_IP)
+
+        assert harness.recorded_ip == LAN_IP, (
+            "a pi-writable coalescing file must never gate the diagnostics write"
+        )
+
+    def test_a_deleted_marker_self_heals_on_the_next_event(self, harness):
+        """The same clause, without an attacker. Losing $MARKER while the
+        observed marker survives must not leave diagnostics blind until the
+        address happens to change."""
+        harness.complete_handoff()
+        harness.run_dispatcher(action="dhcp4-change", ip=LAN_IP)
+        harness.marker.unlink()
+
+        harness.run_dispatcher(action="dhcp4-change", ip=LAN_IP)
+
+        assert harness.recorded_ip == LAN_IP, "the believable-address marker must self-heal"
+
+    def test_drops_a_symlink_planted_at_the_observed_marker(self, harness, tmp_path):
+        """#387 C2 applies to both markers; only $MARKER had a test."""
+        victim = tmp_path / "victim"
+        victim.write_text("do not touch\n")
+        observed = harness.run / "last-observed-ip"
+        observed.symlink_to(victim)
+        harness.complete_handoff()
+
+        harness.run_dispatcher(action="dhcp4-change", ip=LAN_IP)
+
+        assert victim.read_text() == "do not touch\n", "root must not follow a planted symlink"
+        assert not observed.is_symlink(), "the symlink must be dropped"
+
+    def test_a_link_local_after_a_real_address_still_renders_once(self, harness):
+        """Coalescing must not swallow the transition. Losing the real address
+        IS news -- the panel is showing a QR for an address that no longer
+        works -- so the first blanked event after a change still repaints."""
+        harness.complete_handoff()
+        harness.run_dispatcher(action="dhcp4-change", ip=LAN_IP)
+        before = harness.systemctl_invocations.count("litclock.service")
+
+        result = harness.run_dispatcher(action="dhcp4-change", ip=LINK_LOCAL_IP)
+
+        assert result.returncode == 0, result.stderr
+        after = harness.systemctl_invocations.count("litclock.service")
+        assert after == before + 1, "the first event after losing a routable address must repaint"
+
     def test_a_link_local_still_counts_as_network_data_collected(self, harness):
         """Deliberate asymmetry: unlike the hotspot, this IS a real event on a
         real SSID, so the section is collected — it just has no believable
@@ -667,20 +782,29 @@ def _read_lan_ip_like_production(harness: Harness) -> str | None:
     return read_lan_ip(str(harness.marker))
 
 
-def test_creates_the_run_dir_pi_owned_not_root_owned(tmp_path):
+@pytest.mark.parametrize(
+    "addr", [LAN_IP, LINK_LOCAL_IP, ""], ids=["real", "link-local", "no-address-at-all"]
+)
+def test_creates_the_run_dir_pi_owned_not_root_owned(tmp_path, addr):
     """tmpfiles.d declares /run/litclock as 0755 pi pi at sysinit, so this call
     is defensive — but the script runs as ROOT and, since the gate moved, runs
     EARLIER in boot. On any boot where the dir is genuinely absent, a bare
     `mkdir -p` would create it root:root and every pi-side writer would fail
     silently for the rest of that boot: the current-quote file and LKG
     heartbeat, update_state, the weather cache, the gift-message write.
+
+    litclock-dev#667 parameterised this. It previously ran only with a believable
+    address, so its observation window contained just one of the two creation
+    sites — and on a clock with permanently broken DHCP the believable-address
+    path never runs at all, making the other site the ONLY creator for the life
+    of the boot.
     """
     h = Harness(tmp_path)
     for child in sorted(h.run.iterdir()):
         child.unlink()
     h.run.rmdir()
 
-    result = h.run_dispatcher(ip=LAN_IP)
+    result = h.run_dispatcher(ip=addr)
 
     assert result.returncode == 0, result.stderr
     assert h.run.is_dir(), "the dispatcher must create /run/litclock when it is missing"
