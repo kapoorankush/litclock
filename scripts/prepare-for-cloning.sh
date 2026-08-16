@@ -25,6 +25,8 @@ fi
 
 INSTALL_DIR="/home/pi/litclock"
 CONFIG_DIR="/etc/litclock"
+# Same override convention as reset-setup.sh and src/wifi_provision.py.
+STATE_DIR="${LITCLOCK_STATE_DIR:-/var/lib/litclock}"
 
 # Source shared state-file helpers for atomic_write_env_sh (litclock-dev#274) — the
 # env.sh writer-lock that interoperates with src/config.py's fcntl.flock
@@ -163,6 +165,57 @@ echo -e "${GREEN}done${NC}"
 # Step 7: Clear SSL certificates (will be regenerated on first boot)
 echo -n "Clearing SSL certificates... "
 rm -rf "$INSTALL_DIR/.certs" 2>/dev/null || true
+echo -e "${GREEN}done${NC}"
+
+# Step 8: Clear the persisted setup-hotspot password (litclock-dev#620).
+#
+# This script's whole purpose is cloning ONE prepared card into MANY cards for
+# other people (docs/sd-card-cloning.md, "Creating SD Cards for Friends &
+# Family"), and its precondition is a fully provisioned working clock — which
+# means /var/lib/litclock/hotspot-password exists by then. Since #620 that file
+# is PERMANENT (a plain factory reset deliberately preserves it), so without
+# this step every clone would broadcast `LitClock-Setup` with the SAME WPA2 key,
+# known to whoever made the cards and never rotated on any recipient device.
+#
+# Same reasoning as the WiFi profiles, bash history and SSL certs cleared
+# above: anything that identifies or authenticates THIS device must not ride
+# the image. The glob catches staging files orphaned by a power cut between
+# mkstemp and os.replace, each holding a real past password.
+echo -n "Clearing setup-hotspot password... "
+# `|| true` under the `set -e` at line 12 (litclock-dev#649). Without it, a genuinely
+# failing `rm` terminates the script ON THIS LINE, so the `if` below never
+# runs and none of its three RED lines ever print — the warning written
+# specifically to stop someone cloning a compromised card was unreachable in
+# exactly the situation it exists for. The existence check that follows is the
+# real gate; `rm`'s exit status is redundant with it. Unlike the unguarded
+# `rm` at line 61, this one has a failure branch to reach, which is the whole
+# difference: there, aborting IS the handling.
+#
+# `chattr +i` is the easy way to reproduce, but the realistic cause is a
+# degrading SD card remounting read-only, or ownership drift on $STATE_DIR —
+# at the exact moment someone is preparing cards to hand to other people.
+#
+# rm's stderr is captured rather than discarded so the failure branch can name
+# the CAUSE. The two realistic ones need opposite remedies — "Read-only file
+# system" means the card is dying, "Operation not permitted" means ownership
+# drift — and an operator told only "could not remove" cannot tell them apart.
+_RM_ERR=$(rm -f "$STATE_DIR/hotspot-password" "$STATE_DIR"/.hotspot-password.* 2>&1 >/dev/null) || true
+# `-L` alongside `-e` because `-e` FOLLOWS symlinks and is false for a dangling
+# one — so a failed unlink of a dangling symlink at this path would have printed
+# `done`. The invariant this step needs is "no entry survives at the password
+# path", not "no readable file survives"; a surviving entry means the removal
+# did not do what it claimed, whatever it points at. The glob half needs no
+# equivalent: `compgen -G` matches NAMES, so it already sees a dangling link.
+if [[ -e "$STATE_DIR/hotspot-password" || -L "$STATE_DIR/hotspot-password" ]] ||
+    compgen -G "$STATE_DIR/.hotspot-password.*" >/dev/null 2>&1; then
+    echo -e "${RED}FAILED${NC}"
+    echo -e "${RED}Could not remove the setup-WiFi password from $STATE_DIR.${NC}"
+    if [[ -n "$_RM_ERR" ]]; then
+        echo -e "${RED}${_RM_ERR}${NC}"
+    fi
+    echo -e "${RED}Do NOT clone this card — every copy would share a key you know.${NC}"
+    exit 1
+fi
 echo -e "${GREEN}done${NC}"
 
 echo ""

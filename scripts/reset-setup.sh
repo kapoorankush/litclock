@@ -22,6 +22,9 @@ NC='\033[0m' # No Color
 
 INSTALL_DIR="/home/pi/litclock"
 CONFIG_DIR="/etc/litclock"
+# Same override convention as the other scripts (wifi-watchdog, bootcheck,
+# lkg-record, update) and as src/wifi_provision.py's STATE_DIR.
+STATE_DIR="${LITCLOCK_STATE_DIR:-/var/lib/litclock}"
 
 # Source shared state-file helpers for atomic_write_env_sh (#274) — the
 # env.sh writer-lock that interoperates with src/config.py's fcntl.flock
@@ -520,9 +523,48 @@ if [[ "$GIFT_MODE" == "true" ]]; then
         echo -e "${YELLOW}  sudo $0 --gift-mode${NC}"
         exit 1
     fi
+    # litclock-dev#620: rotate the setup-hotspot password for the new owner.
+    #
+    # It deliberately SURVIVES a plain reset and a WiFi reset — there the
+    # motivating user is the same person re-provisioning their own clock, whose
+    # phone already has this network saved, and a changed password is a trap
+    # with no user-discoverable recovery on Android ("No Internet Access", no
+    # password field, and a QR scan does not override the saved entry).
+    #
+    # Gift mode is the ONE exception: the recipient's phone has nothing saved,
+    # and the gifter must not keep a working key to the recipient's setup
+    # network. Placed AFTER the #393 abort gate on purpose — a gift prep that
+    # fails leaves the device with its CURRENT owner, and rotating there would
+    # drop that owner into the very trap this feature removes.
+    #
+    # Fails CLOSED, matching the env.sh precedent above: `rm -f` returns 0 for
+    # a missing file but not for a read-only remount (the Pi's most common
+    # degradation), and the script has no `set -e`, so an unverified delete
+    # would print "done" and ship the gifter's key. The temp glob catches
+    # staging files orphaned by a SIGKILL/power-cut between mkstemp and
+    # os.replace, each of which holds a real past PSK.
+    echo -n "Regenerating hotspot password for the new owner... "
+    rm -f "$STATE_DIR/hotspot-password" "$STATE_DIR"/.hotspot-password.* 2>/dev/null
+    if [[ -e "$STATE_DIR/hotspot-password" ]] || compgen -G "$STATE_DIR/.hotspot-password.*" >/dev/null 2>&1; then
+        echo -e "${RED}FAILED${NC}"
+        echo -e "${RED}========================================${NC}"
+        echo -e "${RED}  Gift prep FAILED — do NOT ship this device${NC}"
+        echo -e "${RED}========================================${NC}"
+        echo -e "${RED}The setup-WiFi password could not be removed from $STATE_DIR.${NC}"
+        echo -e "${RED}Shipping now would hand the recipient a network key you still know.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}done${NC}"
+
     # litclock-dev#528 — shared handoff gate; see disable_ssh_for_handoff above.
-    # Deliberately AFTER the env-wipe-failed gate: on a failed prep the
-    # device stays on and the owner may still need SSH to fix it.
+    # Deliberately AFTER the env-wipe-failed gate: on a failed prep the device
+    # stays on and the owner may still need SSH to fix it.
+    #
+    # Also deliberately AFTER the litclock-dev#620 rotation above, for the same
+    # reason: that block fails CLOSED and can exit 1, which leaves the device
+    # with its CURRENT owner. Disabling SSH first would strip that owner's
+    # remote access on the exact path where they still need it to recover.
+    # SSH-off is the last thing before poweroff.
     disable_ssh_for_handoff
 
     # Marker was written earlier (pre-stop) so shutdown-splash has already

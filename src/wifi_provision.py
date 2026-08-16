@@ -24,6 +24,7 @@ import secrets
 import string
 import subprocess
 import sys
+import tempfile
 import time
 
 from log import setup_logging
@@ -221,6 +222,18 @@ def validate_hotspot_credentials(ssid, password):
         return "SSID must be printable ASCII (0x20-0x7E) so every surface renders the same name"
     if len(ssid) > HOTSPOT_SSID_MAX_CHARS:
         return f"SSID is {len(ssid)} characters; 802.11 caps SSIDs at {HOTSPOT_SSID_MAX_CHARS} octets"
+    return _validate_hotspot_password(password)
+
+
+def _validate_hotspot_password(password):
+    """The password half of validate_hotspot_credentials, split out so the
+    persisted-password reader (litclock-dev#620) can re-check a value from disk
+    without inventing a second, drifting copy of these bounds — and without
+    needing an SSID it does not have an opinion about.
+
+    Returns None when valid, else a log-safe error string (never echoes the
+    password itself).
+    """
     if not password:
         # Guard None/empty explicitly — this reads as public API and must
         # return an error string, never raise, for a future direct caller.
@@ -233,6 +246,186 @@ def validate_hotspot_credentials(ssid, password):
     if _outside_printable_ascii(password):
         return "password contains characters outside printable ASCII; WPA2-PSK passphrases are printable ASCII"
     return None
+
+
+# Persisted per-device hotspot password (litclock-dev#620). Before this, every
+# provisioning cycle minted a fresh password under the SAME SSID, so a phone
+# that had joined once held a saved entry whose credential no longer worked.
+# Hardware-measured 2026-08-12: iOS surfaces "Incorrect password" and offers a
+# password field (recoverable), but Android reports "No Internet Access",
+# never mentions the password, never offers a field, and a QR scan does NOT
+# override the saved entry — leaving no user-discoverable recovery short of
+# "Forget This Network", which the non-technical recipient will not find.
+#
+# WHO RUNS THIS: litclock-firstboot.service is `User=pi`, so the shipped
+# writer, the file owner and the directory owner are all uid pi. (An earlier
+# draft of this change asserted root; that was wrong and the guards below are
+# commented accordingly.)
+#
+# NOTE the env vars are read at IMPORT time, unlike the shell scripts which
+# re-read them per process. Tests and callers override the module attribute
+# (which _load_or_create_hotspot_password resolves at call time), not the env.
+STATE_DIR = os.environ.get("LITCLOCK_STATE_DIR", "/var/lib/litclock")
+HOTSPOT_PASSWORD_FILE = os.environ.get("LITCLOCK_HOTSPOT_PASSWORD_FILE", os.path.join(STATE_DIR, "hotspot-password"))
+# Staging prefix for the atomic write. Shared with the reset/clone scripts,
+# which must sweep orphans matching it — a SIGKILL between mkstemp and
+# os.replace leaves a 0600 file holding a real past PSK.
+HOTSPOT_PASSWORD_TMP_PREFIX = ".hotspot-password."
+
+
+def _read_persisted_password(path):
+    """Return the stored hotspot password, or None if there isn't a usable one.
+
+    O_NOFOLLOW|O_NONBLOCK is hardening against a hostile FILE, not a privilege
+    boundary: the reader runs as pi and pi owns the 0755 directory, so pi could
+    equally rewrite the file directly. What these flags do buy is that a
+    symlink planted at this path is refused rather than read through (which
+    would hoist up to 63 bytes of some other file onto the e-ink and into a
+    join QR), and that a planted FIFO cannot wedge the open forever — which
+    would hang provisioning and leave the device with no setup AP at all
+    (#497 TOCTOU family).
+
+    Never raises: every failure degrades to "no usable stored password".
+    Provisioning must never be blocked by the persistence layer.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        # The normal first-ever-hotspot case. Not a warning.
+        logging.info("No persisted hotspot password at %s — minting the device's first one", path)
+        return None
+    except PermissionError as e:
+        # Distinct from a corrupt file, and worth shouting about: the file
+        # EXISTS and we simply cannot read it (typically a root-owned copy left
+        # by a maintainer running the CLI under sudo, since the shipped writer
+        # is pi). We fall through to minting a replacement because refusing
+        # would leave the device with no setup AP — but that rotation is
+        # exactly the stale-credential trap #620 exists to remove, so it must
+        # never be silent.
+        logging.error(
+            "Hotspot password %s exists but is unreadable (%s) — minting a REPLACEMENT. "
+            "Any phone that saved this network will fail to rejoin; fix the file's ownership.",
+            path,
+            e,
+        )
+        return None
+    except OSError as e:
+        logging.warning("Could not open persisted hotspot password %s (%s) — regenerating", path, e)
+        return None
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8", errors="strict") as fh:
+            # Bounded read: a corrupt/huge file must not be slurped whole. The
+            # cap is well past HOTSPOT_PASSWORD_MAX_CHARS so a legitimate value
+            # is never truncated into a DIFFERENT valid password.
+            stored = fh.read(HOTSPOT_PASSWORD_MAX_CHARS * 4 + 2)
+            # Tighten a pre-existing loose mode on the fd we already hold (no
+            # TOCTOU). Without this the 0600 promise only ever held for files
+            # THIS code created — a 0644 file from an older install, a restore,
+            # or a hand edit would be accepted and left world-readable forever.
+            try:
+                mode = os.fstat(fh.fileno()).st_mode & 0o777
+                if mode != 0o600:
+                    os.fchmod(fh.fileno(), 0o600)
+                    logging.warning("Tightened hotspot password %s from %o to 0600", path, mode)
+            except OSError as e:
+                logging.warning("Could not tighten permissions on %s (%s)", path, e)
+    except (OSError, UnicodeDecodeError) as e:
+        logging.warning("Could not read persisted hotspot password %s (%s) — regenerating", path, e)
+        return None
+    return stored.strip() or None
+
+
+def _persist_password(path, password):
+    """Write the password 0600, atomically and durably. Returns True on success.
+
+    Best-effort by design: a read-only or full filesystem must NOT stop the
+    clock being provisioned. On failure the caller keeps the in-memory value,
+    so this cycle works and the next one regenerates — degraded to the
+    pre-#620 behaviour rather than broken.
+
+    fsync of both the file and its directory is NOT optional here even though
+    it costs a flash write: without it a power cut during provisioning (one of
+    the two scenarios this whole change exists for) can lose a password the
+    phone has ALREADY saved, reproducing the exact Android dead-end. The cost
+    is one sync per device lifetime — this path writes only when the file is
+    absent or unusable, not on every cycle.
+    """
+    directory = os.path.dirname(path) or "."
+    tmp = None
+    try:
+        os.makedirs(directory, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix=HOTSPOT_PASSWORD_TMP_PREFIX)
+        try:
+            # chmod BEFORE the write so the secret is never briefly readable
+            # (mkstemp is already 0600, but assert it rather than inherit it).
+            os.fchmod(fd, 0o600)
+            fh = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:
+            # fdopen never took ownership of the fd — close it ourselves or it
+            # leaks for the process lifetime.
+            os.close(fd)
+            raise
+        with fh:
+            fh.write(password + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        tmp = None
+        # Durability of the rename itself lives in the DIRECTORY entry.
+        try:
+            dir_fd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError as e:
+            logging.warning("Could not fsync %s after persisting the hotspot password (%s)", directory, e)
+        return True
+    except OSError as e:
+        logging.warning("Could not persist hotspot password to %s (%s) — this cycle only", path, e)
+        return False
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _load_or_create_hotspot_password(path=None):
+    """Read-or-create the device's persistent hotspot password.
+
+    Resolved at CALL time so tests (and the CLI) can point
+    HOTSPOT_PASSWORD_FILE somewhere else without import-order games.
+
+    The returned value is always the one that is actually ON DISK when a write
+    succeeded. That post-condition is the whole invariant: if the AP were
+    brought up with a password the file does not hold, the next cycle would
+    strand the phone — #620 all over again, caused by the fix for #620.
+    """
+    path = path or HOTSPOT_PASSWORD_FILE
+    stored = _read_persisted_password(path)
+    if stored is not None:
+        error = _validate_hotspot_password(stored)
+        if error is None:
+            return stored
+        # Do NOT echo the value — it is a secret even when malformed.
+        logging.warning("Persisted hotspot password at %s is unusable (%s) — regenerating", path, error)
+    password = _generate_password()
+    if not _persist_password(path, password):
+        logging.error(
+            "Hotspot password could not be stored at %s — this cycle only. The next provisioning "
+            "will mint a different one, so a phone that joins now may fail to rejoin later (#620).",
+            path,
+        )
+        return password
+    # Re-read: if a concurrent writer won the replace, adopt THEIR value so the
+    # live AP and the persisted file can never disagree.
+    winner = _read_persisted_password(path)
+    if winner is not None and _validate_hotspot_password(winner) is None and winner != password:
+        logging.warning("Another writer won the hotspot-password race at %s — adopting the stored value", path)
+        return winner
+    return password
 
 
 _READY_STATES = {"disconnected", "connected", "connecting"}
@@ -464,7 +657,10 @@ def create_hotspot(ssid=DEFAULT_SSID, password=None):
         dict with 'ssid', 'password', 'ip' on success, None on failure
     """
     if password is None:
-        password = _generate_password()
+        # litclock-dev#620: read-or-create, so the SSID and its credential stay
+        # in lockstep across provisioning cycles. An explicit password= still
+        # wins, which is what the --password CLI flag and the QA lab rely on.
+        password = _load_or_create_hotspot_password()
 
     # Reject out-of-spec credentials before ANY side effect (no teardown, no
     # captive-portal config, no nmcli) — a rejected pair must leave the system

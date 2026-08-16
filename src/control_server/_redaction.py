@@ -66,6 +66,68 @@ _PSK_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
+# nmcli takes credentials as SPACE-separated argv tokens (`… password <v>`,
+# `… psk <v>`), never KEY=VALUE — so _PSK_RE's mandatory `[:=]` misses them
+# completely. That matters because `pi` has NOPASSWD sudo on the image, sudo
+# writes the FULL argv to its command-audit line, journald ships persistent,
+# and the Diagnostics support bundle exports that journal for the firstboot
+# unit. An 8-char hotspot PSK also sits far below _LONG_TOKEN_RE's 40-char
+# floor, so nothing else caught it either: verified empirically that a real
+# sudo audit line came back from redact_text() with the password intact.
+#
+# This was tolerable while the hotspot password was regenerated every cycle
+# (the leaked value was dead on arrival). litclock-dev#620 makes it the
+# device's PERSISTENT setup-network key, which turns a transient leak into a
+# durable one in a file users attach to GitHub issues — so the filter has to
+# learn the argv form.
+#
+# Deliberately NOT solved by relaxing _PSK_RE's `[:=]` to also accept
+# whitespace: that would redact the next word after any prose mention of
+# "password" ("the password is wrong" -> "the password <REDACTED> wrong").
+# Scoped instead to lines that actually invoke nmcli.
+_NMCLI_SECRET_ARG_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?i)(\b(?:password|psk|wifi-sec\.psk|802-11-wireless-security\.psk)\s+)(\S+)"
+)
+
+# Line-scope guard: an nmcli credential argument only ever appears on a line
+# that is invoking nmcli against wifi/connection objects. Requiring one of
+# these keeps narrative log lines that merely mention nmcli out of scope.
+_NMCLI_ARGV_CONTEXT: Final[frozenset[str]] = frozenset({"wifi", "connection", "con-name", "hotspot"})
+
+# Value-shape guard for the residual false positive: on an in-scope line, a
+# sentence like "nmcli wifi connect failed, the password was rejected" would
+# otherwise redact the auxiliary verb and make the log unreadable — which
+# defeats the point of shipping a support bundle at all. A PSK is never one
+# of these words (WPA2 requires 8+ chars, and none of these reach 8).
+_NOT_A_SECRET: Final[frozenset[str]] = frozenset(
+    {"was", "is", "were", "are", "will", "would", "has", "had", "must", "should", "may", "might", "does", "did", "can"}
+)
+
+
+def _nmcli_arg_replace(m: re.Match[str]) -> str:
+    if m.group(2).strip(".,;:").lower() in _NOT_A_SECRET:
+        return m.group(0)
+    return f"{m.group(1)}{REDACTED_TOKEN}"
+
+
+def _redact_nmcli_argv(text: str) -> str:
+    """Redact space-separated nmcli credential arguments.
+
+    Scoped per line, and only on lines that actually invoke nmcli against a
+    wifi/connection object — see the guards above for why both narrowings
+    exist.
+    """
+    if "nmcli" not in text.lower():
+        return text
+    out = []
+    for line in text.split("\n"):
+        low = line.lower()
+        if "nmcli" in low and any(ctx in low for ctx in _NMCLI_ARGV_CONTEXT):
+            line = _NMCLI_SECRET_ARG_RE.sub(_nmcli_arg_replace, line)
+        out.append(line)
+    return "\n".join(out)
+
+
 def _psk_replace(m: re.Match[str]) -> str:
     """Replacement helper: keep the ``KEY=`` prefix, drop the value, keep
     surrounding quotes if present so the redacted form is still valid
@@ -183,6 +245,10 @@ def redact_text(text: str) -> str:
 
     out = _SSH_RE.sub(REDACTED_TOKEN, text)
     out = _PSK_RE.sub(_psk_replace, out)
+    # nmcli's space-separated argv form (litclock-dev#620 /review) — must run
+    # while the value is still whole, i.e. before the coordinate and
+    # long-token passes rewrite anything inside it.
+    out = _redact_nmcli_argv(out)
     out = _GH_TOKEN_RE.sub(REDACTED_TOKEN, out)
     # Round coordinate matches to 2dp inline instead of redacting outright —
     # the helper still wants to see "user is in Texas" without leaking the
