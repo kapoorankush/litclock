@@ -76,6 +76,21 @@ fi
 # Same rejection the two QR producers already apply before encoding a URL,
 # kept in the same order: src/literary_clock.py (_resolve_lan_ip) and
 # src/control_server/handoff.py.
+# litclock-dev#667: keep the OBSERVED address before blanking. Coalescing and recording
+# answer two different questions and must not share one variable:
+#
+#   "have I already acted on this exact address?"  -> the observed value
+#   "what address should diagnostics believe?"     -> the blanked value
+#
+# Collapsing them is what broke: the same-IP short-circuit below is gated on
+# `[ -n "$CURRENT_IP" ]`, so a blanked link-local failed the gate, never
+# reached `exit 0`, and fell through to a full e-ink render. Every single
+# dhcp4-change on a clock with broken DHCP repainted the panel — measured
+# three renders for three identical events where a real address produces one.
+# That is exactly the unbounded-render / SPI-contention failure the #309
+# /review A4 guard below exists to prevent, and litclock-dev#645 reintroduced it by
+# adding the blanking without extending the short-circuit to cover it.
+RAW_IP="${CURRENT_IP:-}"
 case "${CURRENT_IP:-}" in
     169.254.*|127.*) CURRENT_IP="" ;;
 esac
@@ -126,6 +141,27 @@ fi
 # each hardcode it, and the LITCLOCK_DIAG_LAST_IP_PATH override names it).
 # Since litclock-dev#645 it means "last address RECORDED" — pre-handoff it is written
 # with no render following.
+# litclock-dev#667 — one creator for /run/litclock, used by both marker writes below.
+#
+# tmpfiles.d/litclock.conf declares this dir 0755 pi pi at sysinit, so this is
+# defensive only — but this script runs as ROOT and since litclock-dev#645 moved the
+# handoff gate it runs EARLIER in boot, so on any boot where the dir is
+# genuinely absent a bare `mkdir` would create it root:root and every pi-side
+# writer would fail silently for the rest of that boot: the current-quote file
+# and LKG heartbeat in literary_clock.py, update_state, the weather cache, and
+# the gift-message write in routes/system.py.
+#
+# The ownership attempt comes FIRST and the fallbacks exist because
+# `install -d -o pi -g pi` fails WHOLESALE if the `pi` user does not exist (a
+# renamed user, or the DIY path), where the `mkdir -p` it replaced would still
+# have created the directory. A missing user must cost the ownership, not the
+# directory.
+ensure_run_dir() {
+    install -d -o pi -g pi -m 0755 /run/litclock 2>/dev/null ||
+        install -d -m 0755 /run/litclock 2>/dev/null ||
+        mkdir -p /run/litclock 2>/dev/null || true
+}
+
 MARKER=/run/litclock/last-rendered-ip
 # #387 C2: this dispatcher runs as ROOT and /run/litclock is 0755 pi pi, so a
 # pi-planted symlink at $MARKER would make the read/write below touch an
@@ -137,7 +173,7 @@ if [ -L "$MARKER" ]; then
     rm -f "$MARKER" 2>/dev/null || true
 fi
 LAST_IP=""
-if [ -n "${CURRENT_IP:-}" ] && [ -f "$MARKER" ] && [ ! -L "$MARKER" ]; then
+if [ -f "$MARKER" ] && [ ! -L "$MARKER" ]; then
     # Bounded, whitespace-stripped read (litclock-dev#645 /review). $MARKER lives in a
     # pi-writable directory but is read and re-emitted by ROOT below, so its
     # CONTENT is untrusted even though the symlink guards prove the node is a
@@ -146,15 +182,81 @@ if [ -n "${CURRENT_IP:-}" ] && [ -f "$MARKER" ] && [ ! -L "$MARKER" ]; then
     # an embedded newline forges a standalone dispatcher line in journald —
     # the evidence channel this script exists to feed. Same shape as
     # scripts/shutdown-splash.sh's root read of /run/litclock/shutdown-action.
+    # litclock-dev#667: read LAST_IP UNCONDITIONALLY (it used to be gated on a non-empty
+    # CURRENT_IP), so the log lines below can tell the truth on a blanked event.
+    # Previously a link-local printed "IP changed to unknown (was: none)" while
+    # the marker still held the real prior address — asserting a change that did
+    # not happen and reporting "none" for a value that exists. That is the same
+    # wrong-conclusion class litclock-dev#646 was opened to kill.
     LAST_IP=$(head -c 64 "$MARKER" 2>/dev/null | tr -d '[:space:]' || true)
-    if [ "$CURRENT_IP" = "$LAST_IP" ]; then
-        # Same IP as the last recorded address — nothing new to repaint. Stay
-        # quiet in BOTH handoff states so the journal doesn't fill up under
-        # long-stable connections; NM fires `up` and `dhcp4-change` back to
-        # back and the second one lands here, so this is the common path.
-        exit 0
-    fi
 fi
+
+# litclock-dev#667 — the coalescing marker, deliberately separate from $MARKER.
+# $MARKER holds the last BELIEVABLE address and is read by
+# control_server._network.read_lan_ip to serve the /diagnostics Network
+# section, so a link-local must never land in it (litclock-dev#645: _anomalies only
+# tests lan_ip for truthiness, so recording one would mute the missing-IP
+# fault forever). This file holds the last address we ACTED on, believable or
+# not, and nothing outside this script reads it. Same tmpfs, same symlink
+# discipline, same bounded read.
+OBSERVED_MARKER=/run/litclock/last-observed-ip
+if [ -L "$OBSERVED_MARKER" ]; then
+    rm -f "$OBSERVED_MARKER" 2>/dev/null || true
+fi
+OBSERVED_SEEN=0
+LAST_OBSERVED=""
+if [ -f "$OBSERVED_MARKER" ] && [ ! -L "$OBSERVED_MARKER" ]; then
+    OBSERVED_SEEN=1
+    LAST_OBSERVED=$(head -c 64 "$OBSERVED_MARKER" 2>/dev/null | tr -d '[:space:]' || true)
+elif [ -n "${CURRENT_IP:-}" ]; then
+    # Seed from $MARKER when the observed marker is absent, so an OTA update
+    # landing between two events on a still-running device does not lose one
+    # renewal's worth of coalescing.
+    #
+    # ONLY when the current address is believable, though. $MARKER holds the
+    # last BELIEVABLE address, which during a link-local or no-address outage
+    # is a stale routable address the interface no longer carries — seeding
+    # from it there would assert "I already acted on <stale IP>" when the last
+    # thing actually acted on was the outage, and the recovery repaint would be
+    # swallowed. A spurious render on the first post-OTA event is strictly
+    # cheaper than a swallowed recovery.
+    OBSERVED_SEEN=1
+    LAST_OBSERVED="$LAST_IP"
+fi
+# Short-circuit on the OBSERVED address, so a repeated link-local — or a
+# repeated no-address-at-all — coalesces the same way a repeated real address
+# does. Gated on OBSERVED_SEEN rather than on RAW_IP being non-empty, because
+# "no IPv4 at all" is a legitimate observed value that must coalesce too:
+# NM's default `ipv4.method=auto` FAILS IPv4 on a DHCP timeout rather than
+# self-assigning 169.254.x (nothing here sets `ipv4.link-local`), so the empty
+# case is at least as likely as the link-local one.
+#
+# The second clause restores litclock-dev#645's self-heal. This exit now sits ABOVE the
+# $MARKER write, so skipping it must not leave that file stale or absent —
+# otherwise a plain (non-symlink) file planted at $OBSERVED_MARKER in the
+# pi-writable /run/litclock could suppress the diagnostics write for the life
+# of the boot and resurrect litclock-dev#645's false "Connection issue" with every #387
+# C2 symlink guard intact. Requiring $MARKER to already agree means we only
+# skip work that is genuinely already done.
+if [ "$OBSERVED_SEEN" = 1 ] && [ "$RAW_IP" = "$LAST_OBSERVED" ] &&
+    { [ -z "${CURRENT_IP:-}" ] || [ "$CURRENT_IP" = "$LAST_IP" ]; }; then
+    # Same address as last time and the bookkeeping already agrees — nothing to
+    # repaint, in either handoff state, believable or not. NM fires `up` and
+    # `dhcp4-change` back to back and the second lands here, so this is the
+    # common path.
+    exit 0
+fi
+# Record what we observed BEFORE any early exit below, so the next event can
+# coalesce against it even on paths that record no believable address and
+# render nothing (the pre-handoff gate, every link-local event, and every
+# no-address event). Written UNCONDITIONALLY — an empty value is a real
+# observation, and skipping the write for it is what left the empty case
+# uncoalesced.
+ensure_run_dir
+if [ -L "$OBSERVED_MARKER" ]; then
+    rm -f "$OBSERVED_MARKER" 2>/dev/null || true
+fi
+printf '%s\n' "$RAW_IP" > "$OBSERVED_MARKER" 2>/dev/null || true
 
 # Record the current IP. Unconditional bookkeeping since litclock-dev#645:
 # control_server._network.read_lan_ip serves the /diagnostics Network section
@@ -171,7 +273,7 @@ if [ -n "${CURRENT_IP:-}" ]; then
     # pi-side writer would fail silently for the rest of that boot: the
     # current-quote file and LKG heartbeat in literary_clock.py, update_state,
     # the weather cache, and the gift-message write in routes/system.py.
-    install -d -o pi -g pi -m 0755 /run/litclock 2>/dev/null || true
+    ensure_run_dir
     # Re-drop a symlink immediately before the redirect (best-effort vs a
     # persistent-symlink attack; see the C2 note above).
     if [ -L "$MARKER" ]; then
@@ -217,9 +319,19 @@ fi
 # (most days: zero entries thanks to the same-IP short-circuit above).
 # `|| true` so a logging hiccup can never abort the script under `set -e`
 # and swallow the render below.
-logger -t litclock-dispatcher \
-    "wlan0 IP changed to ${CURRENT_IP:-unknown} (was: ${LAST_IP:-none}); re-rendering" \
-    || true
+# litclock-dev#667: branch on what actually happened. The single-form version claimed
+# "IP changed to unknown (was: none)" on a blanked event while the marker still
+# held the real prior address — two falsehoods in the one line an operator has
+# to reason from, on a device where journald is the only diagnostic channel.
+if [ -n "${CURRENT_IP:-}" ]; then
+    logger -t litclock-dispatcher \
+        "wlan0 IP changed to ${CURRENT_IP} (was: ${LAST_IP:-none}); re-rendering" \
+        || true
+else
+    logger -t litclock-dispatcher \
+        "wlan0 has no routable IPv4 address (DHCP appears to have failed; last recorded: ${LAST_IP:-none}); nothing recorded, re-rendering" \
+        || true
+fi
 
 # --no-block: NM dispatcher scripts MUST return promptly (NM logs slow
 # scripts as warnings, may kill long-runners). Best-effort: if systemctl

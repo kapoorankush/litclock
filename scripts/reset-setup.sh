@@ -495,6 +495,87 @@ disable_ssh_for_handoff() {
 }
 
 echo ""
+# litclock-dev#660 — shared handoff rotation. Both terminal paths that hand the
+# device to another person must clear the persisted setup-WiFi key, and before
+# #660 only gift mode did.
+#
+# The key SURVIVES a plain reset, a WiFi reset and a --reboot deliberately
+# (litclock-dev#620): there the motivating user is the same person
+# re-provisioning their own clock, whose phone already has this network saved.
+# The two paths below are different — each ends with the device powered off as
+# a "someone else turns this on next" signal:
+#
+#   --gift-mode   writes .welcome-mode and powers off, explicitly a gift.
+#   --poweroff    the PWA "Factory reset" card, whose own copy reads "Erases
+#                 everything ... Use this before you move or pass the clock on."
+#
+# The discriminator is BOTH conditions: the WiFi is gone AND the device is
+# leaving. Neither alone is sufficient, and getting that wrong in either
+# direction is a real bug. Written out, because the near-miss versions of this
+# comment were each wrong in a different way:
+#
+#   --poweroff ALONE (a hand-run `sudo reset-setup.sh --poweroff`) does NOT set
+#   WIPE_WIFI. The clock powers off, boots straight back onto its saved network
+#   and never raises a hotspot at all — no setup network exists for a stale key
+#   to protect, so rotating would strand the owner's phone for nothing. The
+#   bench QA doc pins this as "same owner, moved house" and asserts the password
+#   is UNCHANGED. Deliberate, and preserved.
+#
+#   --wipe-wifi WITHOUT a power-off — `--wipe-wifi --reboot`, which
+#   docs/recovery.md calls the "full fresh-start", or a bare `--wipe-wifi` —
+#   must ALSO preserve it. litclock-dev#620's promise is explicit: the password
+#   "survives a plain factory reset AND a WiFi reset ... the motivating user is
+#   the same person re-provisioning their own clock". That user's phone has
+#   LitClock-Setup saved and is about to rejoin it. Rotating here would BE the
+#   litclock-dev#620 bug, just triggered by a different flag. So a WiFi wipe on
+#   its own is NOT the signal.
+#
+#   --wipe-wifi AND a power-off is the signal, and the only one. The WiFi is
+#   gone, so the next power-on raises the setup hotspot; and the device powered
+#   off rather than coming back, which is what "someone else turns this on next"
+#   looks like. That is gift mode (which sets WIPE_WIFI itself) and the PWA
+#   "Factory reset" card, whose copy reads "Erases everything ... Use this
+#   before you move or pass the clock on". Before litclock-dev#660 the second
+#   one did not rotate, so the previous owner kept a permanent key to the next
+#   owner's setup network.
+#
+# Mechanically that pairing is expressed by placing the guarded call inside the
+# gift and --poweroff arms of the terminal branch — those ARE the two power-off
+# paths — rather than by testing WIPE_WIFI alone anywhere earlier.
+#
+# Fails CLOSED, matching the env.sh precedent: `rm -f` returns 0 for a missing
+# file but not for a read-only remount (the Pi's most common degradation), and
+# the script has no `set -e`, so an unverified delete would print "done" and
+# ship the key. The temp glob catches staging files orphaned by a
+# SIGKILL/power-cut between mkstemp and os.replace, each holding a real past PSK.
+#
+# `-L` alongside `-e` because `-e` is FALSE for a dangling symlink, so a failed
+# unlink of one would report success (litclock-dev#663). The invariant is that no
+# entry survives at the password path, whatever it points at. The glob half needs
+# no equivalent: `compgen -G` matches NAMES, so it already sees a dangling link.
+#
+# rm's own diagnosis is surfaced rather than discarded: "Read-only file system"
+# means the card is dying and "Operation not permitted" means ownership drift,
+# and those need opposite remedies.
+rotate_hotspot_password_for_handoff() {
+    local _rm_err
+    echo -n "Clearing the saved setup-WiFi password... "
+    _rm_err=$(rm -f "$STATE_DIR/hotspot-password" "$STATE_DIR"/.hotspot-password.* 2>&1 >/dev/null) || true
+    if [[ -e "$STATE_DIR/hotspot-password" || -L "$STATE_DIR/hotspot-password" ]] ||
+        compgen -G "$STATE_DIR/.hotspot-password.*" >/dev/null 2>&1; then
+        echo -e "${RED}FAILED${NC}"
+        echo -e "${RED}========================================${NC}"
+        echo -e "${RED}  Handoff prep FAILED — do NOT pass this device on${NC}"
+        echo -e "${RED}========================================${NC}"
+        echo -e "${RED}The setup-WiFi password could not be removed from $STATE_DIR.${NC}"
+        echo -e "${RED}Handing the device over now would give the next owner a network${NC}"
+        echo -e "${RED}key you still know.${NC}"
+        [[ -n "$_rm_err" ]] && echo -e "${RED}rm said: $_rm_err${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}done${NC}"
+}
+
 echo "========================================"
 echo -e "${GREEN}  Reset Complete!${NC}"
 echo "========================================"
@@ -523,38 +604,11 @@ if [[ "$GIFT_MODE" == "true" ]]; then
         echo -e "${YELLOW}  sudo $0 --gift-mode${NC}"
         exit 1
     fi
-    # litclock-dev#620: rotate the setup-hotspot password for the new owner.
-    #
-    # It deliberately SURVIVES a plain reset and a WiFi reset — there the
-    # motivating user is the same person re-provisioning their own clock, whose
-    # phone already has this network saved, and a changed password is a trap
-    # with no user-discoverable recovery on Android ("No Internet Access", no
-    # password field, and a QR scan does not override the saved entry).
-    #
-    # Gift mode is the ONE exception: the recipient's phone has nothing saved,
-    # and the gifter must not keep a working key to the recipient's setup
-    # network. Placed AFTER the #393 abort gate on purpose — a gift prep that
-    # fails leaves the device with its CURRENT owner, and rotating there would
-    # drop that owner into the very trap this feature removes.
-    #
-    # Fails CLOSED, matching the env.sh precedent above: `rm -f` returns 0 for
-    # a missing file but not for a read-only remount (the Pi's most common
-    # degradation), and the script has no `set -e`, so an unverified delete
-    # would print "done" and ship the gifter's key. The temp glob catches
-    # staging files orphaned by a SIGKILL/power-cut between mkstemp and
-    # os.replace, each of which holds a real past PSK.
-    echo -n "Regenerating hotspot password for the new owner... "
-    rm -f "$STATE_DIR/hotspot-password" "$STATE_DIR"/.hotspot-password.* 2>/dev/null
-    if [[ -e "$STATE_DIR/hotspot-password" ]] || compgen -G "$STATE_DIR/.hotspot-password.*" >/dev/null 2>&1; then
-        echo -e "${RED}FAILED${NC}"
-        echo -e "${RED}========================================${NC}"
-        echo -e "${RED}  Gift prep FAILED — do NOT ship this device${NC}"
-        echo -e "${RED}========================================${NC}"
-        echo -e "${RED}The setup-WiFi password could not be removed from $STATE_DIR.${NC}"
-        echo -e "${RED}Shipping now would hand the recipient a network key you still know.${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN}done${NC}"
+    # litclock-dev#620 / litclock-dev#660 — clear the persisted setup-WiFi key
+    # before the device leaves this owner. Deliberately AFTER the #393 abort
+    # gate: a gift prep that fails leaves the device with its CURRENT owner, and
+    # rotating there would drop that owner into the very trap #620 removes.
+    rotate_hotspot_password_for_handoff
 
     # litclock-dev#528 — shared handoff gate; see disable_ssh_for_handoff above.
     # Deliberately AFTER the env-wipe-failed gate: on a failed prep the device
@@ -581,9 +635,32 @@ elif [[ "$DO_POWEROFF" == "true" ]]; then
     # guaranteed by the time we power off. On next power-on the wiped config
     # makes first-boot run into the setup hotspot.
     #
+    # litclock-dev#660 — powering off AND having wiped the WiFi is the handoff
+    # signal (see the discriminator note on rotate_hotspot_password_for_handoff).
+    # With --wipe-wifi, which is what litclock-reset.service passes for the PWA
+    # "Factory reset", the next power-on raises the setup hotspot — and before
+    # #660 it raised it with the PREVIOUS owner's permanent key. Without it, this
+    # is the hand-run "same owner, moved house" path: the clock returns to its
+    # saved network, no hotspot is ever raised, and the bench QA doc asserts the
+    # key is unchanged.
+    if [[ "$WIPE_WIFI" == "true" ]]; then
+        rotate_hotspot_password_for_handoff
+    fi
+
     # litclock-dev#636 — the copy above this flow invites "move or pass the
     # clock on", so this path must leave the device in the same SSH posture
     # a recipient would get from a gift or a fresh flash: off.
+    #
+    # Ordered AFTER the litclock-dev#660 rotation above for the same reason the
+    # gift arm is: that block fails CLOSED and can exit 1, which leaves the
+    # device with its CURRENT owner. Disabling SSH first would strip that
+    # owner's remote access on the exact path where they still need it to
+    # diagnose a read-only card. SSH-off is the last thing before poweroff.
+    #
+    # This pairing exists only on this repo — litclock-dev has no SSH gate at
+    # all (it was authored here, in #52/#53), so upstream's version of this arm
+    # has nothing to order against and the two must be merged by hand on every
+    # port that touches it.
     disable_ssh_for_handoff
     echo "Powering off. Power the clock on again to set it up fresh."
     poweroff

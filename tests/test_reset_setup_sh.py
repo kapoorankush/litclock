@@ -153,6 +153,14 @@ class TestGiftMode:
         assert idx != -1, "gift-mode end-of-script branch missing"
         return reset_sh_content[idx : reset_sh_content.find("elif", idx)]
 
+    @staticmethod
+    def _poweroff_block(reset_sh_content):
+        # rfind: the LAST $DO_POWEROFF test is the end-of-script arm (an
+        # earlier one lives in the reboot-hint block), mirroring _gift_block.
+        idx = reset_sh_content.rfind('elif [[ "$DO_POWEROFF" == "true" ]]')
+        assert idx != -1, "poweroff end-of-script branch missing"
+        return reset_sh_content[idx : reset_sh_content.find("elif", idx + 1)]
+
     def test_ssh_gate_disables_every_layer(self, reset_sh_content):
         """litclock-dev#528: the handoff gate must force SSH off across every layer: the
         SOCKET (Bookworm socket-activates sshd — disabling only ssh.service
@@ -196,30 +204,41 @@ class TestGiftMode:
         assert gate_idx != -1 and call_idx != -1 and poweroff_idx != -1
         assert gate_idx < call_idx < poweroff_idx
 
-    def test_gift_mode_rotates_hotspot_password_before_disabling_ssh(self, reset_sh_content):
+    @pytest.mark.parametrize("arm", ["gift", "poweroff"], ids=["gift-mode", "pwa-factory-reset"])
+    def test_rotation_runs_before_disabling_ssh_on_both_handoff_arms(self, reset_sh_content, arm):
         """litclock-dev#620 + litclock-dev#528 interact, and the order is load-bearing.
 
         The hotspot-password rotation fails CLOSED: a read-only card or ownership
-        drift on the state dir makes it print "do NOT ship this device" and exit 1,
-        which leaves the clock with its CURRENT owner. `disable_ssh_for_handoff`
-        does not return — it is the point of no remote access.
+        drift on the state dir makes it print "do NOT pass this device on" and
+        exit 1, which leaves the clock with its CURRENT owner.
+        `disable_ssh_for_handoff` does not return — it is the point of no remote
+        access. Run SSH-off first and that abort path strips the owner's only
+        remote way in on the exact branch where they still need it to diagnose
+        the card. Rotation first; SSH-off last before poweroff.
 
-        Run SSH-off first and that abort path strips the owner's only remote way
-        in on the exact branch where they still need it to diagnose the card.
-        Rotation must come first; SSH-off is the last thing before poweroff.
+        This pairing exists ONLY on this repo: litclock-dev has no SSH gate at
+        all (authored here, in #52/#53), so upstream cannot pin the ordering and
+        every port that touches this file must re-establish it by hand.
 
-        Neither litclock-dev#620 nor litclock-dev#528 constrained the other, because
-        the two landed on separate repos and met for the first time in the public
-        port — so nothing pinned this until now.
+        Parametrised over BOTH arms as of litclock-dev#660. The gift arm was
+        pinned when the two features first met; the --poweroff arm grew the same
+        pairing only when #660 added rotation to it, and nothing covered it.
         """
-        block = self._gift_block(reset_sh_content)
-        rotate_idx = block.find('rm -f "$STATE_DIR/hotspot-password"')
+        import re as _re
+
+        block = self._gift_block(reset_sh_content) if arm == "gift" else self._poweroff_block(reset_sh_content)
+        # Anchor on the CALL LINE, not a bare substring. The comments in both
+        # arms name the function, so `block.find(name)` matches prose that sits
+        # above the call and stays true even with the call moved below the SSH
+        # gate — verified: that mutation kept this test green until this fix.
+        _call = _re.search(r"(?m)^\s*rotate_hotspot_password_for_handoff\s*$", block)
+        rotate_idx = _call.start() if _call else -1
         ssh_idx = block.find("\n    disable_ssh_for_handoff")
-        assert rotate_idx != -1, "litclock-dev#620 hotspot-password rotation missing from gift block"
-        assert ssh_idx != -1, "litclock-dev#528 SSH gate missing from gift block"
+        assert rotate_idx != -1, f"litclock-dev#660 rotation call missing from the {arm} arm"
+        assert ssh_idx != -1, f"litclock-dev#528 SSH gate missing from the {arm} arm"
         assert rotate_idx < ssh_idx, (
-            "SSH must be disabled AFTER the hotspot-password rotation — the rotation "
-            "can exit 1 and leave the device with its current owner, who then needs SSH"
+            f"in the {arm} arm, SSH must be disabled AFTER the hotspot-password rotation — "
+            "the rotation can exit 1 and leave the device with its current owner, who then needs SSH"
         )
 
     def test_poweroff_mode_calls_ssh_gate_before_poweroff(self, reset_sh_content):
@@ -763,15 +782,64 @@ class TestHotspotPasswordResetSemantics:
     """
 
     @staticmethod
-    def _extract_block(content):
-        """The rotation lives INSIDE the gift branch, after the #393
-        ENV_WIPE_FAILED abort gate. Extract from the echo to the `done` line."""
-        anchor = content.find("Regenerating hotspot password")
-        assert anchor != -1, "the gift-mode hotspot-password rotation is missing"
-        start = content.rfind("    echo -n", 0, anchor)
-        end = content.find('${GREEN}done${NC}"', anchor)
-        assert start != -1 and end != -1
-        return content[start : end + len('${GREEN}done${NC}"')]
+    def _rotation_fn(content):
+        """Lift `rotate_hotspot_password_for_handoff()` whole.
+
+        litclock-dev#662: the previous helper lifted an ad-hoc echo..done span and
+        asserted NOTHING about what it lifted, so deleting the fail-closed gate
+        left the span still extractable and the tests still green. Verify the
+        span's load-bearing parts, the way the prepare-for-cloning harness does.
+        """
+        start = content.find("rotate_hotspot_password_for_handoff() {")
+        assert start != -1, "rotate_hotspot_password_for_handoff() is missing"
+        end = content.find("\n}\n", start)
+        assert end != -1, "could not find the end of rotate_hotspot_password_for_handoff()"
+        fn = content[start : end + 3]
+        for required, why in (
+            ("rm -f", "the removal itself"),
+            ('-L "$STATE_DIR/hotspot-password"', "the dangling-symlink survivor check (litclock-dev#663)"),
+            ("compgen -G", "the orphaned-staging-file sweep"),
+            ("exit 1", "the fail-closed abort"),
+            ("do NOT pass this device on", "the operator warning"),
+        ):
+            assert required in fn, f"rotation function lost {why} ({required!r})"
+        return fn
+
+    @staticmethod
+    def _terminal_branch(content):
+        """Lift the REAL terminal if/elif/else chain, not a reconstruction.
+
+        litclock-dev#662: the old harness substituted the literal
+        `: # non-gift: rotation must not run` whenever gift_mode was false, so
+        the negative test executed no script code at all and could not fail.
+        The branch condition has to be INSIDE the lifted span for a
+        parametrised test to mean anything.
+
+        Anchored on the LAST `if [[ "$GIFT_MODE" == "true" ]]` — there are three
+        in this script and the first two are the marker writer and the wipe
+        summary, so `.find()` would silently lift the wrong one.
+        """
+        anchor = content.rfind('if [[ "$GIFT_MODE" == "true" ]]; then')
+        assert anchor != -1, "terminal GIFT_MODE branch is missing"
+        block = content[anchor:]
+        for required, why in (
+            ('elif [[ "$DO_POWEROFF" == "true" ]]', "the --poweroff arm"),
+            ('elif [[ "$DO_REBOOT" == "true" ]]', "the --reboot arm"),
+            ("poweroff", "the terminal poweroff"),
+        ):
+            assert required in block, f"terminal branch lost {why} ({required!r})"
+        # Count CALL lines, not substring hits — the surrounding comments name the
+        # function too, so `.count()` on the raw text reads 3 for 2 calls.
+        calls = [
+            ln
+            for ln in block.splitlines()
+            if ln.strip() == "rotate_hotspot_password_for_handoff" and not ln.lstrip().startswith("#")
+        ]
+        assert len(calls) == 2, (
+            "litclock-dev#660: BOTH handoff arms (gift, and --poweroff when the WiFi "
+            f"went with it) must rotate the key; found {len(calls)} call site(s)"
+        )
+        return block
 
     @staticmethod
     def _state_dir_line(content):
@@ -779,29 +847,109 @@ class TestHotspotPasswordResetSemantics:
         assert line, "reset-setup.sh must define STATE_DIR (the rotation depends on it)"
         return line
 
-    def _run(self, content, tmp_path, gift_mode, extra=""):
+    def _run(self, content, tmp_path, gift_mode, do_poweroff="false", do_reboot="false", wipe_wifi="false", extra=""):
+        """Execute the real function + the real terminal branch.
+
+        `poweroff`/`systemctl` are shadowed by shell functions so the dispatch
+        runs to completion without taking the machine down, and so a test can
+        assert WHICH terminal action was reached.
+        """
         import subprocess
 
         state = tmp_path / "state"
         state.mkdir()
         pw = state / "hotspot-password"
         pw.write_text("clockwis\n", encoding="utf-8")
+        # A staging file must EXIST for any "staging secrets were swept" assertion
+        # to mean anything — without one the glob is empty before the script runs
+        # and the assertion passes with the sweep deleted.
+        (state / ".hotspot-password.XYZ").write_text("oldsecret\n", encoding="utf-8")
+        config = tmp_path / "config"
+        config.mkdir()
         program = (
             "set -u  # NOT -e: reset-setup.sh deliberately omits it\n"
+            'poweroff() { echo "STUB_POWEROFF"; }\n'
+            'systemctl() { echo "STUB_SYSTEMCTL $*"; }\n'
+            # This repo's terminal branch calls disable_ssh_for_handoff, which
+            # upstream does not have (it was authored here, in #52/#53). Without
+            # a stub every harness run emitted "command not found" on stderr —
+            # swallowed, because the harness deliberately omits `set -e` — which
+            # both polluted assertion messages and elided this repo's security
+            # gate from every behavioural test.
+            'disable_ssh_for_handoff() { echo "STUB_SSH_GATE"; }\n'
             f"GIFT_MODE={gift_mode}\n"
+            f"DO_POWEROFF={do_poweroff}\n"
+            f"DO_REBOOT={do_reboot}\n"
+            f"WIPE_WIFI={wipe_wifi}\n"
+            "ENV_WIPE_FAILED=false\n"
+            f"CONFIG_DIR={config}\n"
             f"LITCLOCK_STATE_DIR={state}\n"
             f"{self._state_dir_line(content)}\n"
-            'RED=""\nGREEN=""\nNC=""\n'
+            'RED=""\nGREEN=""\nYELLOW=""\nNC=""\n'
             f"{extra}\n"
-            + (self._extract_block(content) if gift_mode == "true" else ": # non-gift: rotation must not run\n")
+            f"{self._rotation_fn(content)}\n"
+            f"{self._terminal_branch(content)}"
         )
         result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
         return pw, result, state
 
     def test_gift_mode_rotates_the_password(self, reset_sh_content, tmp_path):
-        pw, result, _ = self._run(reset_sh_content, tmp_path, "true")
+        """Forced with wipe_wifi=false on purpose: the gift arm's call is
+        UNCONDITIONAL, and passing wipe_wifi=true here would assert a coupling
+        that does not exist (--gift-mode sets WIPE_WIFI itself, so the test
+        could not tell an unconditional call from a guarded one).
+        """
+        pw, result, _ = self._run(reset_sh_content, tmp_path, "true", wipe_wifi="false")
         assert result.returncode == 0, result.stderr
+        assert "STUB_POWEROFF" in result.stdout, "gift mode must reach poweroff"
+        assert result.stdout.index("STUB_SSH_GATE") < result.stdout.index("STUB_POWEROFF"), (
+            "the SSH gate must run before poweroff"
+        )
         assert not pw.exists(), "gift mode must rotate the hotspot password for the new owner"
+
+    def test_pwa_factory_reset_rotates_the_password(self, reset_sh_content, tmp_path):
+        """litclock-dev#660 — the PWA "Factory reset" card runs
+        `reset-setup.sh --wipe-wifi --strict-env-wipe --poweroff --yes` via
+        litclock-reset.service.
+
+        WiFi is wiped, so the next power-on comes up in the setup hotspot — and
+        before #660 it came up broadcasting LitClock-Setup with the PREVIOUS
+        owner's permanent key, surviving every reset the new owner later
+        performed. v0.223.0 had no such leak because the key regenerated every
+        provisioning cycle, which makes this a REGRESSION introduced by #620
+        rather than a pre-existing gap.
+        """
+        pw, result, state = self._run(reset_sh_content, tmp_path, "false", do_poweroff="true", wipe_wifi="true")
+        assert result.returncode == 0, result.stderr
+        assert "STUB_POWEROFF" in result.stdout, "the --poweroff arm must reach poweroff"
+        assert result.stdout.index("STUB_SSH_GATE") < result.stdout.index("STUB_POWEROFF"), (
+            "the SSH gate must run before poweroff on this arm too (litclock-dev#636)"
+        )
+        assert not pw.exists(), (
+            "litclock-dev#660: --wipe-wifi --poweroff comes back up in the setup hotspot, "
+            "so it MUST clear the persisted setup-WiFi key"
+        )
+        assert not list(state.glob(".hotspot-password.*")), "staging secrets must be swept here too"
+
+    def test_hand_run_poweroff_without_wipe_wifi_keeps_the_password(self, reset_sh_content, tmp_path):
+        """The other half of litclock-dev#660, and the reason the discriminator is
+        WIPE_WIFI rather than the terminal action.
+
+        A hand-run `sudo reset-setup.sh --poweroff` does NOT set WIPE_WIFI. The
+        clock powers off, then boots straight back onto its saved network and
+        never raises a hotspot at all — so there is no setup network for a stale
+        key to protect, and rotating would strand the owner's phone for nothing.
+        The bench QA doc tests exactly this as "same owner, moved house" and
+        asserts the password is UNCHANGED.
+
+        Keying #660 on --poweroff instead of --wipe-wifi would have traded the
+        leak for a regression against a deliberately QA'd behaviour.
+        """
+        pw, result, _ = self._run(reset_sh_content, tmp_path, "false", do_poweroff="true", wipe_wifi="false")
+        assert result.returncode == 0, result.stderr
+        assert "STUB_POWEROFF" in result.stdout, "the --poweroff arm must still reach poweroff"
+        assert pw.exists(), "a --poweroff WITHOUT --wipe-wifi is the same-owner path and must PRESERVE the key"
+        assert pw.read_text(encoding="utf-8").strip() == "clockwis"
 
     def test_gift_mode_also_sweeps_orphaned_staging_files(self, reset_sh_content, tmp_path):
         """A SIGKILL between mkstemp and os.replace leaves a 0600 staging file
@@ -813,13 +961,65 @@ class TestHotspotPasswordResetSemantics:
         (state / "hotspot-password").write_text("clockwis\n", encoding="utf-8")
         (state / ".hotspot-password.XYZ").write_text("oldsecret\n", encoding="utf-8")
         program = (
-            "set -u  # NOT -e: reset-setup.sh deliberately omits it\nGIFT_MODE=true\n"
+            "set -u  # NOT -e: reset-setup.sh deliberately omits it\n"
             f"LITCLOCK_STATE_DIR={state}\n{self._state_dir_line(reset_sh_content)}\n"
-            'RED=""\nGREEN=""\nNC=""\n' + self._extract_block(reset_sh_content)
+            'RED=""\nGREEN=""\nNC=""\n'
+            f"{self._rotation_fn(reset_sh_content)}\n"
+            "rotate_hotspot_password_for_handoff\n"
         )
         r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
         assert r.returncode == 0, r.stderr
         assert not list(state.glob(".hotspot-password.*")), "orphaned staging secrets must be swept"
+
+    @pytest.mark.parametrize(
+        "shape",
+        ["regular_file", "dangling_symlink", "directory"],
+        ids=["regular-file", "dangling-symlink", "directory"],
+    )
+    def test_survivor_check_sees_every_kind_of_surviving_entry(self, reset_sh_content, tmp_path, shape):
+        """litclock-dev#663 parity: prepare-for-cloning.sh got a five-shape
+        survivor test and this copy got none, which is how the missing `-L`
+        survived here after being fixed there.
+
+        A dangling symlink is the sharp case: `-e` FOLLOWS the link and is false
+        for a broken one, so an `-e`-only check reports success for an entry
+        that is demonstrably still there.
+        """
+        import subprocess
+
+        state = tmp_path / "state"
+        state.mkdir()
+        pw = state / "hotspot-password"
+        if shape == "regular_file":
+            pw.write_text("clockwis\n", encoding="utf-8")
+        elif shape == "dangling_symlink":
+            pw.symlink_to(tmp_path / "does-not-exist")
+        else:
+            pw.mkdir()
+            (pw / "occupant").write_text("blocks rmdir\n", encoding="utf-8")
+
+        # Make the unlink fail for root and non-root alike where possible; a
+        # non-empty directory does this without relying on permissions.
+        if shape != "directory":
+            state.chmod(0o500)
+        try:
+            program = (
+                "set -u\n"
+                f"LITCLOCK_STATE_DIR={state}\n{self._state_dir_line(reset_sh_content)}\n"
+                'RED=""\nGREEN=""\nNC=""\n'
+                f"{self._rotation_fn(reset_sh_content)}\n"
+                "rotate_hotspot_password_for_handoff\n"
+            )
+            r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+            if shape != "directory" and os.access(str(state), os.W_OK):
+                pytest.skip("running as root — unlink cannot be blocked for this shape")
+            assert r.returncode != 0, (
+                f"a surviving {shape} at the password path must fail the rotation closed, "
+                "not print done — the invariant is that NO entry survives, whatever it points at"
+            )
+            assert "do NOT pass this device on" in r.stdout + r.stderr
+        finally:
+            state.chmod(0o700)
 
     def test_gift_mode_FAILS_CLOSED_when_the_password_cannot_be_removed(self, reset_sh_content, tmp_path):
         """`rm -f` returns 0 for a missing file but not for a read-only mount —
@@ -829,36 +1029,259 @@ class TestHotspotPasswordResetSemantics:
 
         state = tmp_path / "state"
         state.mkdir()
-        (state / "hotspot-password").write_text("clockwis\n", encoding="utf-8")
-        state.chmod(0o500)  # unlink now fails
-        try:
-            if os.access(str(state), os.W_OK):
-                pytest.skip("running as root — unlink cannot be blocked")
-            program = (
-                "set -u  # NOT -e: reset-setup.sh deliberately omits it\nGIFT_MODE=true\n"
-                f"LITCLOCK_STATE_DIR={state}\n{self._state_dir_line(reset_sh_content)}\n"
-                'RED=""\nGREEN=""\nNC=""\n' + self._extract_block(reset_sh_content)
-            )
-            r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
-            assert r.returncode != 0, "a failed rotation must abort gift prep, not print done"
-            assert "do NOT ship" in r.stdout or "do NOT ship" in r.stderr
-        finally:
-            state.chmod(0o700)
+        # litclock-dev#662: a non-empty DIRECTORY at the password path makes
+        # `rm -f` fail for root and non-root alike, so this guard no longer
+        # self-skips in a root container — where it was previously the ONLY
+        # executing coverage of the fail-closed abort.
+        pw = state / "hotspot-password"
+        pw.mkdir()
+        (pw / "occupant").write_text("blocks rmdir\n", encoding="utf-8")
+        program = (
+            "set -u  # NOT -e: reset-setup.sh deliberately omits it\n"
+            f"LITCLOCK_STATE_DIR={state}\n{self._state_dir_line(reset_sh_content)}\n"
+            'RED=""\nGREEN=""\nNC=""\n'
+            f"{self._rotation_fn(reset_sh_content)}\n"
+            "rotate_hotspot_password_for_handoff\n"
+        )
+        r = subprocess.run(
+            ["bash", "-c", program],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        assert r.returncode != 0, "a failed rotation must abort handoff prep, not print done"
+        assert "do NOT pass this device on" in r.stdout or "do NOT pass this device on" in r.stderr
+        # litclock-dev#663: rm's own diagnosis must reach the operator —
+        # "Is a directory" / "Read-only file system" / "Operation not permitted"
+        # need different remedies and "could not remove" distinguishes none.
+        assert "Is a directory" in r.stdout or "directory" in r.stdout.lower(), (
+            f"rm's cause must be surfaced, got: {r.stdout!r}"
+        )
 
-    def test_rotation_is_inside_the_gift_branch_after_the_abort_gate(self, reset_sh_content):
+    def test_rotation_call_is_after_the_abort_gate(self, reset_sh_content):
         """A gift prep that ABORTS leaves the device with its current owner —
-        rotating there would drop that owner into the trap #620 removes."""
-        rotate = reset_sh_content.index("Regenerating hotspot password")
-        gate = reset_sh_content.index('if [[ "$ENV_WIPE_FAILED" == "true" ]]')
+        rotating there would drop that owner into the trap #620 removes.
+
+        Anchors on the CALL inside the terminal branch, not on a string that
+        also appears in the function definition further up the file. The
+        original version of this test used `.index("Regenerating hotspot
+        password")`, which after #660's refactor resolved to the function body
+        and inverted the comparison.
+        """
+        block = self._terminal_branch(reset_sh_content)
+        gate = block.index('if [[ "$ENV_WIPE_FAILED" == "true" ]]')
+        rotate = block.index("    rotate_hotspot_password_for_handoff")
         assert gate < rotate, "rotation must come AFTER the #393 env-wipe abort gate"
 
     def test_plain_reset_keeps_the_password(self, reset_sh_content, tmp_path):
         """The motivating #620 case: the same owner re-provisioning their own
-        clock must not be handed a stale-credential dead end."""
+        clock must not be handed a stale-credential dead end.
+
+        litclock-dev#662: this previously executed NO script code — the harness
+        substituted a shell no-op for the whole block whenever gift_mode was
+        false, so it wrote the file, ran nothing, and asserted the file existed.
+        It now runs the real terminal branch with GIFT_MODE=false and no
+        terminal-action flag, i.e. the plain `sudo reset-setup.sh` path.
+        """
         pw, result, _ = self._run(reset_sh_content, tmp_path, "false")
         assert result.returncode == 0, result.stderr
+        assert "STUB_POWEROFF" not in result.stdout, "a plain reset must not power off"
         assert pw.exists(), "a non-gift reset must PRESERVE the hotspot password"
         assert pw.read_text(encoding="utf-8").strip() == "clockwis"
+
+    def test_reboot_path_keeps_the_password(self, reset_sh_content, tmp_path):
+        """`--reboot` is the same-owner path too: the clock stays put and comes
+        straight back up, so rotating would strand the owner's saved network."""
+        pw, result, _ = self._run(reset_sh_content, tmp_path, "false", do_reboot="true")
+        assert result.returncode == 0, result.stderr
+        assert "STUB_SYSTEMCTL reboot" in result.stdout, "the --reboot arm must reach systemctl reboot"
+        assert pw.exists(), "a --reboot reset must PRESERVE the hotspot password"
+        assert pw.read_text(encoding="utf-8").strip() == "clockwis"
+
+    def test_wipe_wifi_with_reboot_keeps_the_password(self, reset_sh_content, tmp_path):
+        """`--wipe-wifi --reboot` is docs/recovery.md's "full fresh-start", and it
+        must PRESERVE the key.
+
+        This is the case that pins the real litclock-dev#660 discriminator. A WiFi
+        wipe on its own is NOT the handoff signal: litclock-dev#620's promise is
+        that the password "survives a plain factory reset AND a WiFi reset ...
+        the motivating user is the same person re-provisioning their own clock",
+        and that user's phone is about to rejoin LitClock-Setup. Rotating here
+        would be the litclock-dev#620 bug reached through a different flag.
+
+        The signal is wipe AND power-off — WiFi gone (so a hotspot WILL be
+        raised) and the device leaving rather than coming back.
+        """
+        pw, result, _ = self._run(
+            reset_sh_content, tmp_path, "false", do_reboot="true", wipe_wifi="true"
+        )
+        assert result.returncode == 0, result.stderr
+        assert "STUB_SYSTEMCTL reboot" in result.stdout, "the --reboot arm must reach systemctl reboot"
+        assert pw.exists(), (
+            "--wipe-wifi --reboot is the same owner re-provisioning their own clock "
+            "(docs/recovery.md 'full fresh-start') and MUST preserve the key"
+        )
+        assert pw.read_text(encoding="utf-8").strip() == "clockwis"
+
+    def test_bare_wipe_wifi_keeps_the_password(self, reset_sh_content, tmp_path):
+        """Same rule with no terminal action at all — the device stays up."""
+        pw, result, _ = self._run(reset_sh_content, tmp_path, "false", wipe_wifi="true")
+        assert result.returncode == 0, result.stderr
+        assert "STUB_POWEROFF" not in result.stdout
+        assert pw.exists(), "a bare --wipe-wifi must preserve the key"
+
+    def test_survivor_check_detects_a_dangling_symlink_regardless_of_uid(self, reset_sh_content, tmp_path):
+        """Root-proof coverage of the litclock-dev#663 `-L` clause.
+
+        The parametrised shape test blocks the unlink with a 0500 parent, which
+        root ignores — so under root the dangling-symlink case skips and `-L`
+        has NO executing coverage at all. Here the survivor CONDITION is
+        evaluated directly against a dangling symlink, which needs no failed
+        unlink and therefore behaves identically for root and non-root.
+        """
+        import subprocess
+
+        state = tmp_path / "state"
+        state.mkdir()
+        (state / "hotspot-password").symlink_to(tmp_path / "does-not-exist")
+        fn = self._rotation_fn(reset_sh_content)
+        program = (
+            f"STATE_DIR={state}\n"
+            'if [[ -e "$STATE_DIR/hotspot-password" || -L "$STATE_DIR/hotspot-password" ]]; '
+            "then echo SURVIVOR; else echo CLEAR; fi\n"
+        )
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        assert "SURVIVOR" in r.stdout, "sanity: a dangling symlink must read as a survivor"
+        # And the shipped function must use that same two-clause form.
+        assert '-L "$STATE_DIR/hotspot-password"' in fn, (
+            "litclock-dev#663: `-e` alone FOLLOWS symlinks and is false for a dangling one, "
+            "so a failed unlink of one would report success"
+        )
+        bare_e_only = '[[ -e "$STATE_DIR/hotspot-password" ]] ||' in fn
+        assert not bare_e_only, "the survivor check regressed to -e only"
+
+    def test_a_surviving_staging_file_alone_fails_closed(self, reset_sh_content, tmp_path):
+        """The compgen half of the survivor check had no behavioural coverage.
+
+        The sweep test uses a writable state dir, so `rm` succeeds and the
+        survivor branch never fires — it exercises rm's glob, not the check.
+        Here only a STAGING entry survives, and it is a non-empty directory so
+        the unlink fails for root and non-root alike.
+        """
+        import subprocess
+
+        state = tmp_path / "state"
+        state.mkdir()
+        staging = state / ".hotspot-password.XYZ"
+        staging.mkdir()
+        (staging / "occupant").write_text("blocks rmdir\n", encoding="utf-8")
+        program = (
+            "set -u\n"
+            f"LITCLOCK_STATE_DIR={state}\n{self._state_dir_line(reset_sh_content)}\n"
+            'RED=""\nGREEN=""\nNC=""\n'
+            f"{self._rotation_fn(reset_sh_content)}\n"
+            "rotate_hotspot_password_for_handoff\n"
+        )
+        r = subprocess.run(
+            ["bash", "-c", program], capture_output=True, text=True, timeout=30,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        assert r.returncode != 0, (
+            "a surviving staging file holds a real past PSK and must fail the rotation closed"
+        )
+        assert "do NOT pass this device on" in r.stdout + r.stderr
+
+    @pytest.mark.parametrize(
+        ("gift", "poweroff", "wipe"),
+        [("true", "false", "false"), ("false", "true", "true")],
+        ids=["gift-mode", "pwa-factory-reset"],
+    )
+    def test_a_failed_rotation_never_reaches_poweroff(self, reset_sh_content, tmp_path, gift, poweroff, wipe):
+        """THE safety contract, and it had no test.
+
+        Every other fail-closed test calls the function as the last line of its
+        harness program, so the script's exit status IS the function's and the
+        assertion cannot distinguish `exit 1` from `return 1`. In production
+        there is no `set -e`, so a `return 1` would fall through to
+        `echo "Powering off..."; poweroff` and ship the previous owner's key
+        immediately after printing FAILED.
+
+        This runs the REAL terminal branch with an unremovable password and
+        asserts the device never powers off.
+        """
+        import subprocess
+
+        state = tmp_path / "state"
+        state.mkdir()
+        pw = state / "hotspot-password"
+        pw.mkdir()
+        (pw / "occupant").write_text("blocks rmdir\n", encoding="utf-8")
+        config = tmp_path / "config"
+        config.mkdir()
+        program = (
+            "set -u\n"
+            'poweroff() { echo "STUB_POWEROFF"; }\n'
+            'systemctl() { echo "STUB_SYSTEMCTL $*"; }\n'
+            # This repo's terminal branch calls disable_ssh_for_handoff, which
+            # upstream does not have (it was authored here, in #52/#53). Without
+            # a stub every harness run emitted "command not found" on stderr —
+            # swallowed, because the harness deliberately omits `set -e` — which
+            # both polluted assertion messages and elided this repo's security
+            # gate from every behavioural test.
+            'disable_ssh_for_handoff() { echo "STUB_SSH_GATE"; }\n'
+            f"GIFT_MODE={gift}\nDO_POWEROFF={poweroff}\nDO_REBOOT=false\nWIPE_WIFI={wipe}\n"
+            "ENV_WIPE_FAILED=false\n"
+            f"CONFIG_DIR={config}\nLITCLOCK_STATE_DIR={state}\n"
+            f"{self._state_dir_line(reset_sh_content)}\n"
+            'RED=""\nGREEN=""\nYELLOW=""\nNC=""\n'
+            f"{self._rotation_fn(reset_sh_content)}\n"
+            f"{self._terminal_branch(reset_sh_content)}"
+        )
+        r = subprocess.run(
+            ["bash", "-c", program],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        assert r.returncode != 0, "a failed rotation must abort the script"
+        assert "STUB_POWEROFF" not in r.stdout, (
+            "the device must NOT power off after a failed rotation — powering off "
+            "here ships the previous owner's key, which is the whole point of failing closed"
+        )
+        assert "STUB_SSH_GATE" not in r.stdout, (
+            "and it must NOT disable SSH either: the abort leaves the device with its "
+            "CURRENT owner, who needs remote access to diagnose the card. This is the "
+            "behavioural half of the ordering the parametrised structural test pins."
+        )
+        assert "do NOT pass this device on" in r.stdout + r.stderr
+
+    def test_reset_setup_has_no_other_state_dir_deletion(self, reset_sh_content):
+        """litclock-dev#662: `test_wifi_reset_does_not_wipe_the_state_dir` scans
+        litclock-wifi-reset.sh only, so reset-setup.sh's OWN fourteen-odd `rm`
+        calls were never checked against the #620 preserve-across-reset promise.
+
+        The rotation function is excised before scanning — it is the one place
+        that is SUPPOSED to delete the key.
+        """
+        import re as _re
+
+        fn = self._rotation_fn(reset_sh_content)
+        rest = reset_sh_content.replace(fn, "")
+        for lineno, line in enumerate(rest.splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            # Not just `rm`: `: > file` truncates, `mv` relocates, `shred -u`
+            # and `find -delete` remove. All destroy the #620 promise equally.
+            destroys = _re.search(r"\b(rm|shred|unlink|mv|truncate|find)\b", line) or _re.search(
+                r">\s*\"?\$STATE_DIR", line
+            )
+            if destroys and _re.search(r"STATE_DIR|/var/lib/litclock|hotspot-password", line):
+                raise AssertionError(
+                    f"line {lineno} deletes hotspot state outside the rotation function, "
+                    f"breaking the #620 survives-a-plain-reset promise: {line!r}"
+                )
 
     def test_state_dir_is_overridable_like_the_other_scripts(self, reset_sh_content):
         assert 'STATE_DIR="${LITCLOCK_STATE_DIR:-/var/lib/litclock}"' in reset_sh_content
@@ -871,7 +1294,12 @@ class TestHotspotPasswordResetSemantics:
 
         wifi_reset = (REPO_ROOT / "scripts" / "litclock-wifi-reset.sh").read_text()
         for lineno, line in enumerate(wifi_reset.splitlines(), 1):
-            if _re.search(r"\brm\b", line) and _re.search(r"STATE_DIR|/var/lib/litclock|hotspot-password", line):
+            # Not just `rm`: `: > file` truncates, `mv` relocates, `shred -u`
+            # and `find -delete` remove. All destroy the #620 promise equally.
+            destroys = _re.search(r"\b(rm|shred|unlink|mv|truncate|find)\b", line) or _re.search(
+                r">\s*\"?\$STATE_DIR", line
+            )
+            if destroys and _re.search(r"STATE_DIR|/var/lib/litclock|hotspot-password", line):
                 raise AssertionError(f"line {lineno} deletes state a WiFi reset must preserve (#620): {line!r}")
 
     def test_sd_cloning_rotates_the_password(self):

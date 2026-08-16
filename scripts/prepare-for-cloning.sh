@@ -17,6 +17,39 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# litclock-dev#660 — this script POWERS THE PI OFF when it finishes, so that no
+# boot can happen between preparing the card and imaging it.
+#
+# Why that is load-bearing rather than a convenience: Step 8 deletes the
+# persisted setup-WiFi key, but this script also (re-)enables
+# litclock-firstboot.service and Step 1 removes .setup-complete — which is
+# correct, because a CLONED card must run first-boot. The consequence is that
+# booting the PREPARED MASTER even once runs create_hotspot() ->
+# _load_or_create_hotspot_password(), which mints and fsyncs a fresh PERMANENT
+# key straight back into $STATE_DIR. That key then rides every clone, which is
+# exactly what Step 8 exists to prevent. The regression is silent: by then this
+# script has already printed "done" and "SD Card Ready for Cloning!".
+#
+# An accidental reboot is not the only way in. litclock-dev#659 records that the
+# prepared card's intended end state is indistinguishable from a brick (frozen
+# panel, port 80 refused), so power-cycling it "to see if it is alive" is a
+# realistic operator move — and that is the exact action that resurrects the key.
+#
+# --no-poweroff opts out for testing and CI. It prints a loud warning instead,
+# because with it the hazard above is live again.
+POWEROFF_WHEN_DONE=true
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-poweroff) POWEROFF_WHEN_DONE=false; shift ;;
+        *)
+            echo "Usage: sudo $0 [--no-poweroff]"
+            echo "  --no-poweroff   Leave the Pi running when done. The card must NOT be"
+            echo "                  booted again before imaging (litclock-dev#660)."
+            exit 1
+            ;;
+    esac
+done
+
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
    echo -e "${RED}This script must be run as root (sudo)${NC}"
@@ -223,11 +256,27 @@ echo "========================================"
 echo -e "${GREEN}  SD Card Ready for Cloning!${NC}"
 echo "========================================"
 echo ""
-echo "Next steps:"
-echo "1. Shut down the Pi:  sudo shutdown -h now"
-echo "2. Remove the SD card"
-echo "3. Clone it using Win32 Disk Imager or dd"
-echo "4. Write clones to new SD cards"
+if [[ "$POWEROFF_WHEN_DONE" == "true" ]]; then
+    echo "Next steps:"
+    echo "1. Wait for the green activity LED to stop, then remove the SD card"
+    echo "2. Clone it using Win32 Disk Imager or dd"
+    echo "3. Write clones to new SD cards"
+    echo ""
+    echo -e "${YELLOW}Do NOT power this card on again before you image it.${NC}"
+    echo -e "${YELLOW}A single boot re-creates the setup-WiFi key this script just${NC}"
+    echo -e "${YELLOW}removed, and every clone would then share it (litclock-dev#660).${NC}"
+else
+    echo "Next steps:"
+    echo "1. Shut down the Pi:  sudo shutdown -h now"
+    echo "2. Remove the SD card"
+    echo "3. Clone it using Win32 Disk Imager or dd"
+    echo "4. Write clones to new SD cards"
+    echo ""
+    echo -e "${RED}--no-poweroff was used, so this Pi is still running.${NC}"
+    echo -e "${RED}Do NOT let it boot again before imaging: a single boot re-creates${NC}"
+    echo -e "${RED}the setup-WiFi key this script just removed, and every clone would${NC}"
+    echo -e "${RED}then share it (litclock-dev#660).${NC}"
+fi
 echo ""
 echo "When a cloned card boots, it will:"
 echo "- Show 'Welcome!' on the e-ink display"
@@ -236,3 +285,24 @@ echo "- Display QR code for phone setup"
 echo ""
 echo -e "Tip: To reconfigure without a full clone reset, use ${YELLOW}scripts/reset-setup.sh${NC} instead."
 echo ""
+
+# litclock-dev#660 — power off LAST, after the operator has seen the whole
+# summary above, so nothing can boot this card before it is imaged. Mirrors
+# gift mode in reset-setup.sh, which powers off for the same reason: the device
+# is leaving, and a boot in between would undo the step that made it safe to.
+if [[ "$POWEROFF_WHEN_DONE" == "true" ]]; then
+    echo "Powering off now so the card cannot boot before you image it."
+    # litclock-dev#660 review: `poweroff` can fail (logind/D-Bus unavailable is a
+    # realistic state on the same degrading card Step 8 exists to catch). Under
+    # `set -e` an unchecked failure would kill the script right after printing
+    # the line above, leaving the operator a false statement, no fallback, and a
+    # running Pi they believe is off — while "remove the SD card" is step 1 of
+    # what they just read.
+    poweroff || {
+        echo -e "${RED}Power-off FAILED — the Pi is still running.${NC}"
+        echo -e "${RED}Run 'sudo shutdown -h now' and wait for it to halt BEFORE${NC}"
+        echo -e "${RED}removing the card. Do not let it boot again first: a single${NC}"
+        echo -e "${RED}boot re-creates the key just removed (litclock-dev#660).${NC}"
+        exit 1
+    }
+fi

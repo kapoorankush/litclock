@@ -14,7 +14,7 @@ Flash the released LitClock image onto one Pi and finish setup — see [Flash th
 sudo ./scripts/prepare-for-cloning.sh
 ```
 
-This script will:
+This script will (and then power the Pi off):
 - Remove the setup-complete flag
 - Clear your API key and location
 - Optionally clear WiFi credentials
@@ -23,7 +23,9 @@ This script will:
 
 ## 3. Clone the SD Card
 
-Shut down the Pi and remove the SD card.
+The script powers the Pi off itself when it finishes (litclock-dev#660), so just wait for the activity LED to stop and remove the SD card.
+
+**Do not power the card on again before you image it.** A single boot re-creates the setup-WiFi password the script just removed, and every clone taken afterwards would share it. If you need to inspect the prepared card, re-run the script with `--no-poweroff`.
 
 **On Windows:**
 - Use [Win32 Disk Imager](https://win32diskimager.org/) to read the SD card to an `.img` file

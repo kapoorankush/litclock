@@ -1,5 +1,6 @@
 """Tests for scripts/prepare-for-cloning.sh (issue #160)."""
 
+import os
 import re
 import shlex
 import subprocess
@@ -316,7 +317,7 @@ def test_step_succeeds_when_the_state_dir_does_not_exist(tmp_path):
 
 
 def test_failure_tells_the_operator_what_actually_went_wrong(tmp_path):
-    """"Could not remove" does not tell them which remedy applies.
+    """ "Could not remove" does not tell them which remedy applies.
 
     A read-only remount means the card is dying; an ownership drift means it
     is fixable in place. litclock-dev#649's whole thesis is that the operator was told
@@ -330,6 +331,141 @@ def test_failure_tells_the_operator_what_actually_went_wrong(tmp_path):
     result = _run_step(tmp_path)
 
     assert result.returncode == 1
-    assert "Is a directory" in result.stdout, (
-        f"rm's cause must reach the operator, not /dev/null: {result.stdout!r}"
-    )
+    assert "Is a directory" in result.stdout, f"rm's cause must reach the operator, not /dev/null: {result.stdout!r}"
+
+
+class TestNoBootBeforeImaging:
+    """litclock-dev#660 — the prepared master must not be bootable between
+    Step 8 (which deletes the persisted setup-WiFi key) and imaging.
+
+    Step 8 is only meaningful if nothing re-creates the key afterwards. But this
+    same script re-enables litclock-firstboot.service and Step 1 removes
+    .setup-complete -- both correct, because a CLONED card must run first-boot --
+    so a single boot of the MASTER runs create_hotspot() ->
+    _load_or_create_hotspot_password(), which mints and fsyncs a fresh permanent
+    key straight back. Every clone would then carry it, which is precisely what
+    Step 8 exists to prevent, and silently: the success banner has already printed.
+    """
+
+    @staticmethod
+    def _tail(content):
+        """Everything after the success banner — where the terminal action lives."""
+        idx = content.rfind("SD Card Ready for Cloning!")
+        assert idx != -1, "success banner missing"
+        return content[idx:]
+
+    def test_powers_off_by_default(self, prepare_sh_content):
+        tail = self._tail(prepare_sh_content)
+        assert re.search(r"(?m)^\s*poweroff( \|\||$)", tail), (
+            "litclock-dev#660: clone prep must power the Pi off so the card cannot "
+            "boot before imaging (gift mode powers off for the same reason)"
+        )
+
+    def test_poweroff_is_the_last_action_and_follows_the_key_removal(self, prepare_sh_content):
+        """Ordering is the whole point: powering off BEFORE the key is deleted
+        would leave the key on the card."""
+        rm_idx = prepare_sh_content.index('rm -f "$STATE_DIR/hotspot-password"')
+        # Anchor on the CALL. A bare rindex("poweroff") also matches the
+        # "--no-poweroff was used" echo further down, so it stayed true even
+        # with the real call deleted entirely.
+        calls = [m.start() for m in re.finditer(r"(?m)^\s*poweroff( \|\||$)", prepare_sh_content)]
+        assert len(calls) == 1, f"expected exactly one poweroff call, found {len(calls)}"
+        assert rm_idx < calls[0], "the key removal must happen before the poweroff"
+
+    def test_poweroff_is_gated_so_it_can_be_opted_out(self, prepare_sh_content):
+        """CI and bench iteration need a way out, but it must be explicit.
+
+        Checks the guard IMMEDIATELY enclosing the poweroff, not merely that a
+        POWEROFF_WHEN_DONE conditional appears somewhere earlier -- the tail also
+        contains one around the "Next steps" copy, and an earlier-anywhere check
+        stayed green when the real guard was deleted.
+        """
+        # Assert the case ARM, not the string — the comment at the top of the
+        # script and the usage echo both contain "--no-poweroff", so a bare
+        # substring check stayed green with the whole parser deleted.
+        assert re.search(r"--no-poweroff\)\s*POWEROFF_WHEN_DONE=false", prepare_sh_content), (
+            "the --no-poweroff case arm must set POWEROFF_WHEN_DONE=false"
+        )
+        assert "POWEROFF_WHEN_DONE=true" in prepare_sh_content, "power-off must be the DEFAULT"
+        lines = self._tail(prepare_sh_content).splitlines()
+        po = next(i for i, ln in enumerate(lines) if re.match(r"^\s*poweroff( \|\||$)", ln))
+        assert lines[po].startswith("    "), "poweroff must be indented inside a conditional, not top-level"
+        # Walk back to the nearest enclosing `if` at column 0.
+        opener = next(
+            (lines[i] for i in range(po - 1, -1, -1) if lines[i].startswith("if ") or lines[i] == "fi"),
+            None,
+        )
+        assert opener is not None and 'if [[ "$POWEROFF_WHEN_DONE" == "true" ]]' in opener, (
+            f"poweroff's enclosing conditional must be the POWEROFF_WHEN_DONE guard, got: {opener!r}"
+        )
+
+    def test_no_poweroff_path_warns_about_the_reboot_hazard(self, prepare_sh_content):
+        """With --no-poweroff the hazard is live again, so the operator has to be
+        told in the same breath -- a silent opt-out would be worse than no flag.
+
+        Scoped to the opt-out branch specifically. The default branch carries a
+        near-identical warning, so a tail-wide search stayed green even with the
+        opt-out branch's warning gutted.
+        """
+        tail = self._tail(prepare_sh_content)
+        start = tail.index("else")
+        optout = tail[start : tail.index("fi", start)]
+        assert "no-poweroff was used" in optout, "the opt-out branch must say the Pi is still running"
+        assert re.search(r"re-creates", optout), (
+            "the opt-out branch must name the consequence of booting before imaging"
+        )
+        assert "litclock-dev#660" in optout, "point the operator at the issue that explains why"
+
+    def test_stale_manual_shutdown_instruction_is_gone_from_the_default_path(self, prepare_sh_content):
+        """The old copy told the operator to `sudo shutdown -h now` themselves.
+        On the default path the script has already done it, and leaving the
+        instruction would imply the Pi is still up."""
+        tail = self._tail(prepare_sh_content)
+        default_branch = tail[: tail.index("else")] if "else" in tail else tail
+        assert "sudo shutdown -h now" not in default_branch, (
+            "the default (power-off) path must not tell the operator to shut down by hand"
+        )
+
+    @staticmethod
+    def _run_flag_parser(argv):
+        """Execute the REAL flag-parsing prologue.
+
+        litclock-dev#660 review: every other test in this class is a static
+        assertion on the file text, so renaming POWEROFF_WHEN_DONE or setting it
+        to `0` instead of `false` in the `--no-poweroff` arm left all of them
+        green while --no-poweroff silently powered off a bench or CI Pi.
+        """
+        import subprocess
+
+        content = PREPARE_SH.read_text()
+        start = content.index("POWEROFF_WHEN_DONE=true")
+        loop = content.index("while [[ $# -gt 0 ]]")
+        m = re.search(r"(?m)^done$", content[loop:])
+        assert m, "could not find the end of the argument loop"
+        prologue = content[start : loop + m.end()]
+        program = f'{prologue}\nprintf "RESULT=%s\\n" "$POWEROFF_WHEN_DONE"\n'
+        return subprocess.run(
+            ["bash", "-c", program, "bash", *argv],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+
+    def test_flag_parser_defaults_to_powering_off(self):
+        r = self._run_flag_parser([])
+        assert r.returncode == 0, r.stderr
+        assert "RESULT=true" in r.stdout, f"default must be power-off, got {r.stdout!r}"
+
+    def test_flag_parser_honours_no_poweroff(self):
+        r = self._run_flag_parser(["--no-poweroff"])
+        assert r.returncode == 0, r.stderr
+        assert "RESULT=false" in r.stdout, (
+            "--no-poweroff must set POWEROFF_WHEN_DONE to the literal string the "
+            f"guard compares against, got {r.stdout!r}"
+        )
+
+    def test_flag_parser_rejects_unknown_flags(self):
+        r = self._run_flag_parser(["--wat"])
+        assert r.returncode != 0, "an unknown flag must not be silently ignored"
+        assert "--no-poweroff" in r.stdout, "usage text must document the real flag"
