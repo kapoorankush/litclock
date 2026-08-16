@@ -11,9 +11,14 @@ These tests guard:
      has executable mode bits in the repo (the install paths use
      `install -m 0755`, but a bare `cp` somewhere would inherit the
      repo mode, so keep it +x here).
-  2. The gate on `.handoff-complete` is present (regression guard —
-     without it, the dispatcher storms during first-boot hotspot
-     teardown and queues litclock.service before the clock is ready).
+  2. The gate on `.handoff-complete` is PRESENT — presence only. Its
+     POSITION is what litclock-dev#645 got wrong, and this file could not see
+     that: the string was there the whole time the bug was live, so
+     this assertion passed identically before and after the fix. The
+     position is asserted behaviourally in
+     tests/test_nm_dispatcher_behavior.py::TestPreHandoff. Keep both —
+     this one is a cheap "someone deleted the gate" tripwire, not the
+     regression guard it was originally billed as.
   3. The interface filter (`wlan0`) is present (regression guard —
      dispatcher should only fire for the WiFi adapter).
   4. update.sh and pi-gen both install the file with the correct mode +
@@ -64,7 +69,13 @@ class TestDispatcherFile:
     def test_gates_on_handoff_complete_marker(self):
         # Without this gate, the dispatcher would fire during first-boot
         # hotspot teardown and queue litclock.service before the clock is
-        # ready to render real quotes. Regression guard.
+        # ready to render real quotes.
+        #
+        # PRESENCE ONLY — this is the test litclock-dev#645 walked straight past. The
+        # gate was in the wrong PLACE for the whole life of the bug and this
+        # assertion never noticed, because the string it greps for never
+        # moved out of the file. tests/test_nm_dispatcher_behavior.py owns the
+        # position; this stays as a cheap "someone deleted it" tripwire.
         body = DISPATCHER.read_text()
         assert "/etc/litclock/.handoff-complete" in body, "dispatcher must check handoff-complete marker before firing"
 

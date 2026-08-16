@@ -4,9 +4,14 @@
 # DHCP churn (router reboot, WiFi reconnect, lease expiry). Fixes the
 # UX side of #309.
 #
-# Gated on /etc/litclock/.handoff-complete so it does NOT fire during
-# first-boot hotspot teardown — during setup, litclock.service isn't
-# running yet and there's nothing to repaint.
+# The RE-RENDER is gated on /etc/litclock/.handoff-complete so it does
+# NOT fire during first-boot hotspot teardown — during setup,
+# litclock.service isn't running yet and there's nothing to repaint.
+# The bookkeeping above that gate (the collected marker and the
+# last-rendered-ip file) is deliberately NOT gated: see litclock-dev#645.
+#
+# Events for our OWN setup hotspot are dropped entirely, above both —
+# see the guard below.
 #
 # Install: scripts/update.sh (Phase 5c) and
 # pi-gen/stage3/03-install-services/00-run.sh copy this file to
@@ -23,20 +28,56 @@ set -eu
 INTERFACE="${1:-}"
 ACTION="${2:-}"
 
+# Our own setup access point, as created by src/wifi_provision.py. These MUST
+# stay in lockstep with HOTSPOT_CON_NAME / HOTSPOT_GATEWAY there (and with
+# HOTSPOT_GATEWAY_IP in src/setup_server.py); a shell script cannot import
+# them, so tests/test_nm_dispatcher_behavior.py asserts the parity instead.
+HOTSPOT_CON_NAME=litclock-hotspot
+HOTSPOT_GATEWAY=10.42.0.1
+
 # Only react to events on the WiFi interface. The Pi Zero 2W stock
 # image only ever brings up wlan0; this filter also keeps us safe if
 # the user later adds USB ethernet or a USB-WiFi dongle that grabs a
 # different name and shouldn't trigger our re-render.
 [ "$INTERFACE" = "wlan0" ] || exit 0
 
-# Skip until the first-boot handoff is done. Without this gate, every
-# hotspot teardown during initial setup would queue a litclock.service
-# start before the service is ready to render real quotes.
-[ -f /etc/litclock/.handoff-complete ] || exit 0
-
 case "$ACTION" in
     up|dhcp4-change|dhcp6-change) ;;
     *) exit 0 ;;
+esac
+
+CURRENT_IP=$(ip -4 -o addr show wlan0 2>/dev/null | awk 'NR==1{split($4,a,"/"); print a[1]}' || true)
+
+# Ignore our own setup hotspot (litclock-dev#645 /review). During first-boot, wlan0
+# carries the hotspot's static 10.42.0.1 and NM fires `up` for it on the same
+# interface — so with the handoff gate moved down, that address would be
+# recorded as the clock's LAN IP. That is worse than the bug being fixed:
+# _anomalies.py only tests lan_ip for truthiness, so a device that NEVER
+# acquired a real address would report a healthy network on the strength of
+# its own hotspot. Marking the Network section "collected" here would mute the
+# grey Not-yet-collected tier on the same false premise.
+#
+# CONNECTION_ID is set by NM for the events we handle; the address comparison
+# is the backstop for anything that reaches here without it.
+if [ "${CONNECTION_ID:-}" = "$HOTSPOT_CON_NAME" ] || [ "${CURRENT_IP:-}" = "$HOTSPOT_GATEWAY" ]; then
+    exit 0
+fi
+
+# Treat a non-routable address as no address at all (litclock-dev#645 /review). If DHCP
+# fails on the owner's network, NM self-assigns a 169.254.x link-local — and
+# _anomalies.py:134 only tests lan_ip for truthiness, so recording that string
+# would suppress the missing-IP anomaly forever, on the very fresh-provision
+# path this fix targets. That inverts the change: a clock that never got a
+# lease would report itself healthy where it previously (correctly) tripped at
+# 300s. Blanking rather than exiting is deliberate — this IS a real network
+# event on a real SSID, so the collected marker below should still refresh;
+# it is only the ADDRESS that must not be believed.
+#
+# Same rejection the two QR producers already apply before encoding a URL,
+# kept in the same order: src/literary_clock.py (_resolve_lan_ip) and
+# src/control_server/handoff.py.
+case "${CURRENT_IP:-}" in
+    169.254.*|127.*) CURRENT_IP="" ;;
 esac
 
 # Record "network data has been collected on this Pi" in the persistent
@@ -46,6 +87,18 @@ esac
 # marker. This is what makes the grey "Not yet collected" tier stop flashing
 # for ~5-10s after every reboot (the marker survives reboot; the old
 # /run/litclock check did not). Best-effort: the helper always exits 0.
+#
+# Also BEFORE the .handoff-complete gate further down (litclock-dev#645). The grey
+# "Not yet collected" tier is the fallback that would otherwise have muted the
+# false anomaly, but _anomalies.py requires an empty SSID to mute — and on
+# this path SSID is populated while this marker is missing, so the section
+# rendered as a fault instead. Collecting network data is inert; gating it
+# bought nothing and cost the mute.
+#
+# The `|| true` is load-bearing, not decoration: under `set -e` a helper that
+# exits non-zero would abort the script HERE, before the marker write below —
+# litclock-dev#645's exact shape, one token away. tests/test_nm_dispatcher_behavior.py
+# pins both the failing helper and the missing one.
 #
 # #387 C1: this dispatcher runs as ROOT, so it invokes the ROOT-OWNED copy at
 # /usr/local/lib/litclock — NOT /home/pi/litclock/scripts (pi-writable, which
@@ -67,6 +120,12 @@ fi
 # minute-tick render and burning panel cycles). Marker lives on tmpfs;
 # tmpfiles.d/litclock.conf creates /run/litclock at every boot, so the
 # `mkdir -p` below is defensive only.
+#
+# The filename says "rendered" for historical reasons and is load-bearing on
+# the read side (control_server._network and routes/diagnostics/_collectors.py
+# each hardcode it, and the LITCLOCK_DIAG_LAST_IP_PATH override names it).
+# Since litclock-dev#645 it means "last address RECORDED" — pre-handoff it is written
+# with no render following.
 MARKER=/run/litclock/last-rendered-ip
 # #387 C2: this dispatcher runs as ROOT and /run/litclock is 0755 pi pi, so a
 # pi-planted symlink at $MARKER would make the read/write below touch an
@@ -77,21 +136,42 @@ MARKER=/run/litclock/last-rendered-ip
 if [ -L "$MARKER" ]; then
     rm -f "$MARKER" 2>/dev/null || true
 fi
-CURRENT_IP=$(ip -4 -o addr show wlan0 2>/dev/null | awk 'NR==1{split($4,a,"/"); print a[1]}' || true)
 LAST_IP=""
 if [ -n "${CURRENT_IP:-}" ] && [ -f "$MARKER" ] && [ ! -L "$MARKER" ]; then
-    LAST_IP=$(cat "$MARKER" 2>/dev/null || true)
+    # Bounded, whitespace-stripped read (litclock-dev#645 /review). $MARKER lives in a
+    # pi-writable directory but is read and re-emitted by ROOT below, so its
+    # CONTENT is untrusted even though the symlink guards prove the node is a
+    # regular file. Unbounded, an oversized value makes the `logger` execve
+    # fail E2BIG and `set -e` abort the script before the render; unstripped,
+    # an embedded newline forges a standalone dispatcher line in journald —
+    # the evidence channel this script exists to feed. Same shape as
+    # scripts/shutdown-splash.sh's root read of /run/litclock/shutdown-action.
+    LAST_IP=$(head -c 64 "$MARKER" 2>/dev/null | tr -d '[:space:]' || true)
     if [ "$CURRENT_IP" = "$LAST_IP" ]; then
-        # Same IP as the last render — nothing to repaint. Stay quiet
-        # so the journal doesn't fill up under long-stable connections.
+        # Same IP as the last recorded address — nothing new to repaint. Stay
+        # quiet in BOTH handoff states so the journal doesn't fill up under
+        # long-stable connections; NM fires `up` and `dhcp4-change` back to
+        # back and the second one lands here, so this is the common path.
         exit 0
     fi
 fi
 
-# Record the new IP BEFORE firing the render so a rapid follow-up event
-# (e.g., `up` immediately followed by `dhcp4-change`) doesn't double-fire.
+# Record the current IP. Unconditional bookkeeping since litclock-dev#645:
+# control_server._network.read_lan_ip serves the /diagnostics Network section
+# straight from this file, so it must be written on every qualifying event
+# including the pre-handoff `up`, where no render follows at all. It also
+# still coalesces a rapid follow-up event (e.g. `up` immediately followed by
+# `dhcp4-change`) once the gate below is open.
 if [ -n "${CURRENT_IP:-}" ]; then
-    mkdir -p /run/litclock 2>/dev/null || true
+    # `install -d` with the ownership spelled out, not `mkdir -p` (litclock-dev#645
+    # /review). tmpfiles.d/litclock.conf declares this dir 0755 pi pi at
+    # sysinit, so this is defensive only — but this script runs as ROOT, and
+    # since the gate moved it runs EARLIER in boot, so on any boot where the
+    # dir is genuinely absent a bare mkdir would create it root:root and every
+    # pi-side writer would fail silently for the rest of that boot: the
+    # current-quote file and LKG heartbeat in literary_clock.py, update_state,
+    # the weather cache, and the gift-message write in routes/system.py.
+    install -d -o pi -g pi -m 0755 /run/litclock 2>/dev/null || true
     # Re-drop a symlink immediately before the redirect (best-effort vs a
     # persistent-symlink attack; see the C2 note above).
     if [ -L "$MARKER" ]; then
@@ -100,11 +180,46 @@ if [ -n "${CURRENT_IP:-}" ]; then
     printf '%s\n' "$CURRENT_IP" > "$MARKER" 2>/dev/null || true
 fi
 
+# Skip the RE-RENDER until the first-boot handoff is done. Without this gate,
+# every hotspot teardown during initial setup would queue a litclock.service
+# start before the service is ready to render real quotes.
+#
+# litclock-dev#645: this gate used to sit at the top of the script, before the two
+# bookkeeping writes above. The ordering on a fresh provision is fixed —
+# wlan0's `up` onto the user's SSID fires BEFORE .handoff-complete is
+# written — so the one event that would have recorded the new address was
+# always the one skipped, and /run/litclock/last-rendered-ip stayed absent
+# until the next DHCP renewal (observed lease: 7200s). The diagnostics Network
+# section reads lan_ip from that marker, so every freshly provisioned clock
+# showed a false "Connection issue" for up to an hour, past the 300s
+# ANOMALY_LAN_IP_SETTLE_S grace. Recording the current IP is inert; only the
+# render needs suppressing, so only the render is gated.
+if [ ! -f /etc/litclock/.handoff-complete ]; then
+    # Pre-handoff, so there is nothing to repaint yet — but say so, rather
+    # than exiting silently. This is the window litclock-dev#645 hid in. The message
+    # branches on whether anything was actually written: claiming a write the
+    # `[ -n "$CURRENT_IP" ]` guard above skipped would be the same defect as
+    # the handoff timer in litclock-dev#646.
+    if [ -n "${CURRENT_IP:-}" ]; then
+        logger -t litclock-dispatcher \
+            "wlan0 IP recorded as ${CURRENT_IP} (was: ${LAST_IP:-none}); handoff not complete — not rendering" \
+            || true
+    else
+        logger -t litclock-dispatcher \
+            "wlan0 up with no IPv4 address yet; nothing recorded, handoff not complete — not rendering" \
+            || true
+    fi
+    exit 0
+fi
+
 # Log one line per real IP change so an operator debugging a stale-QR
 # report has journalctl evidence the dispatcher fired. Volume is tiny
 # (most days: zero entries thanks to the same-IP short-circuit above).
+# `|| true` so a logging hiccup can never abort the script under `set -e`
+# and swallow the render below.
 logger -t litclock-dispatcher \
-    "wlan0 IP changed to ${CURRENT_IP:-unknown} (was: ${LAST_IP:-none}); re-rendering"
+    "wlan0 IP changed to ${CURRENT_IP:-unknown} (was: ${LAST_IP:-none}); re-rendering" \
+    || true
 
 # --no-block: NM dispatcher scripts MUST return promptly (NM logs slow
 # scripts as warnings, may kill long-runners). Best-effort: if systemctl

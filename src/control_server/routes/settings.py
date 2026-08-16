@@ -855,7 +855,7 @@ def _save_and_apply(
     # is an implicit "Done" — but only complete if the timezone is now known
     # (e.g. the user just set a city, resolving coords + tz). No-op outside the
     # handoff phase. Never starts a wrong-time clock (design-review A2).
-    handoff.complete_if_timezone_known(current_app)
+    handoff.complete_if_timezone_known(current_app, handoff.TRIGGER_SETTINGS_SAVE)
 
     body: dict[str, Any] = {
         "ok": True,

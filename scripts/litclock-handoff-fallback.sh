@@ -33,8 +33,16 @@ if [[ -z "$lat_val" ]]; then
     exit 0
 fi
 
+# The `handoff: completed via ...` phrasing is deliberate and must match
+# control_server/handoff.py's TRIGGER_* lines verbatim (litclock-dev#646). This script is
+# a sixth completion path, and it is the one that runs precisely when
+# control_server is broken — so an operator grepping the canonical string on a
+# rescued Pi previously got NOTHING and would conclude the handoff never
+# completed. That is the same wrong-conclusion class litclock-dev#646 exists to kill.
+# tests/test_control_server_handoff.py asserts the two spellings agree.
 if touch "$HANDOFF_FLAG" 2>/dev/null; then
-    echo "handoff-fallback: wrote $HANDOFF_FLAG (control_server did not complete the handoff in time)"
+    echo "handoff: completed via the last-resort fallback timer (control_server did not complete the handoff in time)"
+    echo "handoff-fallback: wrote $HANDOFF_FLAG"
 else
     echo "handoff-fallback: could not write $HANDOFF_FLAG" >&2
     exit 1
