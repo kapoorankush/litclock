@@ -1,5 +1,6 @@
 """Tests for scripts/reset-setup.sh (issue #160)."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -194,6 +195,32 @@ class TestGiftMode:
         poweroff_idx = block.rfind("\n    poweroff")
         assert gate_idx != -1 and call_idx != -1 and poweroff_idx != -1
         assert gate_idx < call_idx < poweroff_idx
+
+    def test_gift_mode_rotates_hotspot_password_before_disabling_ssh(self, reset_sh_content):
+        """litclock-dev#620 + litclock-dev#528 interact, and the order is load-bearing.
+
+        The hotspot-password rotation fails CLOSED: a read-only card or ownership
+        drift on the state dir makes it print "do NOT ship this device" and exit 1,
+        which leaves the clock with its CURRENT owner. `disable_ssh_for_handoff`
+        does not return — it is the point of no remote access.
+
+        Run SSH-off first and that abort path strips the owner's only remote way
+        in on the exact branch where they still need it to diagnose the card.
+        Rotation must come first; SSH-off is the last thing before poweroff.
+
+        Neither litclock-dev#620 nor litclock-dev#528 constrained the other, because
+        the two landed on separate repos and met for the first time in the public
+        port — so nothing pinned this until now.
+        """
+        block = self._gift_block(reset_sh_content)
+        rotate_idx = block.find('rm -f "$STATE_DIR/hotspot-password"')
+        ssh_idx = block.find("\n    disable_ssh_for_handoff")
+        assert rotate_idx != -1, "litclock-dev#620 hotspot-password rotation missing from gift block"
+        assert ssh_idx != -1, "litclock-dev#528 SSH gate missing from gift block"
+        assert rotate_idx < ssh_idx, (
+            "SSH must be disabled AFTER the hotspot-password rotation — the rotation "
+            "can exit 1 and leave the device with its current owner, who then needs SSH"
+        )
 
     def test_poweroff_mode_calls_ssh_gate_before_poweroff(self, reset_sh_content):
         """litclock-dev#636: the non-gift factory-reset copy invites "move or
@@ -719,3 +746,140 @@ class TestPowerOffMode:
         # DO_POWEROFF must not appear inside the marker-write block.
         block = reset_sh_content[first : first + 600]
         assert "DO_POWEROFF" not in block
+
+
+class TestHotspotPasswordResetSemantics:
+    """litclock-dev#620 — the persisted hotspot password survives a plain reset
+    and a WiFi reset ON PURPOSE (the owner's phone has the network saved, and a
+    changed password is a trap with no user-discoverable recovery on Android),
+    but gift mode MUST rotate it: the recipient loses nothing, and the gifter
+    must not retain a working key to the recipient's setup hotspot.
+
+    These EXECUTE the real block rather than grepping for it — a structural
+    assertion that never runs the code is not a guard (the #638 lesson). The
+    harness also sources the script's OWN `STATE_DIR=` line instead of
+    inventing one, so dropping that assignment fails the test rather than
+    silently degrading `rm -f` to a no-op path.
+    """
+
+    @staticmethod
+    def _extract_block(content):
+        """The rotation lives INSIDE the gift branch, after the #393
+        ENV_WIPE_FAILED abort gate. Extract from the echo to the `done` line."""
+        anchor = content.find("Regenerating hotspot password")
+        assert anchor != -1, "the gift-mode hotspot-password rotation is missing"
+        start = content.rfind("    echo -n", 0, anchor)
+        end = content.find('${GREEN}done${NC}"', anchor)
+        assert start != -1 and end != -1
+        return content[start : end + len('${GREEN}done${NC}"')]
+
+    @staticmethod
+    def _state_dir_line(content):
+        line = next((ln for ln in content.splitlines() if ln.startswith("STATE_DIR=")), None)
+        assert line, "reset-setup.sh must define STATE_DIR (the rotation depends on it)"
+        return line
+
+    def _run(self, content, tmp_path, gift_mode, extra=""):
+        import subprocess
+
+        state = tmp_path / "state"
+        state.mkdir()
+        pw = state / "hotspot-password"
+        pw.write_text("clockwis\n", encoding="utf-8")
+        program = (
+            "set -u  # NOT -e: reset-setup.sh deliberately omits it\n"
+            f"GIFT_MODE={gift_mode}\n"
+            f"LITCLOCK_STATE_DIR={state}\n"
+            f"{self._state_dir_line(content)}\n"
+            'RED=""\nGREEN=""\nNC=""\n'
+            f"{extra}\n"
+            + (self._extract_block(content) if gift_mode == "true" else ": # non-gift: rotation must not run\n")
+        )
+        result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        return pw, result, state
+
+    def test_gift_mode_rotates_the_password(self, reset_sh_content, tmp_path):
+        pw, result, _ = self._run(reset_sh_content, tmp_path, "true")
+        assert result.returncode == 0, result.stderr
+        assert not pw.exists(), "gift mode must rotate the hotspot password for the new owner"
+
+    def test_gift_mode_also_sweeps_orphaned_staging_files(self, reset_sh_content, tmp_path):
+        """A SIGKILL between mkstemp and os.replace leaves a 0600 staging file
+        holding a real past password; an exact-name rm would ship it."""
+        import subprocess
+
+        state = tmp_path / "state"
+        state.mkdir()
+        (state / "hotspot-password").write_text("clockwis\n", encoding="utf-8")
+        (state / ".hotspot-password.XYZ").write_text("oldsecret\n", encoding="utf-8")
+        program = (
+            "set -u  # NOT -e: reset-setup.sh deliberately omits it\nGIFT_MODE=true\n"
+            f"LITCLOCK_STATE_DIR={state}\n{self._state_dir_line(reset_sh_content)}\n"
+            'RED=""\nGREEN=""\nNC=""\n' + self._extract_block(reset_sh_content)
+        )
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr
+        assert not list(state.glob(".hotspot-password.*")), "orphaned staging secrets must be swept"
+
+    def test_gift_mode_FAILS_CLOSED_when_the_password_cannot_be_removed(self, reset_sh_content, tmp_path):
+        """`rm -f` returns 0 for a missing file but not for a read-only mount —
+        the Pi's most common degradation. Without verification the operator
+        reads 'done' and ships a device whose key the gifter still knows."""
+        import subprocess
+
+        state = tmp_path / "state"
+        state.mkdir()
+        (state / "hotspot-password").write_text("clockwis\n", encoding="utf-8")
+        state.chmod(0o500)  # unlink now fails
+        try:
+            if os.access(str(state), os.W_OK):
+                pytest.skip("running as root — unlink cannot be blocked")
+            program = (
+                "set -u  # NOT -e: reset-setup.sh deliberately omits it\nGIFT_MODE=true\n"
+                f"LITCLOCK_STATE_DIR={state}\n{self._state_dir_line(reset_sh_content)}\n"
+                'RED=""\nGREEN=""\nNC=""\n' + self._extract_block(reset_sh_content)
+            )
+            r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+            assert r.returncode != 0, "a failed rotation must abort gift prep, not print done"
+            assert "do NOT ship" in r.stdout or "do NOT ship" in r.stderr
+        finally:
+            state.chmod(0o700)
+
+    def test_rotation_is_inside_the_gift_branch_after_the_abort_gate(self, reset_sh_content):
+        """A gift prep that ABORTS leaves the device with its current owner —
+        rotating there would drop that owner into the trap #620 removes."""
+        rotate = reset_sh_content.index("Regenerating hotspot password")
+        gate = reset_sh_content.index('if [[ "$ENV_WIPE_FAILED" == "true" ]]')
+        assert gate < rotate, "rotation must come AFTER the #393 env-wipe abort gate"
+
+    def test_plain_reset_keeps_the_password(self, reset_sh_content, tmp_path):
+        """The motivating #620 case: the same owner re-provisioning their own
+        clock must not be handed a stale-credential dead end."""
+        pw, result, _ = self._run(reset_sh_content, tmp_path, "false")
+        assert result.returncode == 0, result.stderr
+        assert pw.exists(), "a non-gift reset must PRESERVE the hotspot password"
+        assert pw.read_text(encoding="utf-8").strip() == "clockwis"
+
+    def test_state_dir_is_overridable_like_the_other_scripts(self, reset_sh_content):
+        assert 'STATE_DIR="${LITCLOCK_STATE_DIR:-/var/lib/litclock}"' in reset_sh_content
+
+    def test_wifi_reset_does_not_wipe_the_state_dir(self):
+        """A substring check for 'hotspot-password' would stay green if the
+        script ever did `rm -rf $STATE_DIR` — which destroys the same
+        invariant, on the exact moved-house scenario #620 is about."""
+        import re as _re
+
+        wifi_reset = (REPO_ROOT / "scripts" / "litclock-wifi-reset.sh").read_text()
+        for lineno, line in enumerate(wifi_reset.splitlines(), 1):
+            if _re.search(r"\brm\b", line) and _re.search(r"STATE_DIR|/var/lib/litclock|hotspot-password", line):
+                raise AssertionError(f"line {lineno} deletes state a WiFi reset must preserve (#620): {line!r}")
+
+    def test_sd_cloning_rotates_the_password(self):
+        """prepare-for-cloning.sh clones ONE card into MANY for other people.
+        Without this, every clone ships the same permanent WPA2 key."""
+        clone = (REPO_ROOT / "scripts" / "prepare-for-cloning.sh").read_text()
+        assert "hotspot-password" in clone, (
+            "prepare-for-cloning.sh must clear the persisted setup-hotspot password (#620) — "
+            "otherwise every cloned card broadcasts LitClock-Setup with the SAME key"
+        )
+        assert ".hotspot-password.*" in clone, "must also sweep orphaned staging files"

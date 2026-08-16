@@ -433,3 +433,44 @@ class TestRedactingFilter:
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
+
+
+class TestNmcliArgvSecrets:
+    """litclock-dev#620 /review — nmcli takes credentials as SPACE-separated
+    argv tokens, so _PSK_RE's mandatory `[:=]` never matched them. With
+    NOPASSWD sudo on the image, sudo writes the full argv to its command-audit
+    line, journald is persistent, and the Diagnostics support bundle exports
+    that journal — so the setup PSK left the device in a file users attach to
+    GitHub issues. Tolerable while the password was regenerated every cycle;
+    #620 makes it the device's PERMANENT setup key.
+    """
+
+    def test_sudo_audit_line_no_longer_leaks_the_hotspot_password(self):
+        line = (
+            "pi : TTY=unknown ; PWD=/home/pi ; USER=root ; "
+            "COMMAND=/usr/bin/nmcli device wifi hotspot ifname wlan0 "
+            "con-name litclock-hotspot ssid LitClock-Setup password AbC12dEf"
+        )
+        out = redact_text(line)
+        assert "AbC12dEf" not in out
+        assert "LitClock-Setup" in out, "the SSID is not the secret; keep the line diagnosable"
+
+    def test_connect_psk_form_is_redacted(self):
+        out = redact_text("Running: sudo nmcli device wifi connect MyNet password hunter2secret")
+        assert "hunter2secret" not in out
+
+    def test_dotted_property_form_is_redacted(self):
+        out = redact_text("sudo nmcli connection modify litclock-hotspot wifi-sec.psk s3cretvalue")
+        assert "s3cretvalue" not in out
+
+    def test_prose_without_nmcli_is_untouched(self):
+        text = "The password is wrong, please retry"
+        assert redact_text(text) == text
+
+    def test_prose_on_an_nmcli_line_is_not_mangled(self):
+        """Over-redaction defeats the point of shipping a support bundle."""
+        out = redact_text("nmcli device wifi connect failed: the password was rejected")
+        assert "was rejected" in out, f"auxiliary verb eaten: {out}"
+
+    def test_keyed_form_still_redacted(self):
+        assert "my secret pass" not in redact_text('WIFI_PASSWORD="my secret pass"')

@@ -11,6 +11,7 @@ wave these cases through and surface the misleading nmcli error.
 
 from __future__ import annotations
 
+import os
 import re
 import string
 import subprocess
@@ -1520,3 +1521,226 @@ class TestWifiFailureClasses:
         assert isinstance(err, str)
         assert _html.escape(err) == "Incorrect WiFi password"
         assert f"{err}" == "Incorrect WiFi password"
+
+
+class TestPersistedHotspotPassword:
+    """litclock-dev#620 — the hotspot password must survive across provisioning
+    cycles, because the SSID does. Every cycle used to mint a fresh one under
+    the same name, so a phone that had joined once held a credential that no
+    longer worked. Hardware-measured 2026-08-12: iOS says "Incorrect password"
+    and offers a password field, but Android reports "No Internet Access",
+    never mentions the password, offers no field, and a QR scan does not
+    override the saved entry — no user-discoverable recovery at all.
+    """
+
+    def test_first_call_mints_and_persists(self, tmp_path):
+        path = tmp_path / "hotspot-password"
+        pw = wifi_provision._load_or_create_hotspot_password(str(path))
+        assert wifi_provision._validate_hotspot_password(pw) is None
+        assert path.read_text(encoding="utf-8").strip() == pw
+
+    def test_second_call_returns_the_SAME_password(self, tmp_path):
+        """The whole point of the issue: stability across cycles."""
+        path = str(tmp_path / "hotspot-password")
+        first = wifi_provision._load_or_create_hotspot_password(path)
+        second = wifi_provision._load_or_create_hotspot_password(path)
+        assert first == second
+
+    def test_persisted_file_is_0600(self, tmp_path):
+        path = tmp_path / "hotspot-password"
+        wifi_provision._load_or_create_hotspot_password(str(path))
+        assert (path.stat().st_mode & 0o777) == 0o600
+
+    def test_trailing_whitespace_is_stripped_not_part_of_the_secret(self, tmp_path):
+        """A hand-edited file with a trailing newline must not yield a
+        DIFFERENT password than the AP was created with."""
+        path = tmp_path / "hotspot-password"
+        path.write_text("clockwis\n\n  \n", encoding="utf-8")
+        assert wifi_provision._load_or_create_hotspot_password(str(path)) == "clockwis"
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",  # empty
+            "   \n",  # whitespace only
+            "short7",  # below WPA2's 8-char floor
+            "p" * 64,  # above the 63-char ceiling
+            "passéword",  # outside printable ASCII
+        ],
+    )
+    def test_unusable_stored_value_is_regenerated_and_rewritten(self, tmp_path, bad):
+        path = tmp_path / "hotspot-password"
+        path.write_text(bad, encoding="utf-8")
+        pw = wifi_provision._load_or_create_hotspot_password(str(path))
+        assert wifi_provision._validate_hotspot_password(pw) is None
+        # and the bad value is replaced, so the next cycle is stable again
+        assert path.read_text(encoding="utf-8").strip() == pw
+
+    def test_never_echoes_the_stored_secret_when_rejecting_it(self, tmp_path, caplog):
+        """A malformed password is still a secret; it must not reach the log."""
+        path = tmp_path / "hotspot-password"
+        path.write_text("sekritéé", encoding="utf-8")
+        with caplog.at_level("WARNING"):
+            wifi_provision._load_or_create_hotspot_password(str(path))
+        assert "sekrit" not in caplog.text
+
+    def test_unwritable_location_still_returns_a_usable_password(self, tmp_path, monkeypatch):
+        """Persistence is best-effort: a read-only filesystem must degrade to
+        today's behaviour (a per-cycle password), never block provisioning."""
+
+        def boom(*_a, **_k):
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(wifi_provision.tempfile, "mkstemp", boom)
+        pw = wifi_provision._load_or_create_hotspot_password(str(tmp_path / "hotspot-password"))
+        assert wifi_provision._validate_hotspot_password(pw) is None
+
+    def test_symlink_is_not_followed(self, tmp_path):
+        """/var/lib/litclock is 0755 pi-owned, so the entry is replaceable by an
+        unprivileged user even though the file is 0600. Refuse to read through
+        a swapped-in symlink; regenerate instead."""
+        secret = tmp_path / "elsewhere"
+        secret.write_text("attacker", encoding="utf-8")
+        link = tmp_path / "hotspot-password"
+        link.symlink_to(secret)
+        pw = wifi_provision._load_or_create_hotspot_password(str(link))
+        assert pw != "attacker"
+        assert wifi_provision._validate_hotspot_password(pw) is None
+
+    def test_create_hotspot_uses_the_persisted_password(self, tmp_path, monkeypatch):
+        """End-to-end: the value create_hotspot reports is the persisted one."""
+        path = str(tmp_path / "hotspot-password")
+        monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", path)
+        expected = wifi_provision._load_or_create_hotspot_password(path)
+
+        monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
+        monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: None)
+        monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
+        monkeypatch.setattr(
+            wifi_provision,
+            "_run_nmcli",
+            lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        result = wifi_provision.create_hotspot()
+        assert result is not None
+        assert result["password"] == expected
+
+    def test_explicit_password_still_wins(self, tmp_path, monkeypatch):
+        """--password (and the QA lab) must override the persisted value, and
+        must NOT overwrite the stored one."""
+        path = tmp_path / "hotspot-password"
+        monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", str(path))
+        stored = wifi_provision._load_or_create_hotspot_password(str(path))
+
+        monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
+        monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: None)
+        monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
+        monkeypatch.setattr(
+            wifi_provision,
+            "_run_nmcli",
+            lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        result = wifi_provision.create_hotspot(password="override1")
+        assert result["password"] == "override1"
+        assert path.read_text(encoding="utf-8").strip() == stored
+
+    # --- /review round: gaps found by mutation testing (guards that did not guard) ---
+
+    def test_symlink_is_REPLACED_not_written_through(self, tmp_path):
+        """The read side was covered; the WRITE side was not. A naive
+        open(path,'w') would push the fresh secret THROUGH an attacker-planted
+        symlink and every earlier test still passed."""
+        secret = tmp_path / "elsewhere"
+        secret.write_text("attacker", encoding="utf-8")
+        link = tmp_path / "hotspot-password"
+        link.symlink_to(secret)
+        pw = wifi_provision._load_or_create_hotspot_password(str(link))
+        assert pw != "attacker"
+        assert secret.read_text(encoding="utf-8") == "attacker", "secret leaked through the symlink"
+        assert not link.is_symlink(), "the symlink must be REPLACED, not written through"
+        assert link.read_text(encoding="utf-8").strip() == pw
+        assert (link.stat().st_mode & 0o777) == 0o600
+        assert not list(tmp_path.glob(".hotspot-password.*")), "staging file leaked"
+
+    def test_fifo_does_not_wedge_the_open(self, tmp_path):
+        """O_NONBLOCK was never exercised: deleting it left every test green,
+        while a planted FIFO would hang provisioning forever and the device
+        would never bring up a setup AP at all."""
+        import stat as _stat
+
+        path = tmp_path / "hotspot-password"
+        os.mkfifo(str(path))  # no writer: a blocking O_RDONLY open never returns
+        pw = wifi_provision._load_or_create_hotspot_password(str(path))
+        assert wifi_provision._validate_hotspot_password(pw) is None
+        assert not _stat.S_ISFIFO(os.stat(str(path)).st_mode)
+
+    def test_replace_failure_leaves_no_temp_file_holding_the_secret(self, tmp_path, monkeypatch, caplog):
+        """Everything after mkstemp was unreachable in the suite. A failing
+        os.replace would strand a 0600 file containing the LIVE password."""
+
+        def boom(*_a, **_k):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(wifi_provision.os, "replace", boom)
+        with caplog.at_level("WARNING"):
+            pw = wifi_provision._load_or_create_hotspot_password(str(tmp_path / "hotspot-password"))
+        assert wifi_provision._validate_hotspot_password(pw) is None
+        leftovers = list(tmp_path.glob(".hotspot-password.*"))
+        assert leftovers == [], f"temp file holding the live secret leaked: {leftovers}"
+        assert pw not in caplog.text
+
+    def test_preexisting_world_readable_file_is_tightened(self, tmp_path):
+        """The 0600 promise only ever held for files this code created; a 0644
+        file from an older install or a restore was accepted and left as-is."""
+        path = tmp_path / "hotspot-password"
+        path.write_text("clockwis\n", encoding="utf-8")
+        path.chmod(0o644)
+        pw = wifi_provision._load_or_create_hotspot_password(str(path))
+        assert pw == "clockwis", "a readable valid password must still be reused"
+        assert (path.stat().st_mode & 0o777) == 0o600, "must not stay world-readable"
+
+    @pytest.mark.parametrize("good", ["a" * 8, "z" * 63, "Aa1" * 4])
+    def test_valid_boundary_values_round_trip_byte_identical(self, tmp_path, good):
+        path = tmp_path / "hotspot-password"
+        path.write_text(good + "\n", encoding="utf-8")
+        assert wifi_provision._load_or_create_hotspot_password(str(path)) == good
+
+    def test_oversized_file_is_rejected_not_truncated(self, tmp_path):
+        """The read cap must never turn a huge file into an accepted prefix."""
+        path = tmp_path / "hotspot-password"
+        path.write_text("a" * 5000, encoding="utf-8")
+        pw = wifi_provision._load_or_create_hotspot_password(str(path))
+        assert wifi_provision._validate_hotspot_password(pw) is None
+        assert pw != "a" * 63, "a huge file must not be truncated into a valid password"
+
+    def test_returned_password_always_matches_disk_under_a_racing_writer(self, tmp_path, monkeypatch):
+        """If the AP advertised a password the file does not hold, the next
+        cycle strands the phone — #620 reintroduced by the fix for #620."""
+        path = tmp_path / "hotspot-password"
+        real_replace = wifi_provision.os.replace
+
+        def racing_replace(src, dst):
+            real_replace(src, dst)
+            with open(dst, "w", encoding="utf-8") as fh:  # another writer wins
+                fh.write("rivalpw1\n")
+
+        monkeypatch.setattr(wifi_provision.os, "replace", racing_replace)
+        pw = wifi_provision._load_or_create_hotspot_password(str(path))
+        assert pw == path.read_text(encoding="utf-8").strip()
+
+    def test_unreadable_existing_file_logs_loudly_before_rotating(self, tmp_path, caplog):
+        """A rotation caused by EACCES is the exact trap #620 removes, so it
+        must never be silent (it self-heals, which makes it HARDER to spot)."""
+        path = tmp_path / "hotspot-password"
+        path.write_text("clockwis\n", encoding="utf-8")
+        path.chmod(0o000)
+        try:
+            if os.access(str(path), os.R_OK):
+                pytest.skip("running as root — EACCES not reachable")
+            with caplog.at_level("ERROR"):
+                pw = wifi_provision._load_or_create_hotspot_password(str(path))
+            assert wifi_provision._validate_hotspot_password(pw) is None
+            assert "unreadable" in caplog.text.lower()
+            assert "clockwis" not in caplog.text
+        finally:
+            path.chmod(0o600)
