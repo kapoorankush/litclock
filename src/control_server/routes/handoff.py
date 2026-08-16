@@ -55,7 +55,7 @@ def done() -> tuple[object, int]:
             409,
         )
 
-    if not handoff.mark_handoff_complete(current_app):
+    if not handoff.mark_handoff_complete(current_app, handoff.TRIGGER_DONE_BUTTON):
         return envelope(
             "handoff_write_failed",
             "Could not finish setup. The clock will start on its own shortly.",

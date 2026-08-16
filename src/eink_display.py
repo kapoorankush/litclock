@@ -33,6 +33,32 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONT_PATH = os.path.join(PROJECT_ROOT, "fonts", "Literata72pt-Regular.ttf")
 FONT_PATH_BOLD = os.path.join(PROJECT_ROOT, "fonts", "Literata72pt-Black.ttf")
 
+# Side gutter for ANY text centred across the full panel, and the single text
+# budget derived from it. Two surfaces share this: the status splash
+# (_clamp_block_to_panel) and the QR splash (create_qr_display_image). Both
+# centre a single line across the whole 800px canvas, so both need the same
+# bound — and there must be exactly ONE derivation of it, or the two surfaces
+# silently disagree after a tweak to either.
+#
+# It lives in the shared Constants block because it now belongs to neither
+# consumer. It does NOT live here for an import-order reason: a module-level
+# name read from inside a function body resolves at CALL time, so the old
+# placement further down the module was never a NameError. Only the derived
+# assignment below has to follow its operand.
+#
+# STATUS_SIDE_MARGIN keeps its name despite no longer being status-specific;
+# renaming it would churn five status tests that name the symbol for reasons
+# unrelated to the QR splash.
+STATUS_SIDE_MARGIN = 20
+PANEL_TEXT_BUDGET = DISPLAY_SIZE[0] - 2 * STATUS_SIDE_MARGIN
+
+# Point sizes the QR splash draws at. Hoisted for the same reason as
+# SETUP_SMALL_FONT_PT below: a hardcoded 36/24/18 in a test silently validates
+# the wrong font after a size tweak here (litclock-dev#629 review).
+QR_TITLE_FONT_PT = 36
+QR_CAPTION_FONT_PT = 24
+QR_URL_FONT_PT = 18
+
 # Hotspot info screen layout (normal + retry variants). Both variants stack
 # their instruction block from the bottom up with these constants so the
 # 3-line retry screen and 4-line normal screen sit flush at the same
@@ -132,22 +158,28 @@ def create_qr_display_image(url: str, title: str = None, caption: str = None, qr
 
     # Load fonts
     try:
-        title_font = ImageFont.truetype(FONT_PATH_BOLD, 36)
-        caption_font = ImageFont.truetype(FONT_PATH, 24)
-        small_font = ImageFont.truetype(FONT_PATH, 18)
+        title_font = ImageFont.truetype(FONT_PATH_BOLD, QR_TITLE_FONT_PT)
+        caption_font = ImageFont.truetype(FONT_PATH, QR_CAPTION_FONT_PT)
+        small_font = ImageFont.truetype(FONT_PATH, QR_URL_FONT_PT)
     except Exception as e:
         # size= + log, never a silent 10px collapse (litclock-dev#589 item 3).
         logging.error("fonts unavailable (%s); using scaled default", e)
-        title_font = ImageFont.load_default(size=36)
-        caption_font = ImageFont.load_default(size=24)
-        small_font = ImageFont.load_default(size=18)
+        title_font = ImageFont.load_default(size=QR_TITLE_FONT_PT)
+        caption_font = ImageFont.load_default(size=QR_CAPTION_FONT_PT)
+        small_font = ImageFont.load_default(size=QR_URL_FONT_PT)
 
     # Calculate positions
     qr_x = (DISPLAY_SIZE[0] - qr_size) // 2
     qr_y = 100  # Starting Y position for QR code
 
-    # Draw title if provided
+    # Draw title if provided. Sanitize first, for the same reason the setup
+    # splash does (litclock-dev#589): this is a CLI surface
+    # (`eink_display.py qr <url> --title T --caption C`), so a control
+    # character in an argument would otherwise reach draw.text. The sibling
+    # splash has stripped these since #589; this one never did.
     if title:
+        title = _sanitize_render_text(title, "title", surface="qr splash")
+        title = _clamp_to_width(title, title_font, draw, PANEL_TEXT_BUDGET, "qr title", surface="qr splash")
         bbox = draw.textbbox((0, 0), title, font=title_font)
         title_width = bbox[2] - bbox[0]
         title_x = (DISPLAY_SIZE[0] - title_width) // 2
@@ -161,14 +193,24 @@ def create_qr_display_image(url: str, title: str = None, caption: str = None, qr
 
     # Draw caption if provided
     if caption:
+        caption = _sanitize_render_text(caption, "caption", surface="qr splash")
+        caption = _clamp_to_width(caption, caption_font, draw, PANEL_TEXT_BUDGET, "qr caption", surface="qr splash")
         bbox = draw.textbbox((0, 0), caption, font=caption_font)
         caption_width = bbox[2] - bbox[0]
         caption_x = (DISPLAY_SIZE[0] - caption_width) // 2
         caption_y = qr_y + qr_size + 20
         draw.text((caption_x, caption_y), caption, font=caption_font, fill=0)
 
-    # Draw URL in small text at bottom
-    url_display = url if len(url) < 60 else url[:57] + "..."
+    # Draw URL in small text at bottom. The old guard truncated at 60
+    # CHARACTERS, which is a pixel guard in disguise and does not hold. Every
+    # figure below is measured at QR_URL_FONT_PT against PANEL_TEXT_BUDGET
+    # (760px), which is the bound that actually applies — not the 800px panel:
+    #   'W' * 57 + '…'                  1023.4px   (the old limit, 4.3x over)
+    #   'http://' + 'W' * 38 + '.local'  768.6px   (51 chars, under the old
+    #                                               character limit, still 8.6px
+    #                                               over the pixel budget)
+    # Measure instead. tests/test_eink_wrap.py pins both numbers.
+    url_display = _clamp_to_width(url, small_font, draw, PANEL_TEXT_BUDGET, "qr url", surface="qr splash")
     bbox = draw.textbbox((0, 0), url_display, font=small_font)
     url_width = bbox[2] - bbox[0]
     url_x = (DISPLAY_SIZE[0] - url_width) // 2
@@ -391,6 +433,7 @@ def create_status_image(title: str, message: str = None, submessage: str = None)
     # the steps list (litclock-dev#319 follow-up to the wrap fix).
     if message:
         message_y = title_y + title_block_height + 30
+        message = _clamp_block_to_panel(message, message_font, draw, "status message")
         bbox = draw.textbbox((0, 0), message, font=message_font)
         msg_width = bbox[2] - bbox[0]
         msg_x = (DISPLAY_SIZE[0] - msg_width) // 2
@@ -398,6 +441,7 @@ def create_status_image(title: str, message: str = None, submessage: str = None)
 
     # Draw submessage if provided
     if submessage:
+        submessage = _clamp_block_to_panel(submessage, small_font, draw, "status submessage")
         bbox = draw.textbbox((0, 0), submessage, font=small_font)
         sub_width = bbox[2] - bbox[0]
         sub_x = (DISPLAY_SIZE[0] - sub_width) // 2
@@ -487,13 +531,18 @@ SETUP_LABEL_PASSWORD = "LitClock's WiFi password:"
 SETUP_FRAMING_LINE = "The clock makes its own WiFi for setup."
 
 
-def _sanitize_render_text(value: str | None, field: str) -> str:
+def _sanitize_render_text(value: str | None, field: str, surface: str = "setup splash") -> str:
     """Strip control characters (including newlines) from a credential before
     it is drawn on the setup splash (litclock-dev#589). This renderer treats
     its args as constants, but wifi_provision honours ``--ssid`` and a newline
     in the SSID would render multiline and collide with the password label.
     Logs when it changes the value so a misconfigured credential is never
-    silently mangled."""
+    silently mangled.
+
+    ``surface`` names the caller in the warning, for the same reason
+    _clamp_to_width takes one: the QR splash now calls this too, and journald
+    is the only diagnostic channel on this device, so a log line naming the
+    wrong screen costs real time."""
     if not value:
         return ""
     text = str(value)
@@ -504,7 +553,7 @@ def _sanitize_render_text(value: str | None, field: str) -> str:
     # range would miss the C1 + Unicode-separator class (/review).
     cleaned = "".join(ch for ch in text if ch == " " or ch.isprintable())
     if cleaned != text:
-        logging.warning("setup splash %s contained control characters; stripped for rendering", field)
+        logging.warning("%s %s contained control characters; stripped for rendering", surface, field)
     return cleaned
 
 
@@ -517,15 +566,101 @@ def _wifi_qr_escape(value: str) -> str:
     return "".join("\\" + ch if ch in '\\;,:"' else ch for ch in value)
 
 
-def _clamp_to_width(text: str, font, draw, max_w: int, field: str) -> str:
+def _collapse_newlines(text: str) -> str:
+    """Flatten multiline text to one line.
+
+    ``draw.textlength`` raises ValueError on any "\n", which would take down a
+    whole splash render. Both the single-line clamp and the row shrink ladder
+    measure before drawing, so both need this, and it lives here so the reason
+    is recorded once. Reachable with arbitrary content via
+    ``eink_display.py handoff-splash --settings-json``, which json.loads its
+    input; the sibling SSID field is defended the same way.
+    """
+    if "\n" in text or "\r" in text:
+        return " ".join(text.split())
+    return text
+
+
+def _clamp_to_width(text: str, font, draw, max_w: int, field: str, surface: str = "setup splash") -> str:
     """Single-line fit-with-ellipsis at ``max_w`` px, logging when it truncates
     so a clipped credential is never silent (litclock-dev#589). Reuses the
-    handoff splash's fit logic (_fit_ssid_to_band)."""
-    fitted = _fit_ssid_to_band(text, font, draw, max_w, max_lines=1)
+    handoff splash's fit logic (_fit_ssid_to_band).
+
+    ``surface`` names the caller in the warning. It used to be hardcoded to
+    "setup splash", which misattributed every truncation once the handoff and
+    status paths started calling this — journald is the only diagnostic channel
+    on this device, so a log line that names the wrong screen costs real time.
+
+    Newlines are collapsed first: ``draw.textlength`` raises ValueError on
+    multiline text, and before this helper was wired into _draw_dotted_row that
+    path only called ``draw.text``, which renders multiline harmlessly. Not
+    reachable from env.sh (config.load_config splits on newlines) but IS
+    reachable via ``eink_display.py handoff-splash --settings-json``, which
+    json.loads arbitrary input. create_handoff_splash_image already defends the
+    sibling SSID field against exactly this.
+    """
+    # Compare against the COLLAPSED text for the width warning, but report the
+    # collapse separately. Reassigning `text` before a single `result != text`
+    # check made newline collapse invisible: a title of "\n" collapses to "",
+    # the fit returns "", the two match, and the string vanished from the panel
+    # with nothing in journald. Two causes, two messages — silence is the one
+    # outcome this device cannot afford.
+    collapsed = _collapse_newlines(text)
+    if collapsed != text:
+        logging.warning("%s %s contained line breaks; collapsed to one line", surface, field)
+    fitted = _fit_ssid_to_band(collapsed, font, draw, max_w, max_lines=1)
     result = fitted[0] if fitted else ""
-    if result != text:
-        logging.warning("setup splash %s too wide for the panel; truncated to fit", field)
+    if result != collapsed:
+        logging.warning("%s %s too wide for the panel; truncated to fit", surface, field)
     return result
+
+
+def _clamp_block_to_panel(text: str, font, draw, field: str) -> str:
+    """Clamp every line of a status message to the panel width.
+
+    ``create_status_image`` draws its message (28pt) and submessage (20pt) with
+    a single unbounded ``draw.text``: only the TITLE has the fit-and-wrap
+    ladder. Unclamped, ``msg_x = (800 - width) // 2`` goes NEGATIVE for a long
+    string, so the text bleeds off BOTH edges and loses its head as well as its
+    tail.
+
+    Reachable, but only at the edge — state it precisely, because this docstring
+    has been wrong twice already. ``scripts/first-boot.sh`` renders
+    ``display_message "WiFi Connected" "Network: $ssid"`` with the joined
+    network's name from ``iwgetid``, and SSIDs are user-controlled up to 32
+    bytes. WIDTH depends on the glyphs: the rendered message "Network: " + 32
+    literal W's measures 1005.9px at the 28pt message font against a 760px
+    budget (the 32 W's alone are 880px — the figure is for the whole drawn
+    string, which is what actually has to fit). Every realistic 32-byte SSID
+    surveyed FITS, though: the widest plausible one found was 697px (92% of
+    budget). So this is a guard against a
+    narrow wide-glyph case plus translated copy, NOT an everyday overflow.
+    (Two earlier versions claimed the opposite in both directions: first that
+    every shipped string fit with bootcheck's 599px as the widest, then that any
+    32-byte SSID overflowed. Neither was true.)
+
+    Headroom on the fixed copy is also thinner than it looks: the widest
+    shipped string is a poweroff farewell quote at 738.9px, 21px under the
+    limit. One added comma would ellipsise it, on the one splash that persists
+    on the glass while the device sits powered off on a shelf.
+
+    Deliberately a clamp rather than a re-flow so shipped layouts stay
+    byte-identical. Line-wise so gift mode's embedded newlines survive.
+
+    KNOWN LIMIT for #532: it truncates character-wise and drops the TAIL, and
+    every shipped submessage puts the actionable part last ("... see the
+    LitClock docs.", "Then plug back in"). For translated instruction copy the
+    right primitive is the font-shrinking ladder ``_fit_title`` uses, on the
+    stated reasoning that silently cutting text is unacceptable there. This is
+    strictly better than the current bleed-off-both-edges behaviour, but it is
+    not the finished answer for translated strings.
+    """
+    max_w = PANEL_TEXT_BUDGET
+    # No `if line` guard: _clamp_to_width already returns "" for falsy input,
+    # and a mutation confirmed the conditional was a no-op branch.
+    return "\n".join(
+        _clamp_to_width(line, font, draw, max_w, field, surface="status splash") for line in text.split("\n")
+    )
 
 
 def setup_instruction_lines(
@@ -755,10 +890,69 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
 # Handoff splash layout (EPIC litclock-dev#383 PR2, litclock-dev#388). Settings summary block on the
 # left, PWA QR top-right. Column where the dotted-leader values start.
 HANDOFF_LEFT_MARGIN = 50
-HANDOFF_VALUE_COLUMN = 330
+# Gutter kept clear before a column boundary, so a clamped cell never sits flush
+# against the thing it was clamped away from. One name because four sites need
+# the same number: both budgets below and both ends of the dotted leader.
+HANDOFF_COLUMN_GUTTER = 8
+# Moved left from 330 so the value column keeps a usable budget once it is
+# bounded by the right column instead of the panel edge (see
+# HANDOFF_VALUE_BUDGET). At 330 the safe budget was 192px, which truncated
+# ordinary IP-geo cities ("Frankfurt am Main, Hesse", 253px); at 240 it is
+# HANDOFF_VALUE_BUDGET px, enough that every realistic location/timezone
+# surveyed survives INTACT — the widest take a point or two off the shrink
+# ladder rather than losing characters. The labels still clear the column: the
+# widest, "Mature quotes", is 148px and ends at x=198, leaving 34px of leader.
+HANDOFF_VALUE_COLUMN = 240
+# QR geometry, hoisted out of create_handoff_splash_image because the settings
+# block has to be budgeted against it. The QR is pasted BEFORE the rows are
+# drawn, so any row that reaches this far paints on top of it.
+HANDOFF_QR_SIZE = 200
+HANDOFF_QR_X = DISPLAY_SIZE[0] - HANDOFF_QR_SIZE - HANDOFF_LEFT_MARGIN  # 550
+HANDOFF_QR_Y = 40
+# Room a row value has before it hits the RIGHT COLUMN — not before it leaves
+# the panel. The panel edge is the wrong bound: the QR starts at x=550 and the
+# URL / "scan with your phone on:" / SSID text sit under it, so right-column ink
+# spans y≈40..364 while all four rows sit at y 200..324. Budgeting against
+# DISPLAY_SIZE[0] let a value reach x=750, straight across the QR.
+#
+# It needed no typing to reach — plain IP-geo output did it. At the old 330
+# column, "Buenos Aires, Argentina" (246px) ended at x=576, and 109 of 498 IANA
+# zones (22%), America/Los_Angeles among them, crossed into the right column.
+# The Location row lands on the QR modules; the Timezone row lands on the IP
+# fallback text printed under it. Between them they degrade both routes to the
+# PWA on the one splash whose only job is getting a phone there.
+#
+# The bound is the RIGHT COLUMN's leftmost ink, which is NOT the QR: the caveat
+# label is centred under the QR and is WIDER than it. "Scan with your phone on:"
+# measures 212px against the QR's 200px, so it starts at x=543 — 7px inboard of
+# the QR — and sits at y 274..292, overlapping the Units row at y 268..290.
+# Budgeting to HANDOFF_QR_X alone left exactly 1px of clearance there, so the
+# lane is declared explicitly instead, with room for the caveat to grow.
+# test_the_shipped_caveat_label_stays_in_its_lane pins that measurement.
+HANDOFF_RIGHT_COLUMN_X = 530
+# Widest a CENTRED right-column caption may be before its own left edge crosses
+# the lane boundary: centring at HANDOFF_QR_X means left_edge = QR_X + (QR_SIZE
+# - w)/2, so w <= QR_SIZE + 2*(QR_X - RIGHT_COLUMN_X). The rows are not the only
+# thing that can cross this line — the URL caption under the QR was drawn
+# unclamped and, for a long enough qr_url, ran the full width of the panel
+# straight through the settings block. Same bleed this PR fixes for the rows,
+# on the sibling line.
+HANDOFF_RIGHT_TEXT_BUDGET = HANDOFF_QR_SIZE + 2 * (HANDOFF_QR_X - HANDOFF_RIGHT_COLUMN_X)
+HANDOFF_VALUE_BUDGET = HANDOFF_RIGHT_COLUMN_X - HANDOFF_COLUMN_GUTTER - HANDOFF_VALUE_COLUMN
+# The LABEL column is tighter still (182px), and moving the value column left
+# tightened it further — a deliberate trade made when this fix was chosen: it
+# shifts the #532 translation pressure from the values onto the labels, where
+# the shrink ladder below absorbs it. English labels are unaffected ("Mature
+# quotes", the widest, is 148px of 182). German "Nicht jugendfreie Zitate" is
+# 242px and now shrinks rather than rendering at full size.
+HANDOFF_LABEL_BUDGET = HANDOFF_VALUE_COLUMN - HANDOFF_COLUMN_GUTTER - HANDOFF_LEFT_MARGIN
+# Floor for the row shrink ladder. Below this the value stops being readable
+# across a room, which is the whole point of the splash, so past the floor we
+# truncate instead of shrinking further.
+HANDOFF_ROW_FONT_FLOOR = 15
 HANDOFF_ROW_HEIGHT = 34
-# Short so the value never collides with the top-right QR (the "scan the QR"
-# call to action lives on its own line below the summary block).
+# Kept short so it reads as a value rather than a sentence; the QR clearance
+# it used to rely on is now enforced by HANDOFF_VALUE_BUDGET above.
 HANDOFF_NOT_DETECTED = "Not detected"
 
 # SSID caveat layout (litclock-dev#399). Painted right-column under the URL text.
@@ -779,6 +973,31 @@ HANDOFF_SSID_LINE_HEIGHT_SMALL = 22  # small_font (18pt regular)
 # copy iterations have ONE intercept point (matches the splash's other
 # user-visible strings).
 HANDOFF_CAVEAT_LABEL = "Scan with your phone on:"
+
+
+def _halve_until_close(text: str, suffix: str, font, draw, max_w: int) -> str:
+    """Cheap prefix pre-cut that keeps the fit loops below bounded.
+
+    Those loops delete ONE character and re-measure the WHOLE string, so they
+    are O(n²) in the input length: 8.6s for an 8000-char argument measured on
+    a dev box, and a Pi Zero 2W is 10-20x slower than that, against the
+    ``timeout 20`` wrapper in scripts/first-boot.sh. Not reachable from the
+    shipped call (``SETUP_URL`` is built from an IPv4-only grep, ≤28 chars) —
+    but the character guard this replaced was O(1), and measuring instead of
+    counting must not make pathological input worse than counting was.
+
+    Halves only while the halved prefix is STILL over budget, so it can never
+    cut past the answer: if ``half`` does not fit, the longest fitting prefix
+    is strictly shorter than ``half``, and everything after it is dead weight.
+    The caller's loop therefore returns exactly what it would have returned
+    unaided, after O(log n) extra measurements instead of O(n).
+    """
+    while len(text) > 64:
+        half = text[: len(text) // 2]
+        if draw.textlength(half + suffix, font=font) <= max_w:
+            break
+        text = half
+    return text
 
 
 def _fit_ssid_to_band(ssid: str, font, draw, max_w: int, max_lines: int = HANDOFF_SSID_MAX_LINES) -> list[str]:
@@ -806,13 +1025,13 @@ def _fit_ssid_to_band(ssid: str, font, draw, max_w: int, max_lines: int = HANDOF
         # Doesn't fit. If this is the last line, fit-with-ellipsis.
         if is_last:
             ellipsis = "…"
-            line = remaining
+            line = _halve_until_close(remaining, ellipsis, font, draw, max_w)
             while line and draw.textlength(line + ellipsis, font=font) > max_w:
                 line = line[:-1]
             lines.append((line + ellipsis) if line else ellipsis)
             return lines
         # Otherwise, peel off the longest prefix that fits and continue.
-        line = remaining
+        line = _halve_until_close(remaining, "", font, draw, max_w)
         while line and draw.textlength(line, font=font) > max_w:
             line = line[:-1]
         if not line:
@@ -823,19 +1042,138 @@ def _fit_ssid_to_band(ssid: str, font, draw, max_w: int, max_lines: int = HANDOF
     return lines
 
 
+def _as_bool(value) -> bool:
+    """Interpret a settings flag that may have arrived as JSON rather than a bool.
+
+    ``bool("false")`` is True, so bare truthiness inverts a flag delivered as a
+    string. Only the conventional affirmatives count as True.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _sanitize_row_value(value) -> str:
+    """Strip non-printables and collapse whitespace in an untrusted row value.
+
+    Mirrors the connected_ssid filter in create_handoff_splash_image. Keeps a
+    plain space (str.isprintable() rejects it) so multi-word city names survive.
+    Non-str input returns "" so the caller's `or HANDOFF_NOT_DETECTED` fires.
+    """
+    if not isinstance(value, str):
+        return ""
+    # Whitespace becomes a space rather than vanishing: str.isprintable() is
+    # False for TAB, so simply dropping non-printables welds the words either
+    # side of one together ("Aires,\tArgentina" -> "Aires,Argentina"). Truly
+    # invisible characters (zero-width space, bidi overrides) are not
+    # whitespace and ARE dropped, which is the point.
+    cleaned = "".join(" " if ch.isspace() else ch for ch in value if ch.isspace() or ch.isprintable())
+    return " ".join(cleaned.split())
+
+
+def _row_baseline(y: int, base_font) -> int:
+    """The baseline every cell in a row sits on.
+
+    Mixed font sizes in one row have to share a BASELINE, not a top edge. PIL's
+    default anchor is top-left, so drawing a shrunk value at the same y floats
+    it upward by the ascent difference — 7px at the 15pt floor against a 22pt
+    row, which reads as a broken line. (A first attempt nudged by half the
+    point-size delta; measured against real renders that under-corrected in
+    both directions, because ascent does not scale linearly with declared
+    size.) Callers pass anchor="ls" so this is exact rather than approximate.
+    """
+    try:
+        ascent, _ = base_font.getmetrics()
+    except Exception as e:
+        # journald is the only diagnostic channel on this device, so a silent
+        # fallback here would shift the whole settings block with no trail.
+        # The declared size is NOT the ascent (Literata is 26 at 22pt), so
+        # approximate rather than using `size` and sitting 4px high.
+        logging.error("row baseline: font reports no metrics (%s); approximating ascent", e)
+        return y + int(getattr(base_font, "size", 22) * 1.18)
+    return y + ascent
+
+
+def _fit_row_text(text: str, font, draw, budget: int, field: str):
+    """Fit ``text`` into ``budget`` px, preferring a smaller font over a
+    shorter string. Returns ``(text, font)``.
+
+    Shrinks one point at a time from the row's base size down to
+    ``HANDOFF_ROW_FONT_FLOOR``, and only truncates if it still doesn't fit at
+    the floor. This is the ``_fit_title`` primitive applied to the settings
+    rows: values here are things the reader VERIFIES (their city, their
+    timezone), so losing the tail is worse than losing a couple of points of
+    size. See HANDOFF_VALUE_BUDGET for why the budget is what it is.
+
+    Falls back to plain truncation when the font has no loadable path (the
+    ``load_default`` path taken when Literata is missing), because there is no
+    size ladder to walk in that case.
+    """
+    if not text:
+        return "", font
+    # BEFORE the first measurement: this ladder measures ahead of
+    # _clamp_to_width, which is where the collapse used to happen, so without it
+    # a single "\n" in a row value takes down the whole splash render.
+    text = _collapse_newlines(text)
+    if draw.textlength(text, font=font) <= budget:
+        return text, font
+
+    path = getattr(font, "path", None)
+    base_size = getattr(font, "size", None)
+    fitted = font
+    if path and base_size:
+        for trial in range(int(base_size) - 1, HANDOFF_ROW_FONT_FLOOR - 1, -1):
+            try:
+                candidate = ImageFont.truetype(path, trial)
+            except Exception as e:  # unreadable font file mid-ladder
+                logging.error("row shrink ladder could not load %s at %dpt (%s)", path, trial, e)
+                break
+            if draw.textlength(text, font=candidate) <= budget:
+                return text, candidate
+            fitted = candidate
+
+    # Still too wide at the floor — truncate at whatever size we reached.
+    return _clamp_to_width(text, fitted, draw, budget, field, surface="handoff splash"), fitted
+
+
 def _draw_dotted_row(draw, y, label, value, font):
     """Draw 'Label ........... Value' with a dotted leader filling the gap
     between the label and the fixed value column. Monochrome e-ink has no
-    color to lean on, so the leader is what visually ties label to value."""
-    draw.text((HANDOFF_LEFT_MARGIN, y), label, font=font, fill=0)
-    label_w = draw.textlength(label, font=font)
-    dot_start = HANDOFF_LEFT_MARGIN + label_w + 8
-    dot_end = HANDOFF_VALUE_COLUMN - 8
+    color to lean on, so the leader is what visually ties label to value.
+
+    Both the label and the value are clamped (litclock-dev#620 /review). They
+    were drawn unbounded from fixed columns, so two separate things went wrong:
+
+    1. A long value ran off the edge of the glass. ``WEATHER_LOCATION_NAME_MAX_LEN``
+       accepts 120 characters and the PWA lets the owner TYPE a place in
+       Location > Specific; that value survives reboots by design (#337
+       MODE=specific) and a WiFi reset clears .handoff-complete so this splash
+       repaints, so a long typed name genuinely reaches the panel.
+    2. Long before that, it collided with the right column — see
+       HANDOFF_VALUE_BUDGET. This one needs no typing at all: plain IP-geo
+       output reaches it.
+
+    Both columns go through ``_fit_row_text``: shrink to fit, truncate only at
+    the floor. A plain clamp was tried first and rejected on rendered evidence —
+    at the QR-safe budget it truncated ordinary IP-geo cities, and a mangled
+    city name is a worse answer than a slightly smaller one. Shrinking keeps
+    every realistic value complete and reserves truncation for input no
+    geolocation service produces.
+    """
+    baseline = _row_baseline(y, font)
+    label, label_font = _fit_row_text(label, font, draw, HANDOFF_LABEL_BUDGET, "row label")
+    draw.text((HANDOFF_LEFT_MARGIN, baseline), label, font=label_font, fill=0, anchor="ls")
+    label_w = draw.textlength(label, font=label_font)
+    # The leader stays at the row's base font so a shrunk label doesn't drag the
+    # dots down with it — the leader is a horizontal rule, not part of the text.
+    dot_start = HANDOFF_LEFT_MARGIN + label_w + HANDOFF_COLUMN_GUTTER
+    dot_end = HANDOFF_VALUE_COLUMN - HANDOFF_COLUMN_GUTTER
     dot_w = draw.textlength(".", font=font) or 1
     n_dots = max(0, int((dot_end - dot_start) // dot_w))
     if n_dots:
-        draw.text((dot_start, y), "." * n_dots, font=font, fill=0)
-    draw.text((HANDOFF_VALUE_COLUMN, y), value, font=font, fill=0)
+        draw.text((dot_start, baseline), "." * n_dots, font=font, fill=0, anchor="ls")
+    value, value_font = _fit_row_text(value, font, draw, HANDOFF_VALUE_BUDGET, "row value")
+    draw.text((HANDOFF_VALUE_COLUMN, baseline), value, font=value_font, fill=0, anchor="ls")
 
 
 def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
@@ -886,12 +1224,19 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
 
     # PWA QR, top-right. A5: encode the just-acquired IP (100% scan success vs
     # flaky Android mDNS). URL printed under it as the human-readable fallback.
-    qr_size = 200
-    qr_x = DISPLAY_SIZE[0] - qr_size - HANDOFF_LEFT_MARGIN
-    qr_y = 40
+    qr_size = HANDOFF_QR_SIZE
+    qr_x = HANDOFF_QR_X
+    qr_y = HANDOFF_QR_Y
     qr_image = generate_qr_image(qr_url).resize((qr_size, qr_size), Image.Resampling.NEAREST)
     image.paste(qr_image, (qr_x, qr_y))
-    url_text = qr_url.replace("http://", "")
+    url_text = _clamp_to_width(
+        _sanitize_row_value(qr_url).replace("http://", ""),
+        small_font,
+        draw,
+        HANDOFF_RIGHT_TEXT_BUDGET,
+        "QR url caption",
+        surface="handoff splash",
+    )
     url_w = draw.textlength(url_text, font=small_font)
     url_y = qr_y + qr_size + 6
     draw.text((qr_x + (qr_size - url_w) // 2, url_y), url_text, font=small_font, fill=0)
@@ -916,10 +1261,13 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
     if connected_ssid:
         caveat_y = url_y + HANDOFF_CAVEAT_TOP_GAP
         # Center the label under the QR (matches URL-text alignment).
-        label_w = draw.textlength(HANDOFF_CAVEAT_LABEL, font=small_font)
+        caveat_label = _clamp_to_width(
+            HANDOFF_CAVEAT_LABEL, small_font, draw, HANDOFF_RIGHT_TEXT_BUDGET, "caveat label", surface="handoff splash"
+        )
+        label_w = draw.textlength(caveat_label, font=small_font)
         draw.text(
             (qr_x + (qr_size - label_w) // 2, caveat_y),
-            HANDOFF_CAVEAT_LABEL,
+            caveat_label,
             font=small_font,
             fill=0,
         )
@@ -957,13 +1305,31 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
 
     # Settings summary block.
     draw.text((HANDOFF_LEFT_MARGIN, 158), "Your settings — auto-detected:", font=label_font, fill=0)
-    location_value = settings.get("location_name") or HANDOFF_NOT_DETECTED if has_location else HANDOFF_NOT_DETECTED
-    timezone_value = settings.get("timezone") or HANDOFF_NOT_DETECTED if has_location else HANDOFF_NOT_DETECTED
+    # Same defence the connected_ssid field above already gets, for the same
+    # reason: these are not trusted strings. location_name and timezone come
+    # from the ip-api.com response, which is fetched over plain HTTP
+    # (geocoding.py), so anyone able to answer that request controls them; the
+    # PWA's typed-place path has its own allowlist but the IP-geo write path
+    # does not go through it. Unfiltered, a bidi override or zero-width run
+    # could reorder or hide part of the very rows the splash exists to let the
+    # user verify before trusting the clock.
+    location_value = _sanitize_row_value(settings.get("location_name")) or HANDOFF_NOT_DETECTED
+    timezone_value = _sanitize_row_value(settings.get("timezone")) or HANDOFF_NOT_DETECTED
+    if not has_location:
+        location_value = timezone_value = HANDOFF_NOT_DETECTED
     rows = [
         ("Location", location_value),
         ("Timezone", timezone_value),
-        ("Units", settings.get("units_label", "Imperial (°F)")),
-        ("Mature quotes", "On" if settings.get("mature_enabled") else "Off"),
+        # Sanitized like the rows above, and for the same reason: this arrives
+        # from the same --settings-json payload. Unfiltered it accepted a bidi
+        # override, and a NON-STRING value (json.loads happily yields an int or
+        # a dict) raised TypeError out of _collapse_newlines and took the whole
+        # splash down. `or` restores the default for empty/invalid input.
+        ("Units", _sanitize_row_value(settings.get("units_label")) or "Imperial (°F)"),
+        # Not bare truthiness: the string "false" is truthy, which would invert
+        # the mature-content indicator. handoff_context() always passes a real
+        # bool, but --settings-json does not have to.
+        ("Mature quotes", "On" if _as_bool(settings.get("mature_enabled")) else "Off"),
     ]
     row_y = 200
     for label, value in rows:

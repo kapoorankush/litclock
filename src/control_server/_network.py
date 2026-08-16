@@ -168,12 +168,28 @@ def read_signal_dbm(
 
 
 def read_lan_ip(path: str | None = None) -> str | None:
-    """LAN IP last rendered by nm-dispatcher.
+    """LAN IP last RECORDED by nm-dispatcher.
 
     Reads ``/run/litclock/last-rendered-ip`` (override via ``path``). The
     dispatcher writes this on actual IP change only — so freshness reflects
-    DHCP-renew + lease-change cadence, not request cadence. Same value the
-    e-ink QR encodes.
+    DHCP-renew + lease-change cadence, not request cadence.
+
+    The filename is historical. Since litclock-dev#645 the dispatcher records the
+    address on every qualifying event, including the pre-handoff ``up`` where
+    no render follows at all — so "recorded", not "rendered", and NOT
+    necessarily the value the e-ink QR encodes (both QR producers resolve the
+    address live instead: ``literary_clock._resolve_lan_ip`` and
+    ``handoff``). The path itself is load-bearing across this module,
+    ``routes/diagnostics/_collectors``, and the ``LITCLOCK_DIAG_LAST_IP_PATH``
+    override, so it is deliberately not renamed;
+    ``tests/test_nm_dispatcher_behavior.py`` asserts the writer and both
+    readers still name the same file.
+
+    The dispatcher refuses to record an address that would lie: our own setup
+    hotspot's gateway, a DHCP-failure ``169.254.x`` link-local, or loopback.
+    :func:`~control_server.routes.diagnostics._anomalies._compute_anomalies`
+    treats any non-empty value here as a healthy network, so an unbelievable
+    address would mute a real "never acquired an IP" fault.
 
     Distinguishes ``None`` from ``""``: passing the empty string is treated
     as an intentional "disable" — the read attempts ``Path("")`` which

@@ -119,8 +119,22 @@ def timezone_known(app) -> bool:
 
 # ---------- completion ----------
 
+# Named triggers for the completion log (litclock-dev#646). journald is the only
+# diagnostic channel on this device, and "how did the handoff complete?" is a
+# question QA and support both need answered. Constants rather than literals so
+# the strings can't drift from the tests that assert the attribution.
+TRIGGER_DONE_BUTTON = "the Done button"
+TRIGGER_SETTINGS_SAVE = "a settings save"
+TRIGGER_BROWSER_TZ = "the browser-timezone fallback"
+TRIGGER_AUTO_TIMER = "the auto-complete timer"
 
-def mark_handoff_complete(app) -> bool:
+# The canonical prefix every completion line carries, in Python AND in
+# scripts/litclock-handoff-fallback.sh. It is what an operator greps for, so the
+# two implementations must not drift; the test suite asserts they agree.
+COMPLETED_VIA_PREFIX = "handoff: completed via"
+
+
+def mark_handoff_complete(app, trigger: str) -> bool:
     """Idempotently create the .handoff-complete marker. Returns True iff the
     marker exists afterward.
 
@@ -129,18 +143,42 @@ def mark_handoff_complete(app) -> bool:
     /etc/litclock, so the direct write raises PermissionError there and we fall
     back to ``sudo touch`` (scoped in sudoers/020_litclock-control). Idempotent:
     an existing marker short-circuits to success, so the three concurrent
-    completion triggers can't race destructively."""
+    completion triggers can't race destructively.
+
+    ``trigger`` names the path that got here, and is logged at the moment the
+    marker actually changes state (litclock-dev#646). Attribution belongs HERE rather
+    than at each call site for the reason the bug existed: the timer used to
+    log its own success unconditionally on expiry, so a handoff completed by
+    the Done button minutes earlier was reported in the journal as a timeout.
+    Logging where the write happens makes a false claim structurally hard —
+    the already-complete branch below says so explicitly instead."""
     path = _handoff_complete_path(app)
-    if os.path.exists(path):
-        return True
     try:
-        Path(path).touch()
+        # O_CREAT|O_EXCL, not exists()-then-touch (litclock-dev#646 /review). The two
+        # steps were not atomic, so two triggers racing produced ONE marker and
+        # TWO "completed via" lines naming different paths — the litclock-dev#646 defect
+        # reached by another route. O_EXCL makes exactly one caller the creator,
+        # so the claim and the write are the same event. It also stops the loser
+        # bumping the marker's mtime, which is the signal QA used to overturn
+        # the original misattribution in the first place.
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        # A real trigger arriving after the handoff completed. Reachable via the
+        # race above, and via the timer once its own gate has passed. Say what
+        # happened rather than nothing, and never let it read as a completion.
+        log.info("handoff: %s fired, already complete — no action", trigger)
         return True
     except OSError:
-        # PermissionError (root-owned /etc/litclock) is the expected production
-        # path; FileNotFoundError (missing dir) falls through to sudo too and
-        # then to the warning if that also fails.
+        # EACCES (root-owned /etc/litclock) is the expected production path;
+        # ENOENT (missing dir) falls through to sudo too, and then to the
+        # warning if that also fails. Note EEXIST takes precedence over EACCES
+        # in the kernel, so reaching here means the marker genuinely did not
+        # exist at that instant.
         pass
+    else:
+        os.close(fd)
+        log.info("handoff: completed via %s", trigger)
+        return True
     try:
         # sudo because /etc/litclock is root-owned and control_server runs as
         # pi. Fixed argv, no shell; matches sudoers/020_litclock-control which
@@ -149,22 +187,54 @@ def mark_handoff_complete(app) -> bool:
     except (subprocess.SubprocessError, OSError) as exc:
         # Direct + sudo both failed. Don't crash the request/timer — the
         # litclock-handoff-fallback.timer is the last-resort writer.
-        log.warning("could not write handoff marker %s: %s", path, exc)
+        log.warning("could not write handoff marker %s (%s): %s", path, trigger, exc)
         return False
-    return os.path.exists(path)
+    written = os.path.exists(path)
+    if written:
+        # THE line the device actually emits. On a Pi /etc/litclock is
+        # root-owned and control_server runs as pi, so the direct O_EXCL above
+        # always fails EACCES and every real completion arrives here — the
+        # direct path only ever runs under a writable test tmp dir. Covered
+        # explicitly in tests/test_control_server_handoff.py for that reason:
+        # /review found this line mutation-survivable when the suite exercised
+        # only the direct path.
+        log.info("handoff: completed via %s", trigger)
+    else:
+        # sudo reported success but the marker isn't there. Rare, and the
+        # fallback timer will retry — but it must not be silent, because the
+        # caller returns False and every caller treats that as "try later".
+        log.warning("handoff: %s ran the sudo write but %s is still absent", trigger, path)
+    return written
 
 
-def complete_if_timezone_known(app) -> bool:
+def complete_if_timezone_known(app, trigger: str, *, log_noop: bool = False) -> bool:
     """Complete the handoff only when the timezone is known. Used by the
     automatic (timer) and implicit (settings-save) triggers, which must not
     start a wrong-time clock. Returns True if the handoff is complete after the
-    call (including the already-complete and not-our-job cases)."""
+    call (including the already-complete and not-our-job cases).
+
+    ``trigger`` is passed through to :func:`mark_handoff_complete` so the
+    journal names the path that did the work (litclock-dev#646).
+
+    The not-our-job branch is silent by DEFAULT: outside the handoff window it
+    is a genuine no-op fired by every settings save for the life of the device,
+    and logging it would bury the one line that matters. ``log_noop=True`` opts
+    a caller in — the timer uses it, because for the timer this is a one-shot
+    and it is precisely the fact QA could not establish from the journal."""
     if not is_handoff_active(app):
+        if log_noop:
+            # is_handoff_active is false for two different reasons; say which,
+            # rather than reporting "already complete" for a device whose setup
+            # never finished.
+            if os.path.exists(_handoff_complete_path(app)):
+                log.info("handoff: %s fired, already complete — no action", trigger)
+            else:
+                log.info("handoff: %s fired but setup is not complete — no action", trigger)
         return True
     if not timezone_known(app):
-        log.info("handoff: timezone not yet known — leaving splash up (no location set)")
+        log.info("handoff: %s fired but the timezone is not yet known — leaving splash up", trigger)
         return False
-    return mark_handoff_complete(app)
+    return mark_handoff_complete(app, trigger)
 
 
 def _sudo_touch_argv(app) -> list[str]:
@@ -187,8 +257,34 @@ def start_auto_timer(app, delay: float | None = None) -> threading.Timer:
 
     def _fire() -> None:
         try:
-            if complete_if_timezone_known(app):
-                log.info("handoff: auto-completed after %.0fs timeout", delay)
+            # litclock-dev#646: this used to log "auto-completed after %.0fs timeout"
+            # whenever complete_if_timezone_known returned True — but that
+            # function returns True for the ALREADY-COMPLETE case as well, so
+            # the timer claimed credit for handoffs the Done button or a
+            # settings save had finished minutes earlier. Hardware-verified
+            # across three bench cycles: every one logged a timeout completion,
+            # and in all three the .handoff-complete mtime was untouched by the
+            # timer. On a device where journald is the only diagnostic channel,
+            # a log line asserting a false cause is worse than no line at all —
+            # it produced a wrong QA conclusion that took marker-mtime
+            # arithmetic to overturn.
+            #
+            # Attribution now happens inside mark_handoff_complete, at the
+            # moment the marker actually changes state, so the timer cannot
+            # claim work it did not do.
+            #
+            # log_noop=True because for the TIMER the no-op is worth a line:
+            # it is a one-shot, and "the timer fired and found the work already
+            # done" is precisely the fact QA could not establish from the
+            # journal. The same branch stays silent for settings saves, which
+            # pass through it for the life of the device.
+            #
+            # /review: an earlier version checked is_handoff_active HERE and
+            # returned early. That left a window — the marker could appear
+            # between this check and the identical one inside
+            # complete_if_timezone_known (an env.sh read sits between them), and
+            # the timer then emitted NOTHING at all. One check, one line.
+            complete_if_timezone_known(app, f"{TRIGGER_AUTO_TIMER} ({delay:.0f}s)", log_noop=True)
         except Exception:  # noqa: BLE001 — never let a timer thread crash silently
             log.exception("handoff: auto-complete timer failed")
 
@@ -217,7 +313,7 @@ def set_timezone_and_complete(app, timezone: str) -> tuple[bool, str | None]:
     ok, err = set_system_timezone(timezone)
     if not ok:
         return False, err
-    mark_handoff_complete(app)
+    mark_handoff_complete(app, TRIGGER_BROWSER_TZ)
     return True, None
 
 

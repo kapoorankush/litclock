@@ -35,10 +35,20 @@ ANOMALY_MEMORY_FREE_MB = 50.0
 ANOMALY_SIGNAL_DBM = -75
 # Settling grace for a missing LAN IP (litclock-dev#596). The last-rendered-ip
 # marker lives in /run (tmpfs, wiped on reboot) and nm-dispatcher writes it only
-# on an actual IP change — so for the first minutes after boot/provisioning it is
-# cold even though the box already has a working address (it is serving this very
-# page). Below this uptime a missing LAN IP is "still settling", not a fault; at
-# or above it, a genuinely absent marker means no IP was ever acquired and trips.
+# on an actual IP change — so briefly after boot it is cold even though the box
+# already has a working address (it is serving this very page). Below this
+# uptime a missing LAN IP is "still settling", not a fault; at or above it, a
+# genuinely absent marker means no IP was ever acquired and trips.
+#
+# litclock-dev#645 narrowed the cold window but did not remove it. The provisioning half
+# of the original rationale is gone: the dispatcher's marker write used to sit
+# behind the .handoff-complete gate, so on a fresh provision it was skipped
+# entirely and the marker stayed absent for a whole DHCP lease — far past this
+# grace, which is what made the false "Connection issue" reachable. The write
+# is now un-gated, so the residual cold window is boot → first wlan0 `up`
+# (seconds). The value stays 300: thresholds here are locked by
+# /plan-design-review P7.1=A, and a slow associate on a weak signal still needs
+# the room.
 ANOMALY_LAN_IP_SETTLE_S = 300
 ANOMALY_LAST_IPGEO_AGE_S = 7 * 24 * 3600
 ANOMALY_QUOTE_AGE_S = 90
@@ -86,10 +96,15 @@ def _compute_anomalies(values: dict[str, Any]) -> list[str]:
     - ``network`` — signal < -75 dBm OR (LAN IP missing AND uptime past the
       settling grace). DHCP age was a third trigger until litclock-dev#552; it fired on
       healthy clocks because a stable lease freezes ``last_dhcp_at`` at boot.
-      The LAN-IP settling grace is litclock-dev#596: the /run marker is cold for the
-      first minutes after boot/provisioning, so a brand-new owner opening
+      The LAN-IP settling grace is litclock-dev#596: the /run marker is cold between
+      boot and the first wlan0 ``up``, so a brand-new owner opening
       Diagnostics over the very connection it serves would otherwise see a
-      false "Connection issue". Note this leaves no signal for "has an IP but
+      false "Connection issue". litclock-dev#645 removed the much longer provisioning
+      window, where the dispatcher's write was gated off entirely. Any
+      non-empty ``lan_ip`` clears this trigger, which is why the dispatcher
+      refuses to record the setup hotspot's own gateway or a DHCP-failure
+      link-local — recording one would mute the fault instead of reporting
+      it. Note this leaves no signal for "has an IP but
       nothing works" — ``gateway`` is collected but never consulted, and there
       is no reachability probe. Accepted gap: the DHCP heuristic never caught
       that state either.
@@ -134,8 +149,9 @@ def _compute_anomalies(values: dict[str, Any]) -> list[str]:
     if not values.get("lan_ip"):
         # litclock-dev#596 — suppress the missing-IP trigger during the post-boot
         # settling window. The /run marker (tmpfs, dispatcher-written on IP
-        # change) is briefly cold right after provisioning while the box already
-        # has a working address. Past the grace, a still-absent marker is a real
+        # change) is briefly cold between boot and the first wlan0 `up` while
+        # the box already has a working address; litclock-dev#645 removed the far longer
+        # provisioning window. Past the grace, a still-absent marker is a real
         # "never acquired an IP" fault and trips. Every non-sane uptime fails
         # SAFE (surfaces the fault): absent (/proc/uptime unreadable → None),
         # bool (rejected like the file's other numeric reads, litclock-dev#372), negative,

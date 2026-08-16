@@ -366,5 +366,30 @@ class TestDenyListPositiveControlFromEnvSh:
         assert _PSK_RE.search(copy_payload) is None
 
 
+def test_journal_collection_excludes_the_nm_dispatcher_unit():
+    """Tripwire for a redaction asymmetry, not a live leak (litclock-dev#645 /review).
+
+    ``lan_ip`` is ``RowPolicy("redacted", "redacted")`` in
+    ``_diagnostics_privacy`` — masked in both the displayed row and the copy
+    payload, because it leaks home subnet topology. But
+    ``scripts/nm-dispatcher/99-litclock-ip-change`` logs that same address in
+    CLEAR to journald, which ships ``Storage=persistent`` on the flashed image,
+    and the support bundle exports journal tails for every unit in
+    ``DIAG_UNITS``.
+
+    Today that is safe only because dispatcher output is attributed to
+    ``NetworkManager-dispatcher.service``, which is not in the allowlist. Adding
+    it later would silently turn a policy-redacted field into cleartext in every
+    support bundle — so make that a failing test rather than a shipped
+    regression.
+    """
+    from control_server.routes.diagnostics._collectors import DIAG_UNITS
+
+    assert "NetworkManager-dispatcher.service" not in DIAG_UNITS, (
+        "the NM dispatcher logs lan_ip in clear; lan_ip is redacted policy, so collecting this "
+        "unit's journal would export it unredacted. Redact at the log site first."
+    )
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
