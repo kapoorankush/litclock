@@ -5,7 +5,7 @@
    carries the quote even before any JS runs (PRD §7.5 progressive
    enhancement).
 
-   #290: status.js polls /api/status every 30s + on visibilitychange,
+   litclock-dev#290: status.js polls /api/status every 30s + on visibilitychange,
    patching textContent / [hidden] on data-status-* hooks below so the
    hero reflects what the e-ink is currently showing. Without JS, the
    page is frozen on the first-paint values until manual reload. #}
@@ -25,7 +25,7 @@
    Inline Phosphor `clock-countdown` SVG (locked icon-per-action mapping
    line 205); emoji as UI affordance is a DESIGN.md anti-pattern (line 472).
 
-   #290: always render the banner element with [hidden] toggled — status.js
+   litclock-dev#290: always render the banner element with [hidden] toggled — status.js
    needs the node to exist so it can show/hide it without DOM creation. #}
 <div class="stale-banner" role="status" aria-live="assertive"
      data-status-stale-banner {% if not s.stale %}hidden{% endif %}>
@@ -41,7 +41,7 @@
   </span>
 </div>
 
-{# #274 follow-up #5 — Phase 3 skip banner. Renders when the last
+{# litclock-dev#274 follow-up #5 — Phase 3 skip banner. Renders when the last
    weekly update.sh run hit a flock timeout on the env.sh merge (rc=75)
    AND the marker is fresh (mtime < 1 day). Self-clears via the reader-
    side staleness clamp; the next clean Phase 3 run also removes the
@@ -62,7 +62,7 @@
    and the texture cosmetic. The quote element is `<blockquote>` so
    screen readers announce it as a quote, not a paragraph.
 
-   #290: both branches always rendered with [hidden] toggling, so the JS
+   litclock-dev#290: both branches always rendered with [hidden] toggling, so the JS
    poll can switch between "have quote" and "empty" without creating DOM. #}
 <section class="hero" role="region" aria-labelledby="status-heading">
   <div data-status-hero-full {% if not s.quote %}hidden{% endif %}>
@@ -75,7 +75,7 @@
          single string so we don't have to mirror Jinja's whitespace rules
          in JS.
 
-         #290 /review fix: the '·&nbsp;' separator stays in the template
+         litclock-dev#290 /review fix: the '·&nbsp;' separator stays in the template
          OUTSIDE the [data-status-attr-time] node that JS patches. The
          original markup put '·&nbsp;{time}' inside one node — JS's
          setText() would overwrite textContent to just the time, wiping
@@ -89,7 +89,7 @@
   <p class="hero-empty" data-status-hero-empty {% if s.quote %}hidden{% endif %}>
     <em>Starting up…</em>&nbsp; Your first quote should appear within a minute.
   </p>
-  {# #309 — graceful disconnect state. Hidden on SSR; status.js reveals
+  {# litclock-dev#309 — graceful disconnect state. Hidden on SSR; status.js reveals
      this when /api/status polling fails (network error, timeout, non-OK)
      and re-hides it on the next successful poll. role="alert" makes
      screen readers announce when it transitions from [hidden] to visible,
@@ -141,7 +141,7 @@
   </div>
   <div class="status-row">
     <dt>Last update</dt>
-    {# #330: render to_version + relative time. The version span is hidden
+    {# litclock-dev#330: render to_version + relative time. The version span is hidden
        (via [hidden]) when last_update_version is null so we still degrade
        to "just relative time" on lkg-sha-absent / fresh-install Pis.
        status.js toggles [hidden] + textContent on poll without rebuilding
@@ -155,7 +155,7 @@
   </div>
 </dl>
 
-{# #309 (3) — opportunistic mDNS bookmark prompt. status.js probes
+{# litclock-dev#309 (3) — opportunistic mDNS bookmark prompt. status.js probes
    litclock.local on first load; if the phone can resolve it on this
    network, this card unhides as a one-time opt-in to navigate to the
    address-stable URL. Add-to-Home-Screen there gives the user a

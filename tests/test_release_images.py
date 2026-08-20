@@ -75,7 +75,7 @@ def _make_repo_with_images(
     """Real git repo with scripts/ + optionally images/ + optionally manifest.json.
 
     The default manifest claims `{quote_0000_0.png: <hash>}` to match the
-    default seeded PNG pair — release_images.sh's #313 completeness gate
+    default seeded PNG pair — release_images.sh's litclock-dev#313 completeness gate
     refuses an empty `files` map, so the default fixture must mirror a real
     publisher state (every seeded main PNG appears in manifest, every claimed
     main PNG has its credits sibling on disk).
@@ -106,8 +106,8 @@ def _make_repo_with_images(
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_bytes(body)
         if with_manifest:
-            # Post-#299 release_images.sh refuses to publish without a manifest.
-            # Post-#313 it also refuses an empty `files` map; default seeds a
+            # Post-litclock-dev#299 release_images.sh refuses to publish without a manifest.
+            # Post-litclock-dev#313 it also refuses an empty `files` map; default seeds a
             # claim matching the seeded main PNG.
             if manifest_files is None:
                 files_map = {"quote_0000_0.png": hashlib.sha256(b"a").hexdigest()}
@@ -198,7 +198,7 @@ class TestValidation:
         assert "no images" in result.stderr.lower() or "no images" in result.stdout.lower()
 
     def test_missing_manifest_aborts(self, tmp_path):
-        """#299: refuse to publish a release without images/manifest.json — the
+        """litclock-dev#299: refuse to publish a release without images/manifest.json — the
         corpus-integrity CI gate would later fail PRs against the resulting
         tag, but the tag would already be occupied, blocking a clean rerun."""
         repo = _make_repo_with_images(tmp_path, with_manifest=False)
@@ -300,7 +300,7 @@ class TestHappyPath:
         assert "tarball size" in result.stdout.lower()
 
     def test_generates_byte_integrity_manifest(self, tmp_path):
-        """#293: release_images.sh must produce a files.sha256 covering every
+        """litclock-dev#293: release_images.sh must produce a files.sha256 covering every
         PNG inside the published tarball. Post-staging-refactor the sidecar
         lives in TMPDIR_ROOT (not the working tree), so we inspect it via the
         published tarball.
@@ -334,7 +334,7 @@ class TestHappyPath:
         result = _run(repo, "v1", bin_dir=bin_dir)
         assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"
         # Sidecar lives inside the published tarball, not in the working tree
-        # (post-staging refactor for #293).
+        # (post-staging refactor for litclock-dev#293).
         assert not (repo / "images" / "files.sha256").exists(), (
             "files.sha256 should NOT be in the working tree — staging refactor freezes "
             "it to TMPDIR_ROOT to close the release-time TOCTOU"
@@ -362,7 +362,7 @@ class TestHappyPath:
         assert "files.sha256" in result.stdout.lower()
 
     def test_files_sha256_is_bundled_inside_tarball(self, tmp_path):
-        """#293: files.sha256 must be INSIDE the published tarball, not just
+        """litclock-dev#293: files.sha256 must be INSIDE the published tarball, not just
         left as a side-effect file in the working tree. Otherwise consumers
         fall through to the legacy-release branch and the verify is a no-op.
         Future refactor that moves the sidecar generation outside the tar
@@ -409,7 +409,7 @@ class TestHappyPath:
         )
 
     def test_refuses_release_when_images_dir_has_no_pngs(self, tmp_path):
-        """#293: release_images.sh must refuse to publish if find returns no
+        """litclock-dev#293: release_images.sh must refuse to publish if find returns no
         PNGs. Without the `xargs -r` guard + count check, an empty images/
         would produce a sidecar with `e3b0...  -` (sha of empty stdin) — a
         corrupt entry that fails verification on every consumer install.
@@ -448,7 +448,7 @@ class TestNoNetworkLeaks:
 
 
 class TestManifestCompleteness:
-    """Issue #313: release_images.sh must refuse to publish when the byte
+    """Issue litclock-dev#313: release_images.sh must refuse to publish when the byte
     sidecar doesn't cover every PNG referenced by manifest.json. files.sha256
     verifies each entry's hash but says nothing about completeness — a
     partial-emission bug in quote_to_image.php would otherwise ship a release

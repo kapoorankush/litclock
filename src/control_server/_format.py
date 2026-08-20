@@ -1,6 +1,6 @@
 """Shared formatting helpers for control_server routes.
 
-Extracted from ``routes/status.py`` and ``routes/diagnostics.py`` per #419
+Extracted from ``routes/status.py`` and ``routes/diagnostics.py`` per litclock-dev#419
 follow-up M2 — both modules had byte-identical copies of ``format_uptime``.
 Single source of truth means a future fix (e.g., sub-minute support) reaches
 both surfaces at once.

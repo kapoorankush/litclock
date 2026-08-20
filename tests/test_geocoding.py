@@ -82,7 +82,7 @@ class TestGeocodeLocation:
         assert "countrycodes" not in request_obj.full_url
 
     def test_addressdetails_param_always_present(self, mocker):
-        """#337 A16: addressdetails=1 must always be in the URL so the
+        """litclock-dev#337 A16: addressdetails=1 must always be in the URL so the
         country_code field is populated for the UNITS-flip logic."""
         nominatim_result = [{"lat": "0", "lon": "0", "display_name": "Anywhere"}]
         mock_urlopen = mocker.patch("geocoding.urllib.request.urlopen", return_value=_mock_urlopen(nominatim_result))
@@ -98,7 +98,7 @@ class TestGeocodeLocation:
         assert "countrycodes=us" in url2
 
     def test_country_code_extracted_from_address(self, mocker):
-        """#337 A16: parse the country_code field from Nominatim's address
+        """litclock-dev#337 A16: parse the country_code field from Nominatim's address
         sub-dict. Uppercase canonicalisation matches ip_geolocate."""
         nominatim_result = [
             {
@@ -125,12 +125,12 @@ class TestGeocodeLocation:
         assert result["country_code"] is None
 
 
-# ── Country-bias coverage for UK + India + US (#337 T8) ────────────────────
+# ── Country-bias coverage for UK + India + US (litclock-dev#337 T8) ────────────────────
 
 
 class TestCountryBiasCoverage:
     """Pin the countrycodes= URL contract across the three countries called
-    out in #337's locked plan. Test cases use mocked Nominatim responses
+    out in litclock-dev#337's locked plan. Test cases use mocked Nominatim responses
     shaped to match what the real service returns (verified against
     nominatim.openstreetmap.org responses 2026-06)."""
 
@@ -299,7 +299,7 @@ class TestTimezoneFromCoords:
         assert result is None
 
 
-# ── LOCATION_ENV_KEYS (EPIC #383 shared writer contract) ──────────────
+# ── LOCATION_ENV_KEYS (EPIC litclock-dev#383 shared writer contract) ──────────────
 
 
 class TestLocationEnvKeys:
@@ -328,7 +328,7 @@ class TestLocationEnvKeys:
         assert geocoding.LOCATION_ENV_KEYS[:3] == triplet
 
 
-# ── set_system_timezone: routes through the root-owned wrapper (#387) ──
+# ── set_system_timezone: routes through the root-owned wrapper (litclock-dev#387) ──
 
 
 class TestSetSystemTimezoneWrapper:

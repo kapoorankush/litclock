@@ -1,4 +1,4 @@
-"""Tests for the #445 persistent collected-marker writers.
+"""Tests for the litclock-dev#445 persistent collected-marker writers.
 
 The marker (``/var/lib/litclock/.last-collected-marker.json``) has TWO writers
 in two languages by design:
@@ -12,7 +12,7 @@ This file pins each writer's behavior AND their cross-language parity: they
 share one file + sidecar lock + JSON format, so writing one key with each
 must yield a single marker carrying both. That parity test is the guard
 against the two implementations drifting (the same cross-language flock
-precedent as the env.sh writers, #274).
+precedent as the env.sh writers, litclock-dev#274).
 """
 
 from __future__ import annotations
@@ -122,7 +122,7 @@ class TestShellWriter:
         assert marker.stat().st_mode & 0o044
 
     def test_symlink_at_marker_is_not_followed(self, tmp_path):
-        """#387 C2: the writer runs as root in production, in a pi-writable dir.
+        """litclock-dev#387 C2: the writer runs as root in production, in a pi-writable dir.
         A pi-planted symlink at the marker path must NOT be written through —
         the writer drops the link and creates a fresh regular file, leaving the
         symlink victim untouched."""

@@ -1,4 +1,4 @@
-// Behavior coverage for src/control_server/static/js/diagnostics.js (#416 PR3a).
+// Behavior coverage for src/control_server/static/js/diagnostics.js (litclock-dev#416 PR3a).
 //
 // The module is an IIFE; tests drive it through the DOM. We mirror the SSR
 // markup in buildDom() so a template-side drift is surfaced (CLAUDE.md
@@ -34,7 +34,7 @@ function buildDom({ anomalies = [], uncollected = [], logEntries = [], serviceUn
     if (severity === "settling") return "Just settling in.";
     return "All running";
   })();
-  // #436 — mirror the SSR template: each row carries data-diag-healthy (the
+  // litclock-dev#436 — mirror the SSR template: each row carries data-diag-healthy (the
   // server's _is_obviously_healthy verdict) and a NON-healthy row seeds a
   // "loading logs…" tail placeholder that JS hydrates per-unit. Default
   // healthy = (state === "active") unless the seed states it explicitly.
@@ -62,7 +62,7 @@ function buildDom({ anomalies = [], uncollected = [], logEntries = [], serviceUn
       </li>`
   ).join("");
 
-  // #432 — section-aware "settling" banner body (SSR copy-paste from the
+  // litclock-dev#432 — section-aware "settling" banner body (SSR copy-paste from the
   // Jinja template's _settling_body lookup).
   const settlingBody = (() => {
     if (severity !== "settling") return "";
@@ -75,7 +75,7 @@ function buildDom({ anomalies = [], uncollected = [], logEntries = [], serviceUn
     return "";
   })();
 
-  // #432 — helper to render a section pill in any tri-state. Anomaly
+  // litclock-dev#432 — helper to render a section pill in any tri-state. Anomaly
   // wins over uncollected (server-side precedence is already applied,
   // so this branch matches the macro's render rules).
   const pillFor = (id, anomalyLabel) => {
@@ -213,7 +213,7 @@ function _appendSection(sectionId) {
   sections.appendChild(details);
 }
 
-// #436 — a Response-like literal for function-form fetch mocks (the mock
+// litclock-dev#436 — a Response-like literal for function-form fetch mocks (the mock
 // matches on pathname only, so per-unit journal responses branch by call
 // order inside a function rather than by URL pattern).
 function jsonOk(body) {
@@ -408,9 +408,9 @@ describe("diagnostics.js F-REVEAL-RACE — reveal-state guard on stale response"
   });
 });
 
-describe("#435 PR4: Reveal click aborts + restarts the in-flight fetch", () => {
+describe("litclock-dev#435 PR4: Reveal click aborts + restarts the in-flight fetch", () => {
   it("fires a SECOND fetch when Reveal is clicked while the first is still pending", async () => {
-    // Pre-#435 the Reveal click during a pending fetch was a no-op
+    // Pre-litclock-dev#435 the Reveal click during a pending fetch was a no-op
     // (early-return on pending=true), so the user waited up to 30s
     // (next poll cycle) to see fresh values. PR4 makes the click
     // call refresher.abort() + refresher.refresh() in sequence — so a
@@ -441,13 +441,13 @@ describe("#435 PR4: Reveal click aborts + restarts the in-flight fetch", () => {
   });
 
   it("does NOT increment consecutiveFailures when fetch is aborted by Reveal click", async () => {
-    // Pre-#435 a Reveal click that landed during a pending fetch would
+    // Pre-litclock-dev#435 a Reveal click that landed during a pending fetch would
     // (in a future world where the click could abort) make the catch
     // handler see an AbortError and mistakenly increment failures,
     // surfacing as "Last refresh failed — retrying" the instant the
     // user toggled. PR4 guards against this with `err.name === 'AbortError'`.
     //
-    // /review on PR #440 added the timeout-vs-user-abort distinction via
+    // /review on PR litclock-dev#440 added the timeout-vs-user-abort distinction via
     // a TimeoutError re-throw — so this test must NOT advance past
     // FETCH_TIMEOUT_MS (10s) or the auto-timeout would correctly fire
     // and increment failures. Use small-tick `advanceTimersByTimeAsync`
@@ -487,7 +487,7 @@ describe("#435 PR4: Reveal click aborts + restarts the in-flight fetch", () => {
   });
 });
 
-describe("#440 /review fixes — adversarial findings", () => {
+describe("litclock-dev#440 /review fixes — adversarial findings", () => {
   it("FETCH_TIMEOUT_MS auto-abort surfaces as a failure, NOT a silent user-cancel", async () => {
     // /review CRITICAL finding (Claude adversarial): pre-fix, the catch
     // handler treated EVERY AbortError as a user-cancel, including the
@@ -673,11 +673,11 @@ describe("diagnostics.js banner severity escalation (D29)", () => {
 });
 
 describe("diagnostics.js F-SERVICES-STALE — services section patched on poll", () => {
-  it("rebuilds the services list when the poll returns new service_states, then hydrates the tail per-unit (#436)", async () => {
+  it("rebuilds the services list when the poll returns new service_states, then hydrates the tail per-unit (litclock-dev#436)", async () => {
     buildDom({
       serviceUnits: [{ unit: "litclock.service", state: "active" }],
     });
-    // #436 — the per-unit tail endpoint (registered FIRST so it wins the
+    // litclock-dev#436 — the per-unit tail endpoint (registered FIRST so it wins the
     // first-match lookup over the general /api/diagnostics pattern).
     fetchMock.register(/\/api\/diagnostics\/journal/, {
       body: { ok: true, unit: "litclock.service", journal_tail: ["err line"] },
@@ -715,7 +715,7 @@ describe("diagnostics.js F-SERVICES-STALE — services section patched on poll",
     expect(document.querySelector('[data-diag-unit="litclock-control.service"] [data-diag-tail]')).toBeNull();
   });
 
-  it("#449 — chip COLOR follows state_modifier while TEXT stays the literal state", async () => {
+  it("litclock-dev#449 — chip COLOR follows state_modifier while TEXT stays the literal state", async () => {
     buildDom({
       serviceUnits: [{ unit: "litclock.service", state: "active" }],
     });
@@ -741,8 +741,8 @@ describe("diagnostics.js F-SERVICES-STALE — services section patched on poll",
     expect(chip.className).not.toContain("diag-service__state--activating");
   });
 
-  it("#449 — falls back to coloring by literal state when state_modifier is absent (deploy-skew safe)", async () => {
-    // A payload from a pre-#449 server (or one mid-rollover) omits
+  it("litclock-dev#449 — falls back to coloring by literal state when state_modifier is absent (deploy-skew safe)", async () => {
+    // A payload from a pre-litclock-dev#449 server (or one mid-rollover) omits
     // state_modifier; the chip must color by the literal state, preserving
     // the old behavior rather than dropping to an unstyled class.
     buildDom({
@@ -769,7 +769,7 @@ describe("diagnostics.js F-SERVICES-STALE — services section patched on poll",
   });
 });
 
-describe("diagnostics.js #436 — per-unit journal tail hydration", () => {
+describe("diagnostics.js litclock-dev#436 — per-unit journal tail hydration", () => {
   it("boot: an all-healthy clock fires ZERO per-unit journal fetches", async () => {
     buildDom({
       serviceUnits: [
@@ -1033,10 +1033,10 @@ describe("diagnostics.js sessionStorage unavailable (private browsing)", () => {
 });
 
 // ----------------------------------------------------------------------------
-// #432 — Tri-state grey "Not yet collected" tier
+// litclock-dev#432 — Tri-state grey "Not yet collected" tier
 // ----------------------------------------------------------------------------
 
-describe("#432 grey tier — pill flips to --muted on poll", () => {
+describe("litclock-dev#432 grey tier — pill flips to --muted on poll", () => {
   it("paints the network section's pill --muted when payload uncollected includes it", async () => {
     // SSR: network in OK state.
     buildDom({ anomalies: [], uncollected: [] });
@@ -1088,7 +1088,7 @@ describe("#432 grey tier — pill flips to --muted on poll", () => {
   });
 });
 
-describe("#432 grey tier — SR announcer on forward transition", () => {
+describe("litclock-dev#432 grey tier — SR announcer on forward transition", () => {
   it("announces 'Network details available.' on uncollected → ok for network", async () => {
     buildDom({ anomalies: [], uncollected: ["network"] });
     const responseQueue = [
@@ -1151,7 +1151,7 @@ describe("#432 grey tier — SR announcer on forward transition", () => {
   });
 });
 
-describe("#432 grey tier — reverse-transition debounce (D8)", () => {
+describe("litclock-dev#432 grey tier — reverse-transition debounce (D8)", () => {
   it("suppresses ok → uncollected within 60s of the last forward transition", async () => {
     // Sequence: poll 1 uncollected, poll 2 ok (forward — records timestamp),
     // poll 3 uncollected again (reverse within 60s — must be suppressed).
@@ -1178,7 +1178,7 @@ describe("#432 grey tier — reverse-transition debounce (D8)", () => {
   });
 });
 
-describe("#432 grey tier — banner sync (severity + body)", () => {
+describe("litclock-dev#432 grey tier — banner sync (severity + body)", () => {
   it("flips banner severity to 'settling' when only uncollected sections are non-OK", async () => {
     buildDom({ anomalies: [], uncollected: [] });
     fetchMock.register(/\/api\/diagnostics/, {
@@ -1274,7 +1274,7 @@ describe("#432 grey tier — banner sync (severity + body)", () => {
   });
 });
 
-describe("#432 grey tier — page-level poll-stale flag (D11)", () => {
+describe("litclock-dev#432 grey tier — page-level poll-stale flag (D11)", () => {
   it("sets [data-poll-stale=true] after 2 consecutive failures", async () => {
     buildDom();
     fetchMock.register(/\/api\/diagnostics/, function () {
@@ -1329,7 +1329,7 @@ describe("#432 grey tier — page-level poll-stale flag (D11)", () => {
   });
 });
 
-describe("#432 grey tier — coverage gaps surfaced by /review testing specialist", () => {
+describe("litclock-dev#432 grey tier — coverage gaps surfaced by /review testing specialist", () => {
   it("announces 'Location details available.' on time-location forward transition (D9 symmetric branch)", async () => {
     // The network branch is covered above; this test covers the symmetric
     // time-location branch at diagnostics.js:298. A regression silencing
@@ -1402,7 +1402,7 @@ describe("#432 grey tier — coverage gaps surfaced by /review testing specialis
     // The bannerSeverity() ladder must keep anomaly tiers ABOVE settling.
     // A regression where settling beats warning would surface a calmer
     // banner on a clock with a REAL problem — strictly worse UX than the
-    // pre-#432 baseline. Locks the precedence at the banner level.
+    // pre-litclock-dev#432 baseline. Locks the precedence at the banner level.
     buildDom({ anomalies: [], uncollected: [] });
     fetchMock.register(/\/api\/diagnostics/, {
       body: {
@@ -1473,7 +1473,7 @@ describe("#432 grey tier — coverage gaps surfaced by /review testing specialis
   });
 });
 
-describe("#432 grey tier — D1/D2 DOM swap on transition (design specialist)", () => {
+describe("litclock-dev#432 grey tier — D1/D2 DOM swap on transition (design specialist)", () => {
   it("hides the dl and shows the placeholder on ok → uncollected reverse", async () => {
     // SSR: network is OK (dl visible, placeholder hidden). Poll returns
     // uncollected → JS must hide the dl AND unhide the placeholder so

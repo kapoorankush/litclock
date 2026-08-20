@@ -10,14 +10,14 @@ env.sh.bak
 *.pickle
 credentials*
 *.json
-# #338: package.json + lockfile MUST be tracked despite the *.json catch-all
+# litclock-dev#338: package.json + lockfile MUST be tracked despite the *.json catch-all
 # above. Keep these `!` unignores adjacent to the rule that would otherwise
 # swallow them so the relationship stays obvious to future readers.
 !package.json
 !package-lock.json
 *.bin
 
-# #338: vitest + jsdom dev dependencies. Dev/CI only — never on the Pi.
+# litclock-dev#338: vitest + jsdom dev dependencies. Dev/CI only — never on the Pi.
 node_modules/
 .vitest-cache/
 
@@ -47,7 +47,7 @@ image-gen/nsfw_flagged_for_review.csv
 image-gen/parser_failures.txt
 image-gen/downloads/
 
-# #192 audit run artifacts — keep the tooling + gold set, drop per-run outputs
+# litclock-dev#192 audit run artifacts — keep the tooling + gold set, drop per-run outputs
 image-gen/audit_fails.csv
 image-gen/audit_all.csv
 image-gen/audit_fails.meta.json
@@ -64,7 +64,7 @@ pi-gen/work/
 # Internal agent-planning scaffolding, browse logs, deploy reports — never commit
 .gstack/
 
-# Quote images live in GitHub Releases (issue #82). The .installed-version marker
+# Quote images live in GitHub Releases (issue litclock-dev#82). The .installed-version marker
 # inside images/ tracks which release is extracted on disk — keep that tracked.
 /images/
 !images/.installed-version
@@ -81,7 +81,7 @@ pi-gen/work/
 .litclock-images.lock
 .claude/scheduled_tasks.lock
 
-# Internal planning docs — maintainer-local, excluded from the public repo (#82 PII decision 2026-07-12)
+# Internal planning docs — maintainer-local, excluded from the public repo (litclock-dev#82 PII decision 2026-07-12)
 DESIGN.md
 PRD-LitClock-Control-PWA.md
 PLAN-LitClock-Control-PWA.md

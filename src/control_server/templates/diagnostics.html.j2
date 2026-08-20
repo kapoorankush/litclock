@@ -1,6 +1,6 @@
 {% extends "base.html.j2" %}
 
-{# Diagnostics page (#416 PR3 — Lane E).
+{# Diagnostics page (litclock-dev#416 PR3 — Lane E).
 
    Server-side rendered from the same collect_diagnostics() payload the
    /api/diagnostics endpoint serves; the first paint carries the full
@@ -44,7 +44,7 @@
    complementary one. Now <section aria-labelledby="status-banner-title">
    so it categorises as a primary region without the 30s re-announce
    noise that role="status" would cause. #}
-{# Severity calc — D6 (#432): adds the third 'settling' state when ALL
+{# Severity calc — D6 (litclock-dev#432): adds the third 'settling' state when ALL
    non-OK sections are uncollected-only (no real anomalies). Order
    matters — anomaly tiers win over settling because a real failure must
    never read as "just settling in." #}
@@ -151,7 +151,7 @@
    /plan-design-review §"Anomaly conditions per section".
 
    Macro to keep the section markup uniform. #}
-{# Tri-state section macro (#432).
+{# Tri-state section macro (litclock-dev#432).
    - anomaly: red/ochre pill, anomaly_label, em-dash rows visible.
    - uncollected: muted graphite pill, "Not yet collected" label, em-dash
      rows REPLACED by a single italic section-aware placeholder line.
@@ -198,7 +198,7 @@
         </svg>
       </span>
     </summary>
-    {# #432 D1/D2 — both the dl AND the placeholder are ALWAYS rendered
+    {# litclock-dev#432 D1/D2 — both the dl AND the placeholder are ALWAYS rendered
        when the section has an uncollected_placeholder. One is `hidden`
        at SSR time, JS toggles `hidden` on a poll-driven transition. This
        keeps the section's row schema in ONE place (the rows= macro arg)
@@ -294,7 +294,7 @@
   ) }}
 
   {# Services section is bespoke: each unit row shows state; a non-healthy row
-     ALSO hydrates a journal tail client-side (#436 — a cold journalctl is
+     ALSO hydrates a journal tail client-side (litclock-dev#436 — a cold journalctl is
      ~5-7s on a Pi Zero 2W and used to block first paint). Anomaly drives open. #}
   {% set is_services_anomalous = 'services' in anomalies %}
   <details class="diag-section{% if is_services_anomalous %} diag-section--anomalous{% endif %}"
@@ -410,10 +410,10 @@
               disabled
               aria-disabled="true"
               aria-label="Open live diagnostics drawer"
-              title="Live drawer arrives in #416 PR3b">
+              title="Live drawer arrives in litclock-dev#416 PR3b">
         Open live drawer
       </button>
-      <small class="diag-log-snapshot__pending">(Live drawer arrives in #416 PR3b.)</small>
+      <small class="diag-log-snapshot__pending">(Live drawer arrives in litclock-dev#416 PR3b.)</small>
     </p>
   </details>
 
@@ -437,7 +437,7 @@
       </svg>
       Copy
     </button>
-    {# #416 follow-up — deeper on-demand logs export. The Copy block above
+    {# litclock-dev#416 follow-up — deeper on-demand logs export. The Copy block above
        carries the 3-line-per-unit page preview; this downloads a fuller
        ~50-line-per-unit journal tail bundled with the same system state, for
        when a helper needs more than the preview. Plain <a download> so it

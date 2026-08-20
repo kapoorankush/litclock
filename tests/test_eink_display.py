@@ -174,7 +174,7 @@ class TestSetupSplashCopy:
     # connect_failed variant shipped with exactly that gap (/review).
     ALL_VARIANTS = [
         (False, None),
-        (True, None),  # pre-#603 call shape — renders the password copy
+        (True, None),  # pre-litclock-dev#603 call shape — renders the password copy
         (True, "wifi_password"),
         (True, "connect_failed"),
     ]

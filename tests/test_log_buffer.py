@@ -1,4 +1,4 @@
-"""Tests for control_server/log_buffer.py (#416 T4 + OV-4=A + C3=A + OV-1=A).
+"""Tests for control_server/log_buffer.py (litclock-dev#416 T4 + OV-4=A + C3=A + OV-1=A).
 
 Coverage:
 - LogEntry shape + to_dict serialisation

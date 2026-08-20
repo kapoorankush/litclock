@@ -13,9 +13,9 @@ Rare. The quote set turns over infrequently. Typical triggers:
 
 - Adding or correcting a quote (edited `image-gen/litclock_annotated.csv` → regenerated images via `php image-gen/quote_to_image.php`)
 - Regenerating after a font or layout change in `image-gen/quote_to_image.php`
-- Retagging quotes (see issue #192 for the gold-set audit flow)
+- Retagging quotes (see issue litclock-dev#192 for the gold-set audit flow)
 
-The #192 audit tooling can find more changes; folding multiple small corrections into a single `v2` bump is fine and encouraged. One release per quote edit is wasteful.
+The litclock-dev#192 audit tooling can find more changes; folding multiple small corrections into a single `v2` bump is fine and encouraged. One release per quote edit is wasteful.
 
 ## Release process
 

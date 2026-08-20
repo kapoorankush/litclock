@@ -27,7 +27,7 @@ ETC_TMPFILES_DIR=/etc/tmpfiles.d
 #   * #14 — install.sh enabled units it never copied; under set -e the
 #     systemctl enable aborted the whole DIY install.
 #   * litclock-dev#547 — litclock-reresolve-location.service reached NO flashed image
-#     at all, so #337's on-boot IP-geo re-resolve silently never ran on a
+#     at all, so litclock-dev#337's on-boot IP-geo re-resolve silently never ran on a
 #     fresh flash. update.sh's glob installed it, so it only appeared after
 #     the first OTA.
 # A glob cannot forget a new unit. scripts/update.sh has used one for years —
@@ -95,7 +95,7 @@ fi
 # END copy-guard
 echo "  OK: copied ${copied} systemd units from ${INSTALL_DIR}/systemd/"
 
-# #309 — NetworkManager dispatcher: re-render the e-ink corner QR when
+# litclock-dev#309 — NetworkManager dispatcher: re-render the e-ink corner QR when
 # wlan0's IP changes so the displayed address tracks reality after DHCP
 # churn. Mode 0755 root:root — NM silently skips dispatcher scripts that
 # don't match these permissions (group/world-writable = rejected).
@@ -104,7 +104,7 @@ install -m 0755 -o root -g root \
     "${INSTALL_DIR}/scripts/nm-dispatcher/99-litclock-ip-change" \
     /etc/NetworkManager/dispatcher.d/99-litclock-ip-change
 
-# #387 — root-owned privilege helpers, installed OUTSIDE the pi-writable repo so
+# litclock-dev#387 — root-owned privilege helpers, installed OUTSIDE the pi-writable repo so
 # the pi user cannot rewrite what runs as root:
 #   litclock-set-timezone       — sudo tz-wrapper for the arbitrary-tz path
 #   litclock-mark-collected.sh  — invoked by the root NM dispatcher above (C1)
@@ -127,7 +127,7 @@ install -m 0644 -o root -g root \
 
 # ── Copy systemd-tmpfiles drop-ins ───────────────────────────────────
 #
-# #241 — /run/litclock, the tmpfs heartbeat directory, plus #245 M5's
+# litclock-dev#241 — /run/litclock, the tmpfs heartbeat directory, plus litclock-dev#245 M5's
 # /var/lib/litclock persistent state directory. Both are created on every boot
 # by systemd-tmpfiles from the drop-in copied here.
 #
@@ -218,25 +218,25 @@ systemctl enable litclock-splash.service
 systemctl enable litclock-firstboot.service
 systemctl enable litclock-shutdown.service
 systemctl enable wifi-watchdog.timer
-# #209 — weekly auto-update. Timer safe to enable at build time: first
+# litclock-dev#209 — weekly auto-update. Timer safe to enable at build time: first
 # trigger is OnCalendar=Sun 03:00 + up to 7d jitter, which only fires after
 # first-boot finishes and litclock.service has been running for >=1 hour.
 # ConditionPathExists=/etc/litclock/.setup-complete in the service blocks
 # any pre-firstboot fire (the flag is only written by first-boot.sh on
 # successful WiFi/setup completion).
-# #241 — LKG poll timer; service has no [Install], so enable the timer.
+# litclock-dev#241 — LKG poll timer; service has no [Install], so enable the timer.
 systemctl enable litclock-update.timer
 systemctl enable litclock-lkg.timer
-# #209 follow-up — LKG auto-revert (bootcheck) poll timer. The .service has no
+# litclock-dev#209 follow-up — LKG auto-revert (bootcheck) poll timer. The .service has no
 # [Install] (it is started by the .timer), so only the timer is enabled.
 systemctl enable litclock-bootcheck.timer
-# EPIC #383 PR2 (#388) — handoff fallback poll timer (service has no [Install]).
+# EPIC litclock-dev#383 PR2 (litclock-dev#388) — handoff fallback poll timer (service has no [Install]).
 systemctl enable litclock-handoff-fallback.timer
-# #245 M1 — Control PWA. ConditionPathExists=/etc/litclock/.setup-complete
+# litclock-dev#245 M1 — Control PWA. ConditionPathExists=/etc/litclock/.setup-complete
 # gates startup; on a fresh image the unit waits until first-boot writes the
 # flag, then comes up automatically.
 systemctl enable litclock-control.service
-# #337 A2/A8 / litclock-dev#547 — on-boot IP-geo re-resolve oneshot. WantedBy=multi-user
+# litclock-dev#337 A2/A8 / litclock-dev#547 — on-boot IP-geo re-resolve oneshot. WantedBy=multi-user
 # .target, gated at runtime by ConditionPathExists=/etc/litclock/.handoff-complete
 # so it no-ops until setup + handoff finish.
 #

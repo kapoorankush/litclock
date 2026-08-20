@@ -1,4 +1,4 @@
-// Behavior coverage for the #309 graceful-disconnect hero state in
+// Behavior coverage for the litclock-dev#309 graceful-disconnect hero state in
 // status.js. When /api/status polling fails (network error, timeout,
 // non-OK HTTP), the hero swaps to a friendly "Couldn't reach LitClock"
 // card with non-technical guidance. On the next successful poll, the
@@ -81,7 +81,7 @@ async function flushRefresh() {
   }
 }
 
-describe("status.js — #309 graceful disconnect hero state", () => {
+describe("status.js — litclock-dev#309 graceful disconnect hero state", () => {
   let mock;
 
   beforeEach(() => {

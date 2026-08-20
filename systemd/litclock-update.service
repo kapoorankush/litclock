@@ -15,7 +15,7 @@ ExecStart=/home/pi/litclock/scripts/update.sh
 WorkingDirectory=/home/pi/litclock
 User=pi
 # Bound the worst case for a real update on a Pi Zero 2W. M5 plan-eng-review
-# (#245) caught the prior 120s ceiling: a real pip-install + image-sync + smoke
+# (litclock-dev#245) caught the prior 120s ceiling: a real pip-install + image-sync + smoke
 # can exceed 2 min under CPU pressure, so the timer was killing real updates
 # mid-Phase-4. 600s lets a worst-case run finish; the script's own internal
 # `timeout 60` on smoke + `timeout 30` on git-fetch is the second layer.

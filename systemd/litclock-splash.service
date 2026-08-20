@@ -7,7 +7,7 @@ After=sysinit.target
 Type=oneshot
 ExecStart=/home/pi/litclock/scripts/boot-splash.sh
 # Trigger the current-quote render via the timer-managed unit so systemd's job
-# queue serializes us against timer fires (no SPI/GPIO contention — issue #269).
+# queue serializes us against timer fires (no SPI/GPIO contention — issue litclock-dev#269).
 # `+` runs as root despite User=pi (no sudo). `--no-block` avoids the
 # systemctl-from-inside-a-running-service deadlock. Guarded on .setup-complete
 # so the first-boot path (litclock-firstboot.service) is unaffected.

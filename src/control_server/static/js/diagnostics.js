@@ -1,6 +1,6 @@
-/* Diagnostics page (#416 PR3a) — auto-refresh + Reveal toggle + copy.
+/* Diagnostics page (litclock-dev#416 PR3a) — auto-refresh + Reveal toggle + copy.
  *
- * Design decisions: see issue #416 /plan-design-review (D1–D33 IDs).
+ * Design decisions: see issue litclock-dev#416 /plan-design-review (D1–D33 IDs).
  *
  * Server-side rendering carries the full first paint (status banner +
  * sections + anomalies + copy_payload) so the page is usable without JS.
@@ -58,19 +58,19 @@
   'use strict';
 
   var POLL_INTERVAL_MS = 30000;
-  /* #432 D8 — debounce window for ok → uncollected (reverse) transitions.
+  /* litclock-dev#432 D8 — debounce window for ok → uncollected (reverse) transitions.
      A real-world flapping case: tmpfs marker briefly missing during a
      dispatcher edit, or weather_location_name briefly cleared mid-edit
      through Settings. Within 60s of a forward transition for the same
      section, the visual update is suppressed for one poll cycle so the
      pill doesn't flicker grey on a transient. */
   var UNCOLLECTED_REVERSE_DEBOUNCE_MS = 60000;
-  /* #432 D11 — N consecutive poll failures trip the page-level "stale"
+  /* litclock-dev#432 D11 — N consecutive poll failures trip the page-level "stale"
      state (60% pill opacity). Match the existing meta-failed UX (which
      fires after 1 failure) but only one notch later so a single transient
      failure doesn't dim every pill. */
   var POLL_STALE_FAILURES = 2;
-  /* #429: client fetch budget. Bumped from 5 s to 10 s to give the
+  /* litclock-dev#429: client fetch budget. Bumped from 5 s to 10 s to give the
      server's DIAG_JOURNAL_TIMEOUT_S (8 s) full headroom under Pi Zero 2W
      IO contention. The pre-bump 5 s client < 8 s server gap meant a
      genuinely-slow journalctl call that the server WAS going to satisfy
@@ -133,14 +133,14 @@
 
   /* ----- Fetch with timeout --------------------------------------------- */
 
-  /* #435: ``externalController`` lets the caller (a refresh handle)
+  /* litclock-dev#435: ``externalController`` lets the caller (a refresh handle)
      attach a controller it can also call ``.abort()`` on. When provided,
      this function still arms the FETCH_TIMEOUT_MS auto-abort against
      the SAME controller — so an external abort and a timeout abort
-     share signal state. When omitted, behaviour matches pre-#435: a
+     share signal state. When omitted, behaviour matches pre-litclock-dev#435: a
      fresh per-call controller bounded by FETCH_TIMEOUT_MS.
 
-     /review on PR #440 found a critical bug: the catch handler in
+     /review on PR litclock-dev#440 found a critical bug: the catch handler in
      makeRefresher swallows AbortError indiscriminately, treating both
      user-cancels and OUR-OWN timeouts as "no failure." Without
      distinguishing, a wedged endpoint hitting the 10 s timeout would
@@ -209,7 +209,7 @@
      marker outlives both paths. */
   var _jsOpenInFlight = Object.create(null);
 
-  /* #432 — pill labels for the tri-state. Anomaly labels live in the
+  /* litclock-dev#432 — pill labels for the tri-state. Anomaly labels live in the
      macro caller (not JS-rebuilt) because each section's anomaly_label
      is distinct ("Resource alert" / "Connection issue" / "Location
      stale" / etc.); the OK + Not yet collected labels are constant
@@ -217,7 +217,7 @@
   var PILL_LABEL_OK = 'OK';
   var PILL_LABEL_UNCOLLECTED = 'Not yet collected';
 
-  /* #432 D6 — section-aware "settling" banner body lookup. Shared between
+  /* litclock-dev#432 D6 — section-aware "settling" banner body lookup. Shared between
      SSR Jinja (in diagnostics.html.j2) and the 30s poll handler so the
      two never disagree. Order-independent: caller normalises by sort()
      so ["time-location","network"] hashes to the same key as the reverse.
@@ -238,7 +238,7 @@
     return '';
   }
 
-  /* #432 — last-forward-transition timestamps per section ID for D8
+  /* litclock-dev#432 — last-forward-transition timestamps per section ID for D8
      debounce. Resets on teardown via the lifecycle so vitest re-entry
      between tests doesn't leak between cases.
 
@@ -255,7 +255,7 @@
     return Date.now();
   }
 
-  /* #432 D11 — page-level poll-stale flag on the sections container.
+  /* litclock-dev#432 D11 — page-level poll-stale flag on the sections container.
      Driven by the consecutive-failure counter in the refresh loop. */
   function _setPollStale(on) {
     var container = $('[data-diag-sections]');
@@ -264,7 +264,7 @@
     else container.removeAttribute('data-poll-stale');
   }
 
-  /* #432 D2 — helper consumed by the poll handler. Defaults `uncollected`
+  /* litclock-dev#432 D2 — helper consumed by the poll handler. Defaults `uncollected`
      to [] so a stale cached diagnostics.js reading an old payload doesn't
      crash on a missing field (graceful per Codex finding 7). */
   function getSectionStates(payload) {
@@ -274,7 +274,7 @@
     };
   }
 
-  /* #432 — apply tri-state pill class + label per the truth table.
+  /* litclock-dev#432 — apply tri-state pill class + label per the truth table.
      Server already applied uncollected-wins precedence in
      _compute_section_states, so a section ID never appears in BOTH
      `anomalies` and `uncollected` at this point — the checks below are
@@ -323,7 +323,7 @@
        after the 60s window passes the time-window check below and lands
        normally.
 
-       Adversarial-review F4 (#432): the timestamps use performance.now()
+       Adversarial-review F4 (litclock-dev#432): the timestamps use performance.now()
        (monotonic) instead of Date.now() because fresh-flash Pis routinely
        step the wall clock by minutes-to-hours on first NTP sync — exactly
        the timing window the grey tier was designed for. A wall-clock
@@ -395,7 +395,7 @@
         }
       }
     }
-    /* #432 D1/D2 — swap the visible row content on transition. Both the
+    /* litclock-dev#432 D1/D2 — swap the visible row content on transition. Both the
        dl AND the placeholder are always rendered in SSR (template) when a
        section has an uncollected_placeholder; one carries `hidden` at
        request time. Here we just flip the attribute so the visible body
@@ -423,7 +423,7 @@
     return newState;
   }
 
-  /* ----- Service journal tails: per-unit hydration (#436) ---------------
+  /* ----- Service journal tails: per-unit hydration (litclock-dev#436) ---------------
      Tails are no longer server-rendered — a cold journalctl is ~5-7s on a Pi
      Zero 2W and used to block first paint on the SSR/poll path. Each
      NON-healthy row hydrates its own tail from /api/diagnostics/journal?unit=,
@@ -445,7 +445,7 @@
 
   /* Own AbortController + timeout, mirroring fetchDiagnostics: a timeout is
      re-thrown as TimeoutError so the row's error branch shows "couldn't load
-     logs" rather than silently swallowing the timeout (PR #440 pattern). */
+     logs" rather than silently swallowing the timeout (PR litclock-dev#440 pattern). */
   function fetchJournalTail(unit) {
     var url = '/api/diagnostics/journal?unit=' + encodeURIComponent(unit);
     var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
@@ -523,7 +523,7 @@
           if (_tailGen[unit] !== gen) return;
           /* Client-side failure (abort/timeout/http). A server-side journalctl
              failure arrives as an empty tail (renders as 'ok, no lines') — the
-             collector can't distinguish empty from failed (#436 T3). */
+             collector can't distinguish empty from failed (litclock-dev#436 T3). */
           _serviceTails[unit] = { status: 'error', lines: [] };
         })
         .then(function () {
@@ -568,7 +568,7 @@
 
   /* F-SERVICES-STALE: rebuild the services <ul> from values.service_states so
      the per-unit rows stay in sync with the banner + pill on every poll. Tails
-     are NOT in values (they hydrate per-unit, #436) — non-healthy rows render
+     are NOT in values (they hydrate per-unit, litclock-dev#436) — non-healthy rows render
      their current _serviceTails state (loading/ok/error). createElement +
      textContent only (no innerHTML) to preserve the XSS-defense posture. */
   function patchServicesSection(valuesDict) {
@@ -583,7 +583,7 @@
       var li = document.createElement('li');
       li.className = 'diag-service';
       li.setAttribute('data-diag-unit', unit);
-      /* #436 — server-computed health gates client-side tail hydration
+      /* litclock-dev#436 — server-computed health gates client-side tail hydration
          (data-diag-healthy="0" rows get a per-unit fetch). Reading the flag
          from the same predicate the server used avoids JS/server drift on
          oneshot-inactive / transient rows. */
@@ -598,8 +598,8 @@
       var stateSpan = document.createElement('span');
       var state = info.state || 'unknown';
       /* Chip COLOR follows state_modifier (server emits 'transient-ok' for a
-         oneshot mid-paint, #449, and 'settled-ok' for a oneshot at its
-         by-design inactive resting state, #463, so the row tint matches the
+         oneshot mid-paint, litclock-dev#449, and 'settled-ok' for a oneshot at its
+         by-design inactive resting state, litclock-dev#463, so the row tint matches the
          OK section pill); chip TEXT stays the literal systemd state. */
       var modifier = info.state_modifier || state;
       stateSpan.className = 'diag-service__state diag-service__state--' + modifier + ' mono';
@@ -607,7 +607,7 @@
       head.appendChild(stateSpan);
       li.appendChild(head);
 
-      /* #436 — non-healthy rows carry a tail slot reflecting the current
+      /* litclock-dev#436 — non-healthy rows carry a tail slot reflecting the current
          per-unit hydration state (loading/ok/error). Healthy rows have none.
          Reads _serviceTails so a poll rebuild doesn't wipe an already-loaded
          tail back to a "loading" flash. */
@@ -630,7 +630,7 @@
 
   /* ----- Banner (D29) --------------------------------------------------- */
 
-  /* D29 + #432 D6 — banner has 4 visual states:
+  /* D29 + litclock-dev#432 D6 — banner has 4 visual states:
        ok          → green check + "All running" + --success
        warning     → ochre triangle + "Something needs attention" + --warning
                      (used for system / network / time-location / setup-markers
@@ -691,7 +691,7 @@
     var title = $('[data-diag-banner-title]');
     if (title) title.textContent = bannerTitle(severity);
 
-    /* #432 D6 + F8 — body is rendered ONLY for the settling tier; insert
+    /* litclock-dev#432 D6 + F8 — body is rendered ONLY for the settling tier; insert
        or remove the node depending on severity so the layout doesn't
        leave an empty <p> behind on the OK tier. Insert INTO the
        [data-diag-banner-live] wrapper (NOT the outer __copy div) so the
@@ -739,7 +739,7 @@
   /* ----- Copy payload --------------------------------------------------- */
 
   function patchCopyBlock(text) {
-    /* #436 — the server payload no longer carries service logs (tails hydrate
+    /* litclock-dev#436 — the server payload no longer carries service logs (tails hydrate
        client-side). Store it and re-render with the client log appendix so a
        poll refresh doesn't drop the hydrated logs from the copy blob. */
     _serverCopyPayload = text || '';
@@ -853,7 +853,7 @@
      state has since changed — preventing the OLD revealed response from
      patching sensitive data into the DOM after the user toggled away.
 
-     #435 (PR4 / CQ-3): returns ``{refresh, abort}`` so the Reveal click
+     litclock-dev#435 (PR4 / CQ-3): returns ``{refresh, abort}`` so the Reveal click
      handler can `abort()` an in-flight fetch then immediately `refresh()`
      with the new reveal state, instead of waiting for the slow fetch
      (e.g. journal-tail on a degraded Pi Zero 2W) to either finish or
@@ -886,7 +886,7 @@
           if (myGen !== generation) return;
           if (myReveal !== readReveal()) return;
           state.lastRefreshAt = Date.now();
-          /* #432 D2 — getSectionStates defaults both fields to [] so a
+          /* litclock-dev#432 D2 — getSectionStates defaults both fields to [] so a
              cached client reading a pre-v0.214.4 payload doesn't crash on
              a missing `uncollected` key. */
           var ss = getSectionStates(body);
@@ -924,18 +924,18 @@
           });
           _announceForwardTransitions(forwardTransitions);
           patchServicesSection(values);
-          /* #436 — re-hydrate tails for any still-non-healthy row after the
+          /* litclock-dev#436 — re-hydrate tails for any still-non-healthy row after the
              rebuild (server caches each tail 45s > 30s poll, so this doesn't
              re-fork journalctl every cycle). */
           hydrateServiceTails();
           patchBanner(effectiveAnomalies, effectiveUncollected, state.lastRefreshAt);
           patchCopyBlock(body.copy_payload || '');
-          /* #432 D11 — clear the page-level poll-stale flag on first
+          /* litclock-dev#432 D11 — clear the page-level poll-stale flag on first
              success after a streak of failures. */
           _setPollStale(false);
         })
         .catch(function (err) {
-          /* #435: ``abort()`` synthesises an AbortError — it's a user-
+          /* litclock-dev#435: ``abort()`` synthesises an AbortError — it's a user-
              intended cancel, NOT a failure. Don't count it against
              consecutiveFailures (would otherwise show "Last refresh
              failed — retrying" the instant the user toggled Reveal). */
@@ -946,7 +946,7 @@
           /* F-FAILURE-MASKED: track consecutive failures so the user
              sees a persistent indicator after the 2s hint window. */
           state.consecutiveFailures = (state.consecutiveFailures || 0) + 1;
-          /* #432 D11 — set the page-level poll-stale flag once we've
+          /* litclock-dev#432 D11 — set the page-level poll-stale flag once we've
              accumulated POLL_STALE_FAILURES (default 2) consecutive
              failures. The pill opacity drops to 60% so the user can
              see at-a-glance "this surface is stale." */
@@ -982,7 +982,7 @@
     }
 
     function abort() {
-      /* /review on PR #440 found two regressions in the prior shape of
+      /* /review on PR litclock-dev#440 found two regressions in the prior shape of
          this function: (1) the `if (!currentController) return;` guard
          left `pending=true` stuck in environments where AbortController
          is undefined (old WebViews) so the synchronous refresh() after
@@ -1042,7 +1042,7 @@
     var state = {
       lastRefreshAt: null,
       anomalies: [],
-      /* #432 — uncollected mirrors anomalies in shape. priorStates is the
+      /* litclock-dev#432 — uncollected mirrors anomalies in shape. priorStates is the
          per-section cached logical state ('ok' | 'uncollected' | 'anomaly')
          used by patchSection to detect forward/reverse transitions for
          the D8 debounce + D9 SR announcer. */
@@ -1094,7 +1094,7 @@
     /* Reveal pill click handler. */
     var revealBtn = $('[data-diag-reveal]');
     var revealHandler = null;
-    /* #435: refresher exposes ``{refresh, abort}`` so the click handler
+    /* litclock-dev#435: refresher exposes ``{refresh, abort}`` so the click handler
        can abort an in-flight fetch and immediately fire a new one with
        the toggled reveal state. The Reveal click is the only caller
        that uses ``abort()``; poll + visibility paths only ``refresh()``. */
@@ -1140,12 +1140,12 @@
 
     /* Boot refresh: if Reveal is on, fire immediately so values match.
        Otherwise SSR is authoritative for state/verdict; just wait for the
-       first interval. (Since #436 tails are NOT part of that SSR authority —
+       first interval. (Since litclock-dev#436 tails are NOT part of that SSR authority —
        they hydrate separately just below.) */
     if (readReveal()) {
       refresher.refresh();
     }
-    /* #436 — capture the SSR-rendered copy payload so client-hydrated service
+    /* litclock-dev#436 — capture the SSR-rendered copy payload so client-hydrated service
        logs can be appended without losing it, then hydrate tails for any
        non-healthy row. Self-gating: a healthy clock has no data-diag-healthy="0"
        row, so this fires ZERO fetches. */
@@ -1179,13 +1179,13 @@
     if (lc.revealBtn && lc.revealHandler) lc.revealBtn.removeEventListener('click', lc.revealHandler);
     document.removeEventListener('visibilitychange', lc.visibilityHandler);
     lc.stopPoll();
-    /* #432 — clear the module-level transition store so vitest re-entry
+    /* litclock-dev#432 — clear the module-level transition store so vitest re-entry
        between tests doesn't leak forward-transition timestamps from a
        prior IIFE evaluation. The _jsOpenInFlight marker store is also
        module-level — clear it for the same reason. */
     _uncollectedForwardAt = Object.create(null);
     _jsOpenInFlight = Object.create(null);
-    /* #436 — clear per-unit tail state + captured copy payload so vitest
+    /* litclock-dev#436 — clear per-unit tail state + captured copy payload so vitest
        re-entry between tests doesn't leak a prior IIFE's hydrated tails. */
     _serviceTails = Object.create(null);
     _tailGen = Object.create(null);

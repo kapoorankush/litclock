@@ -1,4 +1,4 @@
-"""Tests for /api/wifi/reset (#245 M5 D11/D12).
+"""Tests for /api/wifi/reset (litclock-dev#245 M5 D11/D12).
 
 Covers:
 - Token + rate-limit gating (mirrors M4 patterns)
@@ -80,7 +80,7 @@ class TestApiWifiReset:
         assert body["error"]["code"] == "confirm_token_invalid"
 
     def test_replayed_token_returns_409_consumed(self, client):
-        """#317 item 1 codex P2: replay of a consumed wifi_reset token
+        """litclock-dev#317 item 1 codex P2: replay of a consumed wifi_reset token
         returns 409 ``confirm_token_consumed`` (was 401
         ``confirm_token_invalid``). The distinct slug protects against
         the JS refresh-and-retry path bypassing single-use on duplicate
@@ -143,15 +143,15 @@ class TestApiWifiReset:
         assert body["error"]["code"] == "rate_limited"
         assert "retry_after_s" in body["error"]
 
-    # ─── #328 — restore-on-failure regressions ──────────────────────────────
+    # ─── litclock-dev#328 — restore-on-failure regressions ──────────────────────────────
 
     def test_called_process_error_restores_token_for_retry(self, client):
-        """#328 (the live M8-hardware-QA #327 scenario): the
+        """litclock-dev#328 (the live M8-hardware-QA litclock-dev#327 scenario): the
         litclock-wifi-reset.service unit was missing on fresh pi-gen
         images. Tapping Reset WiFi got "systemctl failed" — pre-fix
         the user's retry then hit "Confirm token is missing, expired,
         or already used", which masked the real error and made the
-        underlying #327 fix harder to spot.
+        underlying litclock-dev#327 fix harder to spot.
 
         Post-fix: token restored on CalledProcessError, retry surfaces
         the real systemctl error again."""
@@ -182,7 +182,7 @@ class TestApiWifiReset:
         mock_run.assert_called_once()
 
     def test_update_busy_restores_token_for_retry(self, client):
-        """#328: a 409 update_in_progress is pre-side-effect — no systemctl
+        """litclock-dev#328: a 409 update_in_progress is pre-side-effect — no systemctl
         dispatched. Restoring lets the user retry after the update
         completes without re-opening the page."""
         token = _mint_token(client)

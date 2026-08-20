@@ -6,7 +6,7 @@
 # render is triggered by ExecStartPost in litclock-splash.service so systemd's
 # job queue serializes it against timer-fired litclock.service runs (avoids
 # the SPI/GPIO contention that produced lgpio "GPIO busy" errors before
-# issue #269 was fixed).
+# issue litclock-dev#269 was fixed).
 #
 
 INSTALL_DIR="${LITCLOCK_DIR:-/home/pi/litclock}"

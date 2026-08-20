@@ -1,6 +1,6 @@
-"""Persistent "data has been collected" marker for the /diagnostics tiers (#445).
+"""Persistent "data has been collected" marker for the /diagnostics tiers (litclock-dev#445).
 
-The diagnostics "Not yet collected" grey tier (#432) originally keyed off the
+The diagnostics "Not yet collected" grey tier (litclock-dev#432) originally keyed off the
 tmpfs file ``/run/litclock/last-rendered-ip`` — present iff the NM dispatcher
 had fired since boot. That file is wiped at every reboot, so a healthy clock
 flashed grey for ~5-10s after each boot until the dispatcher re-fired. This
@@ -112,7 +112,7 @@ def mark_collected(section: str, marker_path: str | None = None) -> bool:
 
 def _acquire(lock_fd: int) -> bool:
     """Non-blocking flock poll loop with a deadline (mirrors the env.sh writer
-    pattern, #274). Returns False if the lock can't be taken within the
+    pattern, litclock-dev#274). Returns False if the lock can't be taken within the
     budget. ``time.monotonic`` is immune to NTP steps."""
     deadline = time.monotonic() + _LOCK_WAIT_S
     while True:

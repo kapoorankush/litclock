@@ -13,7 +13,7 @@
 // poll loop acts only on SUSTAINED evidence:
 //
 // 1. LIVE RUNS UNAFFECTED — unit_busy:true keeps the counter at zero; a
-//    payload with NO unit_busy field (pre-#636 server) is treated as live
+//    payload with NO unit_busy field (pre-litclock-dev#636 server) is treated as live
 //    forever, never counted toward a dead verdict.
 // 2. SUSTAINED DEAD → TERMINAL, NOT RELOAD — DEAD_UPDATER_POLL_THRESHOLD
 //    consecutive unit_busy:false readings stop polling and (if the reading

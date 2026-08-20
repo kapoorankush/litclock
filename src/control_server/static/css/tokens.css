@@ -67,7 +67,7 @@
   /* Type scale — clamp(min · target · max) per DESIGN.md "Type scale". The
    * `target` is the rem-based value that scales with the user's root-font
    * preference; `min` and `max` cap legibility at the extremes. */
-  /* M6 D6 (#258 fix): ceiling raised 14 → 18px so iOS Dynamic Type can grow
+  /* M6 D6 (litclock-dev#258 fix): ceiling raised 14 → 18px so iOS Dynamic Type can grow
    * caption-tagged microcopy past the prior clip point. At default 16px root
    * the clamp middle is 12px (0.75rem), unchanged from before; visible growth
    * starts at iOS Larger 1+. .tabbar a's tactical local override (M5) is
@@ -120,7 +120,7 @@
   --t-long: 600ms;
   --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
 
-  /* RTL flip for directional glyphs (#416 PR3c D33). Convention
+  /* RTL flip for directional glyphs (litclock-dev#416 PR3c D33). Convention
      placeholder: arrow icons that point at the reading-direction end
      (drawer-link '→', follow-tail '↓N new' pill, any caret-right SVG
      that gets added later) should compose
@@ -177,7 +177,7 @@
 * { box-sizing: border-box; }
 
 html {
-  /* iOS Dynamic Type opt-in. Hardware-found 2026-04-27 (PR #252 testing):
+  /* iOS Dynamic Type opt-in. Hardware-found 2026-04-27 (PR litclock-dev#252 testing):
    * iOS Safari in standalone PWA mode hardcodes root font-size to 16px
    * regardless of the user's Larger Text preference, UNLESS the root
    * element opts in via Apple's `-apple-system-body` font shorthand. With
@@ -294,7 +294,7 @@ a.accent-link:hover { color: var(--accent-muted); }
   min-height: 44px;
   padding: var(--sp-xs) var(--sp-md);
   color: var(--ink-muted);
-  /* Use the global --fs-caption token. M6 D6 (#258) raised the global
+  /* Use the global --fs-caption token. M6 D6 (litclock-dev#258) raised the global
    * ceiling 14 → 18px, so this row's tactical local override is no longer
    * needed — the token + the tabbar share the same clamp now. */
   font-size: var(--fs-caption);
@@ -350,7 +350,7 @@ a.accent-link:hover { color: var(--accent-muted); }
  * ≥90 seconds. Ochre warning border-top + surface-raised bg, role="status"
  * + aria-live="polite" so screen readers announce the staleness when it
  * appears mid-session. */
-/* #290 /review fix — [hidden] specificity hazard. Author `.foo { display: flex }`
+/* litclock-dev#290 /review fix — [hidden] specificity hazard. Author `.foo { display: flex }`
  * ties on (0,1,0) with UA `[hidden] { display: none }` but wins on cascade
  * origin (author beats user-agent). So `<div class="stale-banner" hidden>` was
  * rendering visibly despite the attribute. Make `[hidden]` win unconditionally
@@ -457,7 +457,7 @@ a.accent-link:hover { color: var(--accent-muted); }
   text-align: center;
 }
 
-/* #309 — graceful disconnect state. Treatment per DESIGN.md "Empty /
+/* litclock-dev#309 — graceful disconnect state. Treatment per DESIGN.md "Empty /
  * loading / error states" (lines 253-258): --error accent line at top
  * of card, 14px ink-muted body, retry as primary action. Headline keeps
  * the serif voice so it reads as a quiet aside, not an alarm. */
@@ -521,7 +521,7 @@ a.accent-link:hover { color: var(--accent-muted); }
   background: var(--accent-muted);
 }
 
-/* #309 (3) — mDNS bookmark prompt card. Sits below the status rows,
+/* litclock-dev#309 (3) — mDNS bookmark prompt card. Sits below the status rows,
  * styled as a calm aside, not a CTA banner. Two-button row mirrors
  * the AtHS-hint dismiss pattern but uses the standard button hierarchy
  * (Primary filled + Tertiary text-link) rather than the inline-share

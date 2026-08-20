@@ -1,4 +1,4 @@
-"""Project-wide JSON error envelope (issue #254).
+"""Project-wide JSON error envelope (issue litclock-dev#254).
 
 Locked decisions for the control_server API surface, made before M3 lands
 ``/api/settings/*``:
@@ -21,7 +21,7 @@ Locked decisions for the control_server API surface, made before M3 lands
    ``HTTPException`` or 500 on an ``/api/*`` route emerges as the
    envelope, instead of Flask's default text/html debug page.
 
-4. **Success envelope shapes — flat vs wrapped (#419 A4).**
+4. **Success envelope shapes — flat vs wrapped (litclock-dev#419 A4).**
 
    Two project patterns exist for SUCCESS responses:
 
@@ -30,7 +30,7 @@ Locked decisions for the control_server API surface, made before M3 lands
      The client treats every non-``ok`` field as a top-level value.
    - **Wrapped** (for routes carrying structured sub-payloads):
      ``{"ok": true, "values": {...}, "anomalies": [...], "section_order": [...]}``.
-     Used by ``/api/diagnostics`` (#416 PR2). The ``values`` wrapper is
+     Used by ``/api/diagnostics`` (litclock-dev#416 PR2). The ``values`` wrapper is
      intentional — the SERVER-side schema gate
      (:func:`control_server.routes.diagnostics._sse._check_schema_match`)
      compares ``values.keys()`` against

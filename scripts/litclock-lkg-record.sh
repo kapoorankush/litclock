@@ -7,7 +7,7 @@
 # 10-minute boot grace). Fast oneshot — exits in ~50ms when any gate
 # blocks the write.
 #
-# Issue #241 — the previous design used `sleep $HEARTBEAT_SECONDS` plus a
+# Issue litclock-dev#241 — the previous design used `sleep $HEARTBEAT_SECONDS` plus a
 # Requisite=litclock.service systemd dep. Both were broken: parallel-start
 # meant the requisite check ran before litclock was active, and Type=oneshot
 # litclock services almost never returned is-active=success 10 minutes
@@ -21,7 +21,7 @@
 #                                       ▼
 #                                    write lkg-sha   (atomic: .tmp + mv)
 #
-# Bootcheck/revert is a separate follow-up (issue #241 → bootcheck-revert)
+# Bootcheck/revert is a separate follow-up (issue litclock-dev#241 → bootcheck-revert)
 # and is intentionally NOT shipped here. This script is observability +
 # substrate; consumption lands in its own PR after we have field data.
 

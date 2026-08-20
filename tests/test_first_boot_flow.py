@@ -1,4 +1,4 @@
-"""Tests for first-boot flow validation (#111).
+"""Tests for first-boot flow validation (litclock-dev#111).
 
 Validates the complete first-boot sequence for image-based deployment:
 - WiFi provisioning with zero saved networks
@@ -139,7 +139,7 @@ class TestNTPSync:
         )
 
 
-# ── SSL cert generation (#111) ───────────────────────────────────────
+# ── SSL cert generation (litclock-dev#111) ───────────────────────────────────────
 
 
 class TestSSLCertGeneration:
@@ -185,10 +185,10 @@ class TestSSLCertGeneration:
 
         Mocks `https_cert.subprocess.run` — the actual subprocess call lives
         there since M1's extraction; setup_server.generate_self_signed_cert
-        is a thin delegate. Pre-#414 the test happened to work by mocking
+        is a thin delegate. Pre-litclock-dev#414 the test happened to work by mocking
         `setup_server.subprocess.run` because setup_server had an
         `import subprocess` for set_system_timezone, but the patched name
-        was never actually invoked. After #414 moved set_system_timezone +
+        was never actually invoked. After litclock-dev#414 moved set_system_timezone +
         its subprocess dep to geocoding, setup_server has no subprocess
         attribute at all, so the bug-passing-as-test-pass surfaced."""
         mocker.patch(
@@ -234,7 +234,7 @@ class TestSSLCertGeneration:
         assert "localhost" in result.stdout
 
 
-# ── Timezone setting (#111) ──────────────────────────────────────────
+# ── Timezone setting (litclock-dev#111) ──────────────────────────────────────────
 
 
 class TestTimezoneInFirstBoot:
@@ -243,7 +243,7 @@ class TestTimezoneInFirstBoot:
     def test_setup_server_sets_timezone(self, mocker):
         """The setup POST handler calls set_system_timezone.
 
-        #414 item #5: set_system_timezone lives in `geocoding` since the
+        litclock-dev#414 item #5: set_system_timezone lives in `geocoding` since the
         location_resolver extraction — setup_server.set_system_timezone is
         a re-export alias, and the subprocess call happens in geocoding."""
         mocker.patch(
@@ -309,7 +309,7 @@ class TestBootSequenceIntegrity:
         assert "WEATHER_UNITS=imperial" in content
 
     def test_first_boot_routes_default_env_through_atomic_writer(self):
-        """#274 follow-up: first-boot.sh must use the shared sidecar-flock
+        """litclock-dev#274 follow-up: first-boot.sh must use the shared sidecar-flock
         writer (`atomic_write_env_sh` from `scripts/lib/state.sh`) for the
         default-env-creation path, not a bare `cat > "$ENV_FILE"` heredoc.
 
@@ -333,7 +333,7 @@ class TestBootSequenceIntegrity:
             "first-boot.sh must invoke atomic_write_env_sh with $ENV_FILE — "
             "ensures the default-env-creation path goes through the same "
             "sidecar-flock writer as update.sh / reset-setup.sh / "
-            "prepare-for-cloning.sh (#274 cross-writer interlock)"
+            "prepare-for-cloning.sh (litclock-dev#274 cross-writer interlock)"
         )
 
     def test_first_boot_uses_no_block_for_timer(self):
@@ -344,7 +344,7 @@ class TestBootSequenceIntegrity:
         assert "--no-block" in content
 
     def test_first_boot_starts_litclock_control(self):
-        """#245 M5 hardware-QA fix: after firstboot writes .setup-complete back
+        """litclock-dev#245 M5 hardware-QA fix: after firstboot writes .setup-complete back
         on a Reset-WiFi recovery, litclock-control.service must be explicitly
         kicked. The unit's ConditionPathExists=/etc/litclock/.setup-complete
         is evaluated at job-start time only — systemd does NOT re-fire a
@@ -386,7 +386,7 @@ class TestBootSequenceIntegrity:
 
     def test_boot_splash_triggers_clock_if_setup_complete(self):
         """The on-boot clock render moved from boot-splash.sh into an
-        ExecStartPost on litclock-splash.service (issue #269). Verify the
+        ExecStartPost on litclock-splash.service (issue litclock-dev#269). Verify the
         unit file still triggers litclock.service when .setup-complete exists,
         and that it uses --no-block (deadlock prevention) and the `+` prefix
         (run as root despite User=pi)."""
@@ -403,10 +403,10 @@ class TestBootSequenceIntegrity:
         assert post.startswith("ExecStartPost=+"), "Must use `+` prefix to run as root"
 
     def test_first_boot_consumes_gift_mode_marker_before_setup_complete(self):
-        """Gift-mode marker (#189) must be removed in the first-boot success
+        """Gift-mode marker (litclock-dev#189) must be removed in the first-boot success
         path so subsequent shutdowns paint the normal 'Powered Off' splash.
 
-        #316 /review CRITICAL ordering fix: the rm happens BEFORE
+        litclock-dev#316 /review CRITICAL ordering fix: the rm happens BEFORE
         mark_setup_complete (was after). The previous order had a window
         where power loss between mark_setup_complete and the rm would
         leave .welcome-mode stranded with .setup-complete already present.
@@ -429,30 +429,32 @@ class TestBootSequenceIntegrity:
         assert call_idx > rm_idx, (
             "marker rm must precede the mark_setup_complete CALL — "
             "otherwise a power-loss race between mark_setup_complete and "
-            "rm permanently strands the gift welcome marker (#316 /review)"
+            "rm permanently strands the gift welcome marker (litclock-dev#316 /review)"
         )
 
     def test_first_boot_consumes_welcome_message_before_setup_complete(self):
-        """#280: the optional personalized welcome message (set via the PWA
+        """litclock-dev#280: the optional personalized welcome message (set via the PWA
         Prepare-for-Gifting flow) must be cleaned up alongside the
-        .welcome-mode marker. #316 /review: same ordering invariant as
+        .welcome-mode marker. litclock-dev#316 /review: same ordering invariant as
         .welcome-mode — rm before mark_setup_complete to defeat the
         power-loss race."""
         with open(FIRST_BOOT_SH) as f:
             content = f.read()
-        assert ".welcome-message" in content, "first-boot.sh must clean up the optional .welcome-message file (#280)"
+        assert ".welcome-message" in content, (
+            "first-boot.sh must clean up the optional .welcome-message file (litclock-dev#280)"
+        )
         rm_idx = content.find(".welcome-message")
         # Find the rm command (not a comment).
         rm_idx = content.find("rm -f /etc/litclock/.welcome-mode")
         call_idx = content.find("mark_setup_complete", rm_idx)
         assert call_idx > rm_idx, (
             ".welcome-message rm must precede mark_setup_complete CALL — "
-            "same power-loss race as .welcome-mode (#316 /review)"
+            "same power-loss race as .welcome-mode (litclock-dev#316 /review)"
         )
 
 
 def test_first_boot_default_env_includes_mode_and_ip_country():
-    """#337 A3 + /review testing-gap: first-boot.sh's env.sh template (both
+    """litclock-dev#337 A3 + /review testing-gap: first-boot.sh's env.sh template (both
     the state.sh-flock path AND the legacy heredoc fallback) must include
     the new MODE + IP_COUNTRY defaults. Without these, a fresh-flash Pi
     would have no MODE/IP_COUNTRY keys at all — pre-S2 migration semantics
@@ -463,20 +465,20 @@ def test_first_boot_default_env_includes_mode_and_ip_country():
     content = (Path(__file__).parent.parent / "scripts/first-boot.sh").read_text()
     # The keys appear in TWO blocks (flock path + heredoc fallback) — count both.
     assert content.count("export WEATHER_LOCATION_MODE=auto") >= 2, (
-        "#337 A3: first-boot.sh must include MODE=auto in BOTH the atomic-write "
+        "litclock-dev#337 A3: first-boot.sh must include MODE=auto in BOTH the atomic-write "
         "path AND the heredoc-fallback path (so the keys ship regardless of which "
         "writer fires)."
     )
     assert content.count("export WEATHER_IP_COUNTRY=") >= 2, (
-        "#337 A3: first-boot.sh must include WEATHER_IP_COUNTRY= in both writer paths"
+        "litclock-dev#337 A3: first-boot.sh must include WEATHER_IP_COUNTRY= in both writer paths"
     )
 
 
-# ── #529: power off after the Setup-Incomplete timeout ──────────────
+# ── litclock-dev#529: power off after the Setup-Incomplete timeout ──────────────
 
 
 class TestSetupIncompletePoweroff:
-    """#529: after the setup-wait times out, the device must paint recovery
+    """litclock-dev#529: after the setup-wait times out, the device must paint recovery
     instructions, wait a grace period, and power off — not idle forever in
     a half-provisioned state."""
 
@@ -499,7 +501,7 @@ class TestSetupIncompletePoweroff:
         assert "sudo systemctl poweroff" in block
 
     def test_no_grace_sleep_between_paint_and_poweroff(self, content):
-        """Owner decision on #529: NO delay between painting the recovery
+        """Owner decision on litclock-dev#529: NO delay between painting the recovery
         copy and powering off. The copy invites the user to pull power, so
         every running second after the paint is a window for an unclean
         power cut (SD-corruption class). The 30-minute setup timeout was

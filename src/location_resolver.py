@@ -1,4 +1,4 @@
-"""Location resolver: shared IP-geolocation + atomic env.sh writer (#337 A4).
+"""Location resolver: shared IP-geolocation + atomic env.sh writer (litclock-dev#337 A4).
 
 Extracted from ``setup_server.py`` so the new ``litclock-reresolve-location``
 systemd oneshot can reuse it without dragging captive-portal / http.server
@@ -13,7 +13,7 @@ Plus a sync-quick variant for the PWA Save Specific→Auto path (A7):
 budget so the user's Save tap returns in under ~5s instead of the full
 ~33s the boot resolver tolerates.
 
-Atomicity contract (A15, inherited from #393):
+Atomicity contract (A15, inherited from litclock-dev#393):
   1. ``set_system_timezone(tz)`` FIRST. If timedatectl is missing or rejects
      the value, abort — no env writes happen.
   2. Only on tz success do we ``config.atomic_update`` the location keys.
@@ -45,7 +45,7 @@ import sys
 import time
 from typing import Any
 
-# #414 maintainability item #4: prefer logging over print() so journald can
+# litclock-dev#414 maintainability item #4: prefer logging over print() so journald can
 # filter by level. The oneshot's `StandardOutput=journal` directive routes
 # stdout to the journal regardless, but bare prints land as `notice` with no
 # severity info — `journalctl -p warning -u litclock-reresolve-location`
@@ -77,7 +77,7 @@ def _persisted_country(env_file: str) -> str:
 
 
 def country_default_units(country: str) -> str:
-    """A6 default rule (locked under EPIC #383): US (or unknown) → imperial,
+    """A6 default rule (locked under EPIC litclock-dev#383): US (or unknown) → imperial,
     everything else → metric. Mirrors ``reset-setup.sh`` defaults."""
     return "imperial" if country in ("", "US") else "metric"
 
@@ -95,7 +95,7 @@ def update_env_location(
 ) -> bool:
     """Persist a resolved location to env.sh + system timezone.
 
-    Atomic-write ordering (T5 / codex outside-voice, #393):
+    Atomic-write ordering (T5 / codex outside-voice, litclock-dev#393):
       0. Refuse incomplete location. Coordinates are persisted only as a
          complete pair (both lat AND lon) backed by a resolved timezone;
          partial or tz-less coords skip the whole write.
@@ -106,7 +106,7 @@ def update_env_location(
     The worst failure case is "tz set, env stale" instead of "env populated,
     tz stale" (wrong-time clock — the design-review A2 hard-block).
 
-    New kwargs (#337):
+    New kwargs (litclock-dev#337):
       * ``mode``: writes ``WEATHER_LOCATION_MODE`` when not None.
       * ``ip_country``: writes ``WEATHER_IP_COUNTRY`` (uppercased) when not None.
 
@@ -124,7 +124,7 @@ def update_env_location(
     if not env_file or not os.path.exists(env_file):
         return False
 
-    # #393: coordinates are only safe to persist as a COMPLETE, tz-backed pair.
+    # litclock-dev#393: coordinates are only safe to persist as a COMPLETE, tz-backed pair.
     # Two consumers gate on them and they disagree on shape:
     #   * control_server/handoff.py:_has_location requires BOTH lat AND lon;
     #   * scripts/litclock-handoff-fallback.sh checks WEATHER_LATITUDE alone.
@@ -147,8 +147,8 @@ def update_env_location(
         return False
 
     if timezone:
-        # #414 maintainability item #5: import directly from geocoding (where
-        # set_system_timezone lives post-extraction). Pre-#414 this lazy-imported
+        # litclock-dev#414 maintainability item #5: import directly from geocoding (where
+        # set_system_timezone lives post-extraction). Pre-litclock-dev#414 this lazy-imported
         # from setup_server, which dragged the captive-portal / http.server /
         # NetworkManager helpers onto the boot-critical reresolve oneshot's
         # startup path. The single remaining `import setup_server` (for ENV_FILE
@@ -194,7 +194,7 @@ def update_env_location(
             mode,
             ip_country,
         )
-        # #445: record that time-location data has been collected on this Pi
+        # litclock-dev#445: record that time-location data has been collected on this Pi
         # so /diagnostics stops flashing the grey "Not yet collected" tier
         # post-reboot. Best-effort, never fails the resolve.
         try:
@@ -225,7 +225,7 @@ def resolve_location_from_ip(retries: bool = True, env_file: str | None = None) 
     backoff. Used by first-boot post-WiFi and the on-boot reresolve oneshot
     where we can afford ~33s wall clock to recover from DNS races.
 
-    ``retries=False`` (#337 A7, sync-quick): single attempt with no backoff.
+    ``retries=False`` (litclock-dev#337 A7, sync-quick): single attempt with no backoff.
     Used by the PWA Save Specific→Auto switch where the user is waiting on
     a Save button tap (must return in <5s on happy path). Hard-fail still
     writes nothing; the next reboot's oneshot will retry under full budget.
@@ -241,7 +241,7 @@ def resolve_location_from_ip(retries: bool = True, env_file: str | None = None) 
         next resolve's comparison has the latest baseline.
 
     On hard failure (all attempts return None / raise), no env writes
-    happen. PR2's handoff splash + the PWA browser-tz fallback (#337 A18)
+    happen. PR2's handoff splash + the PWA browser-tz fallback (litclock-dev#337 A18)
     cover the user-recovery path.
     """
     if env_file is None:
@@ -312,9 +312,9 @@ def resolve_location_from_ip(retries: bool = True, env_file: str | None = None) 
             log.warning("timezone_from_coords fallback raised: %s", e)
 
     # Route the write through setup_server._update_env_location so existing
-    # tests that monkeypatch the shim continue to work. The shim (post-#337
+    # tests that monkeypatch the shim continue to work. The shim (post-litclock-dev#337
     # A4) is a thin delegate back into this module's update_env_location.
-    # CRITICAL (#337 /review P0): pass env_file explicitly. The shim's
+    # CRITICAL (litclock-dev#337 /review P0): pass env_file explicitly. The shim's
     # default forwards setup_server.ENV_FILE, which is None in the PWA
     # sync-quick and on-boot oneshot contexts — Codex caught the silent
     # no-op caused by the missing forward. The shim now pops env_file
@@ -340,7 +340,7 @@ def resolve_location_from_ip(retries: bool = True, env_file: str | None = None) 
 
 
 def main() -> int:
-    """Entry point for ``litclock-reresolve-location.service`` (#337 A2/A8).
+    """Entry point for ``litclock-reresolve-location.service`` (litclock-dev#337 A2/A8).
 
     Reads env.sh. CRITICAL: if ``WEATHER_LOCATION_MODE != "auto"``, exits
     cleanly (silent no-op) — this is the silent-corruption guard pinned by
@@ -356,7 +356,7 @@ def main() -> int:
         (``Before=litclock.service`` was deliberately dropped). Any
         failure logs to journal and exits 0 so systemd doesn't retry-loop.
     """
-    # #414 maintainability item #4: configure logging when run as a script
+    # litclock-dev#414 maintainability item #4: configure logging when run as a script
     # so the levels survive into the journal. systemd's StandardOutput=journal
     # captures stderr (where logging writes by default) with metadata; plain
     # print() lands as `notice` level uniformly. Use a minimal format since

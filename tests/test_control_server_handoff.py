@@ -1,4 +1,4 @@
-"""Tests for the post-WiFi PWA handoff (EPIC #383 PR2, #388).
+"""Tests for the post-WiFi PWA handoff (EPIC litclock-dev#383 PR2, litclock-dev#388).
 
 Covers control_server/handoff.py + routes/handoff.py + the banner wiring:
 
@@ -381,12 +381,12 @@ class TestBannerRendering:
         assert 'id="handoff-banner"' not in body
 
 
-# ─── #399 connected-SSID resolver + e-ink ctx plumbing ──────────────────────
+# ─── litclock-dev#399 connected-SSID resolver + e-ink ctx plumbing ──────────────────────
 
 
 class TestConnectedSsidResolver:
     """The handoff splash paints a "phone must be on this WiFi" caveat
-    next to the QR (#399). The SSID it shows comes from
+    next to the QR (litclock-dev#399). The SSID it shows comes from
     ``handoff.connected_ssid()`` — these tests pin the resolver's
     contract: defensive against any failure, returns empty string (not
     None) on the no-WiFi / nmcli-missing / permissions-denied paths so
@@ -454,7 +454,7 @@ class TestConnectedSsidResolver:
         assert handoff_mod.connected_ssid() == ""
 
 
-# ─── #388 fresh-flash fix: splash paints via a short-lived SUBPROCESS ────────
+# ─── litclock-dev#388 fresh-flash fix: splash paints via a short-lived SUBPROCESS ────────
 
 
 class TestRenderEinkSplashSubprocess:

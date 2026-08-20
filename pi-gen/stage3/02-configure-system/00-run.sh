@@ -62,12 +62,12 @@ install -m 644 files/litclock-journald.conf "${ROOTFS_DIR}/etc/systemd/journald.
 
 # --- WiFi stability fixes (Pi Zero 2W target) ---
 install -m 644 files/brcmfmac.conf "${ROOTFS_DIR}/etc/modprobe.d/brcmfmac.conf"
-# #245 M5 D8 — single canonical wifi-watchdog.sh under scripts/. The pi-gen
+# litclock-dev#245 M5 D8 — single canonical wifi-watchdog.sh under scripts/. The pi-gen
 # files/wifi-watchdog.sh copy is gone; we install from the same source as
 # scripts/update.sh does.
 install -m 755 "${ROOTFS_DIR}/home/pi/litclock/scripts/wifi-watchdog.sh" \
     "${ROOTFS_DIR}/usr/local/bin/wifi-watchdog.sh"
-# #245 M5 D11 — Reset-WiFi helper invoked by litclock-wifi-reset.service.
+# litclock-dev#245 M5 D11 — Reset-WiFi helper invoked by litclock-wifi-reset.service.
 install -m 755 "${ROOTFS_DIR}/home/pi/litclock/scripts/litclock-wifi-reset.sh" \
     "${ROOTFS_DIR}/usr/local/bin/litclock-wifi-reset.sh"
 
@@ -89,7 +89,7 @@ cp "${ROOTFS_DIR}/etc/issue" "${ROOTFS_DIR}/etc/issue.default"
 on_chroot << 'CHROOT'
 usermod -aG gpio,spi,i2c pi
 
-# #433: ensure pi can read systemd journals (required for the diagnostics
+# litclock-dev#433: ensure pi can read systemd journals (required for the diagnostics
 # page's journal_tail rendering). pi-gen stage1's default user setup
 # normally includes systemd-journal; this is belt-and-suspenders against
 # variants of the base image that drop it. Idempotent: usermod -aG is a
@@ -103,7 +103,7 @@ install -d /etc/sudoers.d
 echo "pi ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/010_pi-nopasswd
 chmod 440 /etc/sudoers.d/010_pi-nopasswd
 
-# #245 M4 — Control PWA scoped sudo. Validate the source first; visudo -c -f
+# litclock-dev#245 M4 — Control PWA scoped sudo. Validate the source first; visudo -c -f
 # exits non-zero on bad syntax, set -e at the top of this script aborts the
 # build before a broken file lands. No `if [ -f ]` guard — a missing source
 # file means the repo reorganized and the install path silently dropped a
@@ -112,7 +112,7 @@ SUDOERS_SRC="/home/pi/litclock/sudoers/020_litclock-control"
 visudo -c -f "$SUDOERS_SRC"
 install -m 0440 -o root -g root "$SUDOERS_SRC" /etc/sudoers.d/020_litclock-control
 
-# #343 — let the `pi` service account bind port 80 for control_server without a
+# litclock-dev#343 — let the `pi` service account bind port 80 for control_server without a
 # capability (sysctl, NOT AmbientCapabilities, to avoid flipping NoNewPrivs and
 # breaking the litclock-control setuid-sudo reboot path). Applied at first boot
 # by systemd-sysctl.service before litclock-control starts.

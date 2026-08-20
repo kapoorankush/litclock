@@ -1,6 +1,6 @@
 """HTTP routes + SSE machinery for the diagnostics surface.
 
-Split out of the pre-#419 monolithic ``routes/diagnostics.py`` (M1). This
+Split out of the pre-litclock-dev#419 monolithic ``routes/diagnostics.py`` (M1). This
 module owns:
 
 - The Flask :data:`bp` blueprint that all diagnostics routes attach to.
@@ -15,7 +15,7 @@ module owns:
   :func:`_parse_reveal_groups`).
 
 Test patching note (D8): tests that monkey-patch ``collect_diagnostics``,
-``_read_journal_tail`` (the ``/api/diagnostics/journal`` reader, #436),
+``_read_journal_tail`` (the ``/api/diagnostics/journal`` reader, litclock-dev#436),
 ``_compute_uncollected``, or ``_compute_section_states`` MUST patch them on
 THIS module (where the route's name lookup happens), not on the package
 ``__init__.py``. The package re-exports the names for plain imports, but
@@ -107,7 +107,7 @@ SSE_HEARTBEAT_INTERVAL_S = 15
 SSE_INNER_POLL_S = 1.0
 
 
-# Accepted ``?level=`` values on /api/logs. Pre-#416 PR2 the route silently
+# Accepted ``?level=`` values on /api/logs. Pre-litclock-dev#416 PR2 the route silently
 # returned 0 entries for any unrecognised level — strict allowlist matches
 # the rest of the route's validation.
 _VALID_LOG_LEVELS: frozenset[str] = frozenset({"DEBUG", "INFO", "WARNING", "WARN", "ERROR", "CRITICAL"})
@@ -134,7 +134,7 @@ class _SseSession:
 
 
 # OrderedDict so LRU eviction at cap is cheap. Keyed by sid. Initialised
-# eagerly at module load (the pre-#416 PR2 lazy-init was racy on the first
+# eagerly at module load (the pre-litclock-dev#416 PR2 lazy-init was racy on the first
 # two concurrent SSE connections — Security specialist finding F-LAZY-RACE).
 _sse_registry: OrderedDict[str, _SseSession] = OrderedDict()
 _sse_registry_lock = threading.Lock()
@@ -193,7 +193,7 @@ def _parse_reveal_groups(raw: str | None) -> frozenset[str]:
 def _redact_values_for_envelope(values: dict[str, Any], revealed_groups: frozenset[str]) -> dict[str, Any]:
     """Apply PRIVACY_POLICY redaction to the JSON ``values`` dict.
 
-    Pre-#416 PR2 /review the route emitted ``values`` raw — ssid, 6dp
+    Pre-litclock-dev#416 PR2 /review the route emitted ``values`` raw — ssid, 6dp
     lat/lon, lan_ip, gateway, weather_location_name all visible to any
     LAN client. For safe-clear fields, the native value is preserved.
     For redacted/rounded fields the rendered string is substituted unless
@@ -240,7 +240,7 @@ def _check_schema_match(values: dict[str, Any]) -> None:
 def api_diagnostics() -> tuple[Any, int]:
     """JSON envelope with structured diagnostics values + anomaly flags.
 
-    Response shape (#419 A4 — kept WRAPPED, not flattened):
+    Response shape (litclock-dev#419 A4 — kept WRAPPED, not flattened):
 
     ```json
     {
@@ -264,7 +264,7 @@ def api_diagnostics() -> tuple[Any, int]:
     surface; diagnostics is the project's wrapped-envelope pattern. See
     :mod:`control_server.errors` for the cross-route envelope rules.
 
-    Invariants (#419 A2):
+    Invariants (litclock-dev#419 A2):
 
     - ``section_order`` is the CANONICAL render order for the PWA's
       diagnostics sections. The current ``diagnostics.html.j2`` template
@@ -278,7 +278,7 @@ def api_diagnostics() -> tuple[Any, int]:
       process) but MAY CHANGE across releases. Clients caching the
       ordering across deploys must re-fetch.
 
-    Error path (#419 T7 covers this): on any exception during the
+    Error path (litclock-dev#419 T7 covers this): on any exception during the
     collect-and-shape pipeline, the route returns 500 + the standard
     JSON envelope ``{ok: false, error: {code, message}}`` via
     :func:`control_server.errors.envelope`. Error code is
@@ -288,13 +288,13 @@ def api_diagnostics() -> tuple[Any, int]:
     try:
         values = collect_diagnostics()
         _check_schema_match(values)
-        # #432 — _compute_section_states applies uncollected-wins
+        # litclock-dev#432 — _compute_section_states applies uncollected-wins
         # precedence over BOTH _compute_anomalies + _compute_uncollected
         # in one place. The route never calls those predicates directly —
         # the helper IS the single source of truth for precedence. See the
         # helper's docstring for why uncollected-wins (it's what actually
         # closes the user-reported fresh-flash bug — anomaly-wins on
-        # overlap would leave the orange pills #432 was opened to remove).
+        # overlap would leave the orange pills litclock-dev#432 was opened to remove).
         anomalies, uncollected = _compute_section_states(values)
         revealed = _parse_reveal_groups(request.args.get("reveal"))
         copy_payload = build_copy_payload(values, revealed_groups=revealed)
@@ -321,13 +321,13 @@ def api_diagnostics() -> tuple[Any, int]:
 @bp.route("/api/diagnostics/journal")
 def api_diagnostics_journal() -> tuple[Any, int]:
     """Per-unit journal tail — the async hydration source for the Services
-    section (#436).
+    section (litclock-dev#436).
 
     Split OUT of ``collect_diagnostics`` (and therefore off both the SSR and the
     30 s poll critical paths) so a cold ``journalctl`` (~5-7 s on a Pi Zero 2W)
     never blocks first paint. The PWA fires ONE request per non-healthy unit, so
     a slow unit can't stall another's tail (the multi-failure case that
-    otherwise blew the client's 10 s budget — #433 OV-7 / #436 T4).
+    otherwise blew the client's 10 s budget — litclock-dev#433 OV-7 / litclock-dev#436 T4).
 
     SECURITY: ``unit`` feeds ``journalctl -u <unit>`` via
     :func:`_read_journal_tail`. It MUST be a member of the fixed
@@ -378,7 +378,7 @@ def _parse_lines_param(raw: str | None) -> int:
 
 @bp.route("/api/diagnostics/support-logs")
 def api_diagnostics_support_logs() -> Any:
-    """On-demand 'deep logs for support' export (#416 follow-up).
+    """On-demand 'deep logs for support' export (litclock-dev#416 follow-up).
 
     A single downloadable text bundle: the standard copy payload (system state,
     default-redacted) + a deeper per-unit journal tail (``DIAG_SUPPORT_JOURNAL_LINES``
@@ -441,9 +441,9 @@ def page_diagnostics() -> Any:
     # advertised Content-Type is text/html, not JSON.
     values = collect_diagnostics()
     _check_schema_match(values)
-    # #432 — single source of truth for tri-state precedence; matches the JSON
+    # litclock-dev#432 — single source of truth for tri-state precedence; matches the JSON
     # route's shape so SSR first-paint and the 30s poll never disagree on
-    # STATE / verdict. (Since #436 neither path carries journal tails — those
+    # STATE / verdict. (Since litclock-dev#436 neither path carries journal tails — those
     # hydrate per-unit via /api/diagnostics/journal after first paint — so the
     # "never disagree" contract is about state/anomalies, not tail text.)
     anomalies, uncollected = _compute_section_states(values)
@@ -518,7 +518,7 @@ def api_logs() -> tuple[Any, int]:
             since_seq = int(raw_since)
         except ValueError:
             return envelope("bad_since_seq", "since_seq must be an integer.", 400)
-    # #419 PR2 P3: snapshot() takes ``_lock`` once for all three reads so
+    # litclock-dev#419 PR2 P3: snapshot() takes ``_lock`` once for all three reads so
     # the badge counter (``total``) and the resume-seq (``latest_seq``)
     # can't drift across an in-flight ``emit()``.
     entries, total, latest_seq = handler.snapshot(limit=limit, level=level, since_seq=since_seq)
@@ -573,7 +573,7 @@ def _generate_sse(sid: str, since_seq: int | None) -> Any:
         superseded.close_event.set()
     try:
         if since_seq is not None and since_seq >= 0:
-            # #419 PR2 P4 (D10): get_logs(order='asc') returns the newest-N
+            # litclock-dev#419 PR2 P4 (D10): get_logs(order='asc') returns the newest-N
             # slice in chronological order — same set the old
             # ``reversed(get_logs(...))`` produced, but one pass instead of
             # two. Limit STILL means "newest N"; order is post-sort.
@@ -616,9 +616,9 @@ def api_logs_stream() -> Any:
     Client supplies ``?sid=<uuid>`` (OV-2=A). Optional ``since_seq`` lets
     a reconnecting client backfill the gap (replayed via
     :func:`MemoryLogHandler.get_logs` ``order='asc'`` so the client sees
-    entries in chronological order — see #419 D10).
+    entries in chronological order — see litclock-dev#419 D10).
 
-    ## Wire-event contract (#419 A1 + A3)
+    ## Wire-event contract (litclock-dev#419 A1 + A3)
 
     The stream emits SSE frames using the standard ``event:`` + ``data:``
     shape. Two frame families with DIFFERENT data shapes:

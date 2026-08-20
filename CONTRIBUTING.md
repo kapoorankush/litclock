@@ -124,7 +124,7 @@ chore(deps): update Pillow to 10.0
 ### Pull Requests
 
 - Fill out the PR template when creating PRs
-- Link to related issues using `Closes #123` or `Fixes #123`
+- Link to related issues using `Closes litclock-dev#123` or `Fixes litclock-dev#123`
 - Keep PRs focused - one feature/fix per PR
 - Write a clear description of what changed and why
 
@@ -184,7 +184,7 @@ source venv/bin/activate
 # On the Pi it is NOT. requirements-apt.txt lists packages that come from
 # apt there, and pip-installing them into the venv either fails to compile
 # on a gcc-less image, or shadows the apt version with a binary that
-# gpiozero may then pick as its pin_factory backend (see #214). Every
+# gpiozero may then pick as its pin_factory backend (see litclock-dev#214). Every
 # install path filters those names out first; the README shows the filter
 # if you are working on the device.
 pip install -r requirements.txt
@@ -199,7 +199,7 @@ pip install -r requirements-dev.txt  # ruff linter
 ### JavaScript tests (control PWA)
 
 The control_server's `src/control_server/static/js/*.js` files are tested
-with vitest + jsdom (#338). Dev/CI only — never installed on the Pi.
+with vitest + jsdom (litclock-dev#338). Dev/CI only — never installed on the Pi.
 
 ```bash
 # One-time setup. Requires Node 20+.
@@ -217,31 +217,31 @@ script against a fresh jsdom DOM per test file via the helpers in
 `tests/js/helpers/loadScript.js`. See that file's docstrings for the
 URL-pattern fetch mock + dialog stub conventions.
 
-### Diagnostics subprocess-timing regressions (#444)
+### Diagnostics subprocess-timing regressions (litclock-dev#444)
 
 The diagnostics route shells out to `journalctl`/`systemctl`/`nmcli`/
 `timedatectl` via `control_server._subprocess.cached_subprocess`. On a Pi
 Zero 2W with a few weeks of journal storage and SD-card IO contention these
-calls are *slow*, and three v0.214.x hotfixes (#427, #428, #433) each fixed
+calls are *slow*, and three v0.214.x hotfixes (litclock-dev#427, litclock-dev#428, litclock-dev#433) each fixed
 a per-call *timing* bug that the instant-return mocks in the suite couldn't
 see — they only surfaced in hardware QA.
 
 We protect those classes with **targeted, deterministic regression tests**
-rather than a synthetic latency simulator (decided in #444 — a simulator
+rather than a synthetic latency simulator (decided in litclock-dev#444 — a simulator
 keyed on guessed p50/p95/p99 numbers tests against a fiction, and still
 wouldn't assert the crisp argument-value invariants below). Each class has
 a direct guard:
 
-- **#428 — failure-TTL cap** (`min(ttl, FAILURE_TTL_CAP_S)`): a failing
+- **litclock-dev#428 — failure-TTL cap** (`min(ttl, FAILURE_TTL_CAP_S)`): a failing
   subprocess (`None`) must rotate out of the cache in 5 s, not the caller's
   full 20 s. Covered by `TestFailureTtl` in `tests/test_subprocess_helper.py`,
   which drives `_time.monotonic` with a fake `_MockClock` (no real sleeps),
   including the "born-stale" case where the subprocess outlasts the cap.
-- **#433 — lazy-tail journal forks**: a healthy clock must fork `journalctl`
+- **litclock-dev#433 — lazy-tail journal forks**: a healthy clock must fork `journalctl`
   zero times; only not-obviously-healthy units get a tail. Covered by
   `TestLazyTailFilter` in `tests/test_control_server_diagnostics.py`, which
   spies on `_batched_journal_tails` and asserts the exact `units` tuple.
-- **#427 — journalctl per-call timeout outlier** (8 s vs the 3 s fast
+- **litclock-dev#427 — journalctl per-call timeout outlier** (8 s vs the 3 s fast
   readers use): covered by `tests/test_control_server_perf.py` —
   `test_read_journal_tail_uses_journal_timeout_not_fast_timeout` pins the
   journalctl call site at `DIAG_JOURNAL_TIMEOUT_S` + 20 s ttl + one fork,
@@ -253,7 +253,7 @@ a direct guard:
   fixture records each call's `timeout`/`ttl` (via `.kw_for(key)`) so the
   test asserts the *argument value*, no wall-clock race.
 
-- **#430 — per-call fast budgets**: each fast call (nmcli, iw, systemctl,
+- **litclock-dev#430 — per-call fast budgets**: each fast call (nmcli, iw, systemctl,
   timedatectl, git, ip route, uname) reads its OWN timeout constant
   (`DIAG_NMCLI_TIMEOUT_S`, `DIAG_IW_LINK_TIMEOUT_S`, …) instead of the single
   shared `DIAG_SUBPROC_TIMEOUT_S`, so a bump for one slow-under-load call
@@ -283,7 +283,7 @@ than relying on the latency showing up in hardware QA.
 `requirements.txt` is the **generated lockfile** with every transitive
 explicitly pinned — do not hand-edit `requirements.txt`.
 
-This split closes a real failure mode (issue #323): LitClock is
+This split closes a real failure mode (issue litclock-dev#323): LitClock is
 release-gated (`update.sh` only pulls tagged releases), but transitive
 Python deps that aren't pinned in `requirements.txt` resolve against
 live PyPI at install time on each Pi. A future Werkzeug release that
@@ -327,11 +327,11 @@ and they appear in `requirements.txt` with a `# via <parent>` comment.
 Pinning a pure transitive in `requirements.in` makes it a top-level
 constraint that `pip-compile --upgrade` will refuse to bump — that re-
 introduces the same transitive security-bump gap this workflow exists
-to close (#323).
+to close (litclock-dev#323).
 
 **Exception: CVE-floor constraints.** When a transitive is held at a
 minimum version for a documented security reason (e.g. `urllib3>=2.7.0`
-to keep CVE-2026-44431 / CVE-2026-44432 closed — PR #322), list it in
+to keep CVE-2026-44431 / CVE-2026-44432 closed — PR litclock-dev#322), list it in
 `requirements.in` as a **range** (`>=X.Y.Z`), not an exact pin, with a
 comment explaining the CVE / PR. The range preserves the floor while
 still letting `pip-compile --upgrade` pick newer compatible releases.
@@ -342,9 +342,9 @@ full constraint graph AND the lockfile is self-documenting. The install
 paths (`scripts/update.sh`, `pi-gen/stage3/01-setup-app/00-run.sh`)
 filter these names out of the generated lock before pip-install via
 `requirements-apt.txt` —
-they come from apt at runtime via `--system-site-packages` (issue #214).
+they come from apt at runtime via `--system-site-packages` (issue litclock-dev#214).
 
-**Why not eager `--upgrade-strategy`?** PR #322 narrowed `update.sh` to
+**Why not eager `--upgrade-strategy`?** PR litclock-dev#322 narrowed `update.sh` to
 plain `--upgrade` (no eager) because Phase 4.5's smoke test never
 imports Flask, so a transitive break would ship to the fleet
 undetected. The lockfile is the correct place to land transitive
@@ -370,7 +370,7 @@ _THIS_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$_THIS_SCRIPT_DIR/lib/state.sh"
 ```
 
-**`scripts/lib/state.sh`** exposes two helpers any shell script that mutates `/home/pi/litclock/env.sh` MUST use to interoperate with `src/config.py:atomic_update`'s `fcntl.flock` on the PWA side. Skipping them re-introduces [#274](https://github.com/kapoorankush/litclock/issues/274):
+**`scripts/lib/state.sh`** exposes two helpers any shell script that mutates `/home/pi/litclock/env.sh` MUST use to interoperate with `src/config.py:atomic_update`'s `fcntl.flock` on the PWA side. Skipping them re-introduces [litclock-dev#274](https://github.com/kapoorankush/litclock/issues/274):
 
 - `atomic_write_env_sh DEST CONTENT` — full-body overwrite via `mktemp` + `mv -f` under the sidecar flock. Use for "rewrite env.sh from defaults" callers (`reset-setup.sh`, `prepare-for-cloning.sh`).
 - `with_env_lock CMD...` — run CMD holding the env.sh sidecar flock. Use for `>>` append-per-var callers (`update.sh` Phase 3). CMD runs in a subshell so use a side-channel tempfile if you need to pass data back to the caller.
@@ -423,21 +423,21 @@ python3 image-gen/corpus_edit.py ship "fix(corpus): retag X from HH:MM to HH:MM"
 This replaces the previous manual sequence and protects against three silent footguns:
 
 1. **Filename drift** — images are keyed `quote_{HHMM}_{counter}.png` with the counter assigned by CSV row order, so any edit to a bucket renames every image in that bucket.
-2. **Skip-if-exists staleness** — historically the PHP generator skipped on `file_exists` alone, silently preserving stale content under renamed slots. Post-#299 it now skips only when an `images/manifest.json` entry confirms the existing PNG was generated from the current row's content; reorders force a regen.
+2. **Skip-if-exists staleness** — historically the PHP generator skipped on `file_exists` alone, silently preserving stale content under renamed slots. Post-litclock-dev#299 it now skips only when an `images/manifest.json` entry confirms the existing PNG was generated from the current row's content; reorders force a regen.
 3. **Release-tag collision** — `scripts/release_images.sh` refuses to overwrite an existing release tag; forgetting to bump `.images-version` breaks the publish step.
 
-**CI enforcement (post-#299):** `.github/workflows/corpus-integrity.yml` blocks any PR that edits `image-gen/litclock_annotated.csv` without bumping `.images-version` AND publishing a matching `litclock-images-vN` release whose `manifest.json` `corpus_hash` equals the SHA1 of the PR's CSV. There is no `--no-verify` escape hatch — running `corpus_edit.py ship` is the supported path.
+**CI enforcement (post-litclock-dev#299):** `.github/workflows/corpus-integrity.yml` blocks any PR that edits `image-gen/litclock_annotated.csv` without bumping `.images-version` AND publishing a matching `litclock-images-vN` release whose `manifest.json` `corpus_hash` equals the SHA1 of the PR's CSV. There is no `--no-verify` escape hatch — running `corpus_edit.py ship` is the supported path.
 
 Subcommands for debugging (all safe to run on the working tree):
 
 | Subcommand | What it does |
 |------------|--------------|
 | `validate` | Assert every changed row's `timestring` parses to its HH:MM tag. Would catch a mistag like a `10.10pm.` row tagged `21:10`. |
-| `diff` | List the HH:MM buckets whose contents differ from git HEAD, AND surface any drift between `images/manifest.json` and the current CSV (post-#299). |
+| `diff` | List the HH:MM buckets whose contents differ from git HEAD, AND surface any drift between `images/manifest.json` and the current CSV (post-litclock-dev#299). |
 | `regenerate` | Wipe dirty buckets, then run `quote_to_image.php`. Supports `--dry-run`. |
 | `ship MSG` | Full end-to-end pipeline. Supports `--dry-run`, `--no-release`, `--no-push`, `--branch NAME`. |
 
-See issue #211 for the original design and issue #299 for the manifest + CI integrity layer.
+See issue litclock-dev#211 for the original design and issue litclock-dev#299 for the manifest + CI integrity layer.
 
 ### How bolding works — the timestring column IS the bold spec
 

@@ -1,5 +1,5 @@
 // Behavior coverage for the post-WiFi handoff banner controller
-// (EPIC #383 PR2, #388) — src/control_server/static/js/handoff.js — plus its
+// (EPIC litclock-dev#383 PR2, litclock-dev#388) — src/control_server/static/js/handoff.js — plus its
 // coordination with aths-hint.js.
 //
 // Success state: the "Done" button POSTs /api/handoff/done, then the banner

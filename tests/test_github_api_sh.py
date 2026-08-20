@@ -1,4 +1,4 @@
-"""Tests for scripts/lib/github_api.sh (issues #209 + #247).
+"""Tests for scripts/lib/github_api.sh (issues litclock-dev#209 + litclock-dev#247).
 
 Covers `github_api_latest_release_tag` semantics against a local mock
 HTTP server. The resolver hits /tags and selects the highest-semver
@@ -408,7 +408,7 @@ class TestAuth:
         assert _Handler.last_auth_header is None
 
     def test_git_credentials_fallback_used_when_env_empty(self, tmp_path):
-        """Regression for #209 hardware-found defect (PR #237): the systemd
+        """Regression for litclock-dev#209 hardware-found defect (PR litclock-dev#237): the systemd
         timer-driven update path runs with clean env (no ~/.profile), so
         GH_TOKEN is empty even when the token is present in the standard
         ~/.git-credentials file. The helper must fall back to parsing

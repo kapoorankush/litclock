@@ -1,4 +1,4 @@
-"""Tests for scripts/lib/update_status.sh (#245 M5 D9, F6).
+"""Tests for scripts/lib/update_status.sh (litclock-dev#245 M5 D9, F6).
 
 Drives the helpers via a thin bash harness that sources the lib + invokes
 each public function. Verifies:

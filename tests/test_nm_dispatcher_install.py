@@ -1,6 +1,6 @@
 """Tests for scripts/nm-dispatcher/99-litclock-ip-change + its install paths.
 
-The NetworkManager dispatcher (#309) re-renders the e-ink corner QR
+The NetworkManager dispatcher (litclock-dev#309) re-renders the e-ink corner QR
 when wlan0's IP changes, so the displayed address doesn't lag behind
 reality after DHCP churn. Mode 0755 root:root is mandatory — NM
 silently skips dispatcher scripts that are group/world-writable.
@@ -140,13 +140,15 @@ class TestDispatcherFile:
 class TestInstallPaths:
     """The dispatcher must be installed by every code path that provisions
     a LitClock: first-flash via pi-gen and in-place upgrade via update.sh.
-    Missing either silently leaves the #309 UX bug in place on that path.
+    Missing either silently leaves the litclock-dev#309 UX bug in place on that path.
 
     install.sh was a third path until litclock-dev#547 retired it."""
 
     def test_update_sh_syncs_dispatcher(self):
         body = UPDATE_SH.read_text()
-        assert "nm-dispatcher/99-litclock-ip-change" in body, "update.sh must sync the NM dispatcher on upgrades (#309)"
+        assert "nm-dispatcher/99-litclock-ip-change" in body, (
+            "update.sh must sync the NM dispatcher on upgrades (litclock-dev#309)"
+        )
         assert "/etc/NetworkManager/dispatcher.d" in body, "update.sh must target the NM dispatcher directory"
 
     def test_update_sh_is_idempotent(self):
@@ -154,51 +156,53 @@ class TestInstallPaths:
         # log a noisy reinstall every weekly update.timer run when nothing
         # changed. Look for `cmp -s` near the dispatcher install.
         body = UPDATE_SH.read_text()
-        # Slice the file from the #309 Phase 5c marker forward.
+        # Slice the file from the litclock-dev#309 Phase 5c marker forward.
         marker = "# ─── Phase 5c"
-        assert marker in body, "update.sh should have a Phase 5c section header for #309"
+        assert marker in body, "update.sh should have a Phase 5c section header for litclock-dev#309"
         phase_5c = body[body.index(marker) : body.index(marker) + 1500]
         assert "cmp -s" in phase_5c, "Phase 5c should diff against installed copy before reinstall (idempotency)"
 
     def test_pi_gen_installs_dispatcher(self):
         body = PI_GEN_SERVICES.read_text()
-        assert "nm-dispatcher/99-litclock-ip-change" in body, "pi-gen stage3 must install the NM dispatcher (#309)"
+        assert "nm-dispatcher/99-litclock-ip-change" in body, (
+            "pi-gen stage3 must install the NM dispatcher (litclock-dev#309)"
+        )
         assert "/etc/NetworkManager/dispatcher.d" in body, "pi-gen stage3 must target the NM dispatcher directory"
 
     def test_pi_gen_uses_correct_mode(self):
         body = PI_GEN_SERVICES.read_text()
-        # Find the #309 block and assert mode + ownership are correct.
-        assert "# #309" in body, "pi-gen should have a #309 comment marker"
-        block_start = body.index("# #309")
+        # Find the litclock-dev#309 block and assert mode + ownership are correct.
+        assert "# litclock-dev#309" in body, "pi-gen should have a litclock-dev#309 comment marker"
+        block_start = body.index("# litclock-dev#309")
         block = body[block_start : block_start + 700]
         assert "0755" in block and "root" in block, "pi-gen dispatcher install must use mode 0755 root:root"
 
 
-# ─── #387: 020-completion hardening (C1 + C2) ───────────────────────────────
+# ─── litclock-dev#387: 020-completion hardening (C1 + C2) ───────────────────────────────
 
 
 class TestPrivilegeHardening387:
-    """The dispatcher runs as root. Two escalation vectors closed in #387:
+    """The dispatcher runs as root. Two escalation vectors closed in litclock-dev#387:
     C1 (it must invoke the root-owned mark-collected copy, not the pi-writable
     repo one) and C2 (root writes into pi-owned dirs must not follow symlinks)."""
 
     def test_c1_invokes_root_owned_mark_collected(self):
         body = DISPATCHER.read_text()
         assert "/usr/local/lib/litclock/litclock-mark-collected.sh" in body, (
-            "dispatcher (root) must call the root-owned mark-collected copy (#387 C1)"
+            "dispatcher (root) must call the root-owned mark-collected copy (litclock-dev#387 C1)"
         )
 
     def test_c1_does_not_run_pi_writable_helper_as_root(self):
         body = DISPATCHER.read_text()
         # No unguarded call to the pi-writable repo path (that would be pi->root).
         assert "/home/pi/litclock/scripts/litclock-mark-collected.sh" not in body, (
-            "dispatcher must NOT execute the pi-writable helper as root (#387 C1)"
+            "dispatcher must NOT execute the pi-writable helper as root (litclock-dev#387 C1)"
         )
 
     def test_c2_last_rendered_ip_symlink_guard(self):
         body = DISPATCHER.read_text()
         assert '[ -L "$MARKER" ]' in body, (
-            "dispatcher must refuse to follow a symlink at /run/litclock/last-rendered-ip (#387 C2)"
+            "dispatcher must refuse to follow a symlink at /run/litclock/last-rendered-ip (litclock-dev#387 C2)"
         )
 
     def test_install_paths_ship_root_owned_helpers(self):
@@ -206,7 +210,7 @@ class TestPrivilegeHardening387:
         # /usr/local/lib/litclock so pi cannot rewrite what runs as root.
         for src, name in ((UPDATE_SH, "update.sh"), (PI_GEN_SERVICES, "pi-gen")):
             body = src.read_text()
-            assert "/usr/local/lib/litclock" in body, f"{name} must install the #387 helpers dir"
+            assert "/usr/local/lib/litclock" in body, f"{name} must install the litclock-dev#387 helpers dir"
             assert "litclock-set-timezone" in body, f"{name} must install the tz-wrapper root-owned"
             assert "litclock-mark-collected.sh" in body, f"{name} must install mark-collected root-owned"
             assert "-o root -g root" in body, f"{name} must install the helpers root:root"
@@ -219,9 +223,9 @@ class TestMarkCollectedHardening387:
 
     def test_symlink_guard_present(self):
         body = self.MARK.read_text()
-        assert '[ -L "$MARKER" ]' in body, "mark-collected must guard against a symlink marker (#387 C2)"
+        assert '[ -L "$MARKER" ]' in body, "mark-collected must guard against a symlink marker (litclock-dev#387 C2)"
 
     def test_uses_mktemp_not_predictable_tmp(self):
         body = self.MARK.read_text()
         assert "mktemp" in body, "mark-collected must stage via mktemp (O_EXCL), not a guessable $$ path"
-        assert 'tmp="$MARKER.tmp.$$"' not in body, "the guessable tmp path must be gone (#387 C2)"
+        assert 'tmp="$MARKER.tmp.$$"' not in body, "the guessable tmp path must be gone (litclock-dev#387 C2)"

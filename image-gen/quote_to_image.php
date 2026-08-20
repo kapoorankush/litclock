@@ -27,15 +27,15 @@ $creditFont = "Literata72pt-SemiBoldItalic.ttf";
 // get the quotes (including title and author) from a CSV file,
 // and create unique images for them, one without and one with title and author
 //
-// Counters are dispatched from TurnQuoteIntoImage's return status (#216):
+// Counters are dispatched from TurnQuoteIntoImage's return status (litclock-dev#216):
 //   'written'         — both quote PNG and credits PNG saved successfully
 //   'failed_nostring' — stristr could not locate the timestring in the quote
 //   'failed_nofit'    — fitText exhausted the font range
 //   'failed_write'    — either imagepng() call returned false (disk/perm/etc.)
 //
-// Skip rule (#299): an existing PNG is reused only if the manifest's recorded
+// Skip rule (litclock-dev#299): an existing PNG is reused only if the manifest's recorded
 // content hash for its filename matches the hash of the current row. Otherwise
-// the row is regenerated. Pre-#299 behaviour was a bare file_exists() short-
+// the row is regenerated. Pre-litclock-dev#299 behaviour was a bare file_exists() short-
 // circuit, which silently kept stale PNGs after CSV row reorders.
 $manifest_path = '../images/manifest.json';
 $existing_manifest_files = [];
@@ -94,7 +94,7 @@ if (($handle = fopen("litclock_annotated.csv", "r")) !== FALSE) {
         $metadata_filename = 'quote_'.$timeKey.'_'.$imagenumber.$nsfw_suffix.'_credits.png';
         $imagePath = '../images/'.$image_filename;
         $metadataPath = '../images/metadata/'.$metadata_filename;
-        // #299/F: JSON-encoded array preimage. Pipe-joining was ambiguous when
+        // litclock-dev#299/F: JSON-encoded array preimage. Pipe-joining was ambiguous when
         // any field legally contained a `|` (CSV-quoted fields can). The flags
         // pin Python parity: JSON_UNESCAPED_SLASHES + JSON_UNESCAPED_UNICODE
         // mirror Python's `ensure_ascii=False` and default slash treatment.
@@ -129,7 +129,7 @@ if (($handle = fopen("litclock_annotated.csv", "r")) !== FALSE) {
     fclose($handle);
 }
 
-// Write the manifest sidecar (#299). corpus_hash + generator_hash let the CI
+// Write the manifest sidecar (litclock-dev#299). corpus_hash + generator_hash let the CI
 // gate validate that the release was produced from the PR's CSV; the per-file
 // hash map drives this script's hash-based skip on next run.
 $manifest = [
@@ -167,7 +167,7 @@ if ($failed > 0) {
 printf("Images on disk:          %d\n", $present_on_disk);
 printf("Gap (CSV rows w/o img):  %d\n", $gap);
 
-// #299: exit non-zero on any row-render failure or manifest write failure.
+// litclock-dev#299: exit non-zero on any row-render failure or manifest write failure.
 // Previously the script always exited 0, letting `corpus_edit ship` proceed
 // past partial generations and ship a release whose corpus_hash matches the
 // CSV but whose tarball is missing PNGs for failed rows.
@@ -322,7 +322,7 @@ function TurnQuoteIntoImage($time, $quote, $timestring, $title, $author, $imagen
     // we leave the orphan quote PNG on disk and skip writing the manifest entry
     // (the success branch in the main loop only records `written`). On next run
     // the manifest miss + missing credits PNG combine to retry both. This is
-    // the #299 update of the original #216 D2 self-heal: previously the
+    // the litclock-dev#299 update of the original litclock-dev#216 D2 self-heal: previously the
     // bare file_exists check caught the mismatch, now the manifest does.
     $creditsPath = '../images/metadata/quote_'.$time.'_'.$imagenumber.$nsfw_suffix.'_credits.png';
     if (imagepng($png_image, $creditsPath) === false) {
@@ -360,7 +360,7 @@ function fitText($quote_array, $width, $height, $font_size, $ts_char_start, $ts_
 
     // create image. NOTE: PHP CLI's `die("string")` exits 0 (only `die(int)`
     // sets a non-zero status), which would let corpus_edit ship treat a fatal
-    // GD failure as success. Use explicit exit(1) instead. (#299)
+    // GD failure as success. Use explicit exit(1) instead. (litclock-dev#299)
     $png_image = imagecreate($width, $height);
     if ($png_image === false) {
         fwrite(STDERR, "Cannot Initialize new GD image stream\n");

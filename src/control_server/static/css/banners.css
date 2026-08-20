@@ -1,7 +1,7 @@
 /* Status / error banners.
  *
- * #317 item 7 / #319 follow-up — these rules used to live duplicated in
- * settings.css AND system.css (settings_post on a #319 gift POST redirects
+ * litclock-dev#317 item 7 / litclock-dev#319 follow-up — these rules used to live duplicated in
+ * settings.css AND system.css (settings_post on a litclock-dev#319 gift POST redirects
  * to /system, and /system needed a matching banner block — leading to
  * verbatim copy-paste). Extracted here so a future color/border tweak
  * lands once instead of twice.
@@ -28,7 +28,7 @@
   border-top: 1px solid var(--error);
   color: var(--ink);
 }
-/* #274 follow-up #2 — Update-in-progress banner on Settings. Same paper
+/* litclock-dev#274 follow-up #2 — Update-in-progress banner on Settings. Same paper
  * texture as the others; --accent border to read as informational
  * rather than success/error. DESIGN.md treats accent as the "active
  * process" cue — matches the Updates-tab reading-list highlight. */

@@ -24,7 +24,7 @@ HOTSPOT_RETRY_DELAY=15
 IP_MAX_RETRIES=10
 IP_RETRY_DELAY=3
 
-# Shared env.sh writer helpers (issue #274). Sourced so the default-env-
+# Shared env.sh writer helpers (issue litclock-dev#274). Sourced so the default-env-
 # creation path below routes through the same sidecar-flock atomic writer
 # that update.sh / reset-setup.sh / prepare-for-cloning.sh use. Without
 # this, first-boot.sh would be the only env.sh writer not respecting the
@@ -271,7 +271,7 @@ start_setup_server_provisioning() {
 # backgrounded the server and relied on the ~15s e-ink QR paint as an *implicit*
 # buffer. If the server isn't listening yet when iOS fires its first probe (~1s
 # after join), that probe fails and iOS can cache a "no captive portal" verdict,
-# so the auto-open never fires until forced traffic (#483). Making readiness
+# so the auto-open never fires until forced traffic (litclock-dev#483). Making readiness
 # explicit closes that race regardless of why startup is slow on a given boot.
 # Uses bash's /dev/tcp (no external dep, no per-probe process spawn). Best-effort:
 # on timeout we paint the QR anyway rather than stall setup forever.
@@ -380,7 +380,7 @@ start_clock_service() {
         ./scripts/runtheclock.sh &
     fi
 
-    # #245 M5 hardware QA fix — also start the Control PWA server.
+    # litclock-dev#245 M5 hardware QA fix — also start the Control PWA server.
     #
     # litclock-control.service has ConditionPathExists=/etc/litclock/.setup-complete.
     # systemd evaluates Condition= directives at job-start time, so a unit
@@ -435,12 +435,12 @@ main() {
     fi
 
     # Ensure env.sh exists. Route through the shared sidecar-flock writer
-    # (#274) so a power loss mid-write can't leave a half-truncated file,
+    # (litclock-dev#274) so a power loss mid-write can't leave a half-truncated file,
     # and a concurrent Python PWA writer can't race the heredoc on a boot
     # where setup-complete didn't land before reboot.
     if [[ ! -f "$ENV_FILE" ]]; then
         log "Creating default env.sh..."
-        # #337 A3: WEATHER_LOCATION_MODE + WEATHER_IP_COUNTRY shipped from
+        # litclock-dev#337 A3: WEATHER_LOCATION_MODE + WEATHER_IP_COUNTRY shipped from
         # the very first boot. MODE=auto means the on-boot reresolve service
         # will populate the rest once WiFi connects + IP-geo succeeds.
         local _defaults
@@ -594,7 +594,7 @@ ENVEOF
         # Confirm the server is actually accepting connections BEFORE painting the
         # QR — the QR is the user's cue to join, and iOS probes for a captive
         # portal within a second of joining. Showing the QR before the server can
-        # answer is what lets that first probe fail and get cached (#483).
+        # answer is what lets that first probe fail and get cached (litclock-dev#483).
         wait_for_setup_server_listening 25 || true
 
         # Now show hotspot credentials + QR code on e-ink (safe to take time here)
@@ -618,7 +618,7 @@ ENVEOF
         # Enable NTP if not already done (provisioning mode skipped it)
         sudo timedatectl set-ntp true 2>/dev/null || true
 
-        # #316 /review CRITICAL ordering fix — consume the gift-mode markers
+        # litclock-dev#316 /review CRITICAL ordering fix — consume the gift-mode markers
         # BEFORE mark_setup_complete. The previous order had a window where
         # power loss / a SIGTERM between mark_setup_complete and the rm
         # would leave .welcome-mode + .welcome-message stranded with
@@ -637,7 +637,7 @@ ENVEOF
         log "First-boot setup finished successfully"
     else
         log_error "Setup did not complete"
-        # #529: paint the recovery instructions, then power off instead of
+        # litclock-dev#529: paint the recovery instructions, then power off instead of
         # idling in a half-provisioned state (burning power, holding the
         # hotspot, reading as "stuck" on a shelf). A power-cycle IS the
         # on-screen recovery instruction, so the off state and the copy
@@ -645,7 +645,7 @@ ENVEOF
         # recipients don't SSH.
         display_message "Setup Incomplete" "Restart to try again" "Unplug, then plug back in"
         # Deliberately NO grace sleep between paint and poweroff (owner
-        # decision on #529): the on-screen copy invites the user to pull
+        # decision on litclock-dev#529): the on-screen copy invites the user to pull
         # power, so every second the Pi keeps running after painting it is
         # a window for an unclean power cut (SD-corruption class). The
         # 30-minute setup timeout above already was the grace period.

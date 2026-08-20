@@ -1,6 +1,6 @@
 """GET / — PWA shell front door (Status tab).
 
-M1 rendered an empty shell. M2 (PR #245) filled the Status tab via
+M1 rendered an empty shell. M2 (PR litclock-dev#245) filled the Status tab via
 `status.html.j2` — the literary hero card + 5-row status list + stale-
 quote banner. M3 owns /settings + /api/settings; M4 owns /system; M5
 (this milestone) owns /updates + /api/update/* + /api/wifi/reset on

@@ -235,7 +235,7 @@ class TestComputeUncollectedNetwork:
             assert "time-location" not in _anomalies._compute_uncollected(v)
 
     def test_mode_none_treated_as_auto(self, app_with_marker):
-        # Fix C (Codex structured review #1): legacy / pre-#337 env files
+        # Fix C (Codex structured review #1): legacy / pre-litclock-dev#337 env files
         # don't set WEATHER_LOCATION_MODE, so the predicate accepts None
         # and "" alongside "auto". Without this, legacy Pis kept showing
         # the orange "Location stale" false positive litclock-dev#432 was opened to

@@ -1,4 +1,4 @@
-/* Live-logs drawer (#416 PR3b) — cross-cutting controller.
+/* Live-logs drawer (litclock-dev#416 PR3b) — cross-cutting controller.
  *
  * Reachable from every tab via the dots-three ribbon at bottom-right.
  * Consumes the SSE stream from PR2 backend (/api/logs/stream) and the
@@ -673,7 +673,7 @@
         e.preventDefault();
         openDrawer(dom, state);
       });
-      // Hide the PR3a "(Live drawer arrives in #416 PR3b.)" hint since
+      // Hide the PR3a "(Live drawer arrives in litclock-dev#416 PR3b.)" hint since
       // it's no longer accurate.
       var pending = document.querySelector('.diag-log-snapshot__pending');
       if (pending) pending.hidden = true;

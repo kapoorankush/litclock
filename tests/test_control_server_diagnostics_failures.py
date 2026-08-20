@@ -1,6 +1,6 @@
 """Malformed-source-file failure-path tests for the diagnostics readers.
 
-Pre-#419 the readers' "missing file" path was covered by tests that
+Pre-litclock-dev#419 the readers' "missing file" path was covered by tests that
 removed the file entirely. The "file exists but is malformed" path was
 left untested for several readers — the existing payload tests assumed
 well-formed inputs. This file fills the gap (T8 from issue body).
@@ -166,9 +166,9 @@ def _block_real_thermal_zone(real_read_text, allowed_path):
 class TestReadLanIpEmptyPath:
     """Codex /review F1 regression guard.
 
-    Pre-#419 the lan_ip reader did ``Path(path).read_text(...)`` directly,
+    Pre-litclock-dev#419 the lan_ip reader did ``Path(path).read_text(...)`` directly,
     so a Flask config of ``DIAG_LAST_IP_PATH=""`` produced ``Path("")``
-    which raised ``OSError`` and degraded to ``None``. The naive #419
+    which raised ``OSError`` and degraded to ``None``. The naive litclock-dev#419
     rewrite (``target = path or DEFAULT_LAST_RENDERED_IP_PATH``) would
     have silently fallen back to the production path — leaking the real
     LAN IP / DHCP timestamp when an override was intended to suppress

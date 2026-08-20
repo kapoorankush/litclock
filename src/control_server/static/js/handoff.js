@@ -1,4 +1,4 @@
-/* Post-WiFi handoff banner controller (EPIC #383 PR2, #388).
+/* Post-WiFi handoff banner controller (EPIC litclock-dev#383 PR2, litclock-dev#388).
  *
  * Two states, keyed on the banner's data-handoff-state:
  *

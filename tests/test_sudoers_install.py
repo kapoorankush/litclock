@@ -1,6 +1,6 @@
 """Tests for sudoers/020_litclock-control + its install paths.
 
-The Control PWA (#245 M4) needs scoped sudo to run `systemctl reboot`
+The Control PWA (litclock-dev#245 M4) needs scoped sudo to run `systemctl reboot`
 and `systemctl poweroff`. A malformed sudoers entry locks out `sudo`
 system-wide — bricks the appliance worse than any other M4 failure
 mode. These tests guard:
@@ -68,9 +68,9 @@ class TestSudoersFile:
             # M3: ad-hoc tick after Settings save (D1).
             "/usr/bin/systemctl start litclock.service",
             "/usr/bin/systemctl start --no-block litclock.service",
-            # #387: root-owned tz-wrapper for the arbitrary-tz sudo path.
+            # litclock-dev#387: root-owned tz-wrapper for the arbitrary-tz sudo path.
             "/usr/local/lib/litclock/litclock-set-timezone",
-            # #387: first-boot NTP enable (latent-010-break without this).
+            # litclock-dev#387: first-boot NTP enable (latent-010-break without this).
             "/usr/bin/timedatectl set-ntp true",
         ],
     )

@@ -1,6 +1,6 @@
 """Anomaly detection for the /api/diagnostics surface.
 
-Split out of the pre-#419 monolithic ``routes/diagnostics.py`` (M1). The
+Split out of the pre-litclock-dev#419 monolithic ``routes/diagnostics.py`` (M1). The
 ``_compute_anomalies`` function is the server's authoritative answer to
 "which sections does PR3's template open by default on first paint" —
 its return list is intersected against :data:`SECTION_IDS` in the
@@ -77,7 +77,7 @@ def _is_numeric(value: Any) -> bool:
     JSON ``true`` round-tripping through a handcrafted writer would surface
     as ``1`` and pass the threshold checks (and ``True == True > 78.0`` is
     False but ``time.time() - 1.0`` makes ``picked_at`` look ancient).
-    Per LitClock learning #372: filter booleans explicitly from numeric reads.
+    Per LitClock learning litclock-dev#372: filter booleans explicitly from numeric reads.
     """
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -113,9 +113,9 @@ def _compute_anomalies(values: dict[str, Any]) -> list[str]:
     - ``services`` — ANY non-oneshot unit non-active. ``DIAG_ONESHOT_UNITS``
       is the explicit allowlist of post-boot-inactive-by-design services;
       members also get a pass on the transient ``activating``/``deactivating``
-      lifecycle states (#443 — litclock.service cycles through these every
+      lifecycle states (litclock-dev#443 — litclock.service cycles through these every
       minute during the quote paint). ``failed`` still trips for oneshots.
-      #433 dropped the prior ``has_journal_access`` trigger (per
+      litclock-dev#433 dropped the prior ``has_journal_access`` trigger (per
       /plan-eng-review A-3 + CMT-2) — it false-positived on healthy clocks
       whenever Pi Zero 2W IO contention pushed journalctl over the 8 s
       budget, and the hint copy advised the wrong group on Bookworm.
@@ -202,7 +202,7 @@ def _compute_anomalies(values: dict[str, Any]) -> list[str]:
             # Oneshot units cycle inactive → activating → active → inactive
             # in 2-5 s during the per-minute quote paint (litclock.service).
             # A poll landing in the activating/deactivating window is the
-            # NORMAL lifecycle, not a failure (#443) — skip it via the shared
+            # NORMAL lifecycle, not a failure (litclock-dev#443) — skip it via the shared
             # _is_oneshot_nonanomaly predicate (kept in lockstep with the
             # lazy-tail filter in _is_obviously_healthy + the row chip tone in
             # _build_service_states). ``failed`` is excluded by that predicate:
@@ -265,7 +265,7 @@ def _recent_logs_contain_error(values: dict[str, Any]) -> bool:
 
 
 def _read_collected_sections() -> set[str] | None:
-    """Parsed section keys from the persistent collected-marker (#445), or
+    """Parsed section keys from the persistent collected-marker (litclock-dev#445), or
     ``None`` to signal "fall back to the legacy tmpfs check".
 
     The marker (``/var/lib/litclock/.last-collected-marker.json``) answers
@@ -301,14 +301,14 @@ def _read_collected_sections() -> set[str] | None:
 
 
 def _compute_uncollected(values: dict[str, Any]) -> list[str]:
-    """Return the section IDs in the muted "Not yet collected" tier (#432).
+    """Return the section IDs in the muted "Not yet collected" tier (litclock-dev#432).
 
     This is the RAW predicate output (pre-precedence). Callers MUST go
     through :func:`_compute_section_states` to apply the uncollected-wins
     truth table — see that helper's docstring for the full table + the
     rationale for inverting the plan's locked anomaly-wins direction.
 
-    "Collected" is now sourced from the persistent marker (#445): a section
+    "Collected" is now sourced from the persistent marker (litclock-dev#445): a section
     is uncollected only if its key is NOT in
     ``/var/lib/litclock/.last-collected-marker.json``. When that marker is
     absent/unreadable (:func:`_read_collected_sections` returns ``None``),
@@ -370,7 +370,7 @@ def _compute_uncollected(values: dict[str, Any]) -> list[str]:
         if not signal_is_anomalous:
             out.append("network")
 
-    # time-location — gate per D3. Fix C: legacy / pre-#337 env files don't
+    # time-location — gate per D3. Fix C: legacy / pre-litclock-dev#337 env files don't
     # set WEATHER_LOCATION_MODE; the rest of the app treats a missing mode as
     # `auto`. Accept None alongside "auto" so those Pis get the grey tier
     # instead of the orange false positive this change was meant to remove.
@@ -396,7 +396,7 @@ def _compute_section_states(
     values: dict[str, Any],
 ) -> tuple[list[str], list[str]]:
     """Return ``(anomalies, uncollected)`` with uncollected-wins precedence
-    on overlap. SINGLE source of truth for the truth table (#432).
+    on overlap. SINGLE source of truth for the truth table (litclock-dev#432).
 
     +-----------------+-----------------------+--------------------+
     | S ∈ anom_raw    | S ∈ uncollected_raw   | Result             |
@@ -419,7 +419,7 @@ def _compute_section_states(
     user-reported fresh-flash case (marker absent + lan_ip empty + ssid
     empty + name empty), BOTH predicates fire for BOTH sections. Anomaly-
     wins precedence would leave the user seeing the same orange "Connection
-    issue" + "Location stale" pills that #432 was opened to fix.
+    issue" + "Location stale" pills that litclock-dev#432 was opened to fix.
 
     Uncollected wins matches the plan's stated INTENT (gift recipient
     sees grey, not orange) and is the only precedence that actually closes

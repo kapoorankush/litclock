@@ -1,4 +1,4 @@
-"""In-memory ring buffer + SSE subscriber model for /api/logs (#416).
+"""In-memory ring buffer + SSE subscriber model for /api/logs (litclock-dev#416).
 
 Inspired by tuanchris/dune-weaver's ``MemoryLogHandler`` pattern. Adapted
 for Flask + waitress (sync threading model — no asyncio queues) and bound
@@ -64,7 +64,7 @@ from ._redaction import RedactingFilter
 # RSS budget.
 MAX_ENTRIES: Final[int] = 500
 
-# Per-message size cap (#416 PR1 /review ASK-4=B). Truncates a misbehaving
+# Per-message size cap (litclock-dev#416 PR1 /review ASK-4=B). Truncates a misbehaving
 # caller (e.g. ``log.info("body=%s", huge_request_body)``) so one bad emit
 # can't blow the buffer's steady-state budget. 64 KB is generous enough to
 # carry full Python tracebacks + Flask debug dumps unchanged; worst-case
@@ -144,7 +144,7 @@ class MemoryLogHandler(logging.Handler):
         Includes ``exc_info`` traceback when present (PR1 adversarial
         pass) so ``log.exception("…")`` calls land in the drawer with the
         full stack — the helper paste is the primary support surface
-        after #387's image-hardening disables SSH, and a traceback-less
+        after litclock-dev#387's image-hardening disables SSH, and a traceback-less
         entry defeats the whole purpose.
 
         ``record.getMessage()`` is byte-truncated at
@@ -213,7 +213,7 @@ class MemoryLogHandler(logging.Handler):
         on reconnect to catch up without re-emitting the entire ring.
 
         ``order`` controls the RETURN ordering of the limit-selected slice
-        (per #419 D10):
+        (per litclock-dev#419 D10):
 
         - ``"desc"`` (default) — newest first. Limit picks the newest N.
         - ``"asc"`` — oldest first. Limit STILL picks the newest N, then
@@ -223,7 +223,7 @@ class MemoryLogHandler(logging.Handler):
           callers can't accidentally swap "newest 4" for "oldest 4" by
           flipping a single keyword.
 
-        Codex /review #419 flagged the alternative semantic (limit selects
+        Codex /review litclock-dev#419 flagged the alternative semantic (limit selects
         by order direction) as a trap for backfill/reconnect callers.
         """
         if order not in ("asc", "desc"):
@@ -284,7 +284,7 @@ class MemoryLogHandler(logging.Handler):
     ) -> tuple[list[LogEntry], int, int]:
         """Atomic ``(entries, total, latest_seq)`` under one lock acquire.
 
-        ``GET /api/logs`` reads all three values per request; before #419
+        ``GET /api/logs`` reads all three values per request; before litclock-dev#419
         PR2 the handler took the ``_lock`` three times (one per call). That
         leaves a window where ``total_count`` and ``latest_seq`` can
         reflect different buffer states across an in-flight ``emit()``,
@@ -387,7 +387,7 @@ class MemoryLogHandler(logging.Handler):
 
         There is no public route that calls this — /plan-eng-review OV-3=A
         dropped the would-be ``DELETE /api/logs`` endpoint because
-        clearing in-memory state is a write, and issue #416 explicitly
+        clearing in-memory state is a write, and issue litclock-dev#416 explicitly
         forbids any writes from the diagnostics surface. The drawer's
         "start fresh from now" feature is a client-side filter, not a
         server-side reset.

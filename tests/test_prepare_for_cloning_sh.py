@@ -1,4 +1,4 @@
-"""Tests for scripts/prepare-for-cloning.sh (issue #160)."""
+"""Tests for scripts/prepare-for-cloning.sh (issue litclock-dev#160)."""
 
 import os
 import re
@@ -33,7 +33,7 @@ class TestPrepareForCloningStructure:
 
     def test_regenerates_env_sh_with_defaults(self, prepare_sh_content):
         """env.sh credentials must be scrubbed before cloning. Cloner should
-        overwrite the file with defaults, not delete it. Post-#274 the
+        overwrite the file with defaults, not delete it. Post-litclock-dev#274 the
         write goes through atomic_write_env_sh (sidecar-flocked)."""
         assert 'atomic_write_env_sh "$INSTALL_DIR/env.sh"' in prepare_sh_content
         assert "OPENWEATHERMAP_APIKEY=" in prepare_sh_content
@@ -67,7 +67,7 @@ class TestPrepareForCloningStructure:
 
 
 def test_defaults_include_weather_location_mode_and_ip_country():
-    """#337 A3 + /review testing-gap: prepare-for-cloning.sh must include
+    """litclock-dev#337 A3 + /review testing-gap: prepare-for-cloning.sh must include
     the new MODE + IP_COUNTRY defaults. Without these, a cloned image's
     first boot would inherit cloner's MODE=specific (if set) with stale
     coords for a location 1000 miles away from the cloned device's WiFi."""
@@ -75,10 +75,10 @@ def test_defaults_include_weather_location_mode_and_ip_country():
 
     content = (Path(__file__).parent.parent / "scripts/prepare-for-cloning.sh").read_text()
     assert "export WEATHER_LOCATION_MODE=auto" in content, (
-        "#337 A3: prepare-for-cloning.sh DEFAULTS must include MODE=auto"
+        "litclock-dev#337 A3: prepare-for-cloning.sh DEFAULTS must include MODE=auto"
     )
     assert "export WEATHER_IP_COUNTRY=" in content, (
-        "#337 A3: prepare-for-cloning.sh DEFAULTS must include WEATHER_IP_COUNTRY= (empty)"
+        "litclock-dev#337 A3: prepare-for-cloning.sh DEFAULTS must include WEATHER_IP_COUNTRY= (empty)"
     )
 
 

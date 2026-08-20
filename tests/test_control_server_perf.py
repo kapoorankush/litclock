@@ -1,20 +1,20 @@
-"""Perf-path tests for #419 PR2 + #433 follow-ups.
+"""Perf-path tests for litclock-dev#419 PR2 + litclock-dev#433 follow-ups.
 
 Covers:
 
-- ``DIAG_JOURNAL_TIMEOUT_S`` — journalctl-specific 8 s budget (#427).
+- ``DIAG_JOURNAL_TIMEOUT_S`` — journalctl-specific 8 s budget (litclock-dev#427).
 - ``_read_journal_tail`` call-site invariants (timeout, ttl, key, argv).
 - ``log_buffer.MemoryLogHandler.snapshot`` — atomic
   ``(entries, total, latest_seq)`` under one lock acquire. The route now
   calls this in place of three separate lock-takes.
 - ``log_buffer.MemoryLogHandler.get_logs(..., order='asc')`` —
   post-filter on the limit-selected newest-N slice. ``limit`` still means
-  "newest N" regardless of order (#419 D10).
+  "newest N" regardless of order (litclock-dev#419 D10).
 
-#433 dropped the module-level ``ThreadPoolExecutor`` pool in favour of a
+litclock-dev#433 dropped the module-level ``ThreadPoolExecutor`` pool in favour of a
 serial loop, and the empty-units short-circuit (P-1 lazy-tail callers
 pass ``()`` when no unit needs a tail). The pool-lifecycle tests that
-lived here pre-#433 are gone with the pool itself (~125 LOC).
+lived here pre-litclock-dev#433 are gone with the pool itself (~125 LOC).
 """
 
 from __future__ import annotations
@@ -29,11 +29,11 @@ from control_server.routes.diagnostics import _collectors
 
 
 class TestNoJournalPool:
-    """#433 explicitly deleted the journal-tail ``ThreadPoolExecutor``.
+    """litclock-dev#433 explicitly deleted the journal-tail ``ThreadPoolExecutor``.
     Per /review T-4: positively assert the absence so a future refactor
     that re-introduces a pool (even a single-worker one that's effectively
     serial) — with the F10/M1/M2 race-guard surface that came with the
-    pre-#433 plumbing — has to update this test to land. The reexport
+    pre-litclock-dev#433 plumbing — has to update this test to land. The reexport
     contract test pins the PUBLIC-symbol case; this pins module-level
     private state."""
 
@@ -46,7 +46,7 @@ class TestNoJournalPool:
 
 
 class TestBatchedJournalTails:
-    """#433: ``_batched_journal_tails`` is a serial loop. The P-1
+    """litclock-dev#433: ``_batched_journal_tails`` is a serial loop. The P-1
     lazy-tail caller in ``_build_service_states`` passes ``()`` on a
     healthy clock; the function must short-circuit without invoking
     ``_read_journal_tail`` even once."""
@@ -116,7 +116,7 @@ class TestJournalTimeoutBudget:
         )
 
     def test_journal_timeout_under_cache_ttl(self):
-        """Codex /review on #427 — the cache TTL is the natural upper
+        """Codex /review on litclock-dev#427 — the cache TTL is the natural upper
         bound for any per-call timeout. A timeout exceeding the TTL
         means a single slow journalctl call could outlive its own
         cache entry, defeating the amortization the cache exists to
@@ -166,10 +166,10 @@ class TestJournalTimeoutBudget:
             return ""
 
         monkeypatch.setattr(_collectors, "cached_subprocess", fake_cached_subprocess)
-        # #428 PR1a: _read_journal_tail's call site now goes through
+        # litclock-dev#428 PR1a: _read_journal_tail's call site now goes through
         # ``cached_subprocess_or_empty`` (CQ-1 helper at the boundary).
         # Patch the new binding so the timeout-budget invariant test
-        # still observes the call. Pre-#428 this single monkeypatch on
+        # still observes the call. Pre-litclock-dev#428 this single monkeypatch on
         # ``cached_subprocess`` was sufficient; per
         # [[learning-reexport-not-monkeypatch-compat]] Python binds names
         # in each module's namespace at import time.
@@ -187,7 +187,7 @@ class TestJournalTimeoutBudget:
             f"DIAG_JOURNAL_TIMEOUT_S={_collectors.DIAG_JOURNAL_TIMEOUT_S}. "
             "If this fails the v0.214.2 regression has been re-introduced."
         )
-        # Also pin the ttl kwarg. #436 DECOUPLED the journal tail's cache
+        # Also pin the ttl kwarg. litclock-dev#436 DECOUPLED the journal tail's cache
         # window from the shared 20s DIAG_SUBPROC_TTL_S onto its own
         # DIAG_JOURNAL_TTL_S (45s), raised ABOVE the 30s PWA poll interval so a
         # still-unhealthy unit reuses the cached tail instead of re-forking the
@@ -198,12 +198,12 @@ class TestJournalTimeoutBudget:
             f"_read_journal_tail used ttl={call['ttl']}, expected "
             f"DIAG_JOURNAL_TTL_S={_collectors.DIAG_JOURNAL_TTL_S}. "
             "The journal cache window must stay above the 30s poll interval "
-            "(#436) so a stuck-failed unit doesn't re-fork journalctl per poll."
+            "(litclock-dev#436) so a stuck-failed unit doesn't re-fork journalctl per poll."
         )
 
 
 class TestFastCallBudgets:
-    """#430 — per-call budgets for the FAST diagnostics subprocess calls.
+    """litclock-dev#430 — per-call budgets for the FAST diagnostics subprocess calls.
 
     The converse of ``TestJournalTimeoutBudget``. Each fast call (nmcli, iw,
     systemctl, timedatectl, git, ip route, uname) now reads its OWN timeout
@@ -275,9 +275,9 @@ class TestFastCallBudgets:
             assert _collectors.DIAG_JOURNAL_TIMEOUT_S > self._value(name), f"DIAG_JOURNAL_TIMEOUT_S must stay > {name}."
 
     def test_seeded_at_shared_base_until_measured(self):
-        # #430 HONESTY GUARD / tuning tripwire. The per-call budgets are SEEDED
+        # litclock-dev#430 HONESTY GUARD / tuning tripwire. The per-call budgets are SEEDED
         # at the shared base (behaviour-preserving) and must be tuned only from
-        # Pi Zero 2W measurements, never guessed p99s (the #444 call). This
+        # Pi Zero 2W measurements, never guessed p99s (the litclock-dev#444 call). This
         # pins the seed so any value change is a deliberate, reviewed edit with
         # a measurement citation. WHEN YOU TUNE a constant from
         # scripts/diag-subprocess-timing.py data: update this test to the new
@@ -285,7 +285,7 @@ class TestFastCallBudgets:
         for name in self.PER_CALL_CONSTANTS:
             assert self._value(name) == _collectors.DIAG_SUBPROC_TIMEOUT_S, (
                 f"{name} has diverged from the seeded base. If this is an intentional "
-                "tune from #430 Pi measurements, update this guard + cite the data."
+                "tune from litclock-dev#430 Pi measurements, update this guard + cite the data."
             )
 
 
@@ -392,7 +392,7 @@ class TestSnapshotAtomicity:
 
 
 class TestGetLogsAscOrder:
-    """``get_logs(order='asc')`` semantic (#419 D10): limit picks newest N,
+    """``get_logs(order='asc')`` semantic (litclock-dev#419 D10): limit picks newest N,
     order post-sorts the slice. Without this discipline a caller that
     flips order accidentally swaps "newest N" for "oldest N"."""
 

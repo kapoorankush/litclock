@@ -11,7 +11,7 @@
 # Rule: when requirements.txt adds a new package that is also apt-provided
 # via pi-gen/stage3/00-install-deps/00-packages, add its pip name here so
 # pip doesn't try to recompile it from sdist (which needs gcc and fails on
-# the image — see issue #214).
+# the image — see issue litclock-dev#214).
 #
 # Format: one pip package name per line. Comments (`#`) and blank lines
 # are ignored. Matching is anchored to the start of each requirements.txt

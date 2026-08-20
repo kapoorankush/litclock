@@ -303,7 +303,7 @@ jobs:
       # Python dep fails to install, or a systemd unit has invalid syntax,
       # stage3 fails and no .img is ever produced. Post-export mount-based
       # smoke testing was tried and removed — it produced false alarms from
-      # GH Actions loop-device quirks. See PR #202 and issue #114 for
+      # GH Actions loop-device quirks. See PR litclock-dev#202 and issue litclock-dev#114 for
       # context and the community discussions linked there.
 
       - name: Compress image
@@ -394,7 +394,7 @@ jobs:
       #
       # --target is REQUIRED: without it, GitHub stores the default branch
       # name (e.g. "master") in the Release's target_commitish field. The
-      # #209 auto-update resolver reads tag_name and resolves it via
+      # litclock-dev#209 auto-update resolver reads tag_name and resolves it via
       # git rev-list, but downstream tooling (and any future resolver that
       # trusts target_commitish) needs honest metadata. Always stamp the
       # actual commit SHA so the Release points where everyone thinks it does.
@@ -428,7 +428,7 @@ jobs:
         # got this far and partial-failed), upload the assets to it with
         # --clobber instead of trying to recreate it. `gh release create`
         # exits 1 on collision, which used to discard a freshly-built
-        # 1.4GB image alongside a 71-min build. See #242 for the postmortem.
+        # 1.4GB image alongside a 71-min build. See litclock-dev#242 for the postmortem.
         run: |
           if gh release view "${REF_NAME}" --json id >/dev/null 2>&1; then
             echo "Release ${REF_NAME} already exists — uploading assets with --clobber"

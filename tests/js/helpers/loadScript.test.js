@@ -1,4 +1,4 @@
-// Self-test for tests/js/helpers/loadScript.js (#338 D6).
+// Self-test for tests/js/helpers/loadScript.js (litclock-dev#338 D6).
 //
 // Pins the contract that lets every other JS test in the project fail loudly
 // when a developer forgets to register a fetch mock: the mock MUST throw with

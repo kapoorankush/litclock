@@ -1,4 +1,4 @@
-"""Tests for WiFi retry flow in setup_server (#139).
+"""Tests for WiFi retry flow in setup_server (litclock-dev#139).
 
 Covers the background WiFi connect/retry logic added to fix the phone
 disconnect issue on Pi Zero 2W (can't do AP+Station simultaneously).
@@ -73,7 +73,7 @@ def reset_globals(monkeypatch):
     are reset by the autouse fixture in ``conftest.py`` via
     ``setup_server.reset_state()`` — that path waits for any in-flight
     background thread to drain before clearing, which closes the race that
-    caused #355. We keep ``monkeypatch.setattr`` here only for the
+    caused litclock-dev#355. We keep ``monkeypatch.setattr`` here only for the
     configuration globals that benefit from restore semantics.
     """
     monkeypatch.setattr(setup_server, "PROVISIONING_MODE", False)
@@ -661,12 +661,12 @@ class TestConnectAndTeardown:
             sys.modules.pop("wifi_provision", None)
 
 
-# ── reset_state() helper (#355) ─────────────────────────────────────
+# ── reset_state() helper (litclock-dev#355) ─────────────────────────────────────
 
 
 class TestResetState:
     """Lock in the test-isolation contract that the conftest autouse
-    fixture relies on (#355). If ``reset_state()`` ever stops clearing one
+    fixture relies on (litclock-dev#355). If ``reset_state()`` ever stops clearing one
     of the connect-flow globals, an order-dependent flake re-opens — pin
     the behavior here so a regression surfaces in the failing assertion
     rather than as an intermittent CI failure."""
@@ -685,7 +685,7 @@ class TestResetState:
         assert setup_server._WIFI_SCAN_TIME == 0
 
     def test_reset_state_drains_inflight_thread_before_clearing(self):
-        # The drain loop is the actual #355 race fix: without it, a still-live
+        # The drain loop is the actual litclock-dev#355 race fix: without it, a still-live
         # background thread can write WIFI_CONNECT_ERROR *after* reset_state
         # zeroes it, re-opening the order-dependent flake. Pin the behavior
         # by spawning a thread that mimics the production write pattern
@@ -712,7 +712,7 @@ class TestResetState:
         assert setup_server.WIFI_CONNECT_ERROR is None
         assert setup_server.WIFI_CONNECT_IN_FLIGHT is False
 
-    # NOTE: these #478 tests assert on THEIR OWN thread handle (returned by
+    # NOTE: these litclock-dev#478 tests assert on THEIR OWN thread handle (returned by
     # _spawn_bg), never on the global _BG_THREADS count/emptiness — the registry
     # is shared module state, so a benign entry left by another test would make
     # a "== []" / "len == 1" assertion flaky (the very class of cross-test
@@ -720,7 +720,7 @@ class TestResetState:
     # cleanup is deterministic, not timing-dependent.
 
     def test_reset_state_joins_registered_background_thread(self):
-        # #478 — the flag-drain only covers threads that set IN_FLIGHT. _delayed
+        # litclock-dev#478 — the flag-drain only covers threads that set IN_FLIGHT. _delayed
         # (SIGTERM timer) and _resolve_and_signal do NOT, so a prior test's
         # thread could outlive its case and fire its (now next-test-monkeypatched)
         # os.kill/retry into the next test. reset_state must JOIN every thread
@@ -766,7 +766,7 @@ class TestResetState:
             assert t not in setup_server._BG_THREADS
 
     def test_reset_state_cancels_delayed_sigterm_without_firing(self, monkeypatch):
-        # #478 safety: joining a real _delayed SIGTERM timer must NOT wait out
+        # litclock-dev#478 safety: joining a real _delayed SIGTERM timer must NOT wait out
         # its sleep and then fire os.kill. At test-teardown time monkeypatch has
         # already reverted os.kill to the real one (conftest tears monkeypatch
         # down BEFORE the reset fixture), so a fired SIGTERM would kill the
@@ -785,7 +785,7 @@ class TestResetState:
         assert kills == [], "the delayed timer fired os.kill despite being cancelled"
 
     def test_reset_state_joins_before_clearing_globals(self):
-        # #478 follow-up (/review): the join must happen BEFORE reset_state
+        # litclock-dev#478 follow-up (/review): the join must happen BEFORE reset_state
         # clears the connect-flow globals — otherwise a late write from a tracked
         # thread survives the clear and leaks into the next test (the exact bug
         # class the fix targets). A refactor moving the clear ahead of the join
@@ -805,11 +805,11 @@ class TestResetState:
         )
 
 
-# ── #364: SIGTERM-ordering regression tests ─────────────────────────
+# ── litclock-dev#364: SIGTERM-ordering regression tests ─────────────────────────
 
 
 class TestConnectAndTeardownOrdering:
-    """Lock in the first-boot service-sequencing invariants surfaced in #364.
+    """Lock in the first-boot service-sequencing invariants surfaced in litclock-dev#364.
 
     The success path must call (in order):
       connect_to_wifi → teardown_hotspot → _resolve_location_from_ip →
@@ -818,7 +818,7 @@ class TestConnectAndTeardownOrdering:
     ``signal_completion`` is the handoff to ``litclock-firstboot.service``;
     if it doesn't fire before SIGTERM, the post-setup transition breaks.
     ``os.kill`` MUST be queued before IN_FLIGHT clears so reset_state's
-    drain barrier observes a fully-quiescent thread (#364 regression).
+    drain barrier observes a fully-quiescent thread (litclock-dev#364 regression).
     """
 
     def _make_post_body(self, **overrides):
@@ -974,7 +974,7 @@ class TestConnectAndTeardownOrdering:
         tmp_env_file,
         tmp_path,
     ):
-        """#364 REGRESSION TEST.
+        """litclock-dev#364 REGRESSION TEST.
 
         Capture WIFI_CONNECT_IN_FLIGHT at the moment os.kill is called.
         Must observe ``True`` — if a future refactor reorders SIGTERM
@@ -1084,7 +1084,8 @@ class TestConnectAndTeardownOrdering:
 
         # When reset_state returns, SIGTERM must have been queued already.
         assert os_kill_called.is_set(), (
-            "reset_state returned before SIGTERM was queued — drain-barrier false positive (#364 regression)."
+            "reset_state returned before SIGTERM was queued — drain-barrier false positive "
+            "(litclock-dev#364 regression)."
         )
 
 
@@ -1514,7 +1515,7 @@ class TestNoWiFiBranchSigterm:
 
         assert schedule_calls == [], (
             "_schedule_self_terminate must not run when signal_completion returns False — "
-            "would SIGTERM with no signal file and leave firstboot.sh waiting forever (#364)"
+            "would SIGTERM with no signal file and leave firstboot.sh waiting forever (litclock-dev#364)"
         )
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure wall-clock latency of the diagnostics "fast" subprocess calls (#430).
+"""Measure wall-clock latency of the diagnostics "fast" subprocess calls (litclock-dev#430).
 
 Why this exists
 ---------------
@@ -11,10 +11,10 @@ exceeds its budget, ``cached_subprocess`` returns ``None`` → the value renders
 empty → a false-positive anomaly banner fires on a perfectly healthy clock
 (same class as the v0.214.2 ``journalctl`` bug).
 
-#430 sizes a *dedicated* budget per call site. That sizing needs real numbers
+litclock-dev#430 sizes a *dedicated* budget per call site. That sizing needs real numbers
 from Pi Zero 2W hardware under load — which CI can't produce. This script is
 that measurement tool. Run it on authorclock + the test Pi under each of the
-load conditions below and paste the table into the #430 thread; the worst-case
+load conditions below and paste the table into the litclock-dev#430 thread; the worst-case
 p99 (plus headroom) sets each per-call constant.
 
 It measures the SAME argv the code runs (see ``src/control_server/_network.py``,
@@ -104,7 +104,7 @@ DIAG_UNITS = (
 
 
 def build_calls(cap: float) -> list[tuple[str, list[str]]]:
-    """The seven diagnostics 'fast' calls from #430, with dynamic argv resolved.
+    """The seven diagnostics 'fast' calls from litclock-dev#430, with dynamic argv resolved.
 
     One row per per-call budget constant in `_collectors.py` so the table can
     size every constant (nmcli, ip route, iw, systemctl, timedatectl, git,

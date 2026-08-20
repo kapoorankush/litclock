@@ -1,5 +1,5 @@
 [Unit]
-Description=LitClock handoff last-resort completer cadence (EPIC #383 PR2, #388)
+Description=LitClock handoff last-resort completer cadence (EPIC litclock-dev#383 PR2, litclock-dev#388)
 Documentation=https://github.com/kapoorankush/litclock/issues/388
 
 [Timer]

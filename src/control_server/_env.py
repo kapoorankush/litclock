@@ -1,6 +1,6 @@
-"""env.sh reader for control_server consumers (#416 / design D22).
+"""env.sh reader for control_server consumers (litclock-dev#416 / design D22).
 
-Factored out of ``routes/status.py:_read_env_file_settings`` (M2 PR #245) so
+Factored out of ``routes/status.py:_read_env_file_settings`` (M2 PR litclock-dev#245) so
 diagnostic, status, and any future route that needs env.sh values reads
 through one helper. The original name was misleading — the function never
 filtered to weather; it always returned every parsed KEY=value pair. The new
@@ -20,7 +20,7 @@ Lookup order for ``env_file``:
 
 Preferring the explicit arg over the env var lets tests using
 ``create_app({'ENV_FILE': ...})`` override without monkey-patching os.environ
-(adversarial /review on M2 caught this gap; the PR #245 wrapper carried the
+(adversarial /review on M2 caught this gap; the PR litclock-dev#245 wrapper carried the
 same plumbing and this extraction preserves it verbatim).
 """
 

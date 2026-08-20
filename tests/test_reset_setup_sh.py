@@ -1,4 +1,4 @@
-"""Tests for scripts/reset-setup.sh (issue #160)."""
+"""Tests for scripts/reset-setup.sh (issue litclock-dev#160)."""
 
 import os
 from pathlib import Path
@@ -58,12 +58,12 @@ class TestResetSetupStructure:
 
     def test_weather_cache_cleared(self, reset_sh_content):
         """Stale weather cache from a prior unit system can be served under
-        the new unit label (issue #175). Must be cleared."""
+        the new unit label (issue litclock-dev#175). Must be cleared."""
         assert 'rm -f "$INSTALL_DIR"/weather-cache*.json' in reset_sh_content
 
     def test_preserves_env_sh_file(self, reset_sh_content):
         """env.sh should be reset to defaults but NOT deleted — deletion
-        would break downstream scripts that read from it. Post-#274 the
+        would break downstream scripts that read from it. Post-litclock-dev#274 the
         reset writes defaults via atomic_write_env_sh (sidecar-flocked,
         interlocks with src/config.py's atomic_update from the PWA)."""
         assert 'atomic_write_env_sh "$INSTALL_DIR/env.sh"' in reset_sh_content
@@ -75,7 +75,7 @@ class TestResetSetupStructure:
         assert "systemctl enable litclock-firstboot.service" in reset_sh_content
 
     def test_clears_weather_location_name(self, reset_sh_content):
-        """#389/#380: WEATHER_LOCATION_NAME (added as an env key in PR1) must be
+        """litclock-dev#389/litclock-dev#380: WEATHER_LOCATION_NAME (added as an env key in PR1) must be
         in the defaults block so a reset clears the prior city — otherwise a
         reset device's Status/splash would show the previous owner's location."""
         defaults_idx = reset_sh_content.find("DEFAULTS=")
@@ -85,14 +85,14 @@ class TestResetSetupStructure:
 
 
 class TestGiftMode:
-    """Issue #189 — `--gift-mode` preps the device for shipping."""
+    """Issue litclock-dev#189 — `--gift-mode` preps the device for shipping."""
 
     def test_has_gift_mode_flag(self, reset_sh_content):
         assert "--gift-mode" in reset_sh_content
         assert "GIFT_MODE=true" in reset_sh_content
 
     def test_gift_mode_resets_timezone_to_utc(self, reset_sh_content):
-        """#389: the timezone is system state (timedatectl), not env.sh, so the
+        """litclock-dev#389: the timezone is system state (timedatectl), not env.sh, so the
         config wipe doesn't touch it. A gifted device must not leak the gifter's
         timezone — reset it to UTC so the recipient's first-boot IP-geo sets
         theirs. (Hardware QA T24 confirms timedatectl actually reports UTC — a
@@ -100,7 +100,7 @@ class TestGiftMode:
         assert "timedatectl set-timezone UTC" in reset_sh_content
 
     def test_timezone_reset_gated_by_gift_mode(self, reset_sh_content):
-        """#389: only gift mode forgets the timezone — a plain reset of your own
+        """litclock-dev#389: only gift mode forgets the timezone — a plain reset of your own
         device has no privacy reason to. The timedatectl call must sit inside a
         `$GIFT_MODE == true` guard."""
         tz_idx = reset_sh_content.find("timedatectl set-timezone UTC")
@@ -222,7 +222,7 @@ class TestGiftMode:
 
         Parametrised over BOTH arms as of litclock-dev#660. The gift arm was
         pinned when the two features first met; the --poweroff arm grew the same
-        pairing only when #660 added rotation to it, and nothing covered it.
+        pairing only when litclock-dev#660 added rotation to it, and nothing covered it.
         """
         import re as _re
 
@@ -358,7 +358,7 @@ class TestGiftMode:
         )
 
     def test_gift_mode_aborts_poweroff_on_env_wipe_failure(self, reset_sh_content):
-        """#393: the env.sh wipe is the load-bearing privacy step for a gift —
+        """litclock-dev#393: the env.sh wipe is the load-bearing privacy step for a gift —
         it clears the gifter's WEATHER_LATITUDE/LONGITUDE/LOCATION_NAME. If it
         fails (lock timeout rc=75 or a write error), stale coordinates survive
         into the recipient's first boot and PR2's handoff can start a wrong-time
@@ -385,7 +385,7 @@ class TestGiftMode:
         assert "exit 1" in abort_block, "failed-wipe abort must exit non-zero, not fall through to poweroff"
 
     def test_message_file_flag_parsed(self, reset_sh_content):
-        """#280: --message-file FILE flag must be parsed. The PWA's
+        """litclock-dev#280: --message-file FILE flag must be parsed. The PWA's
         Prepare-for-Gifting endpoint hands the script a file path containing
         the personalized welcome — reading from a file (not an inline arg)
         keeps the message out of the process list / journal."""
@@ -393,7 +393,7 @@ class TestGiftMode:
         assert "GIFT_MESSAGE_FILE=" in reset_sh_content
 
     def test_welcome_message_written_before_shutdown_service_stop(self, reset_sh_content):
-        """#280: same ordering invariant as the .welcome-mode marker —
+        """litclock-dev#280: same ordering invariant as the .welcome-mode marker —
         .welcome-message must be written BEFORE the shutdown service stops,
         otherwise shutdown-splash.sh's ExecStop has already painted the
         default greeting and won't re-read the file on the subsequent
@@ -406,22 +406,22 @@ class TestGiftMode:
         )
 
     def test_welcome_message_size_bounded(self, reset_sh_content):
-        """#280 + #319: the message file copy must be size-bounded so a
+        """litclock-dev#280 + litclock-dev#319: the message file copy must be size-bounded so a
         hostile or unbounded input file can't fill /etc/litclock. M3's
-        validator caps GIFT_MODE_MESSAGE at 80 chars (#319 lowered from
+        validator caps GIFT_MODE_MESSAGE at 80 chars (litclock-dev#319 lowered from
         280 once the renderer learned to wrap); reset-setup.sh enforces
         the same at write-time via `os.read(fd, 80)` defense-in-depth
-        inside the O_NOFOLLOW Python block (#316)."""
+        inside the O_NOFOLLOW Python block (litclock-dev#316)."""
         gift_block_start = reset_sh_content.find('if [[ "$GIFT_MODE" == "true" ]]; then')
         gift_block_end = reset_sh_content.find('echo "=', gift_block_start)
         gift_block = reset_sh_content[gift_block_start:gift_block_end]
         assert "os.read(fd, 80)" in gift_block, (
             "welcome-message write must enforce 80-char ceiling (matches "
-            "GIFT_MODE_MESSAGE_MAX_LEN in src/config.py post-#319)"
+            "GIFT_MODE_MESSAGE_MAX_LEN in src/config.py post-litclock-dev#319)"
         )
 
     def test_welcome_message_rejects_symlinks(self, reset_sh_content):
-        """#280 + #316 /review: source file (handed in via --message-file)
+        """litclock-dev#280 + litclock-dev#316 /review: source file (handed in via --message-file)
         must be opened with O_NOFOLLOW. The naive `[[ ! -L ... ]] && head`
         is racy — between the test and the read, a pi-level adversary can
         rename(2) a symlink over the path; since this script runs as root,
@@ -433,11 +433,11 @@ class TestGiftMode:
         assert "O_NOFOLLOW" in gift_block, (
             "--message-file source must be opened with O_NOFOLLOW — the older `[[ ! -L ... ]]` "
             "check is TOCTOU-racy under root, opening a pi→root file-disclosure primitive "
-            "(#316 /review CRITICAL finding)"
+            "(litclock-dev#316 /review CRITICAL finding)"
         )
 
     def test_no_message_file_clears_stale_welcome_message(self, reset_sh_content):
-        """#280: if a previous --gift-mode run set a personalized message and
+        """litclock-dev#280: if a previous --gift-mode run set a personalized message and
         the next run doesn't pass --message-file, the stale message must NOT
         leak into the new gift-mode session. Explicit absence = default text."""
         gift_block_start = reset_sh_content.find('if [[ "$GIFT_MODE" == "true" ]]; then')
@@ -449,9 +449,9 @@ class TestGiftMode:
 
 
 class TestRebootHintFile:
-    """Issue #282 — --reboot must signal shutdown-splash.sh to paint
+    """Issue litclock-dev#282 — --reboot must signal shutdown-splash.sh to paint
     'Restarting...' instead of 'Powered Off'. The hint write is hardened
-    against symlink TOCTOU + cancel/abort cleanup per /review of PR #304."""
+    against symlink TOCTOU + cancel/abort cleanup per /review of PR litclock-dev#304."""
 
     HINT_PATH = "/run/litclock/shutdown-action"
     HINT_TMP_PATTERN = ".litclock-hint.XXXXXX"
@@ -459,11 +459,11 @@ class TestRebootHintFile:
 
     def _hint_block(self, content: str) -> str:
         """Slice the content to just the DO_REBOOT-guarded hint write block.
-        Anchored on the `# Issue #282:` comment header (unique) and the
+        Anchored on the `# Issue litclock-dev#282:` comment header (unique) and the
         `# Step 1:` services-stop marker so we don't accidentally pick up
         the end-of-script `elif [[ $DO_REBOOT ]]` reboot branch."""
-        start = content.find("# Issue #282:")
-        assert start != -1, "`# Issue #282:` hint-block header missing"
+        start = content.find("# Issue litclock-dev#282:")
+        assert start != -1, "`# Issue litclock-dev#282:` hint-block header missing"
         end = content.find("# Step 1:", start)
         assert end != -1, "could not find end of hint block (Step 1 marker)"
         block = content[start:end]
@@ -485,11 +485,11 @@ class TestRebootHintFile:
     def test_hint_written_before_shutdown_service_stop(self, reset_sh_content):
         """The hint write block must precede `systemctl stop litclock-shutdown.service`
         — ExecStop fires from that stop and reads the hint."""
-        # Anchor on the unique #282 comment header (the `if [[ $DO_REBOOT ]]`
+        # Anchor on the unique litclock-dev#282 comment header (the `if [[ $DO_REBOOT ]]`
         # string also appears in the end-of-script reboot branch).
-        block_idx = reset_sh_content.find("# Issue #282:")
+        block_idx = reset_sh_content.find("# Issue litclock-dev#282:")
         stop_idx = reset_sh_content.find("systemctl stop litclock-shutdown.service")
-        assert block_idx != -1, "#282 hint-block header missing"
+        assert block_idx != -1, "litclock-dev#282 hint-block header missing"
         assert stop_idx != -1, "shutdown-service stop missing"
         assert block_idx < stop_idx, "hint write must come before the shutdown-service stop"
 
@@ -580,7 +580,7 @@ class TestResetSetupExecution:
 
 
 def test_clears_handoff_complete_marker():
-    """EPIC #383 PR2 (#388): a reset returns the device to fresh-setup state, so
+    """EPIC litclock-dev#383 PR2 (litclock-dev#388): a reset returns the device to fresh-setup state, so
     the lingering .handoff-complete must be cleared too — otherwise the
     post-WiFi handoff splash would be skipped on re-provision (handoff is active
     only when .setup-complete exists AND .handoff-complete is absent)."""
@@ -589,7 +589,7 @@ def test_clears_handoff_complete_marker():
 
 
 def test_defaults_include_weather_location_mode_and_ip_country():
-    """#337 A3 + /review testing-gap: gift-mode reset must include the new
+    """litclock-dev#337 A3 + /review testing-gap: gift-mode reset must include the new
     MODE + IP_COUNTRY defaults. Without these, a gift-recipient whose
     first-boot IP-geo fails would inherit the gifter's stale MODE=specific
     AND no IP_COUNTRY baseline — on-boot reresolve would never fire."""
@@ -600,11 +600,11 @@ def test_defaults_include_weather_location_mode_and_ip_country():
         "litclock-dev#337 A3: reset-setup.sh DEFAULTS must include MODE=auto"
     )
     assert "export WEATHER_IP_COUNTRY=" in content, (
-        "#337 A3: reset-setup.sh DEFAULTS must include WEATHER_IP_COUNTRY= (empty)"
+        "litclock-dev#337 A3: reset-setup.sh DEFAULTS must include WEATHER_IP_COUNTRY= (empty)"
     )
 
 
-# ── #387: prepare-for-gift pi->root hardening ────────────────────────────────
+# ── litclock-dev#387: prepare-for-gift pi->root hardening ────────────────────────────────
 
 
 class TestPrivilegeHardening387:
@@ -619,10 +619,10 @@ class TestPrivilegeHardening387:
     def test_service_execstart_is_root_owned_copy(self):
         body = self.SERVICE.read_text()
         assert "ExecStart=/usr/local/lib/litclock/reset-setup.sh" in body, (
-            "prepare-for-gift.service must exec the ROOT-OWNED reset-setup.sh copy (#387)"
+            "prepare-for-gift.service must exec the ROOT-OWNED reset-setup.sh copy (litclock-dev#387)"
         )
         assert "ExecStart=/home/pi/litclock/scripts/reset-setup.sh" not in body, (
-            "must NOT exec the pi-writable repo copy as root (#387 pi->root)"
+            "must NOT exec the pi-writable repo copy as root (litclock-dev#387 pi->root)"
         )
 
     def test_gift_message_uses_system_python_not_venv(self, reset_sh_content):
@@ -632,14 +632,14 @@ class TestPrivilegeHardening387:
             "gift-message processing must use the system python3 (litclock-dev#387)"
         )
         assert '"$INSTALL_DIR/venv/bin/python3" - "$GIFT_MESSAGE_FILE"' not in reset_sh_content, (
-            "must NOT run the pi-writable venv interpreter as root (#387)"
+            "must NOT run the pi-writable venv interpreter as root (litclock-dev#387)"
         )
 
     def test_sources_state_lib_relative_to_self(self, reset_sh_content):
         # So the root-owned copy sources the root-owned lib/state.sh beside it.
         assert '"$_THIS_SCRIPT_DIR/lib/state.sh"' in reset_sh_content, (
             "reset-setup must source lib/state.sh relative to its own dir so the "
-            "installed root-owned copy sources the root-owned lib (#387)"
+            "installed root-owned copy sources the root-owned lib (litclock-dev#387)"
         )
 
     def test_install_paths_ship_reset_setup_and_state_root_owned(self):
@@ -655,7 +655,7 @@ class TestPrivilegeHardening387:
 
 
 class TestFactoryResetStrictEnvWipe:
-    """#510 review (Codex): the PWA Factory reset must be fail-closed on a
+    """litclock-dev#510 review (Codex): the PWA Factory reset must be fail-closed on a
     config-wipe failure. Unlike a plain reset (best-effort) or gift mode (aborts
     before poweroff), the factory path passes --strict-env-wipe so a Step 3 env.sh
     wipe failure aborts BEFORE the destructive WiFi wipe + reboot — never silently
@@ -742,7 +742,7 @@ class TestPowerOffMode:
         # --poweroff must NEVER write it, and must actively CLEAR any stale hint
         # (litclock-dev#627 /review) so a factory-reset power-off always paints
         # 'Powered Off'.
-        start = reset_sh_content.find("# Issue #282:")
+        start = reset_sh_content.find("# Issue litclock-dev#282:")
         end = reset_sh_content.find("# Step 1:", start)
         hint_block = reset_sh_content[start:end]
         # The reboot writer stays gated on DO_REBOOT.
@@ -775,7 +775,7 @@ class TestHotspotPasswordResetSemantics:
     must not retain a working key to the recipient's setup hotspot.
 
     These EXECUTE the real block rather than grepping for it — a structural
-    assertion that never runs the code is not a guard (the #638 lesson). The
+    assertion that never runs the code is not a guard (the litclock-dev#638 lesson). The
     harness also sources the script's OWN `STATE_DIR=` line instead of
     inventing one, so dropping that assignment fails the test rather than
     silently degrading `rm -f` to a no-op path.
@@ -913,10 +913,10 @@ class TestHotspotPasswordResetSemantics:
         litclock-reset.service.
 
         WiFi is wiped, so the next power-on comes up in the setup hotspot — and
-        before #660 it came up broadcasting LitClock-Setup with the PREVIOUS
+        before litclock-dev#660 it came up broadcasting LitClock-Setup with the PREVIOUS
         owner's permanent key, surviving every reset the new owner later
         performed. v0.223.0 had no such leak because the key regenerated every
-        provisioning cycle, which makes this a REGRESSION introduced by #620
+        provisioning cycle, which makes this a REGRESSION introduced by litclock-dev#620
         rather than a pre-existing gap.
         """
         pw, result, state = self._run(reset_sh_content, tmp_path, "false", do_poweroff="true", wipe_wifi="true")
@@ -942,7 +942,7 @@ class TestHotspotPasswordResetSemantics:
         The bench QA doc tests exactly this as "same owner, moved house" and
         asserts the password is UNCHANGED.
 
-        Keying #660 on --poweroff instead of --wipe-wifi would have traded the
+        Keying litclock-dev#660 on --poweroff instead of --wipe-wifi would have traded the
         leak for a regression against a deliberately QA'd behaviour.
         """
         pw, result, _ = self._run(reset_sh_content, tmp_path, "false", do_poweroff="true", wipe_wifi="false")
@@ -1061,21 +1061,21 @@ class TestHotspotPasswordResetSemantics:
 
     def test_rotation_call_is_after_the_abort_gate(self, reset_sh_content):
         """A gift prep that ABORTS leaves the device with its current owner —
-        rotating there would drop that owner into the trap #620 removes.
+        rotating there would drop that owner into the trap litclock-dev#620 removes.
 
         Anchors on the CALL inside the terminal branch, not on a string that
         also appears in the function definition further up the file. The
         original version of this test used `.index("Regenerating hotspot
-        password")`, which after #660's refactor resolved to the function body
+        password")`, which after litclock-dev#660's refactor resolved to the function body
         and inverted the comparison.
         """
         block = self._terminal_branch(reset_sh_content)
         gate = block.index('if [[ "$ENV_WIPE_FAILED" == "true" ]]')
         rotate = block.index("    rotate_hotspot_password_for_handoff")
-        assert gate < rotate, "rotation must come AFTER the #393 env-wipe abort gate"
+        assert gate < rotate, "rotation must come AFTER the litclock-dev#393 env-wipe abort gate"
 
     def test_plain_reset_keeps_the_password(self, reset_sh_content, tmp_path):
-        """The motivating #620 case: the same owner re-provisioning their own
+        """The motivating litclock-dev#620 case: the same owner re-provisioning their own
         clock must not be handed a stale-credential dead end.
 
         litclock-dev#662: this previously executed NO script code — the harness
@@ -1260,7 +1260,7 @@ class TestHotspotPasswordResetSemantics:
     def test_reset_setup_has_no_other_state_dir_deletion(self, reset_sh_content):
         """litclock-dev#662: `test_wifi_reset_does_not_wipe_the_state_dir` scans
         litclock-wifi-reset.sh only, so reset-setup.sh's OWN fourteen-odd `rm`
-        calls were never checked against the #620 preserve-across-reset promise.
+        calls were never checked against the litclock-dev#620 preserve-across-reset promise.
 
         The rotation function is excised before scanning — it is the one place
         that is SUPPOSED to delete the key.
@@ -1273,14 +1273,14 @@ class TestHotspotPasswordResetSemantics:
             if line.lstrip().startswith("#"):
                 continue
             # Not just `rm`: `: > file` truncates, `mv` relocates, `shred -u`
-            # and `find -delete` remove. All destroy the #620 promise equally.
+            # and `find -delete` remove. All destroy the litclock-dev#620 promise equally.
             destroys = _re.search(r"\b(rm|shred|unlink|mv|truncate|find)\b", line) or _re.search(
                 r">\s*\"?\$STATE_DIR", line
             )
             if destroys and _re.search(r"STATE_DIR|/var/lib/litclock|hotspot-password", line):
                 raise AssertionError(
                     f"line {lineno} deletes hotspot state outside the rotation function, "
-                    f"breaking the #620 survives-a-plain-reset promise: {line!r}"
+                    f"breaking the litclock-dev#620 survives-a-plain-reset promise: {line!r}"
                 )
 
     def test_state_dir_is_overridable_like_the_other_scripts(self, reset_sh_content):
@@ -1289,25 +1289,27 @@ class TestHotspotPasswordResetSemantics:
     def test_wifi_reset_does_not_wipe_the_state_dir(self):
         """A substring check for 'hotspot-password' would stay green if the
         script ever did `rm -rf $STATE_DIR` — which destroys the same
-        invariant, on the exact moved-house scenario #620 is about."""
+        invariant, on the exact moved-house scenario litclock-dev#620 is about."""
         import re as _re
 
         wifi_reset = (REPO_ROOT / "scripts" / "litclock-wifi-reset.sh").read_text()
         for lineno, line in enumerate(wifi_reset.splitlines(), 1):
             # Not just `rm`: `: > file` truncates, `mv` relocates, `shred -u`
-            # and `find -delete` remove. All destroy the #620 promise equally.
+            # and `find -delete` remove. All destroy the litclock-dev#620 promise equally.
             destroys = _re.search(r"\b(rm|shred|unlink|mv|truncate|find)\b", line) or _re.search(
                 r">\s*\"?\$STATE_DIR", line
             )
             if destroys and _re.search(r"STATE_DIR|/var/lib/litclock|hotspot-password", line):
-                raise AssertionError(f"line {lineno} deletes state a WiFi reset must preserve (#620): {line!r}")
+                raise AssertionError(
+                    f"line {lineno} deletes state a WiFi reset must preserve (litclock-dev#620): {line!r}"
+                )
 
     def test_sd_cloning_rotates_the_password(self):
         """prepare-for-cloning.sh clones ONE card into MANY for other people.
         Without this, every clone ships the same permanent WPA2 key."""
         clone = (REPO_ROOT / "scripts" / "prepare-for-cloning.sh").read_text()
         assert "hotspot-password" in clone, (
-            "prepare-for-cloning.sh must clear the persisted setup-hotspot password (#620) — "
+            "prepare-for-cloning.sh must clear the persisted setup-hotspot password (litclock-dev#620) — "
             "otherwise every cloned card broadcasts LitClock-Setup with the SAME key"
         )
         assert ".hotspot-password.*" in clone, "must also sweep orphaned staging files"

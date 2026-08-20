@@ -1,6 +1,6 @@
 """Shared network helpers for control_server routes.
 
-Extracted from ``routes/status.py`` and ``routes/diagnostics.py`` per #419
+Extracted from ``routes/status.py`` and ``routes/diagnostics.py`` per litclock-dev#419
 follow-up M3 — both modules were running the same ``nmcli``/``ip``/``iw``
 shell-outs, with subtly diverged return-type contracts (status used ``""``
 for missing, diagnostics used ``None``). Canonical surface now returns
@@ -9,14 +9,14 @@ for missing, diagnostics used ``None``). Canonical surface now returns
 pattern keeps working without per-call site changes (D5).
 
 Each reader takes explicit ``cache_key``, ``ttl``, and ``timeout`` params
-(per #419 F6) so status (short steady-state, 5 s, 2 s timeout) and
+(per litclock-dev#419 F6) so status (short steady-state, 5 s, 2 s timeout) and
 diagnostics (longer poll cadence, 20 s, 3 s timeout) can use the underlying
 :func:`control_server._subprocess.cached_subprocess` WITHOUT poisoning each
 other's cache entries — a 2 s-timeout failure cached for 5 s won't block
 a diagnostics caller that would have waited 3 s. The diagnostics-side keys
-keep their pre-#419 ``diag-`` prefix.
+keep their pre-litclock-dev#419 ``diag-`` prefix.
 
-#428 PR1a (CQ-1): the readers below go through
+litclock-dev#428 PR1a (CQ-1): the readers below go through
 :func:`cached_subprocess_or_empty` so they can keep treating
 "subprocess failed" as "binary produced no stdout" without each call site
 writing ``or ""``. The classifier callers (anomaly logic in PR1b) will
@@ -33,7 +33,7 @@ from pathlib import Path
 # (e.g. tests/test_control_server_diagnostics_readers.py). Keep the name
 # bound in this module's namespace so existing monkeypatches still hit
 # something, even though the readers below now go through
-# :func:`cached_subprocess_or_empty` (#428 PR1a CQ-1 — helper at the
+# :func:`cached_subprocess_or_empty` (litclock-dev#428 PR1a CQ-1 — helper at the
 # boundary, contract-loud at call site).
 from ._subprocess import (
     cached_subprocess,  # noqa: F401
@@ -61,7 +61,7 @@ def read_ssid(
     """Active WiFi SSID via nmcli. Returns None when not connected.
 
     Callers that want the legacy ``""``-on-missing surface (status.py's
-    pre-#419 contract) wrap as ``read_ssid() or ""``. Diagnostics keeps
+    pre-litclock-dev#419 contract) wrap as ``read_ssid() or ""``. Diagnostics keeps
     None as a true sentinel so the anomaly detector can distinguish
     "WiFi down" from "SSID is the empty string."
     """
@@ -88,7 +88,7 @@ def read_default_route(
 ) -> tuple[str | None, str | None]:
     """Run ``ip -4 route show default`` once and parse both iface + gateway.
 
-    Replaces the pre-#419 pattern in diagnostics.py that paired
+    Replaces the pre-litclock-dev#419 pattern in diagnostics.py that paired
     ``_read_iface`` + ``_read_gateway``, each forking the SAME command
     under different cache keys. One key here serves both readers.
     """
@@ -193,7 +193,7 @@ def read_lan_ip(path: str | None = None) -> str | None:
 
     Distinguishes ``None`` from ``""``: passing the empty string is treated
     as an intentional "disable" — the read attempts ``Path("")`` which
-    raises ``OSError`` and degrades to ``None`` (matches the pre-#419
+    raises ``OSError`` and degrades to ``None`` (matches the pre-litclock-dev#419
     monolith's behavior where an empty Flask config value would similarly
     degrade). Without this distinction, a staging override of
     ``DIAG_LAST_IP_PATH=""`` would silently fall back to the production

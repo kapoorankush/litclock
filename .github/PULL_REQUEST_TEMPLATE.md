@@ -10,7 +10,7 @@
 
 ## Related Issues
 
-<!-- Link to issues this PR addresses. Use "Closes #123" to auto-close on merge -->
+<!-- Link to issues this PR addresses. Use "Closes litclock-dev#123" to auto-close on merge -->
 
 ## Test Plan
 

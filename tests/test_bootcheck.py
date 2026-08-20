@@ -1,4 +1,4 @@
-"""Tests for scripts/litclock-bootcheck.sh (LKG auto-revert consumer, #209).
+"""Tests for scripts/litclock-bootcheck.sh (LKG auto-revert consumer, litclock-dev#209).
 
 The consumer half of the LKG mechanism. Driven by litclock-bootcheck.timer,
 it decides "did the clock paint since this boot?" via the tmpfs heartbeat and,

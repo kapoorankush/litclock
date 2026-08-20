@@ -1,4 +1,4 @@
-// Behavior coverage for the #274 follow-up #2 Settings tab "Update in
+// Behavior coverage for the litclock-dev#274 follow-up #2 Settings tab "Update in
 // progress" banner in settings.js. The banner surfaces when an update.sh
 // run is mid-flight in Phase 3 (env.sh merge — holds the shared sidecar
 // flock) or Phase 4 (pip install — the long-running phase where users
@@ -50,7 +50,7 @@ async function flushInitialPoll() {
   }
 }
 
-describe("settings.js — update-in-progress banner (#274 followup #2)", () => {
+describe("settings.js — update-in-progress banner (litclock-dev#274 followup #2)", () => {
   let mock;
 
   beforeEach(() => {

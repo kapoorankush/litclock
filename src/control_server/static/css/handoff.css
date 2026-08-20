@@ -1,4 +1,4 @@
-/* Post-WiFi handoff banner (EPIC #383 PR2, #388).
+/* Post-WiFi handoff banner (EPIC litclock-dev#383 PR2, litclock-dev#388).
  *
  * Design-review A4 (locked): top-anchored sheet over the Status tab, bottom
  * corners rounded (r-xl), --surface ground. The Status hero dims to 70% while

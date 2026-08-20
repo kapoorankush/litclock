@@ -47,7 +47,7 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# ─── #334 Tension 3 — single-flight via flock ────────────────────────
+# ─── litclock-dev#334 Tension 3 — single-flight via flock ────────────────────────
 # Two concurrent update.sh invocations (e.g. user taps Apply just as the
 # weekly timer fires) would race on /run/litclock/update.status, the new
 # /var/lib/litclock/last-update.json mirror, and the lkg-sha clear in
@@ -63,7 +63,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 #
 # Best-effort: if we can't create the lock file (no permission on
 # /var/lib/litclock yet, or running in a sandbox/CI without the state
-# dir), skip the guard and run unguarded — pre-#334 behavior. The
+# dir), skip the guard and run unguarded — pre-litclock-dev#334 behavior. The
 # guard's job is to protect production; degrading to "no protection"
 # in environments that can't host the lock is the right trade-off
 # vs. failing the whole update.
@@ -83,7 +83,7 @@ if [[ "${LITCLOCK_UPDATE_LOCK_HELD:-0}" != "1" ]] && command -v flock >/dev/null
     fi
     # Re-check: only attempt flock if the file is actually present + readable.
     # Sandboxed / unprivileged environments may have no /var/lib/litclock —
-    # in that case skip the guard, run unguarded (pre-#334 behavior).
+    # in that case skip the guard, run unguarded (pre-litclock-dev#334 behavior).
     if [[ -e "$LITCLOCK_UPDATE_LOCK_FILE" ]]; then
         export LITCLOCK_UPDATE_LOCK_HELD=1
         # `flock -n -E 75 <file> <cmd>` — 75 is a custom exit status for
@@ -124,7 +124,7 @@ fi
 # shellcheck source=/dev/null
 . "$_THIS_SCRIPT_DIR/lib/state.sh"
 
-# Update status file helpers (#245 M5). Optional source — older Pis on a SHA
+# Update status file helpers (litclock-dev#245 M5). Optional source — older Pis on a SHA
 # that predates M5 won't have lib/update_status.sh, so we tolerate it being
 # absent and skip status writes via the no-op stubs below. F14 in plan: every
 # post-M5 fire ships its own copy of this lib via the canonical scripts/.
@@ -146,11 +146,11 @@ fi
 # bootcheck-recovering) lives in scripts/lib/state.sh — keep that the single list.
 STATE_DIR="${LITCLOCK_STATE_DIR:-/var/lib/litclock}"
 # NOTE: update.sh no longer references lkg-sha directly (LKG auto-revert,
-# #209 follow-up). It is written only by litclock-lkg-record.sh and read only
+# litclock-dev#209 follow-up). It is written only by litclock-lkg-record.sh and read only
 # by litclock-bootcheck.sh; update.sh must NOT clear it (see Phase 1).
 UPDATE_FAILED_FILE="$STATE_DIR/update-failed"
 POST_UPDATE_GRACE_FILE="$STATE_DIR/post-update-grace-until"
-# litclock-bootcheck (LKG auto-revert, follow-up to #209). bootcheck writes
+# litclock-bootcheck (LKG auto-revert, follow-up to litclock-dev#209). bootcheck writes
 # rollback-target when it has detected a persistent post-update brick and is
 # routing recovery back through this installer; blocked-sha suppresses
 # re-installing the release bootcheck reverted from; boot-fail-count +
@@ -159,28 +159,28 @@ ROLLBACK_TARGET_FILE="$STATE_DIR/rollback-target"
 BLOCKED_SHA_FILE="$STATE_DIR/blocked-sha"
 BOOT_FAIL_COUNT_FILE="$STATE_DIR/boot-fail-count"
 BOOTCHECK_RECOVERING_FILE="$STATE_DIR/bootcheck-recovering"
-# #274 follow-up: marker written on Phase 3 flock-timeout (rc=75) so the
+# litclock-dev#274 follow-up: marker written on Phase 3 flock-timeout (rc=75) so the
 # Status hero can surface "env-vars merge skipped on last update" — the
 # skip itself is correct (next weekly tick retries), but without this
 # marker the user has no surface to see it happened. Marker is mtime-only;
 # reader (control_server status route) clamps to `now - mtime < 86400` so
 # the banner self-clears after a day even if the next update isn't run.
 PHASE3_SKIPPED_FILE="$STATE_DIR/update-phase3-skipped"
-# #245 M5 D6 — shared GH-API cache for /api/update/check + this script.
+# litclock-dev#245 M5 D6 — shared GH-API cache for /api/update/check + this script.
 # 6h TTL. update.sh invalidates on Phase 7 success (deletes it) so the PWA
 # shows "up to date" instantly post-update.
-# #434 — this is a purely derived cache, so it lives on the /run/litclock
+# litclock-dev#434 — this is a purely derived cache, so it lives on the /run/litclock
 # tmpfs (kept off the SD card) rather than the persistent STATE_DIR. The
 # default path AND the LITCLOCK_UPDATE_CHECK_CACHE full-path override are kept
 # symmetric with src/control_server/update_state.py (DEFAULT_CACHE_FILE +
 # cache_path()) so a harness that repoints one consumer repoints BOTH — the
 # reader and the invalidator must never disagree on where the cache lives.
 UPDATE_CHECK_CACHE_FILE="${LITCLOCK_UPDATE_CHECK_CACHE:-/run/litclock/update-check.json}"
-# Pre-#434 installs kept this cache on the SD card at $STATE_DIR/update-check.json.
+# Pre-litclock-dev#434 installs kept this cache on the SD card at $STATE_DIR/update-check.json.
 # Invalidated alongside the live file below so an in-place upgrade doesn't leave
 # a stale flash-resident blob behind (one-time migration; rm -f is idempotent).
 LEGACY_UPDATE_CHECK_CACHE_FILE="$STATE_DIR/update-check.json"
-# #334 — persistent mirror of /run/litclock/update.status (state=complete).
+# litclock-dev#334 — persistent mirror of /run/litclock/update.status (state=complete).
 # Written after update_status_complete validates, AFTER the EXIT trap is
 # disarmed. Lets the Status hero "Last update" row survive the tmpfs clear
 # of update.status at reboot during the 15-min LKG soak window AND the
@@ -190,14 +190,14 @@ LAST_UPDATE_FILE="$STATE_DIR/last-update.json"
 
 # Resolve the target SHA for this update cycle.
 # Path: /repos/.../tags → highest semver vX.Y.Z → git fetch <tag> → git rev-list -n 1 <tag>
-# (Switched off /releases/latest in #247 — fine-grained PATs 404 on it for
+# (Switched off /releases/latest in litclock-dev#247 — fine-grained PATs 404 on it for
 # private repos. See scripts/lib/github_api.sh for the long version.)
 #
 # Emits the 40-char SHA on stdout when it succeeds.
 # Emits an empty stdout and exit 0 on ANY failure (network, HTTP, parse,
 # unknown tag) — the caller then falls back to the legacy origin/master
 # reset path only when the resolver is unavailable because the lib wasn't
-# sourced (fresh-image one-shot update on a pre-#209 Pi); otherwise a
+# sourced (fresh-image one-shot update on a pre-litclock-dev#209 Pi); otherwise a
 # resolver failure is treated as graceful-offline and the whole script
 # exits cleanly.
 #
@@ -302,7 +302,7 @@ if [[ ! -f /etc/litclock/.setup-complete ]]; then
     exit 1
 fi
 
-# EPIC #383 PR2 (#388) migration (Option A). The new litclock.service is gated
+# EPIC litclock-dev#383 PR2 (litclock-dev#388) migration (Option A). The new litclock.service is gated
 # on /etc/litclock/.handoff-complete (the post-WiFi PWA handoff). Devices that
 # provisioned BEFORE PR2 never ran the handoff flow, so that marker is absent —
 # without this, the upgraded litclock.service would no-op on every timer tick
@@ -330,13 +330,13 @@ fi
 # On re-exec, the original SHA is passed as $1 to preserve the version diff
 OLD_SHA="${1:-$(git rev-parse --short HEAD)}"
 
-# #245 M5 D9 — initialize the status-file cache so subsequent
+# litclock-dev#245 M5 D9 — initialize the status-file cache so subsequent
 # update_status_set_phase / *_complete / *_failed_* calls inherit started_at +
 # from_version. Done unconditionally; the helper is a no-op when the lib is
 # absent (pre-M5 self-reexec path).
 update_status_init "$OLD_SHA"
 
-# #245 M5 D4 / F9 — install a finalize-on-exit trap. If the script exits
+# litclock-dev#245 M5 D4 / F9 — install a finalize-on-exit trap. If the script exits
 # normally (after update_status_complete / update_status_failed_reverted),
 # _LITCLOCK_UPDATE_FINALIZED=1 is set and the trap is a no-op. Otherwise
 # (uncaught error, kernel signal, systemd TimeoutStartSec=600 sending SIGTERM)
@@ -350,7 +350,7 @@ _litclock_update_trap() {
             "Update did not complete (signal or unexpected exit at phase ${_LITCLOCK_UPDATE_PHASE_INDEX:-?})." \
             2>/dev/null || true
     fi
-    # #274 cleanup: Phase 3 side-channel tempfile that mapfile reads
+    # litclock-dev#274 cleanup: Phase 3 side-channel tempfile that mapfile reads
     # ADDED_VARS from. Cleared on normal exit at line ~556, but a SIGKILL
     # mid-Phase-3 (power loss, OOM) would otherwise leak it across runs.
     [ -n "${_PHASE3_ADDED_FILE:-}" ] && rm -f "$_PHASE3_ADDED_FILE" 2>/dev/null
@@ -556,7 +556,7 @@ fi
 
 NEW_SHA=$(git rev-parse --short HEAD)
 
-# #245 M5 — record the post-Phase-2 SHA in the status file so the PWA can
+# litclock-dev#245 M5 — record the post-Phase-2 SHA in the status file so the PWA can
 # render "v0.210.0 → v0.211.0" copy from row 2 onward.
 update_status_set_to_version "$NEW_SHA"
 
@@ -642,7 +642,7 @@ for installed_unit in /etc/systemd/system/litclock*.service \
 done
 
 # ─── Phase 2c: Sync quote images ─────────────────────────────────────
-# Quote images are NOT tracked in git (issue #82). Fetch them from the
+# Quote images are NOT tracked in git (issue litclock-dev#82). Fetch them from the
 # GitHub Release pinned by .images-version. No-op when on-disk marker
 # already matches the pin.
 #
@@ -667,7 +667,7 @@ update_status_set_phase 4
 
 # ─── Phase 3: Merge new env vars ─────────────────────────────────────
 #
-# Issue #274: the per-var `echo >>` append idiom below races against the
+# Issue litclock-dev#274: the per-var `echo >>` append idiom below races against the
 # PWA Python writer (src/config.py:atomic_update) which holds a flock on
 # `<env.sh>.lock`. Hoist the merge body into a function and run it via
 # `with_env_lock` so both writers contend on the same sidecar inode.
@@ -715,7 +715,7 @@ _phase3_merge_sample() {
     done < "$INSTALL_DIR/env.sh.sample"
 }
 
-# #274 follow-up — track whether we just wrote the Phase 3 skip marker
+# litclock-dev#274 follow-up — track whether we just wrote the Phase 3 skip marker
 # inside the inner rc=75 branch below. EVERY other path that reaches
 # Phase 3 must clear any stale marker from a prior run so the Status
 # banner self-clears — including:
@@ -739,7 +739,7 @@ if [[ -f "$INSTALL_DIR/env.sh" && -f "$INSTALL_DIR/env.sh.sample" ]]; then
         # opportunistic (next weekly tick retries); skip + continue rather
         # than abort the entire update.
         log_warn "env.sh locked by another writer — skipping sample merge this run (will retry next tick)"
-        # #274 follow-up: stamp the marker so the PWA Status hero can
+        # litclock-dev#274 follow-up: stamp the marker so the PWA Status hero can
         # surface the skip. mtime-only — reader (control_server status
         # route) clamps to "< 1 day old" so the banner self-clears.
         if ! atomic_write_file "$PHASE3_SKIPPED_FILE" ""; then
@@ -786,7 +786,7 @@ fi
 # package changes. Including the apt-filter file means adding a new
 # name to it (e.g. a new apt-provisioned GPIO lib) triggers a pip
 # re-run, which correctly removes stale pip-installed copies of
-# packages that should now come from apt (#214).
+# packages that should now come from apt (litclock-dev#214).
 REQUIREMENTS_APT="$INSTALL_DIR/requirements-apt.txt"
 PACKAGES_HASH=$(cat "$REQUIREMENTS" "$REQUIREMENTS_APT" 2>/dev/null | md5sum | cut -d' ' -f1)
 
@@ -795,7 +795,7 @@ NEED_PIP=false
 # GPIO libs (python3-gpiozero / spidev / lgpio / pigpio). Mirrors the
 # pi-gen build at pi-gen/stage3/01-setup-app/00-run.sh — update.sh MUST
 # stay in sync with that, otherwise a venv rebuild tries to pip-compile
-# C extensions on an image with no gcc (#214).
+# C extensions on an image with no gcc (litclock-dev#214).
 if [[ ! -d "$INSTALL_DIR/venv" ]]; then
     log_warn "Virtual environment missing — recreating..."
     python3 -m venv --system-site-packages "$INSTALL_DIR/venv"
@@ -819,7 +819,7 @@ if [[ "$NEED_PIP" == "true" ]]; then
     # Filter apt-provisioned names (requirements-apt.txt, defined above)
     # out of requirements.txt before pip install — they are reachable via
     # --system-site-packages and attempting to pip-install them triggers
-    # sdist compilation (#214).
+    # sdist compilation (litclock-dev#214).
     REQUIREMENTS_FILTERED=$(mktemp)
     if [[ -f "$REQUIREMENTS_APT" ]]; then
         EXCLUDE_RE=$(grep -vE '^[[:space:]]*(#|$)' "$REQUIREMENTS_APT" | sed 's/\./\\./g' | paste -sd'|')
@@ -829,7 +829,7 @@ if [[ "$NEED_PIP" == "true" ]]; then
     fi
     # --upgrade forces pip to honor bumped pins. Without it, pip leaves an
     # already-installed package at the OLD version even after requirements.txt
-    # bumps the pin (urllib3==2.6.3 → 2.7.0 reproduced this — #321). Security
+    # bumps the pin (urllib3==2.6.3 → 2.7.0 reproduced this — litclock-dev#321). Security
     # fixes silently fail to propagate via the weekly auto-update path.
     #
     # We intentionally do NOT use --upgrade-strategy eager. Eager would also
@@ -844,7 +844,7 @@ if [[ "$NEED_PIP" == "true" ]]; then
         log_info "Python packages updated"
         rm -f "$REQUIREMENTS_FILTERED"
     else
-        # #324 + codex adversarial review of PR #349 — pip-install failure
+        # litclock-dev#324 + codex adversarial review of PR litclock-dev#349 — pip-install failure
         # must revert the git tree + exit, but the smoke-failure-branch
         # mirror is NOT a clean parallel:
         #
@@ -998,7 +998,7 @@ if [[ -x "$PYTHON" ]]; then
         echo "========================================"
         echo -e "${RED}  Update FAILED (smoke test) — reverted to $REVERT_SHA${NC}"
         echo "========================================"
-        # #245 M5 D9 — terminal status. PWA renders the "rolled back, clock
+        # litclock-dev#245 M5 D9 — terminal status. PWA renders the "rolled back, clock
         # is fine" copy from this state (NOT the alarm-bell unrecovered copy).
         # REVERT_SHA == OLD_SHA normally; the LKG target in rollback mode (so we
         # never report the bad SHA we were fleeing).
@@ -1011,7 +1011,7 @@ fi
 # Row 6 of the D3 phase reading-list: "Installing services" (Phase 5 + 5b + 6).
 update_status_set_phase 6
 
-# #245 M5 F14 — re-canonicalize /usr/local/bin/wifi-watchdog.sh on every
+# litclock-dev#245 M5 F14 — re-canonicalize /usr/local/bin/wifi-watchdog.sh on every
 # update. Pre-M5 Pis have an inline-heredoc copy from install.sh that lacks
 # OV1's firstboot fallback (D8) + F2's no-default-route handling. This
 # unconditional install pulls in the canonical copy from scripts/, so the
@@ -1032,7 +1032,7 @@ fi
 log_info "Updating systemd services..."
 ENABLED_UNITS=()
 
-# #241 migration — the previous litclock-lkg.service had
+# litclock-dev#241 migration — the previous litclock-lkg.service had
 # WantedBy=litclock.service, which created a /etc/systemd/system/
 # litclock.service.wants/litclock-lkg.service symlink. The rewritten
 # service has no [Install] section, so the old symlink would silently
@@ -1041,7 +1041,7 @@ ENABLED_UNITS=()
 # is still parseable for symlink cleanup.
 if [[ -f /etc/systemd/system/litclock-lkg.service ]] \
    && grep -q "WantedBy=litclock.service" /etc/systemd/system/litclock-lkg.service 2>/dev/null; then
-    log_info "Migrating litclock-lkg.service from WantedBy hook to timer (#241)..."
+    log_info "Migrating litclock-lkg.service from WantedBy hook to timer (litclock-dev#241)..."
     sudo systemctl disable litclock-lkg.service 2>/dev/null || true
     sudo systemctl stop litclock-lkg.service 2>/dev/null || true
 fi
@@ -1070,7 +1070,7 @@ for unit in "$INSTALL_DIR"/systemd/*.service "$INSTALL_DIR"/systemd/*.timer; do
     # this release is shipping and we should enable it. Otherwise leave the
     # user's enable/disable choice intact (respects opt-out via
     # `systemctl disable --now litclock-update.timer`, which is the appliance
-    # opt-out documented in the README per #209's design).
+    # opt-out documented in the README per litclock-dev#209's design).
     was_pre_existing=true
     [[ -f "/etc/systemd/system/$name" ]] || was_pre_existing=false
 
@@ -1099,7 +1099,7 @@ done
 
 sudo systemctl daemon-reload
 
-# #241 — install tmpfiles.d drop-ins for the tmpfs heartbeat dir and the
+# litclock-dev#241 — install tmpfiles.d drop-ins for the tmpfs heartbeat dir and the
 # /var/lib/litclock state dir, and materialize them now (avoids waiting until
 # next boot). If --create fails, /run/litclock won't exist on the running
 # system and the heartbeat will silently drop until the next reboot — log
@@ -1167,7 +1167,7 @@ if [[ ${#ENABLED_UNITS[@]} -gt 0 ]]; then
     log_info "Newly enabled: ${ENABLED_UNITS[*]}"
 fi
 
-# #249/#251 — `enable` registers a unit but does not activate it in the
+# litclock-dev#249/litclock-dev#251 — `enable` registers a unit but does not activate it in the
 # current systemd session. For newly-enabled timers, also start them so
 # the cadence kicks in immediately rather than waiting for next reboot.
 # --no-block matches the litclock-control.service pattern below — update.sh
@@ -1181,7 +1181,7 @@ done
 
 # ─── Phase 5b: Sync sudoers drops ────────────────────────────────────
 #
-# #245 M4 — Control PWA scoped sudo. Validate-then-install: visudo -c -f
+# litclock-dev#245 M4 — Control PWA scoped sudo. Validate-then-install: visudo -c -f
 # the source file in the repo first; only `install` it into /etc/sudoers.d/
 # on a clean parse. A malformed sudoers entry locks out `sudo` system-wide,
 # which would brick the appliance worse than any other M4 failure mode.
@@ -1204,7 +1204,7 @@ for sudoers_src in "$INSTALL_DIR"/sudoers/*; do
     log_info "Installed sudoers drop: $name"
 done
 
-# ─── Phase 5c: Sync NetworkManager dispatcher (#309) ─────────────────
+# ─── Phase 5c: Sync NetworkManager dispatcher (litclock-dev#309) ─────────────────
 #
 # Re-render the e-ink corner QR when wlan0's IP changes (router reboot,
 # WiFi reconnect, lease expiry) so the displayed address never lags
@@ -1221,7 +1221,7 @@ if [[ -f "$NM_DISP_SRC" ]]; then
     fi
 fi
 
-# #387 — sync the root-owned privilege helpers so pi cannot rewrite what runs
+# litclock-dev#387 — sync the root-owned privilege helpers so pi cannot rewrite what runs
 # as root: the tz-wrapper, the dispatcher's mark-collected helper, and
 # reset-setup.sh (run as root by litclock-prepare-for-gift.service). Installed
 # to /usr/local/lib/litclock. Idempotent cmp-then-install, same shape as above.
@@ -1248,7 +1248,7 @@ if [[ -f "$_st_src" ]]; then
     fi
 fi
 
-# ─── Phase 5d: Idempotent systemd-journal group migration (#433) ─────
+# ─── Phase 5d: Idempotent systemd-journal group migration (litclock-dev#433) ─────
 # pi-gen-built images already have `pi` in the systemd-journal group via
 # stage1's default user setup, so this is a no-op for every deployed
 # user we know about. Insurance against future pi-gen variants that
@@ -1264,9 +1264,9 @@ fi
 if getent group systemd-journal >/dev/null 2>&1; then
     if ! id -nG pi 2>/dev/null | grep -qw systemd-journal; then
         if sudo usermod -aG systemd-journal pi; then
-            log_info "Added pi to systemd-journal group (#433); takes effect after service restart."
+            log_info "Added pi to systemd-journal group (litclock-dev#433); takes effect after service restart."
         else
-            log_warn "Failed to add pi to systemd-journal group (#433); journal_tail may render empty for non-self units."
+            log_warn "Failed to add pi to systemd-journal group (litclock-dev#433); journal_tail may render empty for non-self units."
         fi
     fi
 fi
@@ -1281,7 +1281,7 @@ chmod +x "$INSTALL_DIR"/scripts/*.sh
 update_status_set_phase 7
 
 # Touch the post-update grace marker BEFORE any service restart (issue
-# #241, decision D2 — mtime-only). The LKG writer reads `now - mtime` and
+# litclock-dev#241, decision D2 — mtime-only). The LKG writer reads `now - mtime` and
 # skips promotion while inside the 15-min grace window. Writing this
 # first guarantees that any lkg-record poll (scheduled or manual) firing
 # during the restart sequence sees the gate, not a fresh SHA atop a fresh
@@ -1305,7 +1305,7 @@ fi
 
 log_info "Restarting services..."
 
-# Do NOT `systemctl restart litclock-shutdown.service` here (#331).
+# Do NOT `systemctl restart litclock-shutdown.service` here (litclock-dev#331).
 # litclock-shutdown.service is a stop-hook unit (Type=oneshot,
 # RemainAfterExit=yes, ExecStart=/bin/true, ExecStop runs
 # shutdown-splash.sh). `restart` = stop+start, and the stop half fires
@@ -1320,7 +1320,7 @@ sudo systemctl start litclock.service 2>/dev/null || true
 
 sudo systemctl start litclock.timer
 
-# #343 — control_server now binds port 80. Install + apply the sysctl that lets
+# litclock-dev#343 — control_server now binds port 80. Install + apply the sysctl that lets
 # the pi service account bind it BEFORE the restart below, or the rebind fails.
 # Idempotent: install overwrites, sysctl -w is a no-op if already 80. The file
 # install persists across reboot regardless; we VERIFY the live apply and warn
@@ -1336,7 +1336,7 @@ if [[ -f "$INSTALL_DIR/sysctl.d/30-litclock-unprivileged-ports.conf" ]]; then
     # Read the live value from /proc, NOT `sysctl -n`: sysctl lives in /usr/sbin
     # which is not on the pi user's non-login PATH, so `sysctl -n` here returns
     # "command not found" and a false "could not lower floor" warning (caught in
-    # #343 hardware QA). The /proc file is always readable with no PATH/sudo.
+    # litclock-dev#343 hardware QA). The /proc file is always readable with no PATH/sudo.
     _port_floor=$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start 2>/dev/null || echo "")
     # litclock-dev#527 field incident: the FILE install was silently swallowed
     # (2>/dev/null || true) while `sysctl -w` set the live value to 80 — so the
@@ -1350,24 +1350,24 @@ if [[ -f "$INSTALL_DIR/sysctl.d/30-litclock-unprivileged-ports.conf" ]]; then
     # self-heals the live value via ExecStartPre — this warning is the
     # human-visible half.)
     if ! cmp -s "$INSTALL_DIR/sysctl.d/30-litclock-unprivileged-ports.conf" "$_SYSCTL_CONF"; then
-        echo "  WARNING (#343/#527): the persistent port-80 sysctl drop-in is"
+        echo "  WARNING (litclock-dev#343/litclock-dev#527): the persistent port-80 sysctl drop-in is"
         echo "  missing or stale at $_SYSCTL_CONF. The live floor may be 80 now but"
         echo "  will revert on reboot. Re-run: sudo install -m 0644 -o root -g root \\"
         echo "    $INSTALL_DIR/sysctl.d/30-litclock-unprivileged-ports.conf $_SYSCTL_CONF"
     fi
     if [[ "$_port_floor" != "80" ]]; then
-        echo "  WARNING (#343): could not lower the unprivileged-port floor to 80"
+        echo "  WARNING (litclock-dev#343): could not lower the unprivileged-port floor to 80"
         echo "  (net.ipv4.ip_unprivileged_port_start=${_port_floor:-unknown}). The Control"
         echo "  PWA may be unreachable on port 80 until the next reboot applies the"
         echo "  installed $_SYSCTL_CONF."
     fi
 fi
 
-# #245 M1 — Control PWA. Restart if it's already running so it picks up the
+# litclock-dev#245 M1 — Control PWA. Restart if it's already running so it picks up the
 # new code; start --no-block if it's enabled but inactive (e.g., this is the
 # update that brought the unit in for the first time, or a prior reboot was
 # missed). `is-active` covers running; `is-enabled` catches the enabled-but-
-# inactive case caught by issue #251.
+# inactive case caught by issue litclock-dev#251.
 if systemctl is-active --quiet litclock-control.service 2>/dev/null; then
     sudo systemctl restart litclock-control.service 2>/dev/null || true
 elif systemctl is-enabled --quiet litclock-control.service 2>/dev/null; then
@@ -1395,12 +1395,12 @@ else
 fi
 echo ""
 
-# #245 M5 D6 — invalidate the GH-API cache so the PWA shows "up to date"
+# litclock-dev#245 M5 D6 — invalidate the GH-API cache so the PWA shows "up to date"
 # instantly post-update instead of waiting up to 6h for the cache to expire.
-# Best-effort: the live cache is on the /run/litclock tmpfs (#434, pi-owned via
+# Best-effort: the live cache is on the /run/litclock tmpfs (litclock-dev#434, pi-owned via
 # the tmpfiles.d entry); rm should succeed without sudo. Failure is non-fatal —
 # the worst case is a stale "update available" indicator until the next 6h
-# window. Also sweep the pre-#434 SD-resident copy at $STATE_DIR so upgraders
+# window. Also sweep the pre-litclock-dev#434 SD-resident copy at $STATE_DIR so upgraders
 # don't leave a stale blob on the flash card.
 for _cache_file in "$UPDATE_CHECK_CACHE_FILE" "$LEGACY_UPDATE_CHECK_CACHE_FILE"; do
     if [[ -f "$_cache_file" ]]; then
@@ -1410,13 +1410,13 @@ for _cache_file in "$UPDATE_CHECK_CACHE_FILE" "$LEGACY_UPDATE_CHECK_CACHE_FILE";
     fi
 done
 
-# #245 M5 D4 — write the terminal "complete" status. The Phase 7 systemctl
+# litclock-dev#245 M5 D4 — write the terminal "complete" status. The Phase 7 systemctl
 # restart of litclock-control.service above kills the running waitress
 # mid-PWA-poll; the PWA's first successful post-restart poll reads this
 # state + new version and triggers reload via A8.
 update_status_complete
 
-# #334 Tension 1 — disarm the EXIT trap BEFORE persisting last-update.json.
+# litclock-dev#334 Tension 1 — disarm the EXIT trap BEFORE persisting last-update.json.
 # Otherwise an OS-level kill (SIGKILL escapes traps; SIGTERM does not but
 # any uncaught error in the persist would still be racy) between the
 # update_status_complete write and the persist write would let the trap
@@ -1425,7 +1425,7 @@ update_status_complete
 # file disagrees with on the next reboot. Disarm first, then persist.
 _LITCLOCK_UPDATE_FINALIZED=1
 
-# #334 Tension 2 — validate-then-cp. Read /run/litclock/update.status back
+# litclock-dev#334 Tension 2 — validate-then-cp. Read /run/litclock/update.status back
 # (the file we just wrote), jq-validate that state == "complete" AND
 # to_version == "$NEW_SHA" AND finished_at_unix is fresh (within last 60s).
 # Only on a clean validation do we promote the file to the persistent
@@ -1435,7 +1435,7 @@ _LITCLOCK_UPDATE_FINALIZED=1
 #
 # Failure is best-effort: log_warn + continue. The Status hero falls back
 # to lkg-sha (source 3) if last-update.json is missing — same UX as
-# pre-#334 — so a write failure here can't regress the row.
+# pre-litclock-dev#334 — so a write failure here can't regress the row.
 _litclock_persist_last_update() {
     # Pre-M5 legacy path (update_status.sh not sourced) — there's no
     # /run/litclock/update.status to mirror, so persist is a no-op.
@@ -1453,7 +1453,7 @@ _litclock_persist_last_update() {
     fi
     local now_unix
     now_unix=$(date +%s 2>/dev/null || echo 0)
-    # #342 I2 — widen the freshness floor from 60s to 3600s. The gate's
+    # litclock-dev#342 I2 — widen the freshness floor from 60s to 3600s. The gate's
     # original intent is "not torn / not stale-from-a-previous-update-run",
     # not minute-level freshness — so an hour-wide window is safe. The
     # narrow window bit on Pi Zero 2W cold-boot updates: the Pi has no
@@ -1484,9 +1484,9 @@ _litclock_persist_last_update() {
         sudo mkdir -p "$parent" 2>/dev/null || mkdir -p "$parent" 2>/dev/null \
             || { log_warn "could not create $parent — skipping last-update.json persist"; return 0; }
     fi
-    # #342 I4 — sweep orphan .tmp.* siblings from prior persist attempts
+    # litclock-dev#342 I4 — sweep orphan .tmp.* siblings from prior persist attempts
     # that died between the cp staging and the mv publish (disk full, OOM,
-    # kill -9). Mirrors the manifest-sweep pattern from PR #293. The sweep
+    # kill -9). Mirrors the manifest-sweep pattern from PR litclock-dev#293. The sweep
     # runs INSIDE the same flock that protects this update.sh invocation,
     # so it can't race with a concurrent legitimate persist. Best-effort:
     # any rm failure (e.g. parent dir transiently unwritable) falls through

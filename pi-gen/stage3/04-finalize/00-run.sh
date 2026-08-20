@@ -12,7 +12,7 @@ LITCLOCK_VERSION="${LITCLOCK_VERSION:-dev}"
 LITCLOCK_SHA="${LITCLOCK_SHA:-unknown}"
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# --- Version metadata (#110) ---
+# --- Version metadata (litclock-dev#110) ---
 cat > "${ROOTFS_DIR}/etc/litclock-version" << EOF
 version=${LITCLOCK_VERSION}
 git_sha=${LITCLOCK_SHA}
@@ -22,7 +22,7 @@ EOF
 on_chroot << 'CHROOT'
 set -e
 
-# --- Image size optimization (#112) ---
+# --- Image size optimization (litclock-dev#112) ---
 
 # Protect runtime libraries from being auto-removed with build deps
 apt-mark manual libgcc-s1 || true
@@ -51,7 +51,7 @@ rm -rf /var/lib/apt/lists/*
 # Clean misc caches and tmp files (preserve /var/log for first-boot debugging)
 rm -rf /tmp/* /var/tmp/*
 
-# Pre-compile Python bytecode INTO the image (#483). This stage used to DELETE
+# Pre-compile Python bytecode INTO the image (litclock-dev#483). This stage used to DELETE
 # all __pycache__, so a fresh flash always compiled src/ cold on its first
 # litclock-firstboot run. Shipping the .pyc removes that first-run compile from
 # the setup/captive-portal path. checked-hash invalidation keeps the .pyc
@@ -63,7 +63,7 @@ rm -rf /tmp/* /var/tmp/*
 # Scoped to src/ deliberately: the setup/captive path imports only src/ modules +
 # stdlib (already compiled in the base image). The venv libraries (Pillow, waitress,
 # etc.) load when litclock.service starts AFTER setup completes, not during the
-# time-critical hotspot window, so compiling them here wouldn't help #483 and would
+# time-critical hotspot window, so compiling them here wouldn't help litclock-dev#483 and would
 # add tens of MB to the image plus a slow qemu-emulated compile to the build.
 # First strip ALL bytecode under the tree (this is what the old line did): the
 # host-side `cp -a` in 01-setup-app can carry in stale/foreign .pyc from the build

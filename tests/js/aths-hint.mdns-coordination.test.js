@@ -1,4 +1,4 @@
-// Coordination tests for the /review #406 follow-up: aths-hint.js must
+// Coordination tests for the /review litclock-dev#406 follow-up: aths-hint.js must
 // defer when status.js's mDNS probe is in flight so the user doesn't see
 // the AtHS card AND the mDNS bookmark card stacked on first load.
 //
@@ -39,7 +39,7 @@ async function advancePastAthSOpen() {
   for (let i = 0; i < 4; i++) await Promise.resolve();
 }
 
-describe("aths-hint.js — mDNS coordination (/review #406)", () => {
+describe("aths-hint.js — mDNS coordination (/review litclock-dev#406)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     try { window.localStorage.clear(); } catch (_e) { /* ignore */ }

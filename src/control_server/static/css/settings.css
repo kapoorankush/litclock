@@ -6,7 +6,7 @@
  * pill option padding, etc.) are kept as literals when no token maps cleanly,
  * with comments explaining the choice. Adding single-consumer tokens like
  * `--checkbox-size` or `--pill-padding` was considered + rejected during the
- * #414 maintainability /review as more cruft than the reuse-potential warrants.
+ * litclock-dev#414 maintainability /review as more cruft than the reuse-potential warrants.
  *
  * Sections are full-width cards on `--bg` (not `--surface`) so the
  * tab feels like an editorial page rather than a stack of bubbles —
@@ -186,13 +186,13 @@
 .settings-button--primary:hover { background: var(--accent-muted); }
 .settings-button--primary:active { background: var(--accent-muted); }
 
-/* #325/#337 A10 — dead CSS removed: `.settings-button--secondary`,
+/* litclock-dev#325/litclock-dev#337 A10 — dead CSS removed: `.settings-button--secondary`,
  * `.settings-form--clear`, `.settings-form__actions--clear`,
  * `.settings-row__help--clear` styled the Clear-weather-location affordance
  * that A10 deleted (Automatic radio IS the reset). If a future feature
  * needs Secondary button styling, port from DESIGN.md "Buttons" line 218-223.
  *
- * #317 item 7 — destructive button + form modifier rules removed when the
+ * litclock-dev#317 item 7 — destructive button + form modifier rules removed when the
  * Prepare-for-Gifting card moved to /system. The destructive language now
  * lives in system.css next to the matching action-card. */
 
@@ -204,7 +204,7 @@
 }
 
 /* ───────────────────────────────────────────────────────────────────────
- * #337 design-review additions (A9 – A18). Concept B segmented pill +
+ * litclock-dev#337 design-review additions (A9 – A18). Concept B segmented pill +
  * Location section restructure + Temperature auto-save pill + Advanced
  * raw-coords <details> + browser-tz fallback. All values from tokens.css.
  * ─────────────────────────────────────────────────────────────────────── */
@@ -222,7 +222,7 @@
   border: 0;
 }
 
-/* Segmented pill (#337 A12 + A13). Two-button binary picker styled with
+/* Segmented pill (litclock-dev#337 A12 + A13). Two-button binary picker styled with
  * --accent fill on the selected side and --ink-muted text on the unselected.
  * Wraps two `<input type=radio>` so it degrades to a real radio group
  * with no JS — see settings.js for the JS layer that keeps `.is-selected`
@@ -254,7 +254,7 @@
    * touch target below the DESIGN.md 44pt minimum). Kept as a literal
    * because the value is hand-tuned for the pill's specific anatomy
    * (option label + 4px outer padding adds up to ~44px tap target).
-   * #414 maintainability /review: tokenizing this would require a
+   * litclock-dev#414 maintainability /review: tokenizing this would require a
    * component-specific token like --pill-padding, which is more cruft
    * than the value's reuse-potential warrants. */
   padding: 10px 12px;
@@ -359,7 +359,7 @@
 }
 
 /* <details>Advanced — the raw-coords escape hatch under Specific mode
- * (#337 A17). Open-by-default when raw coords are in use; collapsed
+ * (litclock-dev#337 A17). Open-by-default when raw coords are in use; collapsed
  * otherwise. The Jinja `{% if advanced_in_use %}open{% endif %}` rule on
  * the template determines initial state from env.sh. */
 .settings-details {
@@ -422,7 +422,7 @@
   border-radius: 2px;
 }
 
-/* Browser-tz fallback row (#337 A18). Renders only when no coords are
+/* Browser-tz fallback row (litclock-dev#337 A18). Renders only when no coords are
  * resolved AND the Intl.DateTimeFormat API is available (JS hides
  * otherwise). Inline text + button so it reads as a sentence. */
 .settings-tz-fallback {

@@ -45,7 +45,7 @@ def env_file(tmp_path: Path) -> str:
         "WEATHER_LOCATION_NAME=\n"
         "WEATHER_UNITS=imperial\n"
         "ALLOW_NSFW_QUOTES=false\n"
-        # #280: GIFT_MODE_ENABLED dropped; only GIFT_MODE_MESSAGE persists.
+        # litclock-dev#280: GIFT_MODE_ENABLED dropped; only GIFT_MODE_MESSAGE persists.
         "GIFT_MODE_MESSAGE=\n"
     )
     return str(p)
@@ -214,7 +214,7 @@ class TestSettingsGet:
         assert resp.status_code == 200
 
     def test_includes_all_sections(self, client) -> None:
-        """#317 item 7: the gift section moved to /system. #337 A9-A11
+        """litclock-dev#317 item 7: the gift section moved to /system. litclock-dev#337 A9-A11
         reordered + renamed: Settings now renders Location / Weather /
         Temperature / Advanced (note: 'temperature-h' replaces 'units-h')."""
         resp = client.get("/settings")
@@ -222,24 +222,25 @@ class TestSettingsGet:
         for marker in (
             "settings-location-h",
             "settings-weather-h",
-            "settings-temperature-h",  # #337 A11 rename: Units → Temperature
+            "settings-temperature-h",  # litclock-dev#337 A11 rename: Units → Temperature
             "settings-advanced-h",
         ):
             assert marker in body
         assert "settings-gift-h" not in body, (
-            "#317 item 7: Prepare-for-Gifting must not render on /settings — "
+            "litclock-dev#317 item 7: Prepare-for-Gifting must not render on /settings — "
             "it lives on /system alongside the other one-shot destructive actions"
         )
-        # #337 A11: the old "settings-units-h" id was renamed to
+        # litclock-dev#337 A11: the old "settings-units-h" id was renamed to
         # "settings-temperature-h" because the section now shows only the
         # temperature units (drop the mph/km/h wind labels that misleadingly
         # suggested a wind preference).
         assert "settings-units-h" not in body, (
-            "#337 A11: 'Units' section renamed to 'Temperature' — the old settings-units-h id should no longer render"
+            "litclock-dev#337 A11: 'Units' section renamed to 'Temperature' — the old "
+            "settings-units-h id should no longer render"
         )
 
     def test_pre_fills_from_env_file(self, client, env_file) -> None:
-        """#337 A9/A11/A13: assertions follow the new IA.
+        """litclock-dev#337 A9/A11/A13: assertions follow the new IA.
         * Latitude now lives under the Location section's `<details>Advanced`,
           pre-filled when MODE=specific (else empty by design — `data-advanced-lat`
           input value is gated on current_mode in the template).
@@ -274,15 +275,15 @@ class TestSettingsGet:
         assert "Austin, TX" in body
 
     def test_destructive_button_class_removed_from_settings_css(self, client) -> None:
-        """#317 item 7: the Prepare-for-Gifting card moved to /system, so the
+        """litclock-dev#317 item 7: the Prepare-for-Gifting card moved to /system, so the
         `.settings-button--destructive` rule that lived in settings.css
-        (added in #316 to fix a UA-default-gray regression) is now dead
+        (added in litclock-dev#316 to fix a UA-default-gray regression) is now dead
         code on the Settings side. The matching destructive styling lives
         in system.css under `[data-action="prepare_for_gift"]`. Pin the
         absence so a stale rule can't drift back in."""
         css = client.get("/static/css/settings.css").data.decode()
         assert ".settings-button--destructive" not in css, (
-            "#317 item 7: .settings-button--destructive must not live on the "
+            "litclock-dev#317 item 7: .settings-button--destructive must not live on the "
             "Settings side anymore — the destructive Prepare button is on /system"
         )
         # Cross-check: the destructive styling DOES exist on the system side.
@@ -292,7 +293,7 @@ class TestSettingsGet:
         )
 
     def test_secondary_button_class_removed_under_a10_ia(self, client) -> None:
-        """#337 A10 (locked 2026-06-01) removed the Clear weather location
+        """litclock-dev#337 A10 (locked 2026-06-01) removed the Clear weather location
         affordance from the new IA — the Automatic pill IS the reset, so the
         secondary button it styled has no users left. The CSS class was the
         original Review C3 fix for the disabled-looking grey-chip regression;
@@ -321,7 +322,7 @@ class TestSettingsGet:
             # colon for pseudo, or comma for selector list) — not just the
             # substring (which would match grep-bait inside comments).
             assert not _re.search(_re.escape(cls) + r"[\s:,]*\{", css_no_comments), (
-                f"#337 A10: {cls} is dead code (Clear button removed). "
+                f"litclock-dev#337 A10: {cls} is dead code (Clear button removed). "
                 "If you need Secondary styling, port DESIGN.md Buttons spec into a fresh rule."
             )
 
@@ -342,7 +343,7 @@ class _PostHelpers:
     def _post_json(self, client, payload, *, csrf_token: str | None = None, origin: str = "http://litclock.local"):
         """Shared JSON-POST helper for any test class that mixes in _PostHelpers.
         Originally defined only on TestApiSettingsPost; promoted up so the new
-        #337 /review-followup test classes (TestSyncQuickAndA14Backstop,
+        litclock-dev#337 /review-followup test classes (TestSyncQuickAndA14Backstop,
         TestApiSystemSetTimezone) can use the same shape without duplicating."""
         body = dict(payload)
         if csrf_token is not None and "csrf_token" not in body:
@@ -409,7 +410,7 @@ class TestSettingsPost(_PostHelpers):
         assert config.load_config(env_file)["ALLOW_NSFW_QUOTES"] == "false"
 
     def test_show_diagnostics_shortcut_round_trips(self, client, csrf_token, env_file) -> None:
-        """#416 PR3c F31 — opt-in ribbon expansion toggle. False default
+        """litclock-dev#416 PR3c F31 — opt-in ribbon expansion toggle. False default
         protects the owner persona; helper persona flips it on so the
         affordance is discoverable. Round-trip through the Advanced
         section's form."""
@@ -484,7 +485,7 @@ class TestSettingsPost(_PostHelpers):
         assert b"data-diag-ribbon-expanded" in body
 
     def test_gift_mode_message_round_trips_with_punctuation(self, client, csrf_token, env_file) -> None:
-        """#280: gift section now persists ONLY the message draft. Toggle was
+        """litclock-dev#280: gift section now persists ONLY the message draft. Toggle was
         dropped — gift mode is a one-shot action via /api/system/prepare-for-gift."""
         msg = 'O\'Brien said "hi"; back later'
         resp = self.post_form(
@@ -498,7 +499,7 @@ class TestSettingsPost(_PostHelpers):
         assert cfg["GIFT_MODE_MESSAGE"] == msg
 
     def test_gift_mode_rejects_dollar_sign(self, client, csrf_token) -> None:
-        """#317 item 7 — gift writer still lives on POST /settings (centralised
+        """litclock-dev#317 item 7 — gift writer still lives on POST /settings (centralised
         persistence), but failure now re-renders the System tab where the
         textarea lives, so the inline error message lands next to the input."""
         resp = self.post_form(
@@ -511,7 +512,7 @@ class TestSettingsPost(_PostHelpers):
         assert b"may not contain" in resp.data
 
     def test_gift_mode_rejects_overlong(self, client, csrf_token) -> None:
-        """#319 lowered the cap to 80 chars."""
+        """litclock-dev#319 lowered the cap to 80 chars."""
         resp = self.post_form(
             client,
             csrf_token=csrf_token,
@@ -530,11 +531,11 @@ class TestSettingsPost(_PostHelpers):
         assert resp.status_code == 400
 
 
-# ─── #325 — Clear weather location ──────────────────────────────────────────
+# ─── litclock-dev#325 — Clear weather location ──────────────────────────────────────────
 
 
 class TestClearWeatherLocation(_PostHelpers):
-    """Issue #325 — explicit "Clear weather location" affordance.
+    """Issue litclock-dev#325 — explicit "Clear weather location" affordance.
 
     Before this: a user who set a city had no UI path to clear it. Settings
     -> empty City -> Save was a no-op (the geocode block is gated on `if
@@ -544,7 +545,7 @@ class TestClearWeatherLocation(_PostHelpers):
     three weather location keys (WEATHER_LOCATION_NAME, WEATHER_LATITUDE,
     WEATHER_LONGITUDE). WEATHER_ENABLED stays unchanged — the honest
     label on the Clear button informs the user that weather pauses.
-    S2-style radio modes (city / GPS / none) are deferred to #337.
+    S2-style radio modes (city / GPS / none) are deferred to litclock-dev#337.
     """
 
     @pytest.fixture
@@ -624,7 +625,7 @@ class TestClearWeatherLocation(_PostHelpers):
         assert cfg["WEATHER_LONGITUDE"] == ""
 
     def test_toggle_only_save_without_clear_preserves_location(self, client, csrf_token, env_with_city, app) -> None:
-        """Toggle-only regression: the bug #325 fixes is "empty City + Save
+        """Toggle-only regression: the bug litclock-dev#325 fixes is "empty City + Save
         = no-op". The new behavior must ONLY kick in when clear=1 is
         explicitly present. A toggle-only POST (WEATHER_ENABLED=false,
         no clear=1, no location_query) must preserve the city.
@@ -645,14 +646,14 @@ class TestClearWeatherLocation(_PostHelpers):
         cfg = config.load_config(env_with_city)
         # WEATHER_ENABLED flipped to false (HTML checkbox unchecked = false).
         assert cfg["WEATHER_ENABLED"] == "false"
-        # But the city + coords are PRESERVED — the #325 fix must not
+        # But the city + coords are PRESERVED — the litclock-dev#325 fix must not
         # regress into "any weather save clears the city".
         assert cfg["WEATHER_LOCATION_NAME"] == "Austin, Texas"
         assert cfg["WEATHER_LATITUDE"] == "30.27"
         assert cfg["WEATHER_LONGITUDE"] == "-97.74"
 
     def test_clear_form_removed_under_a10_ia(self, client, tmp_path, app) -> None:
-        """#337 A10 (locked 2026-06-01 by /plan-design-review): the Clear
+        """litclock-dev#337 A10 (locked 2026-06-01 by /plan-design-review): the Clear
         affordance is removed entirely from the new IA. The Automatic radio
         IS the reset — once the mode pill is in, Clear became redundant AND
         ambiguous ('after clear, what state are we in?'). This pins the
@@ -679,7 +680,7 @@ class TestClearWeatherLocation(_PostHelpers):
                 app.config["ENV_FILE"] = str(env)
                 body = client.get("/settings").data.decode()
             assert 'name="clear"' not in body, (
-                "#337 A10: the Clear form is removed in the new IA. "
+                "litclock-dev#337 A10: the Clear form is removed in the new IA. "
                 "The Automatic pill IS the reset; Clear was redundant/ambiguous."
             )
             assert "Clear location" not in body, "A10: Clear-location button must not render in any env state"
@@ -705,7 +706,7 @@ class TestClearWeatherLocation(_PostHelpers):
 
 class TestApiSettingsPost(_PostHelpers):
     """`_post_json` is inherited from `_PostHelpers` (promoted there during
-    the #337 /review-followup so the new sync-quick + system-tz test classes
+    the litclock-dev#337 /review-followup so the new sync-quick + system-tz test classes
     can share the same JSON-POST shape)."""
 
     def test_success_envelope_on_valid_save(self, client, csrf_token, env_file) -> None:
@@ -787,7 +788,7 @@ class TestApiSettingsPost(_PostHelpers):
         The HTML form path DOES synth missing checkboxes (unchecked checkbox
         doesn't submit) — but JSON callers explicitly send what they want changed.
 
-        #337 A9 update: WEATHER_LATITUDE moved from the Weather section to the
+        litclock-dev#337 A9 update: WEATHER_LATITUDE moved from the Weather section to the
         Location section; PATCH-merge invariant is unchanged but the section
         identifier in the test payload follows the new IA. Cross-section
         bool-isolation is the property being pinned (WEATHER_ENABLED lives in
@@ -811,7 +812,7 @@ class TestApiSettingsPost(_PostHelpers):
         assert cfg["WEATHER_ENABLED"] == "true"
 
     def test_504_envelope_on_env_lock_timeout(self, client, csrf_token, env_file, monkeypatch) -> None:
-        """#274 follow-up #4 — when `_exclusive_lock` raises TimeoutError
+        """litclock-dev#274 follow-up #4 — when `_exclusive_lock` raises TimeoutError
         (env.sh sidecar flock held > budget by another writer), the
         settings route must surface HTTP 504 with the structured
         `env_lock_timeout` envelope so the PWA can show a real "settings
@@ -883,7 +884,7 @@ class TestApiGeocode:
         assert data["error"]["code"] == "geocode_failed"
 
     def test_worldwide_flag_skips_ip_bias(self, client, monkeypatch) -> None:
-        """#337 /review testing-gap: `/api/geocode?worldwide=1` must call
+        """litclock-dev#337 /review testing-gap: `/api/geocode?worldwide=1` must call
         `geocode_location(query, country_code=None)` — no IP-country bias.
         Pin via spy + explosion if ip_geolocate is called (worldwide must
         skip the lookup entirely)."""
@@ -930,7 +931,7 @@ class TestApiGeocode:
         assert seen_cc == ["US"]
 
     def test_country_code_in_response(self, client, monkeypatch) -> None:
-        """#337 A16 — response bubbles the resolved country (None when absent)."""
+        """litclock-dev#337 A16 — response bubbles the resolved country (None when absent)."""
         import geocoding
 
         monkeypatch.setattr(
@@ -949,7 +950,7 @@ class TestApiGeocode:
 
 
 class TestApiSystemSetTimezone(_PostHelpers):
-    """#337 A18 — new steady-state timezone setter. Replaces the gated-on-
+    """litclock-dev#337 A18 — new steady-state timezone setter. Replaces the gated-on-
     handoff /api/handoff/set-timezone endpoint that silently no-op'd in the
     PWA settings context. Codex /review caught the no-op; this route is the
     always-on companion."""
@@ -1073,7 +1074,7 @@ class TestSaveAndApplyTriggers(_PostHelpers):
         assert _stub_systemctl == []
 
     def test_ad_hoc_tick_aborts_when_shutdown_imminent(self, client, csrf_token, _stub_systemctl) -> None:
-        """#362 D7 — the ad-hoc tick thread polls is-active for up to 15s
+        """litclock-dev#362 D7 — the ad-hoc tick thread polls is-active for up to 15s
         before firing ``systemctl start litclock.service``. If
         ``/api/system/{reboot,poweroff}`` flips ``_SHUTDOWN_IMMINENT``
         during that window, the thread MUST abort instead of firing a
@@ -1106,7 +1107,7 @@ class TestSaveAndApplyTriggers(_PostHelpers):
         """When a city is supplied and resolution succeeds, set_system_timezone
         runs with the timezone derived from the new coordinates.
 
-        #337 A9 update: section moved from 'weather' to 'location' per the new
+        litclock-dev#337 A9 update: section moved from 'weather' to 'location' per the new
         IA shift (lat/lon owned by Location, Weather is toggle only)."""
         tz_calls: list[str] = []
 
@@ -1126,7 +1127,7 @@ class TestSaveAndApplyTriggers(_PostHelpers):
 
 
 class TestSyncQuickAndA14Backstop(_PostHelpers):
-    """#337 /review testing-gaps fills. Pin the server-side behavior of:
+    """litclock-dev#337 /review testing-gaps fills. Pin the server-side behavior of:
     * A12 sync-quick on Specific→Auto switch + Auto save-as-refresh
     * A14 server backstop: MODE=specific + empty Place + empty Advanced → 422
     * A16 country-change UNITS-flip via Specific save (same vs different country)

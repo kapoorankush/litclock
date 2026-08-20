@@ -12,12 +12,12 @@ INSTALL_DIR="${LITCLOCK_DIR:-/home/pi/litclock}"
 PYTHON="$INSTALL_DIR/venv/bin/python3"
 
 # Resolve action in priority order:
-#   0. /run/litclock-splash-suppress    → root-only: exit without painting (#529)
+#   0. /run/litclock-splash-suppress    → root-only: exit without painting (litclock-dev#529)
 #   1. /etc/litclock/.welcome-mode      → gift-mode welcome (consumed by first-boot.sh)
 #   2. /run/litclock/shutdown-action    → explicit hint from reset-setup.sh / future callers
 #   3. systemctl list-jobs reboot.target → best-effort detection (racy when our ExecStop
 #                                          fires from a mid-script `systemctl stop`
-#                                          before the reboot job is enqueued — issue #282)
+#                                          before the reboot job is enqueued — issue litclock-dev#282)
 #   4. fall through                     → poweroff (final-state quote)
 #
 # Hint-file hardening: /run/litclock/ is pi-owned 0755 (per tmpfiles.d), so a
@@ -27,7 +27,7 @@ PYTHON="$INSTALL_DIR/venv/bin/python3"
 # (c) explicit `reboot|poweroff` allowlist — anything else falls through to
 # the list-jobs detection, so a spoofed "junk" hint can't suppress the
 # legitimate reboot signal.
-# #529: splash suppression. The first-boot Setup-Incomplete poweroff has
+# litclock-dev#529: splash suppression. The first-boot Setup-Incomplete poweroff has
 # already painted its recovery instructions and needs them to PERSIST on
 # the bistable e-ink through shutdown — so it touches this marker (via
 # sudo) and we exit without painting anything. The marker lives directly
@@ -71,12 +71,12 @@ case "$SHUTDOWN_ACTION" in
             '"It was a bright cold day in April." — Orwell'
             '"Many years later, as he faced the firing squad..." — García Márquez'
         )
-        # #280: if the gifter wrote a personalized message via the PWA's
+        # litclock-dev#280: if the gifter wrote a personalized message via the PWA's
         # Prepare-for-Gifting flow (or via reset-setup.sh --message), it lives
         # at /etc/litclock/.welcome-message. Use it as the TITLE, falling back
         # to "Welcome to LitClock" for the default-gift case. The message is
         # bounded to 80 chars by the M3 validator + the textarea maxlength
-        # (#319 lowered the ceiling from 280 once the renderer learned to
+        # (litclock-dev#319 lowered the ceiling from 280 once the renderer learned to
         # word-wrap), so it's safe to use as the title argument. Embedded
         # newlines pass through bash command substitution (only trailing
         # newlines get stripped) and the renderer honors `\n` as a hard

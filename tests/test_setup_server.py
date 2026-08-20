@@ -2785,7 +2785,7 @@ class TestRetryInstructionVariants:
         assert any("WiFi password" in ln for ln in lines)
 
     def test_retry_without_reason_keeps_the_password_copy(self):
-        """Backward compat: is_retry=True with no reason is the pre-#603
+        """Backward compat: is_retry=True with no reason is the pre-litclock-dev#603
         call shape — it must keep rendering what it always rendered."""
         import eink_display
 

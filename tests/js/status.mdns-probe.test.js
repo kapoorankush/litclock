@@ -1,7 +1,7 @@
-// Behavior coverage for the #309 (piece 3) mDNS bookmark probe in
+// Behavior coverage for the litclock-dev#309 (piece 3) mDNS bookmark probe in
 // status.js. After the PWA loads via IP, status.js silently probes
 // http://litclock.local/api/health with a READABLE (CORS) fetch and
-// checks the body for `app === 'litclock'` (#487 — identity, not just
+// checks the body for `app === 'litclock'` (litclock-dev#487 — identity, not just
 // reachability). Only a real LitClock reveals the bookmark card offering a
 // one-tap switch to the address-stable URL. Silent on failure OR on any
 // responder that isn't our clock.
@@ -60,7 +60,7 @@ async function advancePastProbe() {
   }
 }
 
-describe("status.js — #309 (3) mDNS bookmark probe", () => {
+describe("status.js — litclock-dev#309 (3) mDNS bookmark probe", () => {
   let mock;
   let originalLocation;
   let assignSpy;
@@ -95,7 +95,7 @@ describe("status.js — #309 (3) mDNS bookmark probe", () => {
       // jsdom's default origin is http://localhost; mirror that.
       protocol: "http:",
       hostname: originalLocation.hostname,
-      // #343: control_server is on port 80, so window.location.port is '' —
+      // litclock-dev#343: control_server is on port 80, so window.location.port is '' —
       // controlUrl() must then omit the port from the probe/switch target.
       port: "",
       pathname: originalLocation.pathname,
@@ -126,7 +126,7 @@ describe("status.js — #309 (3) mDNS bookmark probe", () => {
     expect(card.hidden).toBe(false);
   });
 
-  it("keeps the card hidden when a NON-LitClock device answers on the control port (#487 identity)", async () => {
+  it("keeps the card hidden when a NON-LitClock device answers on the control port (litclock-dev#487 identity)", async () => {
     // The whole point of the readable/identity probe: some other `.local` device
     // could answer /api/health on the control port with 200 + JSON, but without our identity
     // marker. The old opaque no-cors probe would have false-positived and offered
@@ -264,7 +264,7 @@ describe("status.js — #309 (3) mDNS bookmark probe", () => {
 
     expect(window.location.assign).toHaveBeenCalledTimes(1);
     const target = window.location.assign.mock.calls[0][0];
-    // #343: bare host, no port (page is on 80 so location.port is '').
+    // litclock-dev#343: bare host, no port (page is on 80 so location.port is '').
     expect(target.startsWith("http://litclock.local/")).toBe(true);
     expect(target).not.toContain("litclock.local:");
     expect(window.localStorage.getItem("litclock.mdns-bookmark-dismissed"))

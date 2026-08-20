@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# diag-pwa-load-audit.sh — measure PWA page TTFB to confirm/refute #436 bottleneck #2
+# diag-pwa-load-audit.sh — measure PWA page TTFB to confirm/refute litclock-dev#436 bottleneck #2
 # (the synchronous SSR subprocess fan-out that gates /diagnostics first paint).
 #
 # Run this ON authorclock. It does NOT need a reboot — a `systemctl restart
 # litclock-control` gives the cold subprocess cache we want, cleanly and repeatably.
 # The optional final section covers the full-cold reboot case; run it separately.
 #
-# Reference: issue #436 measurement plan + #430 (DIAG_SUBPROC_TTL_S = 20s).
+# Reference: issue litclock-dev#436 measurement plan + litclock-dev#430 (DIAG_SUBPROC_TTL_S = 20s).
 set -u
 
-BASE="${LITCLOCK_CONTROL_BASE:-http://localhost}"  # #343: control_server on port 80
+BASE="${LITCLOCK_CONTROL_BASE:-http://localhost}"  # litclock-dev#343: control_server on port 80
 CURL_FMT='ttfb=%{time_starttransfer}  total=%{time_total}  http=%{http_code}  bytes=%{size_download}\n'
 SVC="litclock-control.service"
 TTL=20   # DIAG_SUBPROC_TTL_S — subprocess cache lifetime, seconds
@@ -21,7 +21,7 @@ hit() {  # hit <path> <label>
 }
 
 echo "############################################################"
-echo "# #436 PWA load audit — $(date -Is)"
+echo "# litclock-dev#436 PWA load audit — $(date -Is)"
 echo "# host=$(hostname)  base=${BASE}"
 echo "############################################################"
 
@@ -80,5 +80,5 @@ echo "#   curl -s -o /dev/null -w '$CURL_FMT' ${BASE}/diagnostics"
 echo "#"
 echo "# READ: if cold req#1 and TTL-expired TTFB are materially above warm (2-5)"
 echo "# AND above Status/Settings, bottleneck #2 is real -> skeleton+hydrate PR."
-echo "# If the cold delta is small, #465 was enough -> close #436 lean."
+echo "# If the cold delta is small, litclock-dev#465 was enough -> close litclock-dev#436 lean."
 echo "############################################################"

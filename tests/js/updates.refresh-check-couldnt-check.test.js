@@ -1,4 +1,4 @@
-// #381 regression — refreshCheck() forces a reload when the rendered card
+// litclock-dev#381 regression — refreshCheck() forces a reload when the rendered card
 // is in the initial "checking…" substate (data-state="unknown" with no cache)
 // AND the API confirms available === null (terminal-unknown, e.g. private
 // repo + no PAT).
@@ -41,7 +41,7 @@ async function flushMicrotasks() {
   }
 }
 
-describe("updates.js refreshCheck() — #381 unknown→unknown reload", () => {
+describe("updates.js refreshCheck() — litclock-dev#381 unknown→unknown reload", () => {
   let fetchMock;
   let reloadCalled;
   let originalReload;
@@ -204,7 +204,7 @@ describe("updates.js refreshCheck() — #381 unknown→unknown reload", () => {
 
   it("does NOT reload when rendered=unknown AND fresh=available (state genuinely changed — existing logic handles it)", async () => {
     // Defensive: the existing `renderedState !== freshState` path already
-    // reloads here. Pin that the #381 fix doesn't interfere.
+    // reloads here. Pin that the litclock-dev#381 fix doesn't interfere.
     buildDom("unknown");
 
     fetchMock.register(/\/api\/update\/check$/, {
@@ -227,7 +227,7 @@ describe("updates.js refreshCheck() — #381 unknown→unknown reload", () => {
     await vi.runAllTimersAsync();
     await flushMicrotasks();
 
-    // Both the #381 unknown-unknown branch (no — fresh is "available", not
+    // Both the litclock-dev#381 unknown-unknown branch (no — fresh is "available", not
     // "unknown") and the existing state-mismatch branch (yes — "unknown" !=
     // "available") could fire. Either way reload runs exactly once. We
     // assert reload happened; the assertion is robust either way.

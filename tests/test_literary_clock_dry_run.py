@@ -1,4 +1,4 @@
-"""Tests for src/literary_clock.py --dry-run flag (issue #209).
+"""Tests for src/literary_clock.py --dry-run flag (issue litclock-dev#209).
 
 The flag is load-bearing for the weekly auto-update smoke test. If it ever
 imports display_driver (which binds GPIO/SPI on import) then scripts/update.sh
@@ -242,7 +242,7 @@ class TestStructural:
         assert "LITCLOCK_UPDATE_FAILED_MARKER" in src
 
     def test_heartbeat_helper_exists_and_is_env_overridable(self):
-        """#241 — the LKG writer reads /run/litclock/heartbeat. The Python
+        """litclock-dev#241 — the LKG writer reads /run/litclock/heartbeat. The Python
         side must (1) define the helper, (2) honor an env override (so tests
         and non-root devboxes can point it elsewhere), and (3) handle OSError
         so a missing tmpfs never fails the render."""
@@ -271,7 +271,7 @@ class TestStructural:
         )
 
     def test_weather_enabled_master_toggle_is_read(self):
-        """M3 #245 — the Settings tab's "Show weather on display" toggle
+        """M3 litclock-dev#245 — the Settings tab's "Show weather on display" toggle
         writes WEATHER_ENABLED. main() must check it before constructing
         a provider, otherwise toggling off has no runtime effect (caught
         on test Pi 2026-04-29)."""

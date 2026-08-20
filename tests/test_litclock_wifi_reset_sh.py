@@ -1,4 +1,4 @@
-"""Tests for scripts/litclock-wifi-reset.sh (#245 M5 D11/D12).
+"""Tests for scripts/litclock-wifi-reset.sh (litclock-dev#245 M5 D11/D12).
 
 Drives the helper as a subprocess with stubbed `nmcli` + `systemctl`
 binaries via env overrides. Verifies the locked sequence:
@@ -34,7 +34,7 @@ def harness(tmp_path):
     """
     setup_complete = tmp_path / ".setup-complete"
     setup_complete.write_text("")
-    # EPIC #383 PR2 (#388): wifi-reset must clear the handoff marker too.
+    # EPIC litclock-dev#383 PR2 (litclock-dev#388): wifi-reset must clear the handoff marker too.
     handoff_complete = tmp_path / ".handoff-complete"
     handoff_complete.write_text("")
 
@@ -127,7 +127,7 @@ class TestHappyPath:
         assert not harness["setup_complete"].exists(), "setup-complete must be removed so firstboot.service re-fires"
 
     def test_removes_handoff_complete(self, harness):
-        """EPIC #383 PR2 (#388): a WiFi change can mean a new timezone, so the
+        """EPIC litclock-dev#383 PR2 (litclock-dev#388): a WiFi change can mean a new timezone, so the
         handoff (IP-geo re-resolve + browser-tz fallback) must re-run on
         re-provision. A lingering .handoff-complete would skip it and risk a
         wrong-time clock."""

@@ -134,7 +134,7 @@ def _icon_bg_baked(source: Image.Image, size: int) -> Image.Image:
     """Generic bg-baked variant at arbitrary size. Solid --bg fill, logo at
     100% scale. Used for the iOS apple-touch-icon size matrix (180/152/167)
     so iOS doesn't fall back to a generated initial-letter placeholder when
-    it can't find a matching size — caught by hardware QA on PR #252."""
+    it can't find a matching size — caught by hardware QA on PR litclock-dev#252."""
     canvas = Image.new("RGBA", (size, size), BG_COLOR)
     inner = source.resize((size, size), Image.LANCZOS)
     canvas.alpha_composite(inner)

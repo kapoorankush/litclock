@@ -1,6 +1,6 @@
 name: Corpus integrity
 
-# #299 enforcement layer.
+# litclock-dev#299 enforcement layer.
 #
 # Goal: prevent CSV edits from landing without a matching image release. The
 # bug we're guarding against is "edit the CSV, forget to re-run corpus_edit
@@ -97,7 +97,7 @@ jobs:
 
           if ! gh release download "$RELEASE_TAG" --repo "$GH_REPO" --pattern manifest.json --dir "$RUNNER_TEMP"; then
             echo "::error::Release $RELEASE_TAG has no manifest.json asset." >&2
-            echo "::error::Re-cut the release with the post-#299 release_images.sh." >&2
+            echo "::error::Re-cut the release with the post-litclock-dev#299 release_images.sh." >&2
             exit 1
           fi
           echo "MANIFEST_PATH=$RUNNER_TEMP/manifest.json" >> "$GITHUB_OUTPUT"

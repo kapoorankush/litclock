@@ -1,4 +1,4 @@
-"""Tests for scripts/lib/state.sh env.sh writer-lock helpers (issue #274).
+"""Tests for scripts/lib/state.sh env.sh writer-lock helpers (issue litclock-dev#274).
 
 Three layers of coverage:
 
@@ -7,7 +7,7 @@ Three layers of coverage:
 2. Cross-process flock integration — actually exercises shell + Python
    contention on the sidecar lock that interoperates between
    `fcntl.flock` (src/config.py) and `flock(1)` (the shell helpers).
-   This is the regression test that would have caught #274.
+   This is the regression test that would have caught litclock-dev#274.
 3. No-flock fallback — `flock(1)` may be absent in some sandbox/CI
    environments; the helper must degrade to an unlocked write rather
    than fail outright (mirrors scripts/update.sh:71).
@@ -105,7 +105,7 @@ class TestStructure:
             )
 
     def test_no_production_path_unlinks_sidecar_lock(self) -> None:
-        """#274 follow-up — pin the lockfile-inode-stability invariant
+        """litclock-dev#274 follow-up — pin the lockfile-inode-stability invariant
         documented at `scripts/lib/state.sh:143-147`.
 
         Unlinking `env.sh.lock` while a writer holds it breaks the
@@ -219,7 +219,7 @@ def test_python_writer_blocks_on_shell_held_flock(
     interoperate: flock(1) and fcntl.flock both hit flock(2) syscalls
     on the same fd and contend.
 
-    This is the regression test that would have caught #274 — without
+    This is the regression test that would have caught litclock-dev#274 — without
     the shared lock, the call returns immediately and the user's update
     races silently with the shell write.
     """
@@ -253,7 +253,7 @@ def test_python_writer_blocks_on_shell_held_flock(
     # interlock the call returns in <50ms.
     assert elapsed >= 0.3, (
         f"atomic_update returned in {elapsed:.3f}s while shell held the flock — "
-        "the cross-language sidecar lock isn't interlocking. Regression of #274."
+        "the cross-language sidecar lock isn't interlocking. Regression of litclock-dev#274."
     )
 
     # And the update must have actually landed once the lock cleared.
@@ -391,7 +391,7 @@ def test_atomic_write_env_sh_refuses_symlink_destination(tmp_path: Path) -> None
     chmod'd onto the staged tmp and the resulting env.sh ships
     world-writable with the OPENWEATHERMAP_APIKEY inside. reset-setup.sh
     and prepare-for-cloning.sh both run as root, so this is a
-    defense-in-depth concern flagged by /review on PR #366.
+    defense-in-depth concern flagged by /review on PR litclock-dev#366.
 
     The helper must refuse to proceed, return non-zero, and leave the
     destination untouched.
@@ -436,7 +436,7 @@ def test_atomic_write_env_sh_uses_0644_on_first_boot(flock_or_skip: str, tmp_pat
     at 0600 — which would block the pi-user `source env.sh` in
     runtheclock.sh from reading it on a fresh install. The finalize
     helper must explicitly chmod 0644 before the rename. Adversarial
-    review on PR #366 flagged this as the next-caller footgun.
+    review on PR litclock-dev#366 flagged this as the next-caller footgun.
     """
     env_sh = tmp_path / "env.sh"  # deliberately does NOT exist
     assert not env_sh.exists(), "test bug: dest should not pre-exist"
@@ -462,18 +462,18 @@ def test_atomic_write_env_sh_uses_0644_on_first_boot(flock_or_skip: str, tmp_pat
     assert mode == 0o644, f"first-boot env.sh must be 0644 so pi-user `source env.sh` works, got {oct(mode)}"
 
 
-# ─── 4. Cross-writer timeout symmetry (#274 follow-up #4) ─────────────
+# ─── 4. Cross-writer timeout symmetry (litclock-dev#274 follow-up #4) ─────────────
 
 
 def test_python_writer_times_out_when_shell_holds_flock_too_long(
     flock_or_skip: str, shell_env_factory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#274 follow-up #4 — symmetry: shell-side helpers already exit 75
+    """litclock-dev#274 follow-up #4 — symmetry: shell-side helpers already exit 75
     on a 30s flock timeout. The Python side must now match.
 
     Hold the sidecar flock from a background shell for 3 seconds. With
     a Python-side budget of 0.3s, `atomic_update` must raise TimeoutError
-    rather than block until the shell releases (the pre-#274-followup-#4
+    rather than block until the shell releases (the pre-litclock-dev#274-followup-#4
     behavior). Surface as TimeoutError so the route handler can emit the
     504 ENV_LOCK_TIMEOUT envelope instead of letting the Flask worker
     accumulate a stuck thread.
@@ -509,7 +509,7 @@ def test_python_writer_times_out_when_shell_holds_flock_too_long(
     # the full 3s; post-fix must exit near 0.3s.
     assert elapsed < 1.5, (
         f"atomic_update should raise TimeoutError near the 0.3s budget, took {elapsed:.3f}s — "
-        "regression of #274 follow-up #4 bounded-wait"
+        "regression of litclock-dev#274 follow-up #4 bounded-wait"
     )
 
 
@@ -532,7 +532,7 @@ def test_python_and_shell_share_lock_wait_env_var(monkeypatch: pytest.MonkeyPatc
 
     assert hasattr(config, "ENV_LOCK_WAIT_DEFAULT"), (
         "config.ENV_LOCK_WAIT_DEFAULT must exist — Python-side budget for the "
-        "env.sh flock acquire timeout (#274 follow-up #4)"
+        "env.sh flock acquire timeout (litclock-dev#274 follow-up #4)"
     )
     # End-to-end: setting the env-var changes the parsed default.
     monkeypatch.setenv("LITCLOCK_ENV_LOCK_WAIT", "7")

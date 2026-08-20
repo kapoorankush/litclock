@@ -1,4 +1,4 @@
-// Tests for #337's settings.js additions:
+// Tests for litclock-dev#337's settings.js additions:
 //   * A12 segmented-pill click handler (Location mode + Temperature units)
 //   * A14 composite-cache-key blur preview + stale-on-typing dim
 //   * A17 Advanced lat/lon cleared on pill→Auto switch
@@ -6,7 +6,7 @@
 //   * A13 Temperature pill auto-save (single round-trip per click)
 //   * A18 browser-tz fallback (Intl detection + endpoint call)
 //
-// Pattern mirrors the existing settings.update-banner.test.js + #346
+// Pattern mirrors the existing settings.update-banner.test.js + litclock-dev#346
 // Weather-toggle tests — DOM stubbed to match the post-A9 template shape,
 // fetch mocked, loadScript runs the IIFE against the prepared globals.
 
@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installFetchMock, loadScript } from "./helpers/loadScript.js";
 
 // Mirror the new Location + Temperature section markup (settings.html.j2
-// post-#337). Only the elements settings.js queries are included — the
+// post-litclock-dev#337). Only the elements settings.js queries are included — the
 // banner / form-submit handlers run their own checks for unrelated DOM.
 function buildDom({ mode = "auto", lat = "", lon = "", name = "" } = {}) {
   const autoHidden = mode === "auto" ? "" : "hidden";
@@ -119,7 +119,7 @@ afterEach(() => {
 
 // ── A12: pill click activates the corresponding mode ────────────────────
 
-describe("#337 A12 — Location mode pill", () => {
+describe("litclock-dev#337 A12 — Location mode pill", () => {
   it("clicking the Specific label activates that mode + shows the panel", () => {
     buildDom({ mode: "auto" });
     loadScript("settings.js");
@@ -186,7 +186,7 @@ describe("#337 A12 — Location mode pill", () => {
 
 // ── A10 + A14: Save disabled when Specific + empty Place ────────────────
 
-describe("#337 A10 — Save-disabled rule", () => {
+describe("litclock-dev#337 A10 — Save-disabled rule", () => {
   it("disables Save when MODE=specific AND Place is empty AND Advanced is empty", () => {
     buildDom({ mode: "specific" });
     loadScript("settings.js");
@@ -239,7 +239,7 @@ describe("#337 A10 — Save-disabled rule", () => {
 
 // ── A14: composite cache key + stale-on-typing dim ──────────────────────
 
-describe("#337 A14 — blur preview composite cache key + stale dim", () => {
+describe("litclock-dev#337 A14 — blur preview composite cache key + stale dim", () => {
   async function flush() {
     await Promise.resolve();
     await Promise.resolve();
@@ -321,7 +321,7 @@ describe("#337 A14 — blur preview composite cache key + stale dim", () => {
 
 // ── A13: Temperature pill auto-saves on click (no Save button) ──────────
 
-describe("#337 A13 — Temperature pill auto-save", () => {
+describe("litclock-dev#337 A13 — Temperature pill auto-save", () => {
   async function flushAutoSave() {
     // CSRF + settings POST + .then chains. A few await Promise.resolve() ticks
     // is enough since installFetchMock returns already-resolved promises.
@@ -374,8 +374,8 @@ describe("#337 A13 — Temperature pill auto-save", () => {
     globalThis.alert = origAlert;
   });
 
-  // #415 /review (testing specialist): the autoSavePatch helper extracted in
-  // #414 item #3 preserves a special path for 504 env_lock_timeout — when
+  // litclock-dev#415 /review (testing specialist): the autoSavePatch helper extracted in
+  // litclock-dev#414 item #3 preserves a special path for 504 env_lock_timeout — when
   // the server returns 504 with {error:{code:'env_lock_timeout', message:...}}
   // the helper extracts that server message into err.timeoutMsg, and the
   // call site surfaces it via alert() instead of the generic "Couldn't save"
@@ -413,7 +413,7 @@ describe("#337 A13 — Temperature pill auto-save", () => {
     globalThis.alert = origAlert;
   });
 
-  // #457/#458: the Temperature pill is wired via the serialized
+  // litclock-dev#457/litclock-dev#458: the Temperature pill is wired via the serialized
   // `wireSegmentedAutoSave` helper. A rapid metric→imperial flip during an
   // in-flight save must not open a concurrent second request; the second
   // save fires only after the first settles, so the persisted units converge
@@ -467,7 +467,7 @@ describe("#337 A13 — Temperature pill auto-save", () => {
     expect(cOpt.classList.contains("is-selected")).toBe(false);
   });
 
-  // #457: the load-bearing "revert to the last CONFIRMED value, not the failed
+  // litclock-dev#457: the load-bearing "revert to the last CONFIRMED value, not the failed
   // target" branch for the SEGMENTED helper. The boolean toggle can't pin this
   // (for a 2-state control confirmed and !target coincide), so the segmented
   // pill is the authoritative guard: save #1 (metric) succeeds → confirmedOpt
@@ -522,7 +522,7 @@ describe("#337 A13 — Temperature pill auto-save", () => {
     globalThis.alert = origAlert;
   });
 
-  // #457: SSR-seed edge — a radiogroup with NO `is-selected` opt (server
+  // litclock-dev#457: SSR-seed edge — a radiogroup with NO `is-selected` opt (server
   // rendered no default). confirmedOpt seeds null; the first click must still
   // fire exactly one save carrying that opt's value (desiredOpt !== null).
   it("with no opt pre-selected, the first click still saves the chosen value", async () => {
@@ -550,7 +550,7 @@ describe("#337 A13 — Temperature pill auto-save", () => {
 
 // ── A18: browser-tz fallback button ─────────────────────────────────────
 
-describe("#337 A18 — browser-tz fallback", () => {
+describe("litclock-dev#337 A18 — browser-tz fallback", () => {
   it("populates the label with the detected tz + unhides the row", () => {
     buildTzDom();
     // jsdom returns an actual Intl object; verify the row becomes visible.
@@ -571,7 +571,7 @@ describe("#337 A18 — browser-tz fallback", () => {
     // succeeds. What matters is that the POST lands with the detected
     // tz; the reload is an unconditional side-effect we don't need to
     // simulate to verify the behavior contract.
-    // #337 /review — endpoint changed from /api/handoff/set-timezone (which
+    // litclock-dev#337 /review — endpoint changed from /api/handoff/set-timezone (which
     // no-ops post-handoff) to the new always-on /api/system/set-timezone.
     mock.register(/^\/api\/system\/set-timezone$/, { status: 200, body: { ok: true } });
     loadScript("settings.js");
@@ -595,7 +595,7 @@ describe("#337 A18 — browser-tz fallback", () => {
 
 // ── Always-on: has-js class added so [data-no-js-only] hides ────────────
 
-describe("#337 has-js class for no-JS-only CSS hide", () => {
+describe("litclock-dev#337 has-js class for no-JS-only CSS hide", () => {
   it("settings.js adds 'has-js' to <html> on load", () => {
     buildDom();
     expect(document.documentElement.classList.contains("has-js")).toBe(false);

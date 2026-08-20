@@ -3,7 +3,7 @@
 Provides location lookup via Nominatim (OpenStreetMap) and IP-based
 geolocation via ip-api.com, plus timezone derivation from coordinates
 (``timezone_from_coords``) and timezone application to the OS
-(``set_system_timezone`` — moved here from setup_server.py in #414
+(``set_system_timezone`` — moved here from setup_server.py in litclock-dev#414
 maintainability cleanup so location_resolver can pull it without
 dragging setup_server's captive-portal / http.server imports onto the
 boot-critical reresolve oneshot's startup path).
@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 # first three are the location triplet covered by the all-or-none coherence
 # guard in settings.py; WEATHER_UNITS is set alongside the triplet by the
 # provisioning resolver (derived from country_code) but evolves independently
-# from the PWA Settings UI. See EPIC #383 / PR1 for the rationale.
+# from the PWA Settings UI. See EPIC litclock-dev#383 / PR1 for the rationale.
 LOCATION_ENV_KEYS = (
     "WEATHER_LATITUDE",
     "WEATHER_LONGITUDE",
@@ -57,13 +57,13 @@ def geocode_location(query, country_code=None):
         dict with keys: lat (str), lon (str), display_name (str), timezone
         (str or None), country_code (str or None — upper-cased ISO 3166-1
         alpha-2, parsed from Nominatim's ``address.country_code`` field
-        added by #337 A16 to power the unified country-change UNITS-reset
+        added by litclock-dev#337 A16 to power the unified country-change UNITS-reset
         rule across all save paths).
         On failure: dict with key: error (str)
     """
     try:
         encoded = urllib.parse.quote(query)
-        # #337 A16: ``addressdetails=1`` returns an ``address`` object with
+        # litclock-dev#337 A16: ``addressdetails=1`` returns an ``address`` object with
         # a ``country_code`` field (lowercase 2-char ISO), which we need so
         # PWA Specific saves can apply the A6 country-change UNITS-reset
         # rule. The response shape is otherwise unchanged — the new field
@@ -88,7 +88,7 @@ def geocode_location(query, country_code=None):
         lon = result["lon"]
         display_name = result["display_name"]
 
-        # #337 A16: extract country_code from the address sub-dict.
+        # litclock-dev#337 A16: extract country_code from the address sub-dict.
         # Nominatim returns it as lowercase 2-char (e.g., "us", "gb", "in"),
         # canonicalize to upper for consistency with ``ip_geolocate()`` +
         # ``_persisted_country()`` which both work in uppercase.
@@ -165,7 +165,7 @@ def timezone_from_coords(lat, lon):
 def set_system_timezone(timezone):
     """Set the system timezone via ``timedatectl``.
 
-    Moved here from ``setup_server.py`` in the #414 maintainability cleanup
+    Moved here from ``setup_server.py`` in the litclock-dev#414 maintainability cleanup
     so callers (``location_resolver``, ``routes/settings.py``, ``routes/handoff.py``)
     can apply timezones without importing the captive-portal/http.server
     surface that lives in setup_server. Validates against
@@ -183,7 +183,7 @@ def set_system_timezone(timezone):
         if timezone not in valid_timezones:
             return False, f"Invalid timezone: {timezone}"
 
-        # Set the timezone via the root-owned wrapper (#387). We CANNOT call
+        # Set the timezone via the root-owned wrapper (litclock-dev#387). We CANNOT call
         # `sudo timedatectl set-timezone <tz>` directly: sudoers/020 only
         # authorizes the wrapper's fixed path (a `set-timezone *` glob would be
         # a privilege hole once 010_pi-nopasswd is dropped). The wrapper

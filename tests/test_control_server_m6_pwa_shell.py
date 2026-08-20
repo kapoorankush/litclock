@@ -5,7 +5,7 @@ PLAN-LitClock-Control-PWA.md (M6 row + design-review section). Includes the
 14 mandatory regression invariants from the test plan
 (`~/.gstack/projects/kapoorankush-litclock/ankush-master-m6-eng-review-test-plan-20260430-183708.md`):
 
-1.  /api/* always passes through the SW unchanged (M5 #254 contract preserved).
+1.  /api/* always passes through the SW unchanged (M5 litclock-dev#254 contract preserved).
 2.  Non-GET methods pass through the SW (codex F-NEW finding).
 3.  --fs-caption ceiling is now 18px.
 4.  M5 tabbar local override removed.
@@ -249,7 +249,7 @@ SPLASH_SIZES = (
 
 
 class TestStaticAssetCaching:
-    """PWA load perf (#436). Flask's static handler ships no ``max-age`` by
+    """PWA load perf (litclock-dev#436). Flask's static handler ships no ``max-age`` by
     default, forcing a conditional revalidation round-trip per asset on every
     PWA navigation — a burst that reads as "slow / feels broken" on a Pi Zero
     2W, and one iOS can't escape because the service worker never registers at
@@ -272,7 +272,7 @@ class TestStaticAssetCaching:
         assert r.status_code == 200
         cache_control = r.headers.get("Cache-Control", "")
         # 15 min — the shortest TTL still longer than a browsing session, so it
-        # kills the per-navigation revalidation storm (#436) while bounding
+        # kills the per-navigation revalidation storm (litclock-dev#436) while bounding
         # post-update.sh staleness on iOS to <=15 min (static URLs are not
         # fingerprinted).
         assert "max-age=900" in cache_control, f"{url} missing 15m max-age: {cache_control!r}"
@@ -285,7 +285,7 @@ class TestStaticAssetCaching:
 
     def test_api_still_no_store(self, client) -> None:
         """errors.py forces no-store on /api/* — the static default must not
-        override it (a cached /api/health 500 mid-update is the bug #254 fixed)."""
+        override it (a cached /api/health 500 mid-update is the bug litclock-dev#254 fixed)."""
         r = client.get("/api/health")
         assert r.headers.get("Cache-Control") == "no-store"
 
@@ -631,7 +631,7 @@ class TestServiceWorkerRegistration:
 
 
 # ============================================================
-# #258 caption ceiling (D6)
+# litclock-dev#258 caption ceiling (D6)
 # ============================================================
 
 

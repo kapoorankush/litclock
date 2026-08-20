@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 #
-# LitClock — update status file helpers (#245 M5 D4 / D9 / F6 / F9).
+# LitClock — update status file helpers (litclock-dev#245 M5 D4 / D9 / F6 / F9).
 #
 # Sourced by scripts/update.sh. Writes /run/litclock/update.status as JSON
 # the PWA's /api/update/status endpoint reads and the Updates tab renders as

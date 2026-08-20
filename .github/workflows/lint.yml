@@ -62,7 +62,7 @@ jobs:
 
   js-test:
     # JS unit tests for src/control_server/static/js/* via vitest + jsdom
-    # (#338). Dev/CI only — never installed on the Pi. Runs in parallel with
+    # (litclock-dev#338). Dev/CI only — never installed on the Pi. Runs in parallel with
     # ruff/shellcheck/pytest/pip-audit and shows as a separate required-check
     # on PRs. Branch protection is a separate manual repo setting; this job
     # being red won't server-side block merge until that toggle is flipped.

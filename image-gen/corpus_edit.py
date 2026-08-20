@@ -9,15 +9,15 @@ Subcommands:
     validate    Every changed row's timestring matches its HH:MM tag.
     diff        List HH:MM buckets whose contents differ from git HEAD,
                 AND surface drift between images/manifest.json and the
-                current CSV (post-#299).
+                current CSV (post-litclock-dev#299).
     regenerate  Wipe dirty buckets' images, then run the PHP generator.
     ship MSG    validate -> regenerate -> bump .images-version
                 -> commit on a new branch -> release_images.sh -> push -> gh pr create.
 
 Why this exists: image filenames are ``quote_{HHMM}_{counter}.png`` with the
 counter assigned by CSV row order per time bucket. Any add / delete / retag
-invalidates every filename in the affected buckets. Pre-#299 the generator's
-file_exists short-circuit silently preserved the stale images; post-#299 the
+invalidates every filename in the affected buckets. Pre-litclock-dev#299 the generator's
+file_exists short-circuit silently preserved the stale images; post-litclock-dev#299 the
 ``images/manifest.json`` content-hash sidecar drives a content-aware skip and
 ``.github/workflows/corpus-integrity.yml`` blocks PRs that don't pair their
 CSV change with a matching release. See issues litclock-dev#211 and litclock-dev#299.

@@ -1,4 +1,4 @@
-"""Tests for resolve_target_sha() in scripts/update.sh (issue #209).
+"""Tests for resolve_target_sha() in scripts/update.sh (issue litclock-dev#209).
 
 The resolver reads the latest Release tag via github_api_latest_release_tag
 then hits local git to produce an authoritative SHA. All failure modes
@@ -148,7 +148,7 @@ class TestStructural:
             assert rc == "0", f"graceful-offline violated: found `return {rc}`"
 
     def test_resolver_uses_single_tag_fetch_with_timeout(self):
-        """Regression for #209 hardware-found defect: pi-gen ships a shallow
+        """Regression for litclock-dev#209 hardware-found defect: pi-gen ships a shallow
         clone, so `git fetch --tags origin` backfills 30k+ historical
         objects on first run and exceeds the service's 120s
         TimeoutStartSec on a Pi Zero 2W. Resolver must scope the fetch
@@ -165,7 +165,7 @@ class TestStructural:
         assert "git fetch --tags" not in fn_body, (
             "resolver must not do a blanket `git fetch --tags` — that backfills "
             "all historical objects for every release tag, killing the Pi-side "
-            "120s TimeoutStartSec on shallow clones (#209 regression)."
+            "120s TimeoutStartSec on shallow clones (litclock-dev#209 regression)."
         )
         # Must do a single-tag refspec fetch with --no-tags scope.
         assert "--no-tags" in fn_body, "resolver must scope fetch with --no-tags"
@@ -185,7 +185,7 @@ def test_update_sh_sources_the_lib():
     """Wiring check — update.sh must source scripts/lib/github_api.sh."""
     body = UPDATE_SH.read_text()
     assert "lib/github_api.sh" in body
-    # Must tolerate the lib being missing (for fresh-image pre-#209 updates)
+    # Must tolerate the lib being missing (for fresh-image pre-litclock-dev#209 updates)
     assert "[[ -f" in body or "[ -f" in body
 
 

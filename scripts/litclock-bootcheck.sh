@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# LitClock — Last-Known-Good (LKG) auto-revert consumer (follow-up to #209).
+# LitClock — Last-Known-Good (LKG) auto-revert consumer (follow-up to litclock-dev#209).
 #
-# The #209 writer (litclock-lkg-record.sh) records the last SHA that actually
+# The litclock-dev#209 writer (litclock-lkg-record.sh) records the last SHA that actually
 # rendered to /var/lib/litclock/lkg-sha. THIS script is the consumer: it
 # detects a persistent post-update brick and self-heals the device without
 # SSH or an SD reflash.

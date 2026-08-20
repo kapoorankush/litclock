@@ -6,7 +6,7 @@ from weather_providers.base_provider import BaseWeatherProvider
 class OpenWeatherMap(BaseWeatherProvider):
     _cache_prefix = "weather-cache-owm"
     # Pre-refactor: OpenWeatherMap used to write to plain `weather-cache.json`
-    # via the old unit-less default cache path, removed in the #175
+    # via the old unit-less default cache path, removed in the litclock-dev#175
     # unit-aware-cache refactor. Listed here so the orphan sweep cleans it
     # up on upgrade, otherwise it lingers as dead weight forever.
     _legacy_cache_filenames = ("weather-cache.json",)

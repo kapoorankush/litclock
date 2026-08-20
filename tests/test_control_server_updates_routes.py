@@ -678,7 +678,7 @@ class TestApiUpdateStatus:
     def test_non_running_states_carry_no_unit_busy_key(self, client):
         """litclock-dev#636 — the evidence field is scoped to the one state whose
         truthfulness it qualifies; terminal and idle payloads stay
-        byte-compatible with pre-#636 clients."""
+        byte-compatible with pre-litclock-dev#636 clients."""
         status_file = Path(os.environ.get("LITCLOCK_UPDATE_STATUS_FILE"))
         status_file.parent.mkdir(parents=True, exist_ok=True)
         for state in ("complete", "failed_reverted", "failed_unrecovered"):

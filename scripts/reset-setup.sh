@@ -26,7 +26,7 @@ CONFIG_DIR="/etc/litclock"
 # lkg-record, update) and as src/wifi_provision.py's STATE_DIR.
 STATE_DIR="${LITCLOCK_STATE_DIR:-/var/lib/litclock}"
 
-# Source shared state-file helpers for atomic_write_env_sh (#274) — the
+# Source shared state-file helpers for atomic_write_env_sh (litclock-dev#274) — the
 # env.sh writer-lock that interoperates with src/config.py's fcntl.flock
 # on the sidecar. Path resolved relative to this script so the sourcing
 # survives a `sudo ./scripts/reset-setup.sh` invocation. state.sh ships
@@ -46,7 +46,7 @@ DO_REBOOT=false
 DO_POWEROFF=false
 WIPE_WIFI=false
 GIFT_MODE=false
-# #510: --strict-env-wipe makes a Step 3 env.sh wipe failure FATAL *before* any
+# litclock-dev#510: --strict-env-wipe makes a Step 3 env.sh wipe failure FATAL *before* any
 # destructive/irreversible step (WiFi wipe, reboot). Used by the PWA Factory
 # reset (litclock-reset.service): a factory reset promises a clean slate, so a
 # failed config wipe must abort with the device still reachable (WiFi intact) to
@@ -54,12 +54,12 @@ GIFT_MODE=false
 # leave it false (best-effort, unchanged).
 STRICT_ENV_WIPE=false
 GIFT_MESSAGE_FILE=""
-# #393: tracks whether the Step 3 env.sh wipe failed (lock timeout / write
+# litclock-dev#393: tracks whether the Step 3 env.sh wipe failed (lock timeout / write
 # error). In --gift-mode a failed wipe is fatal — see the end-of-script gift
 # branch. Plain resets ignore it (best-effort).
 ENV_WIPE_FAILED=false
 
-# Parse flags. `--message-file FILE` (#280) lets the PWA's prepare-for-gift
+# Parse flags. `--message-file FILE` (litclock-dev#280) lets the PWA's prepare-for-gift
 # endpoint hand us a personalized welcome message to plumb into the
 # shutdown splash. Reading from a file (not an inline arg) keeps the
 # message out of the process list / journal and avoids quoting/escape
@@ -90,12 +90,12 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: sudo $0 [--yes] [--wipe-wifi] [--reboot] [--gift-mode] [--message-file FILE]"
             echo "  --yes               Skip confirmation prompt"
             echo "  --wipe-wifi         Also delete saved WiFi networks (full fresh-flash simulation)"
-            echo "  --strict-env-wipe   Abort (before WiFi wipe / reboot) if the env.sh wipe fails (#510)"
+            echo "  --strict-env-wipe   Abort (before WiFi wipe / reboot) if the env.sh wipe fails (litclock-dev#510)"
             echo "  --reboot            Reboot after reset"
             echo "  --poweroff          Power off after reset (no gift splash; implies --strict-env-wipe; litclock-dev#627). Excludes --reboot"
             echo "  --gift-mode         Prepare for shipping: wipe WiFi, write welcome-splash marker, power off"
             echo "  --message-file FILE Read welcome message from FILE; persisted to /etc/litclock/.welcome-message"
-            echo "                      (only meaningful with --gift-mode; #280)"
+            echo "                      (only meaningful with --gift-mode; litclock-dev#280)"
             exit 1
             ;;
     esac
@@ -124,15 +124,15 @@ fi
 if [[ "$GIFT_MODE" == "true" ]]; then
     mkdir -p "$CONFIG_DIR"
     touch "$CONFIG_DIR/.welcome-mode"
-    # #280: if --message-file is set, copy its content to .welcome-message.
-    # Bounded to 80 chars (M3's GIFT_MODE_MESSAGE_MAX_LEN post-#319 — was
+    # litclock-dev#280: if --message-file is set, copy its content to .welcome-message.
+    # Bounded to 80 chars (M3's GIFT_MODE_MESSAGE_MAX_LEN post-litclock-dev#319 — was
     # 280 before the renderer learned to word-wrap). Anything longer is
     # truncated rather than rejected to keep the script lenient on input.
     # If the file is missing/empty, shutdown-splash.sh falls back to the
     # "Welcome to LitClock" default — that's the explicit no-personal-note
     # path for the gifter who just wanted to ship without typing anything.
     #
-    # #316 /review CRITICAL fix — TOCTOU symlink-swap defense. The naive
+    # litclock-dev#316 /review CRITICAL fix — TOCTOU symlink-swap defense. The naive
     # `[[ ! -L ... ]] && head -c 80 ...` is racy: a pi-level adversary can
     # rename(2) a symlink over $GIFT_MESSAGE_FILE between the test and the
     # read. Since this script runs as root via the litclock-prepare-for-gift
@@ -144,7 +144,7 @@ if [[ "$GIFT_MODE" == "true" ]]; then
     # privileged context — O_NOFOLLOW refuses to follow a symlink at the
     # moment of open, surviving the rename race.
     if [[ -n "$GIFT_MESSAGE_FILE" ]]; then
-        # #387: use the SYSTEM python3, never "$INSTALL_DIR/venv/bin/python3".
+        # litclock-dev#387: use the SYSTEM python3, never "$INSTALL_DIR/venv/bin/python3".
         # This runs as root (via litclock-prepare-for-gift.service), and the venv
         # interpreter lives in the pi-writable repo — running it as root would let
         # pi swap the interpreter for arbitrary root code. The heredoc below is
@@ -157,7 +157,7 @@ try:
 except OSError:
     sys.exit(1)  # missing or symlinked — caller falls back to default welcome
 try:
-    # #319: matches GIFT_MODE_MESSAGE_MAX_LEN in src/config.py (was 280).
+    # litclock-dev#319: matches GIFT_MODE_MESSAGE_MAX_LEN in src/config.py (was 280).
     data = os.read(fd, 80)
 finally:
     os.close(fd)
@@ -215,7 +215,7 @@ fi
 
 echo ""
 
-# Issue #282: tell shutdown-splash.sh we're rebooting, not powering off.
+# Issue litclock-dev#282: tell shutdown-splash.sh we're rebooting, not powering off.
 # The `systemctl stop litclock-shutdown.service` below fires ExecStop
 # (shutdown-splash.sh) BEFORE the actual `systemctl reboot` at end-of-script
 # enqueues reboot.target, so splash's list-jobs detection comes up empty and
@@ -251,7 +251,7 @@ fi
 
 # Step 1: Stop all litclock services that may be running or stuck.
 #
-# #274: stop litclock-control.service BEFORE the env.sh rewrite below so
+# litclock-dev#274: stop litclock-control.service BEFORE the env.sh rewrite below so
 # the PWA cannot land a Settings save concurrent with our defaults
 # overwrite. Even though atomic_write_env_sh serializes against the
 # Python writer via flock, dropping the contention surface to "shell
@@ -272,7 +272,7 @@ echo -e "${GREEN}done${NC}"
 # Step 2: Remove setup-complete flag
 echo -n "Removing setup-complete flag... "
 rm -f "$CONFIG_DIR/.setup-complete"
-# EPIC #383 PR2 (#388): clear the handoff marker too. The handoff phase is
+# EPIC litclock-dev#383 PR2 (litclock-dev#388): clear the handoff marker too. The handoff phase is
 # active when .setup-complete exists AND .handoff-complete is absent, so a
 # lingering .handoff-complete would skip the post-WiFi splash when this device
 # re-provisions. Cleared on every reset (gift or plain) since both return the
@@ -281,7 +281,7 @@ rm -f "$CONFIG_DIR/.setup-complete"
 rm -f "$CONFIG_DIR/.handoff-complete"
 echo -e "${GREEN}done${NC}"
 
-# Step 3: Clear env.sh to defaults via atomic_write_env_sh (#274) — the
+# Step 3: Clear env.sh to defaults via atomic_write_env_sh (litclock-dev#274) — the
 # shared sidecar flock interlocks with src/config.py's atomic_update
 # from the PWA. On lock timeout (rc=75) or any other write failure,
 # warn + continue: reset-setup is best-effort across many steps and
@@ -289,7 +289,7 @@ echo -e "${GREEN}done${NC}"
 # we re-write on next boot.
 echo -n "Resetting configuration... "
 if [[ -f "$INSTALL_DIR/env.sh" ]]; then
-    # #337 A3: WEATHER_LOCATION_MODE + WEATHER_IP_COUNTRY belong here so a
+    # litclock-dev#337 A3: WEATHER_LOCATION_MODE + WEATHER_IP_COUNTRY belong here so a
     # gift-recipient whose first-boot IP-geo fails (network issue, blocked
     # ip-api) lands on MODE=auto rather than inheriting the gifter's
     # MODE=specific from a stale env.sh write — the on-boot reresolve
@@ -309,7 +309,7 @@ export ALLOW_NSFW_QUOTES=false
         echo -e "${GREEN}done${NC}"
     else
         _rc=$?
-        # #393: record the failure so --gift-mode can abort before poweroff.
+        # litclock-dev#393: record the failure so --gift-mode can abort before poweroff.
         # A surviving WEATHER_LATITUDE/LONGITUDE leaks the gifter's location and
         # can pass PR2's handoff "tz known" proxy → wrong-time clock for the
         # recipient. Plain resets stay best-effort and ignore this flag.
@@ -325,7 +325,7 @@ else
     echo -e "${GREEN}done${NC}"
 fi
 
-# #510: fail-closed for the PWA Factory reset. A factory reset promises a clean
+# litclock-dev#510: fail-closed for the PWA Factory reset. A factory reset promises a clean
 # slate; if the config wipe failed, do NOT proceed to the destructive/irreversible
 # steps (WiFi wipe, reboot) — that would leave the owner rebooted into a setup
 # with stale settings, believing everything was erased. Abort here (before Step 7
@@ -339,12 +339,12 @@ if [[ "$STRICT_ENV_WIPE" == "true" && "$ENV_WIPE_FAILED" == "true" ]]; then
     exit 1
 fi
 
-# Step 3.5 (gift mode only): reset the system timezone to UTC (#389).
+# Step 3.5 (gift mode only): reset the system timezone to UTC (litclock-dev#389).
 # The timezone is system state (timedatectl / /etc/localtime), NOT env.sh, so
 # the Step 3 config wipe doesn't touch it — a gifted device would otherwise
 # boot showing the GIFTER's timezone until the recipient's first-boot IP-geo
 # resolves theirs, leaking the gifter's location. UTC is the neutral default;
-# the recipient's tz is set by the EPIC #383 first-boot IP-geo (or the PR2
+# the recipient's tz is set by the EPIC litclock-dev#383 first-boot IP-geo (or the PR2
 # browser-tz handoff fallback). Best-effort, like the rest of this script —
 # timedatectl can be absent/unavailable in odd environments; a warning beats
 # aborting the gift prep. Scoped to gift mode: a plain reset of your own device
@@ -375,10 +375,10 @@ echo -e "${GREEN}done${NC}"
 
 # Step 6.5: Clear weather cache. Stale cache from a prior session with
 # different units would be served under the new unit label — bug caught
-# during issue #175 QA on 2026-04-11. The provider code also sweeps orphans
+# during issue litclock-dev#175 QA on 2026-04-11. The provider code also sweeps orphans
 # now, but clearing here is belt-and-suspenders for any path that bypasses
 # provider construction (e.g. a cloned SD card at first boot).
-# #434 moved the live cache to /run/litclock (tmpfs); clear both the tmpfs
+# litclock-dev#434 moved the live cache to /run/litclock (tmpfs); clear both the tmpfs
 # copy (survives a no-reboot reset) and any legacy SD-resident file.
 echo -n "Clearing weather cache... "
 rm -f "$INSTALL_DIR"/weather-cache*.json /run/litclock/weather-cache*.json 2>/dev/null || true
@@ -497,7 +497,7 @@ disable_ssh_for_handoff() {
 echo ""
 # litclock-dev#660 — shared handoff rotation. Both terminal paths that hand the
 # device to another person must clear the persisted setup-WiFi key, and before
-# #660 only gift mode did.
+# litclock-dev#660 only gift mode did.
 #
 # The key SURVIVES a plain reset, a WiFi reset and a --reboot deliberately
 # (litclock-dev#620): there the motivating user is the same person
@@ -583,7 +583,7 @@ echo ""
 
 if [[ "$GIFT_MODE" == "true" ]]; then
     if [[ "$ENV_WIPE_FAILED" == "true" ]]; then
-        # #393: the env.sh wipe is the load-bearing privacy step for a gift —
+        # litclock-dev#393: the env.sh wipe is the load-bearing privacy step for a gift —
         # it clears the gifter's WEATHER_LATITUDE/LONGITUDE/LOCATION_NAME. It
         # failed (lock timeout rc=75 or a write error), so stale coordinates may
         # still be in env.sh. If we shipped the device and the recipient's
@@ -605,9 +605,9 @@ if [[ "$GIFT_MODE" == "true" ]]; then
         exit 1
     fi
     # litclock-dev#620 / litclock-dev#660 — clear the persisted setup-WiFi key
-    # before the device leaves this owner. Deliberately AFTER the #393 abort
+    # before the device leaves this owner. Deliberately AFTER the litclock-dev#393 abort
     # gate: a gift prep that fails leaves the device with its CURRENT owner, and
-    # rotating there would drop that owner into the very trap #620 removes.
+    # rotating there would drop that owner into the very trap litclock-dev#620 removes.
     rotate_hotspot_password_for_handoff
 
     # litclock-dev#528 — shared handoff gate; see disable_ssh_for_handoff above.
@@ -639,7 +639,7 @@ elif [[ "$DO_POWEROFF" == "true" ]]; then
     # signal (see the discriminator note on rotate_hotspot_password_for_handoff).
     # With --wipe-wifi, which is what litclock-reset.service passes for the PWA
     # "Factory reset", the next power-on raises the setup hotspot — and before
-    # #660 it raised it with the PREVIOUS owner's permanent key. Without it, this
+    # litclock-dev#660 it raised it with the PREVIOUS owner's permanent key. Without it, this
     # is the hand-run "same owner, moved house" path: the clock returns to its
     # saved network, no hotspot is ever raised, and the bench QA doc asserts the
     # key is unchanged.

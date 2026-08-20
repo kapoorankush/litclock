@@ -89,7 +89,7 @@ class TestIsStale:
         assert _is_stale(str(f), 3600) is True
 
 
-# ── Unit-aware cache (bug caught during issue #175 QA, 2026-04-11) ─
+# ── Unit-aware cache (bug caught during issue litclock-dev#175 QA, 2026-04-11) ─
 #
 # The cache layer used to key on filename only. A celsius cache written in
 # one session was served under a °F label in a later session after the user
@@ -100,7 +100,7 @@ class TestIsStale:
 class TestUnitAwareCache:
     @pytest.fixture(autouse=True)
     def _reset_legacy_sweep_state(self, monkeypatch):
-        """The one-shot legacy-root sweep gate (#434 review) is module-level
+        """The one-shot legacy-root sweep gate (litclock-dev#434 review) is module-level
         state that would otherwise leak across tests. Reset it to empty before
         each test so a test relying on the legacy _PROJECT_ROOT scan firing
         isn't suppressed by an earlier test having already marked that root
@@ -115,12 +115,12 @@ class TestUnitAwareCache:
         metric = OpenWeatherMap("k", "0", "0", "metric")
         imperial = OpenWeatherMap("k", "0", "0", "imperial")
         assert metric._cache_file_path() != imperial._cache_file_path()
-        # Filename shape: {prefix}-{units}-{lat}-{lon}.json (M3 #245).
+        # Filename shape: {prefix}-{units}-{lat}-{lon}.json (M3 litclock-dev#245).
         assert "-metric-" in metric._cache_file_path()
         assert "-imperial-" in imperial._cache_file_path()
 
     def test_cache_file_path_includes_coords(self):
-        """M3 #245 hardware-QA fix: changing location must invalidate the
+        """M3 litclock-dev#245 hardware-QA fix: changing location must invalidate the
         cache. Austin TX (30.27, -97.74) and Dublin CA (37.7, -121.9) must
         write to different cache files so a coord change gets a clean miss
         on the next tick instead of serving the old location's payload
@@ -159,7 +159,7 @@ class TestUnitAwareCache:
     def test_orphan_sweep_removes_stale_unit_cache(self, tmp_path, monkeypatch):
         """A cache written under metric units must be removed when the
         provider is next constructed under imperial units — otherwise we
-        repeat the #175 bug (celsius numbers rendered with a °F label)."""
+        repeat the litclock-dev#175 bug (celsius numbers rendered with a °F label)."""
         from weather_providers import base_provider
         from weather_providers.open_meteo import OpenMeteo
 
@@ -178,7 +178,7 @@ class TestUnitAwareCache:
         assert not (tmp_path / "weather-cache-openmeteo-imperial-0-0.json").exists()
 
     def test_orphan_sweep_removes_stale_coord_cache(self, tmp_path, monkeypatch):
-        """M3 #245 hardware-QA fix: when the user changes city, the prior
+        """M3 litclock-dev#245 hardware-QA fix: when the user changes city, the prior
         location's cache must be swept on the next render so the new
         coords get a fresh fetch instead of serving the old payload."""
         from weather_providers import base_provider
@@ -231,7 +231,7 @@ class TestUnitAwareCache:
         assert not legacy.exists()
 
     def test_cache_lives_on_tmpfs_by_default(self, monkeypatch):
-        """#434: the weather cache is a purely derived 1h-TTL blob, so it must
+        """litclock-dev#434: the weather cache is a purely derived 1h-TTL blob, so it must
         default to the /run/litclock tmpfs dir — NOT the SD-backed project
         root — to keep ~8,760 writes/yr off the flash card. Unset the override
         + reload so the assertion holds even when a dev/CI runner has exported
@@ -270,7 +270,7 @@ class TestUnitAwareCache:
             importlib.reload(base_provider)
 
     def test_orphan_sweep_removes_legacy_sd_cache_on_upgrade(self, tmp_path, monkeypatch):
-        """#434 migration: after the cache moves to tmpfs, a pre-upgrade file
+        """litclock-dev#434 migration: after the cache moves to tmpfs, a pre-upgrade file
         left in the SD-backed project root must be swept on the first fetch so
         it doesn't rot on flash forever. Cache dir and project root are
         DISTINCT dirs here (unlike the other sweep tests) to model the split."""
@@ -284,7 +284,7 @@ class TestUnitAwareCache:
         monkeypatch.setattr(base_provider, "_CACHE_DIR", str(cache_dir))
         monkeypatch.setattr(base_provider, "_PROJECT_ROOT", str(project_root))
 
-        # Stale cache left behind on the SD card by a pre-#434 install.
+        # Stale cache left behind on the SD card by a pre-litclock-dev#434 install.
         sd_leftover = project_root / "weather-cache-openmeteo-imperial-0-0.json"
         sd_leftover.write_text("{}")
         assert sd_leftover.exists()
@@ -294,7 +294,7 @@ class TestUnitAwareCache:
         assert not sd_leftover.exists(), "stale SD-resident cache must be swept post-upgrade"
 
     def test_legacy_root_swept_only_once_per_process(self, tmp_path, monkeypatch):
-        """#434 review: the legacy SD project-root sweep is a one-time
+        """litclock-dev#434 review: the legacy SD project-root sweep is a one-time
         migration. After the first fetch marks it swept, a stale file that
         later reappears in the project root must NOT be re-swept — we don't
         readdir the flash-backed repo root on every hourly fetch forever."""
@@ -319,7 +319,7 @@ class TestUnitAwareCache:
         assert late.exists(), "legacy root must not be re-scanned after the one-shot migration"
 
     def test_write_cache_is_best_effort_on_failure(self, tmp_path, monkeypatch):
-        """#434 review headline: a cache-write failure (e.g. the pi user can't
+        """litclock-dev#434 review headline: a cache-write failure (e.g. the pi user can't
         create a root-owned /run/litclock) must NOT raise — the caller already
         holds the live fetched data and must still render. It logs and moves
         on, leaving no target file behind."""
@@ -355,7 +355,7 @@ class TestUnitAwareCache:
     def test_get_response_data_writes_then_reads_cache(self, tmp_path, monkeypatch):
         """End-to-end round-trip through get_response_data: a cold fetch writes
         the tmpfs cache, and the next call within the TTL is served from that
-        file WITHOUT re-fetching. Pins that the #434 relocation didn't break
+        file WITHOUT re-fetching. Pins that the litclock-dev#434 relocation didn't break
         the write→read cache contract (the piece unit tests exercised only in
         halves)."""
         import json

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# LitClock — root-owned system-timezone setter (privilege wrapper for #387).
+# LitClock — root-owned system-timezone setter (privilege wrapper for litclock-dev#387).
 #
 # geocoding.set_system_timezone (control_server / location resolver, run as pi)
 # needs to apply an IP-geo- or browser-detected timezone, i.e. `timedatectl
@@ -12,7 +12,7 @@
 # in root-owned code, not in the pi-side caller (which sudoers cannot trust).
 #
 # Installed root:root 0755 to /usr/local/lib/litclock/ by update.sh / pi-gen
-# so the pi user cannot rewrite it (the whole point — see #387 C1).
+# so the pi user cannot rewrite it (the whole point — see litclock-dev#387 C1).
 #
 # Usage:  litclock-set-timezone <IANA-timezone>   e.g. America/Chicago
 # Exit:   0 on success; non-zero + stderr message otherwise.

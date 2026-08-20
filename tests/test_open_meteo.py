@@ -276,12 +276,12 @@ class TestGetWeather:
     def test_cache_prefix_is_openmeteo(self):
         """OpenMeteo must write to its own cache-file namespace so its
         responses never collide with OpenWeatherMap's (different schemas).
-        Post-#175 refactor: cache path also includes units so a WEATHER_UNITS
+        Post-litclock-dev#175 refactor: cache path also includes units so a WEATHER_UNITS
         change writes to a fresh file instead of serving stale-unit values."""
         provider_metric = OpenMeteo("51.5", "-0.1", "metric")
         provider_imperial = OpenMeteo("51.5", "-0.1", "imperial")
         assert provider_metric._cache_prefix == "weather-cache-openmeteo"
-        # Post-M3 (#245 hardware QA): filename also includes coords so a
+        # Post-M3 (litclock-dev#245 hardware QA): filename also includes coords so a
         # location change from the Settings tab gets a clean cache miss
         # instead of serving the prior city's cached payload until
         # WEATHER_TTL expires.

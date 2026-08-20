@@ -45,7 +45,7 @@ actionable item is a set of missing HTTP security-hardening headers (pre-existin
 
 ## DAST (control_server over HTTP)
 
-**New `/api/diagnostics/journal?unit=` endpoint (from #436) — all pass:**
+**New `/api/diagnostics/journal?unit=` endpoint (from litclock-dev#436) — all pass:**
 | Probe | Result |
 |---|---|
 | valid allowlisted unit | 200 ✓ |
@@ -87,7 +87,7 @@ Minor WSGI-server disclosure (no version). Optional to suppress.
 
 ### Accepted (already tracked / by design)
 - No in-flight coalescing on the journal endpoint (LAN client can force cold `journalctl` forks) —
-  filed TODO; consistent with the trusted-LAN posture (`/api/diagnostics` had the same surface pre-#436).
+  filed TODO; consistent with the trusted-LAN posture (`/api/diagnostics` had the same surface pre-litclock-dev#436).
 - SSID not scrubbed from journal tails — by design; a same-LAN client already knows the SSID.
 - Server-side journalctl failure renders as "no recent log lines" (T3 accepted limit) — filed TODO.
 

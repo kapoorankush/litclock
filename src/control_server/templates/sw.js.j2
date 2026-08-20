@@ -7,7 +7,7 @@
  * Strategy:
  *   - Navigate (HTML)        → network-first w/ 1.5s timeout, cache fallback.
  *   - Static asset           → cache-first; cache miss → fetch + store.
- *   - /api/*                 → ALWAYS pass-through (preserves #254 no-store).
+ *   - /api/*                 → ALWAYS pass-through (preserves litclock-dev#254 no-store).
  *   - Non-GET (POST/...)     → ALWAYS pass-through (D2 codex finding).
  *
  * Lifecycle (D3):
@@ -100,12 +100,12 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
 
-  // /api/* always pass-through. Preserves #254's Cache-Control: no-store on
+  // /api/* always pass-through. Preserves litclock-dev#254's Cache-Control: no-store on
   // API responses so the PWA's reconnect probe never serves stale envelopes
   // from a mid-update window.
   if (url.pathname.startsWith('/api/')) return;
 
-  // /diagnostics pass-through. #416 PR3a /review F-SW-CACHE: a revealed
+  // /diagnostics pass-through. litclock-dev#416 PR3a /review F-SW-CACHE: a revealed
   // /diagnostics?reveal=location response renders the unredacted SSID +
   // city + coordinates into the HTML body. Without this guard the SW
   // would cache that HTML and serve it later (offline or first-paint

@@ -1,4 +1,4 @@
-"""Sudoers structural guards for #245 M5.
+"""Sudoers structural guards for litclock-dev#245 M5.
 
 We can't run `visudo -c -f` in CI (requires the visudo binary + isn't
 generally available on dev machines), so this test does the lighter-but-
@@ -24,14 +24,14 @@ class TestSudoersEntries:
         assert "/usr/bin/systemctl start --no-block litclock-wifi-reset.service" in body
 
     def test_litclock_prepare_for_gift_service_entry_present(self):
-        """#280: /api/system/prepare-for-gift triggers the gift-prep unit via
+        """litclock-dev#280: /api/system/prepare-for-gift triggers the gift-prep unit via
         systemctl, same pattern as wifi-reset. Without this entry, the
         endpoint returns a 500 on every invocation."""
         body = SUDOERS.read_text()
         assert "/usr/bin/systemctl start --no-block litclock-prepare-for-gift.service" in body
 
     def test_litclock_reset_service_entry_present(self):
-        """#510: /api/system/reset triggers the factory-reset unit via systemctl,
+        """litclock-dev#510: /api/system/reset triggers the factory-reset unit via systemctl,
         same pattern as wifi-reset/gift. Without this entry the endpoint 500s."""
         body = SUDOERS.read_text()
         assert "/usr/bin/systemctl start --no-block litclock-reset.service" in body
@@ -48,7 +48,7 @@ class TestSudoersEntries:
         assert cmnd in SUDOERS.read_text()
 
     def test_pre_shutdown_stop_entry_present(self):
-        """#362: /api/system/reboot + /api/system/poweroff now synchronously
+        """litclock-dev#362: /api/system/reboot + /api/system/poweroff now synchronously
         stop litclock.timer + litclock.service before invoking the destructive
         systemctl --no-block call so a timer-queued render can't paint over
         the 'Powered Off' splash. Without this exact sudoers entry the
@@ -61,7 +61,7 @@ class TestSudoersEntries:
         """D11 — the helper script invocation goes via systemctl, NOT via a
         direct sudoers entry for the .sh path. A direct entry would make
         the privilege surface broader than necessary; the systemd unit is
-        the trust boundary. #280: same principle for reset-setup.sh — the
+        the trust boundary. litclock-dev#280: same principle for reset-setup.sh — the
         gift-prep unit owns the elevated work, not a sudoers entry for the
         .sh path directly."""
         body = SUDOERS.read_text()
@@ -69,14 +69,14 @@ class TestSudoersEntries:
         assert "/home/pi/litclock/scripts/reset-setup.sh" not in body
 
     def test_gift_tz_reset_entry_matches_route_argv(self):
-        """#396: the sudoers entry must match the EXACT argv prepare_for_gift
+        """litclock-dev#396: the sudoers entry must match the EXACT argv prepare_for_gift
         runs — sudo matches commands verbatim, so a drift (path change, extra
         flag) would silently no-op the privileged call once 010_pi-nopasswd is
-        dropped (#387). Derive the expected command from _gift_reset_argv()
+        dropped (litclock-dev#387). Derive the expected command from _gift_reset_argv()
         rather than a duplicated literal so the source of truth is the code, not
         a string that can rot. sudo strips argv[0], so the sudoers Cmnd is the
         argv minus the leading 'sudo'. This is the parity class MEMORY flags as
-        recurring (#388 sudo-boundary no-op)."""
+        recurring (litclock-dev#388 sudo-boundary no-op)."""
         from control_server.routes.system import _gift_reset_argv
 
         argv = _gift_reset_argv()
@@ -150,7 +150,7 @@ class TestWifiResetServiceUnit:
 
 
 class TestPrepareForGiftServiceUnit:
-    """#280: gift-prep unit, structurally a sibling of wifi-reset."""
+    """litclock-dev#280: gift-prep unit, structurally a sibling of wifi-reset."""
 
     UNIT = REPO_ROOT / "systemd" / "litclock-prepare-for-gift.service"
 
@@ -174,7 +174,7 @@ class TestPrepareForGiftServiceUnit:
 
     def test_execstart_invokes_reset_setup_with_gift_mode(self):
         body = self.UNIT.read_text()
-        # #387: the ROOT-OWNED copy, not the pi-writable repo path (pi can
+        # litclock-dev#387: the ROOT-OWNED copy, not the pi-writable repo path (pi can
         # `systemctl start` this unit via 020, so a pi-writable ExecStart is
         # a pi->root vector).
         assert "/usr/local/lib/litclock/reset-setup.sh" in body

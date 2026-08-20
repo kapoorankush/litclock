@@ -3,7 +3,7 @@
 #
 # Triggered every 5 min by systemd/wifi-watchdog.timer. Counter persists
 # at /var/lib/litclock/wifi-watchdog-reboots so reboot attempts survive
-# the reboots they trigger (#245 M5 D8 — F4 in plan: was /tmp, but /tmp
+# the reboots they trigger (litclock-dev#245 M5 D8 — F4 in plan: was /tmp, but /tmp
 # may be tmpfs on some configs and /var/lib/litclock is the canonical
 # project state dir already provisioned by tmpfiles.d).
 #

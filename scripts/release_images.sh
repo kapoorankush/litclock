@@ -90,7 +90,7 @@ trap 'rm -rf "$TMPDIR_ROOT"' EXIT
 TARBALL="$TMPDIR_ROOT/litclock-images.tar.gz"
 SHA_FILE="$TMPDIR_ROOT/litclock-images.tar.gz.sha256"
 
-# #293: stage images/ inside TMPDIR_ROOT so the byte manifest and the tarball
+# litclock-dev#293: stage images/ inside TMPDIR_ROOT so the byte manifest and the tarball
 # both cover the SAME frozen byte set. Without staging, anything mutating
 # $REPO_ROOT/images between manifest generation and tar creation (concurrent
 # image-gen run, errant editor, fsck) would publish a tarball whose inner
@@ -105,11 +105,11 @@ cp -a "$REPO_ROOT/images" "$STAGING_IMAGES"
 # the frozen snapshot to match the byte set we'll actually publish.
 MANIFEST_SRC="$STAGING_IMAGES/manifest.json"
 
-# #299: refuse to publish without a manifest.json. If we created the release
+# litclock-dev#299: refuse to publish without a manifest.json. If we created the release
 # without one, the corpus-integrity CI gate would later fail PRs against the
 # resulting tag — but the tag would already be occupied, blocking a clean
 # rerun. Fail-loud here. (Originally checked after tarball build; moved
-# earlier in #313 so the manifest-completeness gate can rely on its presence
+# earlier in litclock-dev#313 so the manifest-completeness gate can rely on its presence
 # without re-checking.)
 if [ ! -f "$MANIFEST_SRC" ]; then
     log_error "images/manifest.json missing — refuse to release without it (corpus-integrity CI gate would fail)."
@@ -117,7 +117,7 @@ if [ ! -f "$MANIFEST_SRC" ]; then
     exit 1
 fi
 
-# #293: byte-integrity manifest. The existing manifest.json hashes corpus
+# litclock-dev#293: byte-integrity manifest. The existing manifest.json hashes corpus
 # content (quote+title+author+timestring) for the CI corpus-drift gate — it
 # does NOT detect partial-extract corruption on the consumer side. Generate
 # a separate sha256sum-compatible sidecar of every PNG's bytes and bundle it
@@ -145,7 +145,7 @@ if [ "$FILES_SHA_COUNT" -lt 1 ]; then
 fi
 log_info "  files.sha256: ${FILES_SHA_COUNT} PNGs hashed"
 
-# #313: cross-check the byte sidecar against manifest.json's file set.
+# litclock-dev#313: cross-check the byte sidecar against manifest.json's file set.
 # files.sha256 verifies every PNG it lists matches its hash, but says nothing
 # about completeness — a manifest.json claiming N quote buckets must be
 # satisfied by N main PNGs (root) AND N credits PNGs (metadata/) in the
@@ -213,11 +213,11 @@ log_info "Computing SHA256..."
 (cd "$TMPDIR_ROOT" && sha256sum litclock-images.tar.gz > litclock-images.tar.gz.sha256)
 log_info "SHA256: $(awk '{print $1}' "$SHA_FILE")"
 
-# #299: publish images/manifest.json as a separate top-level asset so the
+# litclock-dev#299: publish images/manifest.json as a separate top-level asset so the
 # corpus-integrity CI workflow can fetch ~50KB of metadata instead of the
 # whole tarball. The manifest is also bundled inside the tarball (it lives
 # in images/), so Pis still get it via the normal install/update flow.
-# (Existence already validated above before sidecar generation; #293 reads
+# (Existence already validated above before sidecar generation; litclock-dev#293 reads
 # from the frozen staging snapshot so the manifest corresponds to the same
 # byte set as the tarball + sidecar.)
 MANIFEST_ASSET="$TMPDIR_ROOT/manifest.json"

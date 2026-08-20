@@ -13,8 +13,8 @@
 #   update-failed              — set by update.sh on smoke-test failure
 #   post-update-grace-until    — mtime-only marker; reader treats
 #                                `now - mtime < 900s` as "still in grace"
-#                                (issue #241, decision D2)
-#   ── LKG auto-revert (litclock-bootcheck, #209 follow-up) ──
+#                                (issue litclock-dev#241, decision D2)
+#   ── LKG auto-revert (litclock-bootcheck, litclock-dev#209 follow-up) ──
 #   boot-fail-count            — consecutive failed boots (bootcheck writes;
 #                                update.sh Phase 7 clears on a successful apply)
 #   bootcheck-recovering       — a rollback was already triggered this cycle;
@@ -81,7 +81,7 @@ atomic_remove_file() {
     rm -f "$target" 2>/dev/null || sudo rm -f "$target" 2>/dev/null || true
 }
 
-# ─── env.sh writer-lock helpers (issue #274) ─────────────────────────
+# ─── env.sh writer-lock helpers (issue litclock-dev#274) ─────────────────────────
 #
 # Three shell writers mutate env.sh (update.sh Phase 3, reset-setup.sh,
 # prepare-for-cloning.sh). The Python PWA writer in src/config.py holds

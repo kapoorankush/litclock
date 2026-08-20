@@ -35,12 +35,12 @@ def create_app(test_config: dict | None = None) -> Flask:
         template_folder="templates",
     )
 
-    # PWA load perf (#436). Flask's static handler defaults to NO ``max-age``
+    # PWA load perf (litclock-dev#436). Flask's static handler defaults to NO ``max-age``
     # — it ships an ETag and relies on conditional 304 revalidation. On a Pi
     # Zero 2W that means every PWA navigation (Status → Settings → Diagnostics →
     # …) re-validates ~9 CSS + ~9 JS + the woff2 faces against the device, a
     # burst of round-trips that reads as the "erratic / slow / feels broken"
-    # symptom in #436. On iOS Safari at our plain-HTTP private-IP origin the
+    # symptom in litclock-dev#436. On iOS Safari at our plain-HTTP private-IP origin the
     # service worker never registers (sw-register.js gates on isSecureContext),
     # so the HTTP cache is the ONLY cache layer there — making this header the
     # single biggest, fully hardware-independent win for the primary platform.
@@ -50,12 +50,12 @@ def create_app(test_config: dict | None = None) -> Flask:
     # releases), so a long max-age serves stale CSS/JS after an ``update.sh``
     # that changed a file in place — fresh HTML against stale sub-resources,
     # worst exactly when a user opens /diagnostics right after an OTA. 15 min
-    # is the shortest TTL that still exceeds a browsing session (the #436
+    # is the shortest TTL that still exceeds a browsing session (the litclock-dev#436
     # revalidation storm is intra-session, seconds-to-minutes), so it kills the
     # storm while bounding post-update staleness on iOS to <=15 min instead of
     # an hour. Fingerprinting the URLs (far-future cache + instant bust) would
     # erase the window entirely, but it isn't worth the work for a single-user
-    # LAN appliance where a 15-min revalidation is a cheap localhost 304 (#467,
+    # LAN appliance where a 15-min revalidation is a cheap localhost 304 (litclock-dev#467,
     # considered + declined). The service worker keeps its own per-version
     # CACHE_NAME busting on Android (immune regardless); this is
     # the layer iOS relies on. ``/api/*`` is unaffected (errors.py forces
@@ -70,7 +70,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         # /api/health version source — see src/control_server/version.py for
         # the resolution order. Pinning here lets tests assert a fixed value.
         VERSION_OVERRIDE=os.environ.get("LITCLOCK_VERSION_OVERRIDE"),
-        # Status hero "Last update" file paths (#330 + #334 + review I5).
+        # Status hero "Last update" file paths (litclock-dev#330 + litclock-dev#334 + review I5).
         # Mirrors the ENV_FILE pattern: tests setting LITCLOCK_*_FILE in the
         # environment before create_app() should see those values land in
         # app.config so app.config["..."] = tmp_path overrides keep
@@ -81,7 +81,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         LAST_UPDATE_FILE=os.environ.get("LITCLOCK_LAST_UPDATE_FILE"),
         LKG_SHA_FILE=os.environ.get("LITCLOCK_LKG_SHA_FILE"),
         PHASE3_SKIPPED_FILE=os.environ.get("LITCLOCK_PHASE3_SKIPPED_FILE"),
-        # EPIC #383 PR2 handoff markers. Same env-override pattern as above so
+        # EPIC litclock-dev#383 PR2 handoff markers. Same env-override pattern as above so
         # tests point these at a tmp dir (and a direct marker write succeeds
         # there without sudo). See control_server/handoff.py for the lifecycle.
         SETUP_COMPLETE_FILE=os.environ.get("LITCLOCK_SETUP_COMPLETE_FILE", "/etc/litclock/.setup-complete"),
@@ -113,7 +113,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     # M3 Settings tab CSRF (D4). Multi-use, action="settings", TTL 30 min.
     app.extensions["csrf_tokens"] = CsrfTokenStore()
 
-    # Project-wide JSON error envelope (issue #254). Installs handlers for
+    # Project-wide JSON error envelope (issue litclock-dev#254). Installs handlers for
     # HTTPException + uncaught Exception so M2-M5 endpoints inherit the
     # convention without each route hand-rolling its own error shape.
     register_error_handlers(app)
@@ -123,14 +123,14 @@ def create_app(test_config: dict | None = None) -> Flask:
     app.register_blueprint(settings.bp)
     app.register_blueprint(status.bp)
     app.register_blueprint(system.bp)
-    # M5 (#245) — Updates tab + Reset-WiFi.
+    # M5 (litclock-dev#245) — Updates tab + Reset-WiFi.
     app.register_blueprint(updates.bp)
     app.register_blueprint(wifi.bp)
     # M6 — /sw.js (templated) + /manifest.webmanifest (proper Content-Type/Cache-Control).
     app.register_blueprint(sw.bp)
-    # EPIC #383 PR2 (#388) — post-WiFi PWA handoff (Done / browser-tz endpoints).
+    # EPIC litclock-dev#383 PR2 (litclock-dev#388) — post-WiFi PWA handoff (Done / browser-tz endpoints).
     app.register_blueprint(handoff.bp)
-    # #416 PR2 — /api/diagnostics + /diagnostics placeholder. The
+    # litclock-dev#416 PR2 — /api/diagnostics + /diagnostics placeholder. The
     # templated page + drawer markup land in PR3.
     app.register_blueprint(diagnostics.bp)
 
@@ -149,7 +149,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             app.logger.exception("handoff context injection failed")
         return {"handoff": {"active": False}}
 
-    # #416 PR3c (F31) — inject `diag_shortcut_expanded` so base.html.j2
+    # litclock-dev#416 PR3c (F31) — inject `diag_shortcut_expanded` so base.html.j2
     # can set body[data-diag-ribbon-expanded]. Cheap (one env read per
     # render); the value is the per-process snapshot of the env, so a
     # toggle save that flushes via reload reflects on next paint.

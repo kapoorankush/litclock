@@ -1,5 +1,5 @@
 #!/bin/bash
-# LitClock handoff last-resort completer (EPIC #383 PR2, #388, task T21).
+# LitClock handoff last-resort completer (EPIC litclock-dev#383 PR2, litclock-dev#388, task T21).
 #
 # Driven by litclock-handoff-fallback.timer ~10 min after boot. If
 # control_server crashed during the post-WiFi handoff window and never wrote

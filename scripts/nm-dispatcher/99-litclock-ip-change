@@ -2,7 +2,7 @@
 # NetworkManager dispatcher: re-render the LitClock e-ink when wlan0's
 # IP changes, so the corner QR stops advertising a stale address after
 # DHCP churn (router reboot, WiFi reconnect, lease expiry). Fixes the
-# UX side of #309.
+# UX side of litclock-dev#309.
 #
 # The RE-RENDER is gated on /etc/litclock/.handoff-complete so it does
 # NOT fire during first-boot hotspot teardown — during setup,
@@ -19,7 +19,7 @@
 # 0755 root:root. Do not edit the installed copy — edit the source in
 # the repo and re-run update.sh.
 #
-# Runtime dependency (#387 C1): this dispatcher runs as ROOT and invokes the
+# Runtime dependency (litclock-dev#387 C1): this dispatcher runs as ROOT and invokes the
 # ROOT-OWNED /usr/local/lib/litclock/litclock-mark-collected.sh, installed by
 # the same three sites. Never wire it back to a pi-writable path.
 
@@ -87,7 +87,7 @@ fi
 # reached `exit 0`, and fell through to a full e-ink render. Every single
 # dhcp4-change on a clock with broken DHCP repainted the panel — measured
 # three renders for three identical events where a real address produces one.
-# That is exactly the unbounded-render / SPI-contention failure the #309
+# That is exactly the unbounded-render / SPI-contention failure the litclock-dev#309
 # /review A4 guard below exists to prevent, and litclock-dev#645 reintroduced it by
 # adding the blanking without extending the short-circuit to cover it.
 RAW_IP="${CURRENT_IP:-}"
@@ -96,7 +96,7 @@ case "${CURRENT_IP:-}" in
 esac
 
 # Record "network data has been collected on this Pi" in the persistent
-# marker (#445) BEFORE the same-IP short-circuit below — reaching here means
+# marker (litclock-dev#445) BEFORE the same-IP short-circuit below — reaching here means
 # wlan0 is up with networking, which is exactly what the /diagnostics Network
 # section reports, so even an unchanged-IP lease renewal should refresh the
 # marker. This is what makes the grey "Not yet collected" tier stop flashing
@@ -115,7 +115,7 @@ esac
 # litclock-dev#645's exact shape, one token away. tests/test_nm_dispatcher_behavior.py
 # pins both the failing helper and the missing one.
 #
-# #387 C1: this dispatcher runs as ROOT, so it invokes the ROOT-OWNED copy at
+# litclock-dev#387 C1: this dispatcher runs as ROOT, so it invokes the ROOT-OWNED copy at
 # /usr/local/lib/litclock — NOT /home/pi/litclock/scripts (pi-writable, which
 # would be a pi→root escalation on the next DHCP event once 010_pi-nopasswd is
 # dropped). Deliberately NO fallback to the repo copy: running the pi-writable
@@ -126,7 +126,7 @@ if [ -x /usr/local/lib/litclock/litclock-mark-collected.sh ]; then
     /usr/local/lib/litclock/litclock-mark-collected.sh network 2>/dev/null || true
 fi
 
-# Same-IP short-circuit (#309 /review adversarial finding A4): NM fires
+# Same-IP short-circuit (litclock-dev#309 /review adversarial finding A4): NM fires
 # `dhcp4-change` on every DHCP lease renewal — including renewals that
 # keep the same IP. Without this guard, a 12-hour lease would gratuitously
 # re-render the e-ink at every renewal, and a flapping AP that emits
@@ -163,7 +163,7 @@ ensure_run_dir() {
 }
 
 MARKER=/run/litclock/last-rendered-ip
-# #387 C2: this dispatcher runs as ROOT and /run/litclock is 0755 pi pi, so a
+# litclock-dev#387 C2: this dispatcher runs as ROOT and /run/litclock is 0755 pi pi, so a
 # pi-planted symlink at $MARKER would make the read/write below touch an
 # arbitrary file as root. Refuse to follow a symlink — drop it and treat as
 # "no previous IP" (a fresh regular file is written below). The residual TOCTOU
@@ -235,7 +235,7 @@ fi
 # $MARKER write, so skipping it must not leave that file stale or absent —
 # otherwise a plain (non-symlink) file planted at $OBSERVED_MARKER in the
 # pi-writable /run/litclock could suppress the diagnostics write for the life
-# of the boot and resurrect litclock-dev#645's false "Connection issue" with every #387
+# of the boot and resurrect litclock-dev#645's false "Connection issue" with every litclock-dev#387
 # C2 symlink guard intact. Requiring $MARKER to already agree means we only
 # skip work that is genuinely already done.
 if [ "$OBSERVED_SEEN" = 1 ] && [ "$RAW_IP" = "$LAST_OBSERVED" ] &&

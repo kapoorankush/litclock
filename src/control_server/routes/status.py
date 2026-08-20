@@ -1,6 +1,6 @@
 """GET /api/status — read-only system + current-quote facts.
 
-Per PR #245 M2: the PWA Status tab (the "memorable thing" front-door
+Per PR litclock-dev#245 M2: the PWA Status tab (the "memorable thing" front-door
 moment) reads ONE endpoint to populate both the literary hero card and
 the 5-row system facts list under it. The hero quote MUST mirror what's
 on the e-ink right now — `literary_clock.py` writes
@@ -12,7 +12,7 @@ minute (locked decision OV3).
 Subprocess calls (nmcli for SSID) are short-cached so the 3s reconnect-
 probe + manual refresh cadence doesn't fork shell helpers excessively.
 The "Last update" row reads on-disk files (update.status + lkg-sha) —
-no subprocess, no cache, just a direct read on each request (#330).
+no subprocess, no cache, just a direct read on each request (litclock-dev#330).
 Each helper is module-level so tests can monkeypatch them without
 touching the real system.
 """
@@ -41,27 +41,27 @@ bp = Blueprint("status", __name__)
 
 # Default status-file path — must match the producer side in
 # src/literary_clock.py:STATUS_FILE. Lives under /run/litclock (tmpfs,
-# pi:pi-owned per the #241 tmpfiles.d entry) so the writer doesn't hit
+# pi:pi-owned per the litclock-dev#241 tmpfiles.d entry) so the writer doesn't hit
 # Permission-denied on /var/run. Override via env so tests can use a tmpfile.
 DEFAULT_STATUS_FILE = os.environ.get("LITCLOCK_STATUS_FILE", "/run/litclock/current-quote.json")
 
-# Last-update signal sources (#330 + #334). update.sh writes all three:
+# Last-update signal sources (litclock-dev#330 + litclock-dev#334). update.sh writes all three:
 #   1. /run/litclock/update.status — phase reading-list, terminal state=complete
 #      includes finished_at_unix + to_version (short SHA). tmpfs, cleared on reboot.
 #   2. /var/lib/litclock/last-update.json — persistent mirror of (1) on terminal
-#      state=complete. Survives reboot-during-15-min-LKG-soak (#334 Window 1)
-#      and offline-graceful-exit (#334 Window 2). Same shape as (1).
+#      state=complete. Survives reboot-during-15-min-LKG-soak (litclock-dev#334 Window 1)
+#      and offline-graceful-exit (litclock-dev#334 Window 2). Same shape as (1).
 #   3. /var/lib/litclock/lkg-sha — full HEAD SHA written after a healthy soak
 #      by litclock-lkg-record.sh. Persistent across reboots.
 # Status row prefers (1) for freshest signal, falls back to (2) for the
 # narrow reboot/offline windows above, then to (3) so the row survives
-# pre-#334 Pis where last-update.json was never written.
+# pre-litclock-dev#334 Pis where last-update.json was never written.
 DEFAULT_UPDATE_STATUS_FILE = os.environ.get("LITCLOCK_UPDATE_STATUS_FILE", "/run/litclock/update.status")
 DEFAULT_LAST_UPDATE_FILE = os.environ.get("LITCLOCK_LAST_UPDATE_FILE", "/var/lib/litclock/last-update.json")
 DEFAULT_LKG_SHA_FILE = os.environ.get("LITCLOCK_LKG_SHA_FILE", "/var/lib/litclock/lkg-sha")
 SHORT_SHA_LEN = 7
 
-# #274 follow-up — Phase 3 skip marker (set by update.sh on rc=75 flock
+# litclock-dev#274 follow-up — Phase 3 skip marker (set by update.sh on rc=75 flock
 # timeout, cleared on a clean Phase 3 run). mtime-only — no body. The
 # Status row clamps "fresh" to within the last day so the banner self-
 # clears even if the next update is never run.
@@ -72,7 +72,7 @@ DEFAULT_PHASE3_SKIPPED_FILE = os.environ.get("LITCLOCK_PHASE3_SKIPPED_FILE", "/v
 # cleaned (e.g. update.sh disabled / cron stopped firing).
 PHASE3_SKIP_FRESH_WINDOW_S = 86400
 
-# #274 follow-up — adversarial-review P1: budget for treating a
+# litclock-dev#274 follow-up — adversarial-review P1: budget for treating a
 # `state=running` update.status entry as fresh. Past this, assume update.sh
 # died (SIGKILL / OOM / power loss) without writing the terminal
 # state=complete or state=failed_* — /run is tmpfs and clears at reboot,
@@ -83,7 +83,7 @@ PHASE3_SKIP_FRESH_WINDOW_S = 86400
 # Past this window, treat as stale and return None so the banner self-clears.
 UPDATE_RUNNING_TIMEOUT_S = 1800
 
-# Stale threshold (#245 D2). Banner appears in the PWA when picked_at_age_s
+# Stale threshold (litclock-dev#245 D2). Banner appears in the PWA when picked_at_age_s
 # exceeds this; corresponds to ~90 seconds of dead clock-tick service.
 STALE_THRESHOLD_S = 90
 
@@ -92,7 +92,7 @@ STALE_THRESHOLD_S = 90
 _SERVICE_START_MONOTONIC = _time.monotonic()
 
 # The cache and helper now live in control_server/_subprocess.py so
-# /api/diagnostics can share them with a longer ttl (#416 / C2=A). Pre-
+# /api/diagnostics can share them with a longer ttl (litclock-dev#416 / C2=A). Pre-
 # extraction grep across master + tests found zero monkey-patches of the
 # old `_subprocess_cache` or `_cached_subprocess` names — the rumored
 # backwards-compat constituency turned out not to exist. Tests that need
@@ -108,7 +108,7 @@ def _cached_subprocess(key: str, argv: list[str], timeout: float = 2.0) -> str |
     :func:`._subprocess.cached_subprocess` directly with ``ttl=20`` for its
     longer steady-state cache window.
 
-    Return type widened to ``str | None`` in #428 PR1a: the underlying
+    Return type widened to ``str | None`` in litclock-dev#428 PR1a: the underlying
     helper returns ``None`` on subprocess failure (timeout / missing
     binary / SubprocessError), distinct from ``""`` (the binary ran but
     produced no stdout). No production caller of this shim exists today;
@@ -132,7 +132,7 @@ def _read_status_file(path: Path) -> dict | None:
 def _wifi_ssid() -> str:
     """Active WiFi SSID via nmcli. Returns empty string when not connected.
 
-    Thin alias over :func:`control_server._network.read_ssid` since #419
+    Thin alias over :func:`control_server._network.read_ssid` since litclock-dev#419
     M3. Kept as a 1-line wrapper so existing test monkey-patches against
     ``routes.status._wifi_ssid`` (notably ``tests/test_control_server.py``
     L2525, which stubs a 30-char SSID to verify Jinja truncation) continue
@@ -148,7 +148,7 @@ def _read_env_file_settings(env_file: str | None = None) -> dict[str, str]:
 
     Kept for backwards compatibility — tests and ``_weather_city`` import this
     name. The actual logic lives in ``control_server/_env.py`` so the
-    Diagnostics route (#416) and Status share one parser.
+    Diagnostics route (litclock-dev#416) and Status share one parser.
     """
     from .._env import read_env_settings  # noqa: PLC0415
 
@@ -183,7 +183,7 @@ def _resolve_phase3_skipped_at(phase3_skipped_file: Path | None = None) -> float
     and cleared on a clean Phase 3 run. Reader-side staleness clamp
     means the Status banner self-clears after a day even if the next
     update.sh never runs to clear the file (cron stopped, unit
-    disabled, etc.) — same pattern as #241 D2's post-update-grace.
+    disabled, etc.) — same pattern as litclock-dev#241 D2's post-update-grace.
 
     Symlinks / FIFOs / directories return ``None`` (use lstat so a
     symlink doesn't follow). Mtime-in-the-future (clock drift pre-NTP
@@ -211,7 +211,7 @@ def _resolve_update_progress(
 ) -> tuple[str | None, int | None]:
     """Return ``(state, phase_index)`` from /run/litclock/update.status.
 
-    Used by the Settings tab banner (#274 follow-up #2) so the PWA can
+    Used by the Settings tab banner (litclock-dev#274 follow-up #2) so the PWA can
     surface "Update in progress — settings briefly locked" when an
     update.sh run is mid-flight. The Save button stays enabled; the
     banner is purely advisory. Phase 3 (env.sh merge) is when the
@@ -284,7 +284,7 @@ def _resolve_last_update(
     lkg_sha_file: Path | None = None,
 ) -> tuple[str | None, str | None]:
     """Return ``(iso_timestamp, short_version)`` for the Status hero "Last
-    update" row (#330 + #334).
+    update" row (litclock-dev#330 + litclock-dev#334).
 
     Order:
       1. /run/litclock/update.status with state=complete → ``finished_at_unix``
@@ -292,12 +292,12 @@ def _resolve_last_update(
          written by update.sh's update_status_complete().
       2. /var/lib/litclock/last-update.json — persistent mirror of (1)
          written by update.sh after update_status_complete validates
-         (#334). Survives the tmpfs clear of (1) at reboot during the
+         (litclock-dev#334). Survives the tmpfs clear of (1) at reboot during the
          15-min LKG soak window AND the offline-graceful-exit window
          where Phase 1 already cleared lkg-sha but no new LKG was
          recorded yet.
       3. /var/lib/litclock/lkg-sha mtime + first 7 chars of contents.
-         Persistent across reboots; covers pre-#334 Pis whose first
+         Persistent across reboots; covers pre-litclock-dev#334 Pis whose first
          post-upgrade reboot happens before any update.sh has written
          last-update.json.
       4. Neither file usable → ``(None, None)``. Caller renders em-dash.
@@ -307,10 +307,10 @@ def _resolve_last_update(
     always leave a queryable ActiveEnterTimestamp on the unit (oneshot +
     RemainAfterExit semantics + service restart-in-place all interfere),
     so the row showed em-dash right after a successful update. The
-    on-disk files are the durable source of truth (#330).
+    on-disk files are the durable source of truth (litclock-dev#330).
 
     All three reads go through the bounded helpers in update_state
-    (#336): ``safe_read_json`` for sources 1 + 2 (8KB cap), ``safe_read_text``
+    (litclock-dev#336): ``safe_read_json`` for sources 1 + 2 (8KB cap), ``safe_read_text``
     for source 3 (64-byte cap). lstat-based gates reject symlinks /
     FIFOs / directories so a planted bad file can't OOM or hang the
     request handler."""
@@ -366,7 +366,7 @@ def _appliance_uptime_s() -> int:
         return _service_uptime_s()
 
 
-# _format_uptime lives in control_server/_format.py since #419 (M2). The
+# _format_uptime lives in control_server/_format.py since litclock-dev#419 (M2). The
 # module-level re-export here keeps the status-internal call site one-name
 # and lets any test that patched ``routes.status._format_uptime`` keep
 # working without rewriting (grep across master found no such patches today,
@@ -420,10 +420,10 @@ def collect_status(
 
     `update_status_file` + `last_update_file` + `lkg_sha_file` plumbed
     through so tests can point the "Last update" row resolver at tmp
-    paths (#330 + #334).
+    paths (litclock-dev#330 + litclock-dev#334).
 
     `phase3_skipped_file` plumbed through for the same reason — the
-    Status hero Phase-3-skip banner (#274 follow-up #5) needs a tmp
+    Status hero Phase-3-skip banner (litclock-dev#274 follow-up #5) needs a tmp
     path in tests."""
     status_path = status_file or Path(DEFAULT_STATUS_FILE)
     quote_payload = _read_status_file(status_path)
@@ -447,9 +447,9 @@ def collect_status(
         last_update_file=last_update_file,
         lkg_sha_file=lkg_sha_file,
     )
-    # #274 follow-up #5: Phase 3 skip marker for the Status hero banner.
+    # litclock-dev#274 follow-up #5: Phase 3 skip marker for the Status hero banner.
     phase3_skipped_at_unix = _resolve_phase3_skipped_at(phase3_skipped_file=phase3_skipped_file)
-    # #274 follow-up #2: in-flight update state for the Settings banner.
+    # litclock-dev#274 follow-up #2: in-flight update state for the Settings banner.
     # Both fields read the same /run/litclock/update.status file — one
     # read, two consumers. None when no update.status file is present
     # (the common steady-state case).
@@ -477,11 +477,11 @@ def collect_status(
         "last_update_at": last_update_at,
         "last_update_at_relative": _format_relative(last_update_at, now_epoch),
         "last_update_version": last_update_version,
-        # #274 follow-up #5: epoch seconds (float) when the marker is
+        # litclock-dev#274 follow-up #5: epoch seconds (float) when the marker is
         # fresh, else null. PWA Status-hero shows a banner when this
         # is non-null. Self-clears after PHASE3_SKIP_FRESH_WINDOW_S.
         "phase3_skipped_at_unix": phase3_skipped_at_unix,
-        # #274 follow-up #2: in-flight update progress so the Settings
+        # litclock-dev#274 follow-up #2: in-flight update progress so the Settings
         # tab can show "Update in progress — Save may briefly block"
         # while update.sh holds the env.sh flock during Phase 3/4.
         # Both null in the common no-update-running state.

@@ -1,4 +1,4 @@
-"""Tests for wifi_provision.ensure_wifi_ready (#172).
+"""Tests for wifi_provision.ensure_wifi_ready (litclock-dev#172).
 
 The strict check exists because on Pi Zero 2W the BCM43436 SDIO chip
 can be left in a stuck state by a rapid reboot. When that happens,
@@ -238,7 +238,7 @@ def test_create_hotspot_rejects_invalid_credentials_before_any_side_effect(monke
 
 
 def test_captive_portal_dnsmasq_config_has_no_resolv(monkeypatch):
-    """#483: the captive dnsmasq config MUST include `no-resolv`.
+    """litclock-dev#483: the captive dnsmasq config MUST include `no-resolv`.
 
     Without it, NM's shared-mode dnsmasq reads /etc/resolv.conf and inherits a
     public upstream (e.g. 8.8.8.8), then forwards iOS's HTTPS-RR (type 65)
@@ -315,7 +315,7 @@ def test_captive_portal_nft_drops_443_silently(monkeypatch):
 
 
 class TestTeardownCaptivePortal:
-    """#343 (/review F3): the captive nft table holds a port-80→8080 redirect,
+    """litclock-dev#343 (/review F3): the captive nft table holds a port-80→8080 redirect,
     and control_server now binds 80. Teardown must VERIFY the table is gone (not
     ignore the delete result), retrying and logging loudly if it survives, or a
     failed teardown on the no-reboot success path would make the PWA unreachable."""
@@ -1715,7 +1715,7 @@ class TestPersistedHotspotPassword:
 
     def test_returned_password_always_matches_disk_under_a_racing_writer(self, tmp_path, monkeypatch):
         """If the AP advertised a password the file does not hold, the next
-        cycle strands the phone — #620 reintroduced by the fix for #620."""
+        cycle strands the phone — litclock-dev#620 reintroduced by the fix for litclock-dev#620."""
         path = tmp_path / "hotspot-password"
         real_replace = wifi_provision.os.replace
 
@@ -1729,7 +1729,7 @@ class TestPersistedHotspotPassword:
         assert pw == path.read_text(encoding="utf-8").strip()
 
     def test_unreadable_existing_file_logs_loudly_before_rotating(self, tmp_path, caplog):
-        """A rotation caused by EACCES is the exact trap #620 removes, so it
+        """A rotation caused by EACCES is the exact trap litclock-dev#620 removes, so it
         must never be silent (it self-heals, which makes it HARDER to spot)."""
         path = tmp_path / "hotspot-password"
         path.write_text("clockwis\n", encoding="utf-8")

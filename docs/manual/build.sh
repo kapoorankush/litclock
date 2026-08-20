@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render the LitClock manual (#404) to print-ready booklet PDFs.
+# Render the LitClock manual (litclock-dev#404) to print-ready booklet PDFs.
 #
 # Source of truth: litclock-manual.html. We emit TWO PDFs that differ only in
 # folded-page size, so a gift-giver can print on whichever paper they have:
@@ -53,7 +53,7 @@ render() {
   { [ -s "$tmppdf" ] && [ "$(wc -c < "$tmppdf")" -gt 10000 ]; } \
     || { echo "ERROR: ${out} render is empty or too small — not committing it." >&2; exit 1; }
 
-  # Page-count guard (#404 /review): the booklet is exactly 4 pages = one
+  # Page-count guard (litclock-dev#404 /review): the booklet is exactly 4 pages = one
   # folded sheet. A content edit that overflows would add a 5th page and
   # silently break the fold/imposition. Assert 4 pages when pdfinfo is
   # available; skip gracefully if it isn't (pdfinfo is not a build dependency).

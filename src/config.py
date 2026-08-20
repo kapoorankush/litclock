@@ -29,7 +29,7 @@ key passes through ``shlex.quote()`` at write time *and* a content allowlist
 that rejects backtick + ``$`` (defense-in-depth — `shlex.quote` already
 neutralises both, but the explicit deny means a future writer that forgets to
 re-quote can't regress us). The validator also caps it at GIFT_MODE_MESSAGE_MAX_LEN
-characters (post-#319: 80).
+characters (post-litclock-dev#319: 80).
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ def _parse_env_lock_wait_default() -> float:
     return parsed if parsed >= 0 else 30.0
 
 
-# #274 follow-up #4 — bounded wait for the Python writer's env.sh sidecar
+# litclock-dev#274 follow-up #4 — bounded wait for the Python writer's env.sh sidecar
 # flock. Mirrors `scripts/lib/state.sh`'s 30s default + `LITCLOCK_ENV_LOCK_WAIT`
 # override so both writers timeout symmetrically. Before this, `_exclusive_lock`
 # called `fcntl.flock(LOCK_EX)` with no timeout — a stuck shell writer (mv
@@ -83,7 +83,7 @@ Validator = Callable[[str], "tuple[bool, str | None]"]
 
 
 def _validate_latitude(value: str) -> tuple[bool, str | None]:
-    # #325: empty string is a valid "unset" state — env.sh.sample ships
+    # litclock-dev#325: empty string is a valid "unset" state — env.sh.sample ships
     # with `WEATHER_LOCATION_NAME=` empty by design, and literary_clock.py
     # handles empty coords as "no location" (the elif location_lat and
     # location_long: branch in main()). The PWA's Clear weather location
@@ -101,7 +101,7 @@ def _validate_latitude(value: str) -> tuple[bool, str | None]:
 
 
 def _validate_longitude(value: str) -> tuple[bool, str | None]:
-    # See _validate_latitude — same "" -> unset contract (#325).
+    # See _validate_latitude — same "" -> unset contract (litclock-dev#325).
     if value == "":
         return True, None
     try:
@@ -123,7 +123,7 @@ def _validate_units(value: str) -> tuple[bool, str | None]:
 
 
 def _validate_weather_location_mode(value: str) -> tuple[bool, str | None]:
-    # #337 A1: two-state enum. WRITER accepts only "auto" or "specific" —
+    # litclock-dev#337 A1: two-state enum. WRITER accepts only "auto" or "specific" —
     # empty string is REJECTED to close the downgrade hole flagged in
     # /review (an empty-string write reads as "auto" via the read-side
     # default, so accepting it at write time would let a confused or
@@ -137,7 +137,7 @@ def _validate_weather_location_mode(value: str) -> tuple[bool, str | None]:
 
 
 def _validate_weather_ip_country(value: str) -> tuple[bool, str | None]:
-    # #337 A6.1: ISO 3166-1 alpha-2 country code (uppercase) OR empty
+    # litclock-dev#337 A6.1: ISO 3166-1 alpha-2 country code (uppercase) OR empty
     # (pre-S2 envs + first-resolve cases where IP-geo hasn't run yet).
     # Used by the on-boot reresolve service to detect country changes for
     # the UNITS-flip rule (A6). The value is compared as a case-sensitive
@@ -161,7 +161,7 @@ def _validate_bool(value: str) -> tuple[bool, str | None]:
     return True, None
 
 
-# #319: lowered from 280 → 80 once the e-ink renderer started word-wrapping
+# litclock-dev#319: lowered from 280 → 80 once the e-ink renderer started word-wrapping
 # the title (eink_display._wrap_title). 80 characters covers natural gifter
 # messages ("Happy Birthday Mom! Love, Alexis" = 32c) in 1-2 wrapped lines
 # at the 48pt title font; the renderer ellipsis-truncates anything that
@@ -178,7 +178,7 @@ WEATHER_LOCATION_NAME_MAX_LEN = 120
 # can't regress us into shell-injection territory.
 _FREE_FORM_FORBIDDEN_CHARS = ("`", "$")
 
-# #319 follow-up — characters that ``str.splitlines()`` splits on in
+# litclock-dev#319 follow-up — characters that ``str.splitlines()`` splits on in
 # addition to ``\n`` / ``\r``. ``load_config`` uses ``.read_text().splitlines()``,
 # so any of these in a stored free-form value would split the env.sh line in
 # half and corrupt the round-trip. Pages.app and Word emit U+2028 for soft
@@ -225,7 +225,7 @@ def _make_free_form_validator(
         # 80 codepoints here (Python's ``len(str)`` is codepoint count).
         if len(value) > max_codepoints:
             return False, f"must be at most {max_codepoints} characters"
-        # #317 item 3 (parameterized in adversarial /review follow-up): some
+        # litclock-dev#317 item 3 (parameterized in adversarial /review follow-up): some
         # free-form fields ALSO have a byte-bound consumer downstream and
         # need a parity-critical UTF-8 byte cap on top of the codepoint
         # cap. ``GIFT_MODE_MESSAGE`` is the canonical case:
@@ -250,7 +250,7 @@ def _make_free_form_validator(
         # validator raises 500 on the API path AND, on
         # ``/api/system/prepare-for-gift``, the confirm token has already
         # been consumed → user loses the token to a 500. Same trap class
-        # #328 was supposed to close. Convert to a clean validation error.
+        # litclock-dev#328 was supposed to close. Convert to a clean validation error.
         if max_bytes is not None:
             try:
                 byte_len = len(value.encode("utf-8"))
@@ -275,7 +275,7 @@ def _make_free_form_validator(
     return _validate
 
 
-# #319: GIFT_MODE_MESSAGE allows embedded newlines so the gifter can write
+# litclock-dev#319: GIFT_MODE_MESSAGE allows embedded newlines so the gifter can write
 # a multi-line welcome ("Happy Birthday\nMom!"). The renderer's word-wrap
 # treats `\n` as a hard line break. WEATHER_LOCATION_NAME stays single-line
 # — it's a search input, not free-form prose.
@@ -298,7 +298,7 @@ SETTINGS_ALLOWLIST: dict[str, Validator] = {
     "WEATHER_LONGITUDE": _validate_longitude,
     "WEATHER_UNITS": _validate_units,
     "WEATHER_LOCATION_NAME": _validate_weather_location_name,
-    # #337 A1 / A6.1 — location-mode provenance + last-detected country.
+    # litclock-dev#337 A1 / A6.1 — location-mode provenance + last-detected country.
     # MODE drives the on-boot reresolve gate (skip when 'specific') and the
     # PWA radio default render. IP_COUNTRY is the country-change detector
     # for the UNITS-flip rule (A6) shared by on-boot + PWA Auto/Specific
@@ -307,12 +307,12 @@ SETTINGS_ALLOWLIST: dict[str, Validator] = {
     "WEATHER_IP_COUNTRY": _validate_weather_ip_country,
     "WEATHER_ENABLED": _validate_bool,
     "ALLOW_NSFW_QUOTES": _validate_bool,
-    # #416 PR3c (F31) — opt-in toggle for the diagnostics shortcut ribbon's
+    # litclock-dev#416 PR3c (F31) — opt-in toggle for the diagnostics shortcut ribbon's
     # full-label state. Default unset / "false" → dots-three icon only
     # (owner-persona protection per OV-D-C). True → 'Live diagnostics' label
     # expanded. Read by base.html.j2 which sets body[data-diag-ribbon-expanded].
     "SHOW_DIAGNOSTICS_SHORTCUT": _validate_bool,
-    # #280: GIFT_MODE_ENABLED dropped — the M3 toggle had no runtime
+    # litclock-dev#280: GIFT_MODE_ENABLED dropped — the M3 toggle had no runtime
     # semantics (literary_clock.py never read it) and the new design treats
     # gift mode as a one-shot pre-ship action via /api/system/prepare-for-gift,
     # not a persistent state. GIFT_MODE_MESSAGE persists as a transient draft
@@ -325,7 +325,7 @@ SETTINGS_ALLOWLIST: dict[str, Validator] = {
 # constrained to ASCII tokens that don't need quoting.
 _SHELL_QUOTED_KEYS = frozenset(["GIFT_MODE_MESSAGE", "WEATHER_LOCATION_NAME"])
 
-# #319 hardware-QA fix: env.sh is a line-oriented file but ``GIFT_MODE_MESSAGE``
+# litclock-dev#319 hardware-QA fix: env.sh is a line-oriented file but ``GIFT_MODE_MESSAGE``
 # now allows embedded newlines. Writing a multi-line shlex-quoted value
 # would span multiple lines, and ``load_config`` parses line-by-line — so
 # the reload path would only see the first line and the textarea pre-fill
@@ -420,7 +420,7 @@ def load_config(path: str | os.PathLike[str] = ENV_FILE_DEFAULT) -> dict[str, st
         _prefix, key, raw = m.group(1), m.group(2), m.group(3)
         value = _unquote(raw)
         # Reverse the writer's newline-encoding for free-form keys so
-        # ``\n``/``\r`` survive the env.sh round-trip (#319 hardware-QA).
+        # ``\n``/``\r`` survive the env.sh round-trip (litclock-dev#319 hardware-QA).
         if key in _SHELL_QUOTED_KEYS:
             value = _decode_newlines_from_envsh(value)
         config[key] = value
@@ -475,7 +475,7 @@ def _exclusive_lock(target: Path, timeout: float | None = None) -> Iterator[None
     by `os.fork` but NOT by `os.exec*` — fine for our single-process Python
     writers.
 
-    #274 follow-up #4 — bounded wait. The shell-side helper in
+    litclock-dev#274 follow-up #4 — bounded wait. The shell-side helper in
     `scripts/lib/state.sh` honors a 30s `LITCLOCK_ENV_LOCK_WAIT` budget; the
     Python side now does the same so a stuck shell writer (wedged mv on a
     degraded SD card, strace left attached, kernel oops mid-rename) can't

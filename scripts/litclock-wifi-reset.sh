@@ -1,5 +1,5 @@
 #!/bin/bash
-# LitClock — Reset-WiFi handler (#245 M5, D11 + D12).
+# LitClock — Reset-WiFi handler (litclock-dev#245 M5, D11 + D12).
 #
 # Invoked via `systemctl start --no-block litclock-wifi-reset.service` from
 # /api/wifi/reset (sudoers-allowed). Drops the user back into firstboot
@@ -49,7 +49,7 @@ log() {
 # NetworkManager's saved connections stay on disk, firstboot detects
 # "already on WiFi", exits oneshot, and the Pi appears stuck (no
 # hotspot, no LAN drop). Fail loud + early instead. /review caught
-# this; see PR #284 review notes.
+# this; see PR litclock-dev#284 review notes.
 if ! command -v "$NMCLI" >/dev/null 2>&1; then
     log "error: nmcli not found at $NMCLI — refusing to reset (would soft-brick)"
     log "       install with: sudo apt install network-manager"
@@ -99,7 +99,7 @@ if [ -f "$SETUP_COMPLETE_FILE" ]; then
     fi
 fi
 
-# EPIC #383 PR2 (#388): clear the handoff marker too. A WiFi reset is exactly
+# EPIC litclock-dev#383 PR2 (litclock-dev#388): clear the handoff marker too. A WiFi reset is exactly
 # when the egress timezone may change (moving house, regifting). env.sh is
 # preserved, but if the new network's IP-geo FAILS the resolver leaves the
 # stale lat/tz in place — and if .handoff-complete still existed, the re-

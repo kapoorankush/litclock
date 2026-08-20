@@ -1,6 +1,6 @@
 """Copy-payload assembler for the /api/diagnostics surface.
 
-Split out of the pre-#419 monolithic ``routes/diagnostics.py`` (M1).
+Split out of the pre-litclock-dev#419 monolithic ``routes/diagnostics.py`` (M1).
 :func:`build_copy_payload` is the markdown block the user pastes into a
 GitHub issue / Slack thread / email. The trailing ``_captured: …_``
 timestamp is request-time so a stale paste is easy to spot.
@@ -180,7 +180,7 @@ def build_support_logs_bundle(
     budget_s: float,
     clock: Callable[[], float] = time.monotonic,
 ) -> str:
-    """Assemble the on-demand 'deep logs for support' bundle (#416 follow-up).
+    """Assemble the on-demand 'deep logs for support' bundle (litclock-dev#416 follow-up).
 
     A SINGLE pasteable/downloadable text blob: the standard copy payload (system
     state, default-redacted) followed by a deeper per-unit journal tail than the

@@ -13,7 +13,7 @@ Headers:
 Per D9 the matching ``static/js/sw-register.js`` short-circuits on iOS via an
 ``isSecureContext`` feature-detect — so this route only ever does real work
 for Chromium-based browsers at our private-IP origin (M5 plain HTTP locked
-in #257).
+in litclock-dev#257).
 
 Plus ``GET /manifest.webmanifest`` — same blueprint, served from
 ``static/manifest.webmanifest`` but with the explicit MIME + Cache-Control
