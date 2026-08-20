@@ -1,12 +1,12 @@
-// Behavior coverage for the #335 backward-compat shim in status.js (#338).
+// Behavior coverage for the litclock-dev#335 backward-compat shim in status.js (litclock-dev#338).
 //
 // The shim (status.js:139-149) is a defensive fallback for service-worker-
-// served HTML from before PR #333 added the three-span structure for the
+// served HTML from before PR litclock-dev#333 added the three-span structure for the
 // "Last update" row. When all three child hooks
 // ([data-status-last-update-{version,sep,relative}]) are absent — the cached
-// SHA from pre-#333 — patch() falls back to writing the combined "sha, rel"
+// SHA from pre-litclock-dev#333 — patch() falls back to writing the combined "sha, rel"
 // string into the parent [data-status-last-update] so the row populates
-// instead of freezing silently. On the post-#333 path, the child hooks
+// instead of freezing silently. On the post-litclock-dev#333 path, the child hooks
 // exist and the shim must NOT fire: the children carry mono SHA styling +
 // hidden state that the shim would clobber if it ran unconditionally.
 //
@@ -42,9 +42,9 @@ function baseStatusPayload(extras = {}) {
 
 // Mirrors src/control_server/templates/status.html.j2:104-117 (last-update
 // row + the hero/banner hooks status.js queries). The withChildren=false
-// variant simulates pre-#333 SW-cached HTML (just the parent dd). Keep in
+// variant simulates pre-litclock-dev#333 SW-cached HTML (just the parent dd). Keep in
 // lockstep with the template hooks — a synthetic-DOM test silently passes
-// against its own scaffold if production markup drifts. (#338, codex
+// against its own scaffold if production markup drifts. (litclock-dev#338, codex
 // maintainability finding.)
 function buildDom({ withChildren }) {
   const lastUpdateRow = withChildren
@@ -93,7 +93,7 @@ async function flushRefresh() {
   }
 }
 
-describe("status.js #335 last-update shim", () => {
+describe("status.js litclock-dev#335 last-update shim", () => {
   let mock;
 
   beforeEach(() => {
@@ -104,7 +104,7 @@ describe("status.js #335 last-update shim", () => {
     mock.restore();
   });
 
-  it("shim fires when child hooks are absent (pre-#333 SW-cached HTML)", async () => {
+  it("shim fires when child hooks are absent (pre-litclock-dev#333 SW-cached HTML)", async () => {
     buildDom({ withChildren: false });
     mock.register(
       /\/api\/status$/,
@@ -127,7 +127,7 @@ describe("status.js #335 last-update shim", () => {
     expect(parent.textContent).toBe("5f12b8b, 5 min ago");
   });
 
-  it("shim does NOT fire on the post-#333 path — children stay separate, styling preserved", async () => {
+  it("shim does NOT fire on the post-litclock-dev#333 path — children stay separate, styling preserved", async () => {
     buildDom({ withChildren: true });
     mock.register(
       /\/api\/status$/,

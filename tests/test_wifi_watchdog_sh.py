@@ -1,4 +1,4 @@
-"""Tests for scripts/wifi-watchdog.sh (#245 M5 D8 + F2/F3/F4/F8).
+"""Tests for scripts/wifi-watchdog.sh (litclock-dev#245 M5 D8 + F2/F3/F4/F8).
 
 The script is invoked every 5 min by systemd/wifi-watchdog.timer. These
 tests drive it as a subprocess with environment overrides for every
@@ -96,7 +96,7 @@ class TestFirstbootSkip:
 # These branches ARE pinned by:
 # - TestSourceInvariants below (script source contains the fallback
 #   assignment, the F8 threshold, the F8 enable+rm calls)
-# - Hardware QA TC-COD-2 on test Pi (#245 PR #284 — verified
+# - Hardware QA TC-COD-2 on test Pi (litclock-dev#245 PR litclock-dev#284 — verified
 #   2026-04-30 via journal + simulated F8 path with stubbed ip(8))
 
 

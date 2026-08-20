@@ -205,7 +205,7 @@ echo -e "${GREEN}done${NC}"
 # This script's whole purpose is cloning ONE prepared card into MANY cards for
 # other people (docs/sd-card-cloning.md, "Creating SD Cards for Friends &
 # Family"), and its precondition is a fully provisioned working clock — which
-# means /var/lib/litclock/hotspot-password exists by then. Since #620 that file
+# means /var/lib/litclock/hotspot-password exists by then. Since litclock-dev#620 that file
 # is PERMANENT (a plain factory reset deliberately preserves it), so without
 # this step every clone would broadcast `LitClock-Setup` with the SAME WPA2 key,
 # known to whoever made the cards and never rotated on any recipient device.

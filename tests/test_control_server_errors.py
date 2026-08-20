@@ -1,4 +1,4 @@
-"""Tests for the project-wide JSON error envelope (issue #254).
+"""Tests for the project-wide JSON error envelope (issue litclock-dev#254).
 
 Pins the locked decisions:
 
@@ -237,7 +237,7 @@ class TestUncaughtExceptionEnvelope:
 
 
 # ---------- ok=True invariance for /api/health and /api/status ----------
-# The issue text (#254) recommends pinning a test asserting `ok` stays
+# The issue text (litclock-dev#254) recommends pinning a test asserting `ok` stays
 # True under all current health code paths. /api/status went canonical
 # in M2 with the same posture; cover both.
 
@@ -248,7 +248,7 @@ class TestOkTrueInvariance:
         assert body["ok"] is True
 
     def test_health_has_app_identity_marker_and_cors_header(self, client) -> None:
-        """#487: /api/health carries an ``app`` identity marker and an
+        """litclock-dev#487: /api/health carries an ``app`` identity marker and an
         ``Access-Control-Allow-Origin`` header so the cross-origin mDNS bookmark
         probe (status.js) can READ the body and confirm it is talking to a real
         LitClock — not some other ``.local`` device answering on :8443."""

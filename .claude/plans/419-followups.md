@@ -1,4 +1,4 @@
-# Plan: Issue #419 — #416 PR2 /review follow-ups
+# Plan: Issue litclock-dev#419 — litclock-dev#416 PR2 /review follow-ups
 
 ## Status
 
@@ -26,7 +26,7 @@
 
 ## Scope
 
-21 informational items deferred from PR2 (#418) /review. All hygiene/perf/test/docs — no correctness bugs (yet — the plan itself had to avoid creating some). Categories:
+21 informational items deferred from PR2 (litclock-dev#418) /review. All hygiene/perf/test/docs — no correctness bugs (yet — the plan itself had to avoid creating some). Categories:
 
 - Maintainability: 5 items (was 6 — M6 dropped per D1)
 - Performance: 3 items (was 5 — P5 dropped per D1, P2 dropped per D9)
@@ -298,9 +298,9 @@ PR1 acceptance includes `python3 -c "from control_server.routes.diagnostics impo
 
 ## NOT in scope
 
-- Pre-#337 settings IA work (already shipped)
-- Any change to `_diagnostics_privacy.py` redaction chain (locked in PR1 of EPIC #416)
-- Diagnostics drawer client JS (PR3 of #416 shipped; #419 is server-side cleanup only)
+- Pre-litclock-dev#337 settings IA work (already shipped)
+- Any change to `_diagnostics_privacy.py` redaction chain (locked in PR1 of EPIC litclock-dev#416)
+- Diagnostics drawer client JS (PR3 of litclock-dev#416 shipped; litclock-dev#419 is server-side cleanup only)
 - Flattening the `/api/diagnostics` envelope (would break the just-shipped PR3 client)
 - PR2 P2 (the tuple cache for `(values, anomalies, copy_payload)`) — dropped per D9. If a real CPU bottleneck is later measured on a Pi Zero 2W, a targeted cache can be added with measurement.
 - Distribution: no new artifact; refactoring only
@@ -370,7 +370,7 @@ Total: 17 build tasks. Down from 21 items (some merged, some absorbed mechanical
 ## TODOS.md updates
 
 None — this issue IS the TODO bucket. Two new follow-ups created by D9:
-- **Future: measure `/api/diagnostics` CPU on Pi Zero 2W; if >50ms, add a targeted cache with real numbers.** (Filed as a comment on #419 itself, not a new issue.)
+- **Future: measure `/api/diagnostics` CPU on Pi Zero 2W; if >50ms, add a targeted cache with real numbers.** (Filed as a comment on litclock-dev#419 itself, not a new issue.)
 
 ## Completion summary
 

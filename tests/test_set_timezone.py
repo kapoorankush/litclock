@@ -1,4 +1,4 @@
-"""Tests for scripts/litclock-set-timezone (#387 tz-wrapper).
+"""Tests for scripts/litclock-set-timezone (litclock-dev#387 tz-wrapper).
 
 The root-owned wrapper is the security boundary for the arbitrary-tz sudo path:
 sudoers/020 authorizes its fixed path, and the wrapper re-validates the argument
@@ -121,7 +121,7 @@ def test_missing_timedatectl_errors_cleanly(tmp_path):
 
 
 def test_no_env_var_binary_override(tmp_path):
-    """Regression (#387 security /review): the wrapper must NOT take its
+    """Regression (litclock-dev#387 security /review): the wrapper must NOT take its
     timedatectl path from an env var — that would be a root-code-exec hole if
     an env_keep ever leaked it across sudo."""
     body = WRAPPER.read_text()

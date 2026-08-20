@@ -1,4 +1,4 @@
-/* Diagnostics page (#416 PR3a).
+/* Diagnostics page (litclock-dev#416 PR3a).
  *
  * Design tokens come from tokens.css (--bg / --surface / --sp-* / --r-* /
  * --fs-* / --ease-ios / etc). This stylesheet is loaded ONLY on the
@@ -25,8 +25,8 @@
 
 /* CSS variables local to the diagnostics page. Anchored on .diag-sections
    so they're always present even when the banner is hidden.
-   TODO(#416-followup): hoist to tokens.css when Status/Updates adopts the
-   same mono-cell density (issue #419). */
+   TODO(litclock-dev#416-followup): hoist to tokens.css when Status/Updates adopts the
+   same mono-cell density (issue litclock-dev#419). */
 .diag-sections {
   --fs-mono-log: clamp(12px, 0.8125rem, 17px);
   --fs-mono-row: clamp(12px, 0.8125rem, 18px);
@@ -65,7 +65,7 @@
   color: var(--warning);
 }
 
-/* #432 D6 — settling tier: neutral graphite icon for the "Just settling
+/* litclock-dev#432 D6 — settling tier: neutral graphite icon for the "Just settling
    in." banner. Distinct from --warning ochre and --error oxblood so the
    gift-recipient persona doesn't read alarm into a fresh-flash state. */
 .status-banner__icon--settling {
@@ -73,7 +73,7 @@
   color: var(--ink-muted);
 }
 
-/* #432 D6 — settling banner: NO border-top accent (neither --warning
+/* litclock-dev#432 D6 — settling banner: NO border-top accent (neither --warning
    ochre nor --error oxblood would alarm the persona). The banner
    container's base border + surface-raised carries the visual frame. */
 .status-banner--settling .status-banner__title {
@@ -81,7 +81,7 @@
   color: var(--ink);
 }
 
-/* #432 D6 — banner body line is rendered only for the settling tier.
+/* litclock-dev#432 D6 — banner body line is rendered only for the settling tier.
    Sits between title and meta; section-aware copy comes from the D6
    lookup table (template + JS share the same map). */
 .status-banner__body {
@@ -243,7 +243,7 @@
   transform: rotate(180deg);
 }
 
-/* Anomaly pill — D4 + D10 (#432).
+/* Anomaly pill — D4 + D10 (litclock-dev#432).
    Four states: ok (success) / muted (uncollected) / warning / error.
    6pt dot + label. The 1px transparent border prevents layout shift when
    the muted state swaps in a visible 1px hairline border on transition. */
@@ -272,7 +272,7 @@
   background: rgba(79, 110, 58, 0.10);
 }
 
-/* #432 — "Not yet collected" tier. Token-driven, NOT warm-ochre — see the
+/* litclock-dev#432 — "Not yet collected" tier. Token-driven, NOT warm-ochre — see the
    plan's Reference mockup caveat: dot is graphite #6B5C4A (--ink-muted),
    distinct from the warning ochre #C68A1F. The pill label uses --ink for
    AAA contrast independent of the dot color. */
@@ -297,7 +297,7 @@
   background: rgba(154, 46, 34, 0.10);
 }
 
-/* #432 D7 — italic placeholder for an uncollected section's row area.
+/* litclock-dev#432 D7 — italic placeholder for an uncollected section's row area.
    Section-aware copy lives in the template (D6 lookup map). NO timing
    claim ("within a minute" was the C2-flagged lie). */
 .diag-rows-placeholder {
@@ -309,7 +309,7 @@
   font-size: var(--fs-small);
 }
 
-/* #432 D11 — after 2 consecutive poll failures, dim ALL section pills to
+/* litclock-dev#432 D11 — after 2 consecutive poll failures, dim ALL section pills to
    60% opacity so the user can see at-a-glance "this surface is stale."
    The page-level disconnect copy ("Couldn't reach LitClock") is the
    primary signal; this is the per-pill reinforcement. */
@@ -402,12 +402,12 @@
   color: var(--ink-muted);
 }
 
-/* #463 — `settled-ok` is a oneshot resting at its by-design `inactive` state.
+/* litclock-dev#463 — `settled-ok` is a oneshot resting at its by-design `inactive` state.
    It is healthy, not idle-broken, so it shares `active`'s botanical-green
    --success tone: a non-tech recipient reads "fine" at a glance instead of
    misreading the calm idle row as a fault. Chip TEXT stays the literal
    `inactive`; only the tone moves (grey base -> green). The `transient-ok`
-   tone below stays neutral graphite for the mid-paint window (#449). */
+   tone below stays neutral graphite for the mid-paint window (litclock-dev#449). */
 .diag-service__state--active,
 .diag-service__state--settled-ok {
   background: rgba(79, 110, 58, 0.10);
@@ -421,9 +421,9 @@
   color: var(--warning);
 }
 
-/* #449 — a oneshot (litclock.service) caught mid-paint in activating/
+/* litclock-dev#449 — a oneshot (litclock.service) caught mid-paint in activating/
    deactivating is the normal per-minute lifecycle, not a fault: the section
-   pill correctly reads OK (#443), so the row chip must read neutral too, not
+   pill correctly reads OK (litclock-dev#443), so the row chip must read neutral too, not
    warning-ochre. The server emits the `transient-ok` modifier only for that
    case (non-oneshot activating/deactivating + any failed keep the ochre
    rule above). Neutral graphite == the base chip tone. */
@@ -670,13 +670,13 @@
   .diag-section__pill--ok                  { background: rgba(167, 198, 130, 0.16); }
   .diag-section__pill--warning             { background: rgba(212, 165, 79, 0.20); }
   .diag-section__pill--error               { background: rgba(212, 92, 76, 0.18); }
-  /* #432 — settling icon on dark canvas. Matches the rest of the
+  /* litclock-dev#432 — settling icon on dark canvas. Matches the rest of the
      dark-mode block: rgba derived from the dark-mode --ink-muted (#9A8B73)
      at the same alpha as --ok (16%). Without this the rgba in the light-
      mode block stays warm-tan against the deeper canvas while the icon
      foreground (var(--ink-muted) token) flips — visual mismatch. */
   .status-banner__icon--settling           { background: rgba(154, 139, 115, 0.16); }
-  /* #463 — settled-ok shares active's healthy green, so it needs the same
+  /* litclock-dev#463 — settled-ok shares active's healthy green, so it needs the same
      dark-tuned background here too (the light-mode rule groups them; without
      this line the light green tint sits muddy on the dark canvas). */
   .diag-service__state--active,

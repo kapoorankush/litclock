@@ -1,4 +1,4 @@
-"""Tests for control_server/_subprocess.py (#416 T2 extraction + C2=A parameterized ttl)."""
+"""Tests for control_server/_subprocess.py (litclock-dev#416 T2 extraction + C2=A parameterized ttl)."""
 
 from __future__ import annotations
 
@@ -40,14 +40,14 @@ class TestCachedSubprocess:
         assert out == ""
 
     def test_returns_none_on_missing_binary(self):
-        # #428 PR1a: FileNotFoundError now surfaces as None so PR1b can
+        # litclock-dev#428 PR1a: FileNotFoundError now surfaces as None so PR1b can
         # short-cache transient subprocess failures separately from
         # successful empty-stdout results.
         out = _subprocess.cached_subprocess("smoke-missing", ["nonexistent_binary_xyz_42"])
         assert out is None
 
     def test_returns_none_on_timeout(self):
-        # #428 PR1a: subprocess.TimeoutExpired now surfaces as None.
+        # litclock-dev#428 PR1a: subprocess.TimeoutExpired now surfaces as None.
         # Pre-PR1a returned "", indistinguishable from a successful
         # run that produced empty stdout.
         out = _subprocess.cached_subprocess("smoke-timeout", ["sleep", "5"], timeout=0.05)
@@ -104,7 +104,7 @@ class TestCachedSubprocess:
 
 
 class TestCachedSubprocessOrEmpty:
-    """#428 PR1a CQ-1: convenience wrapper for display callers (8 sites
+    """litclock-dev#428 PR1a CQ-1: convenience wrapper for display callers (8 sites
     in _network.py + _collectors.py) that treat "subprocess failed" as
     "binary produced no stdout." Coerces None → "" so
     ``raw.splitlines()``/``raw.strip()`` idioms keep working.
@@ -139,7 +139,7 @@ class TestCachedSubprocessOrEmpty:
 
 
 class TestCachedSubprocessReturnType:
-    """#428 PR1a OV-2: callers using truthy guards (`if not raw:`) work
+    """litclock-dev#428 PR1a OV-2: callers using truthy guards (`if not raw:`) work
     unchanged with the new Optional[str] return. Pin the contract via
     explicit return-type assertions so a future refactor that re-collapses
     None and "" can't silently regress the classifier callers' contract."""
@@ -193,7 +193,7 @@ class _MockClock:
 
 
 class TestFailureTtl:
-    """#428 PR1b /plan-eng-review P-2: failure cache window.
+    """litclock-dev#428 PR1b /plan-eng-review P-2: failure cache window.
 
     Pre-PR1b, every cached entry used the caller's ``ttl`` regardless of
     whether the cached value was a success or a subprocess failure.
@@ -316,7 +316,7 @@ class TestFailureTtl:
         assert out3 == "recovered"
 
     def test_failure_entry_not_born_stale_when_subprocess_exceeds_ttl_cap(self, monkeypatch):
-        # #428 PR1b /review ADV-1 (cross-model Claude+Codex): the
+        # litclock-dev#428 PR1b /review ADV-1 (cross-model Claude+Codex): the
         # write-time monotonic must be captured AFTER subprocess.run
         # returns. Otherwise a wedged subprocess that exceeds
         # FAILURE_TTL_CAP_S (5s) births a cache entry that's already
@@ -443,7 +443,7 @@ class TestConcurrentMutation:
 class TestCacheBounds:
     """The cache is hard-capped at MAX_CACHE_ENTRIES with LRU eviction so
     a future contributor varying the key per call (e.g. embedding a
-    hostname) can't leak entries forever (#416 PR1 /review ASK-5=A)."""
+    hostname) can't leak entries forever (litclock-dev#416 PR1 /review ASK-5=A)."""
 
     def test_cap_prevents_unbounded_growth(self):
         # Fill past the cap with unique keys.

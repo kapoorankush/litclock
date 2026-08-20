@@ -1,4 +1,4 @@
-/* Status tab live refresh (#290).
+/* Status tab live refresh (litclock-dev#290).
  *
  * Server-side rendering carries the quote on first paint (PRD §7.5
  * progressive enhancement). Without JS, the user sees whatever was current
@@ -26,14 +26,14 @@
   // or the SSR and post-poll renders disagree.
   var SSID_MAX_CHARS = 18;
 
-  // #309 — mDNS bookmark probe constants. After the PWA loads via IP
+  // litclock-dev#309 — mDNS bookmark probe constants. After the PWA loads via IP
   // (the address the corner QR encoded), we check whether the phone
   // can also resolve litclock.local on this network. If yes, the user
   // gets a one-tap switch to the address-stable URL so AtHS bookmarks
   // a name that survives DHCP churn. Silent if the probe fails.
   var MDNS_HOST = 'litclock.local';
   // Build a control-server URL for a given host at the SAME port this page was
-  // served on (#343). window.location.port is '' when the port is the scheme
+  // served on (litclock-dev#343). window.location.port is '' when the port is the scheme
   // default (80), so the URL is bare `http://litclock.local` — no port to type.
   // Deriving from the live origin means the probe/switch target can never drift
   // from control_server's actual port (80 today, 8443 historically, any dev
@@ -45,7 +45,7 @@
   var MDNS_PROBE_TIMEOUT_MS = 1500;
   var MDNS_PROBE_DELAY_MS = 2000;  // wait past first paint
   var MDNS_STORAGE_KEY = 'litclock.mdns-bookmark-dismissed';
-  // /review (#406 user feedback): mDNS bookmark + AtHS prompt fired
+  // /review (litclock-dev#406 user feedback): mDNS bookmark + AtHS prompt fired
   // back-to-back on first load, causing card fatigue + risking two
   // home-screen bookmarks (one per origin). aths-hint.js now defers
   // until the mDNS probe result is known via this custom event. If
@@ -119,7 +119,7 @@
       }
     }
 
-    // #274 follow-up #5 — Phase 3 skip banner. Server already clamps
+    // litclock-dev#274 follow-up #5 — Phase 3 skip banner. Server already clamps
     // phase3_skipped_at_unix to "fresh" (< 1 day), so non-null = show.
     // Banner is informational; no text update needed (the template's
     // static body covers the only state we surface).
@@ -154,7 +154,7 @@
     setText(getEl('[data-status-weather]'), s.weather_city || '—');
     setText(getEl('[data-status-version]'), s.version || '—');
     setText(getEl('[data-status-uptime]'), s.uptime_human || '—');
-    // #330: Last update row is "v, relative" (e.g., "5f12b8b, 3 min ago")
+    // litclock-dev#330: Last update row is "v, relative" (e.g., "5f12b8b, 3 min ago")
     // when last_update_version is known, else just "relative". SSR carries
     // three spans (version, separator, relative); we toggle [hidden] on
     // the first two and patch textContent in place so the mono styling
@@ -167,12 +167,12 @@
     setHidden(versionEl, !hasVersion);
     setHidden(sepEl, !hasVersion);
     setText(relEl, s.last_update_at_relative || '—');
-    // #335 backward-compat shim: if all three child hooks are absent (the
-    // service worker is serving cached HTML from before PR #333 added the
+    // litclock-dev#335 backward-compat shim: if all three child hooks are absent (the
+    // service worker is serving cached HTML from before PR litclock-dev#333 added the
     // three-span structure), fall back to writing the combined string into
     // the parent [data-status-last-update] element so the row populates
     // instead of freezing silently. Defensive + idempotent: when the child
-    // hooks DO exist (post-#333 path), this branch is skipped entirely.
+    // hooks DO exist (post-litclock-dev#333 path), this branch is skipped entirely.
     if (!versionEl && !sepEl && !relEl) {
       var parentEl = getEl('[data-status-last-update]');
       var rel = s.last_update_at_relative || '—';
@@ -202,7 +202,7 @@
     return chars.slice(0, maxLen - 1).join('') + '…';
   }
 
-  // #309 — graceful disconnect state. Swaps the hero card to a friendly
+  // litclock-dev#309 — graceful disconnect state. Swaps the hero card to a friendly
   // "couldn't reach LitClock" panel with non-technical guidance when
   // /api/status polling fails. Hides on the next successful poll. The
   // [data-status-hero-unreachable] node is SSR-rendered hidden; we just
@@ -211,7 +211,7 @@
     var heroFull = getEl('[data-status-hero-full]');
     var heroEmpty = getEl('[data-status-hero-empty]');
     var heroUnreachable = getEl('[data-status-hero-unreachable]');
-    // #309 /review (design D2): the hero-unreachable retry button and the
+    // litclock-dev#309 /review (design D2): the hero-unreachable retry button and the
     // mdns-bookmark Switch button are both Primary-styled (DESIGN.md
     // locks one Primary action per screen). When the unreachable card
     // appears, suppress the bookmark card so they don't co-render. The
@@ -285,7 +285,7 @@
     if (!document.hidden) refresh();
   });
 
-  // ─── #309 (3): mDNS bookmark probe ───────────────────────────────
+  // ─── litclock-dev#309 (3): mDNS bookmark probe ───────────────────────────────
   //
   // After the PWA loads via IP (corner QR scan), see if the phone can
   // also reach the Pi via litclock.local on this network. If yes, the
@@ -293,7 +293,7 @@
   // Add-to-Home-Screen will save a bookmark that survives DHCP churn.
   //
   // Probe is a readable (CORS) fetch of litclock.local/api/health and
-  // checks the body for `app === 'litclock'` (#487). /api/health sends
+  // checks the body for `app === 'litclock'` (litclock-dev#487). /api/health sends
   // Access-Control-Allow-Origin: *, so the cross-origin read succeeds only
   // against a real LitClock. This VERIFIES IDENTITY, not just reachability —
   // the earlier opaque `mode:'no-cors'` probe could only tell "something
@@ -363,7 +363,7 @@
 
     var probeUrl = controlUrl(MDNS_HOST) + '/api/health';
     var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
-    // #487: readable (CORS) fetch, NOT no-cors. We must read the body to confirm
+    // litclock-dev#487: readable (CORS) fetch, NOT no-cors. We must read the body to confirm
     // the responder is THIS LitClock (`app === 'litclock'`), not some other
     // `.local` device that happens to answer on the control port. /api/health sends
     // Access-Control-Allow-Origin: *. Fail closed — any error, non-JSON, or a

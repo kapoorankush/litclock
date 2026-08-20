@@ -8,17 +8,17 @@ row.
 ## TL;DR
 
 The Control PWA ships at `http://litclock.local` (plain HTTP on **port 80**,
-private IP — #343, so a recipient never types a port). Browsers consider this
+private IP — litclock-dev#343, so a recipient never types a port). Browsers consider this
 origin **not a "secure context"** per the W3C spec.
 
-> **Note on ports (#343).** `litclock-control.service` (post-setup, always-on)
+> **Note on ports (litclock-dev#343).** `litclock-control.service` (post-setup, always-on)
 > is plain HTTP on **port 80** — no port in the URL. The first-boot
 > `setup_server.py` is HTTPS on **8443** (the iOS captive trust dance needs
 > TLS). They are DIFFERENT ports for different phases; always probe control_server
 > with `http://` on 80 (or bare), never `https://`. Port 80 is bound by the
 > non-root `pi` service account via the `ip_unprivileged_port_start=80` sysctl
 > (`/etc/sysctl.d/30-litclock-unprivileged-ports.conf`), not a capability — so it
-> never disturbs the unit's setuid-sudo reboot path. (Before #343 control_server
+> never disturbs the unit's setuid-sudo reboot path. (Before litclock-dev#343 control_server
 > was on 8443, which looked like HTTPS and cost ~10 min in a v0.211.2 soak
 > debugging a non-existent TLS bug — the root reason this moved.)
 That gates several PWA features:
@@ -31,7 +31,7 @@ That gates several PWA features:
 | Self-hosted variable woff2 fonts (Fraunces / Instrument Sans / Geist Mono) | ✅ works | Static file serving + @font-face, no SW dependency |
 | Manifest theme_color, background_color, icons | ✅ works (as far as the platform reads them) | Manifest is fetched and parsed; iOS Safari ignores some manifest fields and falls back to apple-touch-icon + meta tags, which we ship in parallel |
 | AtHS first-run hint (variant B card with iOS-share / Android-download icons) | ✅ works | HTML/CSS/JS only |
-| Caption ceiling fix (#258) — Dynamic Type tab labels | ✅ works | Pure CSS |
+| Caption ceiling fix (litclock-dev#258) — Dynamic Type tab labels | ✅ works | Pure CSS |
 | **Service worker `/sw.js`** | ❌ **inert** | `!isSecureContext` → `sw-register.js` short-circuits |
 | **During-reboot cached shell rendering** | ❌ inert | Requires SW |
 | **Offline cache for static assets** | ❌ inert | Requires SW |
@@ -54,7 +54,7 @@ Workarounds that exist but don't fit a non-tech-user appliance:
 
 - `chrome://flags/#unsafely-treat-insecure-origin-as-secure` — per-device flag,
   user opt-in, dev-only signage.
-- Self-signed TLS — explicitly rejected in #257 because iOS Safari prompts for
+- Self-signed TLS — explicitly rejected in litclock-dev#257 because iOS Safari prompts for
   cert acceptance every PWA launch, suppresses the AtHS icon, and disables
   iOS Larger Text in standalone mode.
 
@@ -69,7 +69,7 @@ the 11 SW-specific tests stay in the M6 PR. Two reasons:
    bit-rot.
 
 2. **The headline M6 user value lands today.** iPhone cold-launch ~250ms tinted
-   splash (closes #259), self-hosted fonts, AtHS first-run hint, Dynamic Type
+   splash (closes litclock-dev#259), self-hosted fonts, AtHS first-run hint, Dynamic Type
    tab labels — all of these work without the SW. The visible-to-users wins
    ship in v1; the during-reboot caching + offline benefits ship in v2.
 
@@ -117,7 +117,7 @@ Android Chrome (`chrome://flags/#unsafely-treat-insecure-origin-as-secure`):
 
 ## Discovered
 
-PR #289 hardware QA, 2026-04-30. Test Pi `192.168.2.132` on Android Chrome:
+PR litclock-dev#289 hardware QA, 2026-04-30. Test Pi `192.168.2.132` on Android Chrome:
 `chrome://serviceworker-internals/` showed no entry for our origin; reload
 with WiFi off showed Chrome's dino offline page (not the cached shell);
 "Add to Home Screen" menu created a shortcut, not an installed PWA.

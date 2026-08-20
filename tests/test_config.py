@@ -87,7 +87,7 @@ def test_load_config_skips_unrecognized_lines(tmp_path: Path) -> None:
         ("WEATHER_LATITUDE", "30.27"),
         ("WEATHER_LATITUDE", "-89.999"),
         ("WEATHER_LATITUDE", "0"),
-        # #325 — empty string is a valid "unset" state for lat/lon (matches
+        # litclock-dev#325 — empty string is a valid "unset" state for lat/lon (matches
         # env.sh.sample's shipped empty WEATHER_LOCATION_NAME=). The PWA's
         # Clear weather location affordance relies on this.
         ("WEATHER_LATITUDE", ""),
@@ -146,7 +146,7 @@ def test_validate_setting_rejects_unknown_key() -> None:
         "Hello",
         "Happy birthday, Mum.",
         "O'Brien said hi",
-        # #319: newlines now accepted so multi-line welcome messages survive
+        # litclock-dev#319: newlines now accepted so multi-line welcome messages survive
         # end-to-end (validator → env.sh → .welcome-message → renderer).
         "Happy Birthday\nMom!",
         "Line one\nLine two\nLine three",
@@ -160,7 +160,7 @@ def test_validate_gift_mode_message_passes_valid(value: str) -> None:
 @pytest.mark.parametrize(
     "value,err_substr",
     [
-        # #319: cap dropped from 280 → 80 once the renderer learned to wrap.
+        # litclock-dev#319: cap dropped from 280 → 80 once the renderer learned to wrap.
         ("a" * 81, "80 characters"),
         ("hi $(whoami)", "may not contain"),
         ("`whoami`", "may not contain"),
@@ -174,7 +174,7 @@ def test_validate_gift_mode_message_rejects_bad(value: str, err_substr: str) -> 
 
 
 def test_gift_mode_message_rejects_emoji_at_codepoint_limit_over_byte_limit() -> None:
-    """#317 item 3 (UTF-8 byte/codepoint parity).
+    """litclock-dev#317 item 3 (UTF-8 byte/codepoint parity).
 
     The validator caps GIFT_MODE_MESSAGE at 80 CODEPOINTS, but the consumer
     in ``scripts/reset-setup.sh`` reads 80 BYTES via ``os.read(fd, 80)``.
@@ -193,7 +193,7 @@ def test_gift_mode_message_rejects_emoji_at_codepoint_limit_over_byte_limit() ->
 
 
 def test_gift_mode_message_accepts_ascii_at_byte_limit() -> None:
-    """Regression net for #317 item 3: the byte cap must not reject
+    """Regression net for litclock-dev#317 item 3: the byte cap must not reject
     well-formed ASCII messages that sit at the byte limit. ASCII users
     were the entire happy path pre-fix and must stay accepted."""
     msg = "a" * config.GIFT_MODE_MESSAGE_MAX_LEN  # 80 codepoints, 80 bytes
@@ -202,7 +202,7 @@ def test_gift_mode_message_accepts_ascii_at_byte_limit() -> None:
 
 
 def test_gift_mode_message_accepts_single_emoji() -> None:
-    """Regression net for #317 item 3: a single emoji (1 codepoint, up to
+    """Regression net for litclock-dev#317 item 3: a single emoji (1 codepoint, up to
     4 bytes) is well under both caps and must still pass. Guards against
     over-correcting the fix into "reject all non-ASCII"."""
     ok, err = config.validate_setting("GIFT_MODE_MESSAGE", "\U0001f381")
@@ -234,13 +234,13 @@ def test_gift_mode_message_rejects_message_just_over_byte_limit() -> None:
 
 
 def test_gift_mode_message_rejects_lone_surrogate_cleanly() -> None:
-    """#317 item 3 codex follow-up (P2): a JSON payload like
+    """litclock-dev#317 item 3 codex follow-up (P2): a JSON payload like
     ``{"message": "\\ud800"}`` is a valid Python ``str`` (Flask's JSON
     decoder produces lone surrogates from such input on at least some
     paths). The validator's ``.encode("utf-8")`` then raises
     ``UnicodeEncodeError`` — without an explicit catch, this propagates
     out of ``validate_setting`` as a 500 from the route. On
-    ``/api/system/prepare-for-gift`` that's the same trap class #328 was
+    ``/api/system/prepare-for-gift`` that's the same trap class litclock-dev#328 was
     supposed to close: the confirm token is consumed BEFORE the validator
     runs, so a 500 here costs the user the token too. The validator must
     convert the encode error to a clean (False, "...") result instead."""
@@ -251,7 +251,7 @@ def test_gift_mode_message_rejects_lone_surrogate_cleanly() -> None:
 
 
 def test_weather_location_name_accepts_codepoint_cap_with_non_ascii() -> None:
-    """#317 item 3 codex follow-up (P3 — scope): the byte cap is scoped to
+    """litclock-dev#317 item 3 codex follow-up (P3 — scope): the byte cap is scoped to
     ``GIFT_MODE_MESSAGE`` because that key has a byte-bound consumer
     (``reset-setup.sh`` reads bytes). ``WEATHER_LOCATION_NAME`` does NOT —
     its only downstream is env.sh round-trip via shlex.quote, which is
@@ -263,7 +263,7 @@ def test_weather_location_name_accepts_codepoint_cap_with_non_ascii() -> None:
 
     This test pins the scoping: a 120-codepoint non-ASCII weather
     location whose byte length exceeds 120 bytes must still be ACCEPTED.
-    Would have failed under the over-broad PR #350 v1 implementation."""
+    Would have failed under the over-broad PR litclock-dev#350 v1 implementation."""
     # 120 × "é" = 120 codepoints, 240 bytes. Sits exactly at the codepoint
     # cap; byte length is double — would have been rejected if the byte cap
     # were applied (the bug this scoping fix prevents).
@@ -275,7 +275,7 @@ def test_weather_location_name_accepts_codepoint_cap_with_non_ascii() -> None:
 
 
 def test_weather_location_name_rejects_codepoints_over_cap() -> None:
-    """Regression net for #317 item 3 scoping: weather location is still
+    """Regression net for litclock-dev#317 item 3 scoping: weather location is still
     capped by CODEPOINTS at WEATHER_LOCATION_NAME_MAX_LEN. Dropping the
     byte cap from this validator must not regress the codepoint cap."""
     msg = "X" * (config.WEATHER_LOCATION_NAME_MAX_LEN + 1)
@@ -305,7 +305,7 @@ def test_weather_location_name_lone_surrogate_still_handled_cleanly() -> None:
 
 @pytest.mark.parametrize("key", ["WEATHER_ENABLED"])
 def test_validate_new_bool_keys(key: str) -> None:
-    """GIFT_MODE_ENABLED dropped in #280 — gift mode is a one-shot action,
+    """GIFT_MODE_ENABLED dropped in litclock-dev#280 — gift mode is a one-shot action,
     not a persistent toggle. WEATHER_ENABLED stays."""
     ok, err = config.validate_setting(key, "true")
     assert ok is True, err
@@ -314,11 +314,11 @@ def test_validate_new_bool_keys(key: str) -> None:
 
 
 def test_gift_mode_enabled_no_longer_in_allowlist() -> None:
-    """#280: the M3 GIFT_MODE_ENABLED toggle is gone. Attempting to save
+    """litclock-dev#280: the M3 GIFT_MODE_ENABLED toggle is gone. Attempting to save
     via the settings allowlist must reject it as unknown so a stale PWA
     form (cached navigation HTML) can't reintroduce the persistent state."""
     ok, _ = config.validate_setting("GIFT_MODE_ENABLED", "true")
-    assert ok is False, "GIFT_MODE_ENABLED should be rejected by the allowlist post-#280"
+    assert ok is False, "GIFT_MODE_ENABLED should be rejected by the allowlist post-litclock-dev#280"
 
 
 def test_validate_weather_location_name_caps_at_120() -> None:
@@ -345,7 +345,7 @@ def test_validate_weather_location_name_caps_at_120() -> None:
     ],
 )
 def test_gift_mode_message_rejects_line_terminator_like_chars(ch_name: str, ch: str) -> None:
-    """#319 adversarial /review: ``load_config`` parses env.sh with
+    """litclock-dev#319 adversarial /review: ``load_config`` parses env.sh with
     ``read_text().splitlines()``, which splits on more than just ``\\n``/``\\r``.
     A user pasting prose from Pages.app or Word (both emit U+2028 for soft
     returns) silently bricks GIFT_MODE_MESSAGE — the env.sh line splits in
@@ -381,7 +381,7 @@ def test_weather_location_name_rejects_line_terminator_like_chars(ch_name: str, 
 
 
 def test_weather_location_name_still_rejects_newlines() -> None:
-    """Regression net for #319: ``_make_free_form_validator`` gained an
+    """Regression net for litclock-dev#319: ``_make_free_form_validator`` gained an
     ``allow_newlines`` parameter (default ``False``). If a future refactor
     accidentally constructs the weather validator with ``allow_newlines=True``
     (or flips the default), this test catches it before silent regression."""
@@ -394,8 +394,8 @@ def test_weather_location_name_still_rejects_newlines() -> None:
 
 
 def test_gift_mode_message_round_trips_newlines(tmp_path: Path) -> None:
-    """#319 hardware-QA fix: env.sh is line-oriented but GIFT_MODE_MESSAGE
-    allows embedded newlines post-#319. The naive shlex.quote-only writer
+    """litclock-dev#319 hardware-QA fix: env.sh is line-oriented but GIFT_MODE_MESSAGE
+    allows embedded newlines post-litclock-dev#319. The naive shlex.quote-only writer
     produced a multi-line single-quoted bash value that ``load_config``
     (which iterates with ``splitlines()``) couldn't reassemble — it read
     only the first line and the textarea pre-fill rendered a stray-quote
@@ -438,7 +438,7 @@ def test_atomic_update_shlex_quotes_gift_mode_message(tmp_path: Path) -> None:
     re-sourcing env.sh in bash gets the original string back, even when it
     contains spaces / single quotes / shell metacharacters."""
     env = tmp_path / "env.sh"
-    # #280: env.sh no longer carries GIFT_MODE_ENABLED — gift mode is a
+    # litclock-dev#280: env.sh no longer carries GIFT_MODE_ENABLED — gift mode is a
     # one-shot action via /api/system/prepare-for-gift, not a persistent
     # toggle. Only GIFT_MODE_MESSAGE persists as a draft.
     env.write_text("GIFT_MODE_MESSAGE=\n")
@@ -660,7 +660,7 @@ def test_atomic_update_rejects_path_traversal_in_units(tmp_path: Path) -> None:
     assert env.read_text() == original
 
 
-# ---------- atomic_update concurrency (issue #253) ----------
+# ---------- atomic_update concurrency (issue litclock-dev#253) ----------
 
 
 def test_atomic_update_concurrent_writers_dont_lose_updates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -748,7 +748,7 @@ def test_atomic_update_lock_released_on_replace_failure(tmp_path: Path, monkeypa
     assert config.load_config(env)["WEATHER_UNITS"] == "metric"
 
 
-# ─── #274 follow-up #4: bounded-wait timeout on _exclusive_lock ───────
+# ─── litclock-dev#274 follow-up #4: bounded-wait timeout on _exclusive_lock ───────
 
 
 def test_exclusive_lock_default_timeout_from_env() -> None:
@@ -785,7 +785,7 @@ def test_exclusive_lock_negative_env_var_falls_back(monkeypatch: pytest.MonkeyPa
 
 def test_exclusive_lock_times_out_when_held(tmp_path: Path) -> None:
     """Adversarial threat model: a stuck shell writer holds the sidecar
-    flock indefinitely. Before #274-followup-#4, the Python writer would
+    flock indefinitely. Before litclock-dev#274-followup-#4, the Python writer would
     block forever on `fcntl.flock(LOCK_EX)`. Now it must raise
     TimeoutError within ~timeout seconds.
 
@@ -1036,12 +1036,12 @@ def test_atomic_update_propagates_timeout_error(tmp_path: Path) -> None:
         holder.join(timeout=2.0)
 
 
-# ─── #337 A1/A6.1 new validators (post /review tightening) ─────────────────
+# ─── litclock-dev#337 A1/A6.1 new validators (post /review tightening) ─────────────────
 
 
 @pytest.mark.parametrize("value", ["auto", "specific"])
 def test_weather_location_mode_accepts_valid(value: str) -> None:
-    """#337 A1 + /review: validator accepts exactly the two enum values."""
+    """litclock-dev#337 A1 + /review: validator accepts exactly the two enum values."""
     ok, err = config.validate_setting("WEATHER_LOCATION_MODE", value)
     assert ok, err
 
@@ -1072,7 +1072,7 @@ def test_weather_location_mode_rejects_invalid(value: str) -> None:
 
 @pytest.mark.parametrize("value", ["", "US", "GB", "IN", "FR", "JP"])
 def test_weather_ip_country_accepts_valid(value: str) -> None:
-    """#337 A6.1: ISO 3166-1 alpha-2 UPPERCASE or empty."""
+    """litclock-dev#337 A6.1: ISO 3166-1 alpha-2 UPPERCASE or empty."""
     ok, err = config.validate_setting("WEATHER_IP_COUNTRY", value)
     assert ok, err
 

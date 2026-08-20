@@ -176,7 +176,7 @@ def create_qr_display_image(url: str, title: str = None, caption: str = None, qr
     # splash does (litclock-dev#589): this is a CLI surface
     # (`eink_display.py qr <url> --title T --caption C`), so a control
     # character in an argument would otherwise reach draw.text. The sibling
-    # splash has stripped these since #589; this one never did.
+    # splash has stripped these since litclock-dev#589; this one never did.
     if title:
         title = _sanitize_render_text(title, "title", surface="qr splash")
         title = _clamp_to_width(title, title_font, draw, PANEL_TEXT_BUDGET, "qr title", surface="qr splash")
@@ -647,7 +647,7 @@ def _clamp_block_to_panel(text: str, font, draw, field: str) -> str:
     Deliberately a clamp rather than a re-flow so shipped layouts stay
     byte-identical. Line-wise so gift mode's embedded newlines survive.
 
-    KNOWN LIMIT for #532: it truncates character-wise and drops the TAIL, and
+    KNOWN LIMIT for litclock-dev#532: it truncates character-wise and drops the TAIL, and
     every shipped submessage puts the actionable part last ("... see the
     LitClock docs.", "Then plug back in"). For translated instruction copy the
     right primitive is the font-shrinking ladder ``_fit_title`` uses, on the
@@ -941,7 +941,7 @@ HANDOFF_RIGHT_TEXT_BUDGET = HANDOFF_QR_SIZE + 2 * (HANDOFF_QR_X - HANDOFF_RIGHT_
 HANDOFF_VALUE_BUDGET = HANDOFF_RIGHT_COLUMN_X - HANDOFF_COLUMN_GUTTER - HANDOFF_VALUE_COLUMN
 # The LABEL column is tighter still (182px), and moving the value column left
 # tightened it further — a deliberate trade made when this fix was chosen: it
-# shifts the #532 translation pressure from the values onto the labels, where
+# shifts the litclock-dev#532 translation pressure from the values onto the labels, where
 # the shrink ladder below absorbs it. English labels are unaffected ("Mature
 # quotes", the widest, is 148px of 182). German "Nicht jugendfreie Zitate" is
 # 242px and now shrinks rather than rendering at full size.
@@ -1146,7 +1146,7 @@ def _draw_dotted_row(draw, y, label, value, font):
 
     1. A long value ran off the edge of the glass. ``WEATHER_LOCATION_NAME_MAX_LEN``
        accepts 120 characters and the PWA lets the owner TYPE a place in
-       Location > Specific; that value survives reboots by design (#337
+       Location > Specific; that value survives reboots by design (litclock-dev#337
        MODE=specific) and a WiFi reset clears .handoff-complete so this splash
        repaints, so a long typed name genuinely reaches the panel.
     2. Long before that, it collided with the right column — see

@@ -1,4 +1,4 @@
-"""Tests for control_server/routes/diagnostics.py /api/logs + SSE (#416 PR2 T7)."""
+"""Tests for control_server/routes/diagnostics.py /api/logs + SSE (litclock-dev#416 PR2 T7)."""
 
 from __future__ import annotations
 
@@ -170,7 +170,7 @@ class TestApiLogsStream:
             "has/slash",
             # Control characters: URL-encoded so they survive Werkzeug's
             # URL parser and reach the route's isalnum() shape gate
-            # (#419 T9). A literal "\n" in the URL string is stripped by
+            # (litclock-dev#419 T9). A literal "\n" in the URL string is stripped by
             # the test-client URL builder; %00 / %0a are not.
             "null%00here",
             "newline%0aattack",
@@ -471,7 +471,7 @@ class TestEndToEndPump:
         # backfill cutoff is anchored to "everything emitted from now on"
         # rather than a hardcoded 0. The hardcode silently turned brittle
         # whenever the test order changed or the buffer carried entries
-        # from a prior test — replaced per #419 T10.
+        # from a prior test — replaced per litclock-dev#419 T10.
         handler = log_buffer.get_memory_handler()
         cutoff = handler.latest_seq() if handler is not None else 0
         _emit(logging.INFO, "before-1")

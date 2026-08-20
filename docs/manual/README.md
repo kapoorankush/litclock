@@ -1,4 +1,4 @@
-# LitClock printable manual (#404)
+# LitClock printable manual (litclock-dev#404)
 
 A 4-page booklet to enclose when LitClock is given as a gift. Designed for a
 non-technical recipient: read in five minutes, no jargon. Visual register

@@ -1,15 +1,15 @@
 """LitClock Control PWA — process entry point.
 
-Plain HTTP on port 80 (#343 — so a user never types a port; bound by the
+Plain HTTP on port 80 (litclock-dev#343 — so a user never types a port; bound by the
 ``pi`` service account via the ip_unprivileged_port_start sysctl, not a
 capability). The locked PLAN A2/A4 + PRD §7.3 originally specified
-self-signed TLS to "match the first-boot cert UX." Hardware QA on PR #252
+self-signed TLS to "match the first-boot cert UX." Hardware QA on PR litclock-dev#252
 invalidated that assumption: iOS standalone PWAs reject self-signed certs
 on every launch (UX deal-breaker), the iOS apple-touch-icon fetch is
 suppressed for untrusted-cert origins (AtHS shows letter-initial fallback),
 and iOS Dynamic Type appears to be suppressed for the same reason.
 
-Per re-decided issue #257 (option C), control_server drops TLS entirely
+Per re-decided issue litclock-dev#257 (option C), control_server drops TLS entirely
 and serves plain HTTP. Justification:
 
 - The locked threat model (PLAN A4) explicitly accepts LAN-trust:
@@ -41,7 +41,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from control_server import create_app  # noqa: E402
-from control_url import CONTROL_PORT as PORT  # noqa: E402  # single source of truth (#343)
+from control_url import CONTROL_PORT as PORT  # noqa: E402  # single source of truth (litclock-dev#343)
 
 THREADS = int(os.environ.get("LITCLOCK_CONTROL_THREADS", "4"))
 # Bind address override. Production default 0.0.0.0 (reachable on LAN);
@@ -57,10 +57,10 @@ def main() -> int:
 
     from control_server import handoff  # noqa: PLC0415
 
-    # #415 /review: configure logging so `log.info()` from sibling modules
+    # litclock-dev#415 /review: configure logging so `log.info()` from sibling modules
     # surfaces in journald. Specifically restores observability for
     # location_resolver's "Resolved location: lat=... mode=..." diagnostic
-    # on the PWA sync-quick path, which regressed in #414 item #4 when bare
+    # on the PWA sync-quick path, which regressed in litclock-dev#414 item #4 when bare
     # print() was migrated to log.info() — Python's root logger defaults to
     # WARNING and silently drops INFO without a configured handler. Default
     # to INFO here (the PWA is the user-facing surface where Save diagnostics
@@ -73,7 +73,7 @@ def main() -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
-    # #416 (eng-review C3=A + OV-1=A): install the in-memory log buffer +
+    # litclock-dev#416 (eng-review C3=A + OV-1=A): install the in-memory log buffer +
     # RedactingFilter on the ROOT logger so /api/logs and the SSE drawer
     # see every log call made by control_server's sibling modules. Lives
     # here, NOT in create_app(), so tests that build apps via the factory
@@ -85,7 +85,7 @@ def main() -> int:
     init_memory_handler()
 
     app = create_app()
-    # EPIC #383 PR2 (#388): on the first launch since setup completed, paint the
+    # EPIC litclock-dev#383 PR2 (litclock-dev#388): on the first launch since setup completed, paint the
     # handoff splash to e-ink and arm the auto-completion timer. Lives here (not
     # create_app) so the test client never paints hardware or starts a timer.
     handoff.kickoff(app)
@@ -93,7 +93,7 @@ def main() -> int:
     try:
         serve(app, host=BIND, port=PORT, threads=THREADS)
     except PermissionError:
-        # #343: binding a privileged port (80) needs the
+        # litclock-dev#343: binding a privileged port (80) needs the
         # net.ipv4.ip_unprivileged_port_start=80 sysctl. If it hasn't applied
         # (an OTA where `sysctl -w` errored, or a kernel < 4.11), fail with an
         # actionable message instead of a bare traceback. The unit

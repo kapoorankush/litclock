@@ -1,4 +1,4 @@
-"""Tests for the single source of truth for the Control PWA port + URL (#343)."""
+"""Tests for the single source of truth for the Control PWA port + URL (litclock-dev#343)."""
 
 import importlib
 import sys
@@ -29,7 +29,7 @@ class TestControlBaseUrl:
         assert mod.CONTROL_PORT == 80
 
     def test_port_80_omits_the_port(self, monkeypatch):
-        # The whole point of #343: a user never sees a port to type.
+        # The whole point of litclock-dev#343: a user never sees a port to type.
         mod = _reload_with_port(monkeypatch, None)
         assert mod.control_base_url("litclock.local") == "http://litclock.local"
         assert mod.control_base_url("192.168.2.5") == "http://192.168.2.5"
@@ -43,7 +43,7 @@ class TestControlBaseUrl:
         assert mod.control_base_url("192.168.2.5") == "http://192.168.2.5:8443"
 
     def test_plain_http_scheme_always(self, monkeypatch):
-        # control_server has no TLS listener (#257) — never https.
+        # control_server has no TLS listener (litclock-dev#257) — never https.
         mod = _reload_with_port(monkeypatch, None)
         assert mod.control_base_url("litclock.local").startswith("http://")
         assert "https://" not in mod.control_base_url("litclock.local")
@@ -70,7 +70,7 @@ class TestControlBaseUrl:
 class TestNoStaleHardcodedPort:
     """Guard: the control-surface code must route the URL through the shared
     helper, not re-hardcode a port. Catches a refactor silently reintroducing
-    `:8443` / `:80` in the QR or handoff builders (#343)."""
+    `:8443` / `:80` in the QR or handoff builders (litclock-dev#343)."""
 
     def _read(self, rel):
         return (Path(__file__).resolve().parents[1] / rel).read_text()
@@ -101,7 +101,7 @@ class TestNoStaleHardcodedPort:
 class TestPort80Deploy:
     """The sysctl drop-in that lets pi bind port 80 must exist, set the right
     knob, and be installed by every deploy path + ordered before the unit
-    binds (#343)."""
+    binds (litclock-dev#343)."""
 
     _CONF = "sysctl.d/30-litclock-unprivileged-ports.conf"
 

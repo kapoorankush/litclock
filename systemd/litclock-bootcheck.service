@@ -1,7 +1,7 @@
 [Unit]
 Description=LitClock Last-Known-Good auto-revert (bootcheck)
 Documentation=https://github.com/kapoorankush/litclock/issues/209
-# Consumer half of the LKG mechanism (writer = litclock-lkg.service, #209).
+# Consumer half of the LKG mechanism (writer = litclock-lkg.service, litclock-dev#209).
 # Driven by litclock-bootcheck.timer. Detects a persistent post-update
 # brick — the clock never paints a frame after boot — and self-heals by
 # routing recovery back through update.sh's complete installer against the

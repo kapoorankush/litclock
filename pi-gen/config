@@ -4,7 +4,7 @@ TARGET_HOSTNAME=litclock
 FIRST_USER_NAME=pi
 # pi-gen requires a password. Default creds are intentional: SSH is off
 # (ENABLE_SSH=0), so no network service authenticates against this password —
-# shell access is physical-only (console, or SD-card ssh file). See #387.
+# shell access is physical-only (console, or SD-card ssh file). See litclock-dev#387.
 FIRST_USER_PASS="raspberry"
 DISABLE_FIRST_BOOT_USER_RENAME=1
 ENABLE_SSH=0

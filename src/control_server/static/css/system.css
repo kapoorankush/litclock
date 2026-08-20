@@ -1,4 +1,4 @@
-/* System tab styling (#245 M4).
+/* System tab styling (litclock-dev#245 M4).
  *
  * Loaded only when active_tab == "system" (see base.html.j2 extra_head
  * block). The action-card classes mirror DESIGN.md "Cards (status hero,
@@ -10,7 +10,7 @@
  * confirm modal); Story 2.1 ships only the action cards + form fallback.
  */
 
-/* #317 item 7 — banner appears on /system after the settings_post gift
+/* litclock-dev#317 item 7 — banner appears on /system after the settings_post gift
  * PRG-redirect lands here. Shared color/typography is in banners.css
  * (loaded via base.html.j2); this rule only adds the System-tab-specific
  * margin: top + sides because the banner sits INSIDE the .system-actions
@@ -99,7 +99,7 @@
 
 /* DESIGN.md "Destructive" button: transparent bg, --error text. Applied
  * only to the cards that are genuinely destructive (Power off requires
- * unplug + re-plug; Reset WiFi forgets saved networks; #317 item 7
+ * unplug + re-plug; Reset WiFi forgets saved networks; litclock-dev#317 item 7
  * Prepare-for-Gifting wipes WiFi + powers off). Restart is NOT
  * destructive — 30s blank then resume — so it stays the default accent.
  *
@@ -128,7 +128,7 @@
   outline-offset: 2px;
 }
 
-/* ─── Prepare-for-Gifting card (#317 item 7) ─────────────────────────────
+/* ─── Prepare-for-Gifting card (litclock-dev#317 item 7) ─────────────────────────────
  *
  * The gift card is a two-form action-card: a Save-draft form (textarea +
  * Save button) above a Prepare-destructive form (hidden message field +
@@ -204,7 +204,7 @@
 /* Visual separation between the Save-draft form and the destructive
  * Prepare form, so the user can't mistake "Prepare for Gifting" for
  * the section's primary action. Hairline above mirrors the
- * Settings-tab `.settings-form--destructive` pattern from #316. */
+ * Settings-tab `.settings-form--destructive` pattern from litclock-dev#316. */
 .action-card__form--destructive {
   margin-top: var(--sp-lg);
   padding-top: var(--sp-lg);

@@ -1,7 +1,7 @@
 """Per-row readers, subprocess cache, and the :func:`collect_diagnostics`
 builder for the /api/diagnostics surface.
 
-Split out of the pre-#419 monolithic ``routes/diagnostics.py`` (M1). Three
+Split out of the pre-litclock-dev#419 monolithic ``routes/diagnostics.py`` (M1). Three
 flavors of reader live here:
 
 - ``_read_text_once`` lazy cache for one-shot reads (kernel, os-release) —
@@ -10,7 +10,7 @@ flavors of reader live here:
   ``_read_lan_ip`` via :mod:`control_server._network`, ``_read_current_quote``,
   setup marker presence checks).
 - Subprocess-backed readers via :func:`control_server._subprocess.cached_subprocess_or_empty`
-  (the CQ-1 helper added in #428 PR1a — coerces ``None`` failure to ``""``
+  (the CQ-1 helper added in litclock-dev#428 PR1a — coerces ``None`` failure to ``""``
   so ``.splitlines()`` / ``.strip()`` idioms keep working). A longer 20 s
   TTL than status's 5 s default avoids paying a cold-cache fork on every
   30 s PWA poll. Classifier callers (PR1b anomaly logic) will use raw
@@ -62,7 +62,7 @@ from ..._network import (
 )
 from ..._redaction import redact_text
 
-# #428 PR1a (CQ-1): readers below go through ``cached_subprocess_or_empty``
+# litclock-dev#428 PR1a (CQ-1): readers below go through ``cached_subprocess_or_empty``
 # so they keep their ``.splitlines()`` / ``.strip()`` idioms without each
 # call site writing ``or ""``. The raw ``cached_subprocess`` import stays
 # bound so tests that monkeypatch ``_collectors.cached_subprocess`` keep
@@ -145,13 +145,13 @@ DIAG_SUBPROC_TTL_S = 20.0
 # block a page render too long.
 DIAG_SUBPROC_TIMEOUT_S = 3.0  # shared "fast" base; the per-call seeds below
 
-# Per-call "fast" budgets (#430). Historically every fast diagnostics call
+# Per-call "fast" budgets (litclock-dev#430). Historically every fast diagnostics call
 # shared the single DIAG_SUBPROC_TIMEOUT_S above. That coupling is a trap: the
-# journalctl story (#427) showed a "fast" call can blow 3 s under SD-IO/CPU
+# journalctl story (litclock-dev#427) showed a "fast" call can blow 3 s under SD-IO/CPU
 # contention, but bumping the SHARED budget to cover the slow one would also
 # loosen the cheap kernel calls that don't need it (and a too-loose budget lets
 # a wedged call stall a render; a too-tight one false-positives an anomaly on a
-# healthy clock — the #430 bug). Each fast call now reads its OWN constant so
+# healthy clock — the litclock-dev#430 bug). Each fast call now reads its OWN constant so
 # the budgets tune independently.
 #
 # HONESTY NOTE: these are SEEDED at the shared base — behaviour-preserving
@@ -160,11 +160,11 @@ DIAG_SUBPROC_TIMEOUT_S = 3.0  # shared "fast" base; the per-call seeds below
 # contention / memory pressure / degraded SD / wedged WiFi. Run
 # ``scripts/diag-subprocess-timing.py`` on the Pi and size each budget at the
 # worst-case p99 + headroom (the journalctl precedent used ~1.5x). Following
-# #444's call, we ship the per-call STRUCTURE + invariant tests now and tune
+# litclock-dev#444's call, we ship the per-call STRUCTURE + invariant tests now and tune
 # from data, never from guessed p99s. The risk-class on each line is the
 # hypothesis the measurement confirms or refutes; the seed is pinned by
 # ``TestFastCallBudgets.test_seeded_at_shared_base_until_measured`` so any tune
-# is a deliberate, data-cited edit. See #430.
+# is a deliberate, data-cited edit. See litclock-dev#430.
 #
 # These per-call constants are intentionally module-private (NOT added to the
 # diagnostics package __all__, unlike DIAG_SUBPROC_TIMEOUT_S / DIAG_JOURNAL_
@@ -191,38 +191,38 @@ DIAG_UNAME_TIMEOUT_S = DIAG_SUBPROC_TIMEOUT_S  # uname -r
 # Journalctl is the outlier. v0.214.2 hardware QA on authorclock clocked a
 # single ``journalctl --no-pager -n 3 -u <unit>`` query at 3.95 s on a Pi
 # Zero 2W with a few weeks of journal storage; under SD-card IO contention
-# the prior 4-worker pool could push p99 past 15 s (#433). 8 s per call gives
+# the prior 4-worker pool could push p99 past 15 s (litclock-dev#433). 8 s per call gives
 # headroom for the worst observed (~4 s) plus transient CPU contention from
 # concurrent paint cycles. PR1b's failure-TTL cap (5 s) means a journalctl
 # that times out gets cached as ``None`` for 5 s, so the next caller re-runs
-# within recovery cadence rather than pinning the failure for 20 s (#428).
+# within recovery cadence rather than pinning the failure for 20 s (litclock-dev#428).
 #
-# Total budget on the route: serial calls (#433 A-2) cap at
-# ``len(units_needing_tails) * DIAG_JOURNAL_TIMEOUT_S``. Lazy-tail (#433 P-1)
+# Total budget on the route: serial calls (litclock-dev#433 A-2) cap at
+# ``len(units_needing_tails) * DIAG_JOURNAL_TIMEOUT_S``. Lazy-tail (litclock-dev#433 P-1)
 # in ``_build_service_states`` keeps ``units_needing_tails`` empty on a
 # healthy clock and bounded at the number of failed/inactive-non-oneshot
 # units otherwise. Worst case is bounded by the count of non-healthy units
 # times this timeout: e.g., 4 simultaneously-unhealthy units would cap at
 # ~32 s (litclock-control.service must be active when /api/diagnostics is
 # being served, so it's never one of the unhealthy ones). Per /review
-# C-1: the serial budget IS strictly worse than the pre-#433 4-worker
+# C-1: the serial budget IS strictly worse than the pre-litclock-dev#433 4-worker
 # parallel design's ~16 s ceiling under IO contention. We accept the
 # regression because the steady-state production case has 0 or 1
 # unhealthy units (almost always 0); the 32 s tail is a multi-failure
 # anomaly where the JS client aborts at its 10 s budget and the user
 # sees "couldn't refresh" — strictly better UX than the v0.214.x oxblood
-# false-positive that #433 was opened to close.
+# false-positive that litclock-dev#433 was opened to close.
 DIAG_JOURNAL_TIMEOUT_S = 8.0
 
 # Journal tails get their OWN cache TTL, decoupled from the shared 20 s
-# DIAG_SUBPROC_TTL_S (#436). Reason: since #436 the tails are no longer fetched
+# DIAG_SUBPROC_TTL_S (litclock-dev#436). Reason: since litclock-dev#436 the tails are no longer fetched
 # on the SSR/poll critical path — they hydrate per-unit via
 # ``GET /api/diagnostics/journal`` after first paint. The PWA re-hydrates a
 # still-unhealthy unit on every 30 s poll (``POLL_INTERVAL_MS`` in
 # diagnostics.js). A 20 s TTL expires between polls, so a stuck-failed unit
 # would re-fork the ~5-7 s cold journalctl EVERY poll. 45 s > 30 s means
 # consecutive polls reuse the cached tail instead of re-forking. Safe to raise
-# past the timeout because the born-stale write-timestamp fix (#438) stamps the
+# past the timeout because the born-stale write-timestamp fix (litclock-dev#438) stamps the
 # cache entry AFTER subprocess.run returns.
 DIAG_JOURNAL_TTL_S = 45.0
 
@@ -251,17 +251,17 @@ DIAG_ONESHOT_UNITS: frozenset[str] = frozenset(
 # systemd states that are NOT a services anomaly for a DIAG_ONESHOT_UNITS
 # member: the settled post-paint ``inactive`` AND the transient
 # ``activating``/``deactivating`` window a oneshot cycles through every
-# minute during the quote paint (#443). SINGLE source of truth shared by
+# minute during the quote paint (litclock-dev#443). SINGLE source of truth shared by
 # ``_compute_anomalies`` (anomaly verdict) and ``_is_obviously_healthy``
-# (lazy-tail journal-fetch decision, #433) so the two can't drift — a unit
+# (lazy-tail journal-fetch decision, litclock-dev#433) so the two can't drift — a unit
 # flagged anomalous but denied its journal tail would lose the debug context
-# #433's P-1 filter exists to preserve. ``failed`` is deliberately absent: a
+# litclock-dev#433's P-1 filter exists to preserve. ``failed`` is deliberately absent: a
 # failed oneshot is a real failure that must trip + keep its tail.
 DIAG_ONESHOT_NONANOMALY_STATES: frozenset[str] = frozenset({"inactive", "activating", "deactivating"})
 
 # Last-N journal lines fetched per unit, displayed in the "Services" section.
 DIAG_JOURNAL_LINES_PER_UNIT = 3
-# Deeper tail for the on-demand support-logs export (#416 follow-up): enough
+# Deeper tail for the on-demand support-logs export (litclock-dev#416 follow-up): enough
 # context to actually debug a failing unit, vs the 3-line page preview.
 DIAG_SUPPORT_JOURNAL_LINES = 50
 # Hard cap on the journal endpoint's `?lines=` param so a client can't ask for
@@ -279,7 +279,7 @@ DEFAULT_PROC_UPTIME_PATH = os.environ.get("LITCLOCK_DIAG_PROC_UPTIME_PATH", "/pr
 DEFAULT_PROC_MEMINFO_PATH = os.environ.get("LITCLOCK_DIAG_PROC_MEMINFO_PATH", "/proc/meminfo")
 DEFAULT_DISK_TARGET = os.environ.get("LITCLOCK_DIAG_DISK_TARGET", "/")
 DEFAULT_LAST_RENDERED_IP_PATH = os.environ.get("LITCLOCK_DIAG_LAST_IP_PATH", "/run/litclock/last-rendered-ip")
-# #445 — persistent "has this section ever been collected" marker. Replaces
+# litclock-dev#445 — persistent "has this section ever been collected" marker. Replaces
 # the reboot-wiped DEFAULT_LAST_RENDERED_IP_PATH check in _compute_uncollected
 # (the read side falls back to that tmpfs path when this marker is absent, for
 # one-release backward compat). Written by scripts/litclock-mark-collected.sh
@@ -471,7 +471,7 @@ def _read_disk_free_pct() -> float | None:
 def _read_default_route() -> tuple[str | None, str | None]:
     """Run ``ip -4 route show default`` once and parse both iface + gateway.
 
-    Pre-#419 the iface + gateway readers BOTH went through this helper so a
+    Pre-litclock-dev#419 the iface + gateway readers BOTH went through this helper so a
     monkey-patch of ``_read_default_route`` reliably reshaped both readers
     in lock-step. The package split now delegates to
     :func:`control_server._network.read_default_route` for the parse, but
@@ -565,15 +565,15 @@ def _batched_is_active(units: tuple[str, ...]) -> dict[str, str]:
 
 def _read_journal_tail(unit: str, n: int = DIAG_JOURNAL_LINES_PER_UNIT, cache_key: str | None = None) -> list[str]:
     # cache_key defaults to the shared per-unit key used by the 3-line page
-    # preview. A DEEPER read (support-logs export, #416 follow-up) MUST pass a
+    # preview. A DEEPER read (support-logs export, litclock-dev#416 follow-up) MUST pass a
     # distinct key: the cache is keyed on the label, NOT the line count, so a
     # deep read sharing the default key would serve the stale 3-line result (or
     # poison the page's cache with a 50-line blob).
     raw = cached_subprocess_or_empty(
         cache_key or f"diag-journal-{unit}",
         ["journalctl", "--no-pager", "-n", str(n), "-u", unit, "-o", "short-iso"],
-        timeout=DIAG_JOURNAL_TIMEOUT_S,  # bumped from DIAG_SUBPROC_TIMEOUT_S in v0.214.2 (#427)
-        ttl=DIAG_JOURNAL_TTL_S,  # decoupled + raised above the 30s poll interval (#436)
+        timeout=DIAG_JOURNAL_TIMEOUT_S,  # bumped from DIAG_SUBPROC_TIMEOUT_S in v0.214.2 (litclock-dev#427)
+        ttl=DIAG_JOURNAL_TTL_S,  # decoupled + raised above the 30s poll interval (litclock-dev#436)
     )
     if not raw:
         return []
@@ -583,9 +583,9 @@ def _read_journal_tail(unit: str, n: int = DIAG_JOURNAL_LINES_PER_UNIT, cache_ke
 def _batched_journal_tails(units: tuple[str, ...], n: int = DIAG_JOURNAL_LINES_PER_UNIT) -> dict[str, list[str]]:
     """Fetch the last N journal lines for each unit, serially.
 
-    NOTE (#436): this has NO production caller anymore. Before #436,
+    NOTE (litclock-dev#436): this has NO production caller anymore. Before litclock-dev#436,
     :func:`_build_service_states` invoked it (the P-1 lazy-tail path); since
-    #436 tails hydrate per-unit off the render path via
+    litclock-dev#436 tails hydrate per-unit off the render path via
     ``/api/diagnostics/journal`` (:func:`_read_journal_tail` directly), so
     ``_build_service_states`` no longer fetches tails at all. This wrapper is
     retained only as a thin serial batch helper exercised by
@@ -595,7 +595,7 @@ def _batched_journal_tails(units: tuple[str, ...], n: int = DIAG_JOURNAL_LINES_P
     helper a future consumer could reuse. The single-unit
     :func:`_read_journal_tail` is the live path.
 
-    The serial loop (over a pre-#433 ``ThreadPoolExecutor``) was #433's fix for
+    The serial loop (over a pre-litclock-dev#433 ``ThreadPoolExecutor``) was litclock-dev#433's fix for
     SD-IO saturation pushing 4 concurrent ``journalctl`` p99 past the 10 s
     client budget; per-unit isolation is now provided at the HTTP layer instead
     (one request per row).
@@ -611,14 +611,14 @@ def _is_oneshot_nonanomaly(unit: str, state: str) -> bool:
     A ``DIAG_ONESHOT_UNITS`` member in any ``DIAG_ONESHOT_NONANOMALY_STATES``
     state — the settled post-paint ``inactive`` or the transient
     ``activating``/``deactivating`` window it cycles through every minute
-    during the quote paint (#443). NOT ``failed``: a failed oneshot is a
+    during the quote paint (litclock-dev#443). NOT ``failed``: a failed oneshot is a
     real failure.
 
     Single source of truth for the three places that must agree on the
     oneshot carve-out so they can't drift: the anomaly verdict
     (``_compute_anomalies``), the lazy-tail fetch decision
     (:func:`_is_obviously_healthy`), and the per-row chip tone
-    (:func:`_build_service_states`, #449).
+    (:func:`_build_service_states`, litclock-dev#449).
     """
     return unit in DIAG_ONESHOT_UNITS and state in DIAG_ONESHOT_NONANOMALY_STATES
 
@@ -626,7 +626,7 @@ def _is_oneshot_nonanomaly(unit: str, state: str) -> bool:
 def _is_obviously_healthy(state: str, unit: str) -> bool:
     """True iff a unit's systemctl state is "nothing to debug here".
 
-    The P-1 lazy-tail filter (#433) in :func:`_build_service_states`
+    The P-1 lazy-tail filter (litclock-dev#433) in :func:`_build_service_states`
     fetches journal tails for every unit EXCEPT the ones this returns
     True for. Two healthy categories:
 
@@ -658,11 +658,11 @@ def _row_state_modifier(unit: str, state: str) -> str:
     * settled ``inactive`` (the by-design resting state) -> ``settled-ok``,
       the same botanical-green ``--success`` tone as ``active`` so a non-tech
       gift recipient reads "healthy" at a glance instead of misreading the
-      calm idle row as a fault (#463). ``litclock-firstboot.service`` is the
+      calm idle row as a fault (litclock-dev#463). ``litclock-firstboot.service`` is the
       sharpest case: permanently ``inactive`` on a provisioned clock.
     * transient ``activating``/``deactivating`` (the per-minute paint window)
       -> ``transient-ok``, neutral graphite, so the row doesn't flash ochre
-      while the section pill reads OK (#443 fixed the verdict, #449 the tone).
+      while the section pill reads OK (litclock-dev#443 fixed the verdict, litclock-dev#449 the tone).
 
     Everything else — non-oneshot units, and any ``failed`` — keeps its
     literal modifier so the existing CSS still tints it (green ``--active``,
@@ -678,7 +678,7 @@ def _row_state_modifier(unit: str, state: str) -> str:
 def _build_service_states() -> dict[str, dict[str, Any]]:
     """Build the per-unit map of ``{state, state_modifier, healthy, journal_tail}``.
 
-    Since #436 this NO LONGER fetches journal tails. ``journal_tail`` is always
+    Since litclock-dev#436 this NO LONGER fetches journal tails. ``journal_tail`` is always
     ``[]`` here; every row's tail hydrates per-unit via
     ``GET /api/diagnostics/journal?unit=<unit>`` AFTER first paint (see
     :func:`_sse.api_diagnostics_journal` + ``patchServicesSection`` in
@@ -693,7 +693,7 @@ def _build_service_states() -> dict[str, dict[str, Any]]:
     template can stamp ``data-diag-healthy`` on each row and the client can gate
     hydration (and the boot fetch) on "does any row actually need a tail?"
     WITHOUT re-implementing the predicate in JS (which would drift on oneshot
-    ``inactive`` / transient rows). It is the SAME predicate the pre-#436
+    ``inactive`` / transient rows). It is the SAME predicate the pre-litclock-dev#436
     lazy-tail filter used to decide which units got a tail.
 
     The anomaly verdict is unaffected: :func:`_anomalies._compute_anomalies`
@@ -708,11 +708,11 @@ def _build_service_states() -> dict[str, dict[str, Any]]:
             "state": state,
             # CSS modifier suffix for the row chip COLOR (the chip TEXT stays
             # the literal ``state``). See :func:`_row_state_modifier`: oneshot
-            # mid-paint -> neutral ``transient-ok`` (#443/#449), oneshot at its
-            # settled ``inactive`` resting state -> green ``settled-ok`` (#463).
+            # mid-paint -> neutral ``transient-ok`` (litclock-dev#443/litclock-dev#449), oneshot at its
+            # settled ``inactive`` resting state -> green ``settled-ok`` (litclock-dev#463).
             "state_modifier": _row_state_modifier(unit, state),
             # Server-computed so JS/template can gate hydration without drift
-            # (#436). Tails hydrate per-unit for the NON-healthy rows only.
+            # (litclock-dev#436). Tails hydrate per-unit for the NON-healthy rows only.
             "healthy": _is_obviously_healthy(state, unit),
             # Always empty here — hydrated client-side via the per-unit endpoint.
             "journal_tail": [],

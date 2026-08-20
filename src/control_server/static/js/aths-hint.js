@@ -60,7 +60,7 @@
     return /Android/i.test(navigator.userAgent || '');
   }
 
-  // /review feedback on #406 — coordination with status.js's mDNS probe.
+  // /review feedback on litclock-dev#406 — coordination with status.js's mDNS probe.
   // status.js sets window.__litclockMdnsPending = true synchronously at
   // script eval when it WILL run the probe (on /status, HTTP origin, not
   // already on .local, not previously dismissed). After the probe settles,
@@ -79,7 +79,7 @@
   var MDNS_DEFER_TIMEOUT_MS = 4000;
 
   function init() {
-    // EPIC #383 PR2 (#388) — while the post-WiFi handoff banner is showing,
+    // EPIC litclock-dev#383 PR2 (litclock-dev#388) — while the post-WiFi handoff banner is showing,
     // suppress this hint so the two cards don't compete for attention. The
     // banner sets `data-handoff-active` on <body> (server-side), and
     // handoff.js removes it + dispatches `litclock:handoff-complete` once the
@@ -90,7 +90,7 @@
     if (isStandalone()) return;
     if (getDismissed()) return;
 
-    // /review #406 — defer while the mDNS probe is in flight. See the
+    // /review litclock-dev#406 — defer while the mDNS probe is in flight. See the
     // MDNS_RESULT_EVENT block at the top of this file for the contract.
     if (window.__litclockMdnsPending === true) {
       var deferTimer = setTimeout(function () {
@@ -153,11 +153,11 @@
     }
   }
 
-  // EPIC #383 PR2 (#388) — run the first-run logic once the handoff banner
+  // EPIC litclock-dev#383 PR2 (litclock-dev#388) — run the first-run logic once the handoff banner
   // completes (handoff.js dispatches this after removing data-handoff-active).
   document.addEventListener('litclock:handoff-complete', init);
 
-  // /review #406 — defer init() one tick so status.js (loaded after this
+  // /review litclock-dev#406 — defer init() one tick so status.js (loaded after this
   // file in document order via `defer`) has a chance to set
   // `window.__litclockMdnsPending` synchronously. Without the yield,
   // aths-hint runs first under `defer`+`readyState==="interactive"`,

@@ -6,17 +6,17 @@ Before every commit, run these in order:
 
 1. **Lint**: `ruff check src/ image-gen/ tests/ scripts/` (matches CI — full rule set, not just `--select F`)
 2. **Tests**: `python3 -m pytest tests/ --ignore=tests/test_eink_display.py -q`
-3. **JS tests** (when `node_modules/` is present): `npm run test:js` — covers `src/control_server/static/js/*.js` via vitest + jsdom (#338). Dev/CI only; skip if you haven't run `npm install`. Never required on the Pi.
+3. **JS tests** (when `node_modules/` is present): `npm run test:js` — covers `src/control_server/static/js/*.js` via vitest + jsdom (litclock-dev#338). Dev/CI only; skip if you haven't run `npm install`. Never required on the Pi.
 
 The eink_display tests require hardware-specific dependencies (Pillow + waveshare display drivers) that aren't available on dev machines. Weather tests now run in CI (astral is lazy-imported inside `is_daytime()`). All non-hardware tests must pass.
 
 Do NOT commit if either step fails.
 
-If the commit touches `image-gen/litclock_annotated.csv`, ship it with `python3 image-gen/corpus_edit.py ship "<message>"` instead of hand-sequencing image regen + `.images-version` bump + release (see CONTRIBUTING.md → "Editing the quote corpus", issue #211).
+If the commit touches `image-gen/litclock_annotated.csv`, ship it with `python3 image-gen/corpus_edit.py ship "<message>"` instead of hand-sequencing image regen + `.images-version` bump + release (see CONTRIBUTING.md → "Editing the quote corpus", issue litclock-dev#211).
 
 ## Testing
 
-- Framework: pytest (Python) + vitest (JS, control PWA only — #338)
+- Framework: pytest (Python) + vitest (JS, control PWA only — litclock-dev#338)
 - Python test command: `python3 -m pytest tests/ --ignore=tests/test_eink_display.py -q`
 - JS test command: `npm run test:js` (requires `npm install` first; Node 20+)
 - Python tests live in `tests/`; JS tests live in `tests/js/`
@@ -31,31 +31,31 @@ If the commit touches `image-gen/litclock_annotated.csv`, ship it with `python3 
 
 ## First-boot QA checklist
 
-The first-boot flow (`scripts/first-boot.sh`) provisions WiFi via a web UI; everything else (location, timezone, units) auto-populates from IP geolocation after WiFi connects (EPIC #383). Must be tested on real Pi hardware — CI cannot fully simulate hotspot creation, captive portal, IP-geo retry, or e-ink display.
+The first-boot flow (`scripts/first-boot.sh`) provisions WiFi via a web UI; everything else (location, timezone, units) auto-populates from IP geolocation after WiFi connects (EPIC litclock-dev#383). Must be tested on real Pi hardware — CI cannot fully simulate hotspot creation, captive portal, IP-geo retry, or e-ink display.
 
 **Critical scenarios to test:**
 
 - **WiFi-only hotspot form**: Verify the setup page shows ONLY the WiFi network picker + password field + Submit button. No Location, Timezone, Temperature, or Mature-content sections — those are PWA-only post-handoff.
 - **Hotspot creation**: Power on with no known WiFi networks. Verify the Pi creates a hotspot and displays credentials + QR code on the e-ink screen.
-- **Captive portal**: Connect a phone to the hotspot. The setup page should auto-open (or be reachable at the displayed IP). On iOS, the journal should show the #526 coax sequence: a `CAPTIVE-PROBE` line with branch `cna-302` or `cna-302-hostmatch` (grep `-> cna-302`, matches both) `status=302` for the `CaptiveNetworkSupport wispr` UA, then (if the sheet rises) a Safari-family UA fetching `/cna` (bridge, 200). A `cna-bridge` 200 answered to a wispr UA means the UA split regressed. Ideally also verify no regression on one iOS-18-class device and macOS (their detection UA is also CaptiveNetworkSupport).
+- **Captive portal**: Connect a phone to the hotspot. The setup page should auto-open (or be reachable at the displayed IP). On iOS, the journal should show the litclock-dev#526 coax sequence: a `CAPTIVE-PROBE` line with branch `cna-302` or `cna-302-hostmatch` (grep `-> cna-302`, matches both) `status=302` for the `CaptiveNetworkSupport wispr` UA, then (if the sheet rises) a Safari-family UA fetching `/cna` (bridge, 200). A `cna-bridge` 200 answered to a wispr UA means the UA split regressed. Ideally also verify no regression on one iOS-18-class device and macOS (their detection UA is also CaptiveNetworkSupport).
 - **WiFi provisioning**: Select a network from the setup page, enter credentials. Verify the Pi connects and transitions to clock mode.
 - **WiFi provisioning failure + retry**: Enter a wrong WiFi password. The page should auto-refresh and show an error banner ("Couldn't join your WiFi…"). Fix the password and resubmit. The Pi should connect on retry. Banner must NOT use the deprecated "home WiFi" phrasing.
 - **IP-geo auto-populate (US residential)**: On a US residential WiFi, after submit verify env.sh contains `WEATHER_LATITUDE`, `WEATHER_LONGITUDE`, `WEATHER_LOCATION_NAME` (City, State), `WEATHER_UNITS=imperial`, and `timedatectl` reports the correct timezone — all from one ip-api.com call.
 - **IP-geo auto-populate (non-US)**: On a non-US WiFi (or via VPN), verify `WEATHER_UNITS=metric` and tz matches the egress country.
 - **IP-geo hard failure**: Block `ip-api.com` (firewall rule or DNS block) during provisioning. Resolver retries 4 times with 1/3/9s backoff. After hard failure: env.sh location keys stay empty, timezone unset. PR2 handoff splash will surface the browser-tz fallback.
 - **Connecting splash (PR2)**: After submitting WiFi creds, the e-ink should swap the hotspot QR for a "Connecting to {SSID}…" splash while WiFi joins + IP-geo runs (~30s), before the handoff splash.
-- **Handoff splash + quote gate (PR2)**: After IP-geo succeeds, the e-ink shows the "Ready to read." handoff splash (settings summary block: Location/Timezone/Units/Mature + PWA QR top-right encoding `http://<IP>` — port 80, no port shown, #343). Quotes must NOT start yet — `litclock.service` is gated on `/etc/litclock/.handoff-complete`. Verify the QR scans to the PWA and the Status tab shows the "Setup complete" top-sheet banner with a "Done — Start the Clock" button.
+- **Handoff splash + quote gate (PR2)**: After IP-geo succeeds, the e-ink shows the "Ready to read." handoff splash (settings summary block: Location/Timezone/Units/Mature + PWA QR top-right encoding `http://<IP>` — port 80, no port shown, litclock-dev#343). Quotes must NOT start yet — `litclock.service` is gated on `/etc/litclock/.handoff-complete`. Verify the QR scans to the PWA and the Status tab shows the "Setup complete" top-sheet banner with a "Done — Start the Clock" button.
 - **Handoff completion paths (PR2)**: Verify ALL of: (a) tapping "Done" in the PWA, (b) saving any setting in PWA Settings, (c) waiting 120s — each writes `.handoff-complete` and the e-ink paints the first quote within ~1 min. The AtHS hint must stay suppressed while the banner is up, then appear after Done.
 - **Handoff failure (IP-geo blocked, PR2)**: With `ip-api.com` blocked, the e-ink shows "Almost ready." + "Not detected" rows; the PWA banner shows "Almost there." with a "Use {browser-tz}" button. Tapping it sets the system tz and starts quotes. Quotes must NOT start on the 120s timer when tz is unknown (a wrong-time clock is worse than no clock).
 - **Handoff fallback timer (PR2)**: If control_server never completes the handoff but a location WAS detected, `litclock-handoff-fallback.timer` writes `.handoff-complete` ~10 min after boot so the clock isn't stuck on the splash. With NO location detected it must leave the splash up.
 - **Upgrade migration (PR2)**: On an already-provisioned Pi, run `update.sh` and confirm quotes keep painting — the new `litclock.service` gate is satisfied by update.sh touching `.handoff-complete` (it never runs the handoff flow). This is the brick-prevention check for authorclock.
 - **Clock starts after setup**: After completing setup + handoff, confirm the e-ink display shows a literary quote within ~2 minutes (assuming tz resolved).
 - **Pre-connected WiFi path**: Boot with WiFi already configured (e.g., via ethernet or wpa_supplicant). Setup runs normal-mode HTTPS server; submitting the (essentially empty) form triggers the same IP-geo resolver.
-- **Post-setup PWA Settings overrides**: After first-boot, open the Control PWA → Settings → Weather and verify auto-populated values are editable. If a city is set, a "Clear" link appears next to the "Currently: …" hint. Tap Clear → city, latitude, longitude all clear together. Weather should stop rendering on the e-ink within ~1 min. Toggling `WEATHER_ENABLED` off WITHOUT tapping Clear must preserve the saved city (regression test for the toggle-only flow). **#337 supersedes this — see the #337 IA section below.**
+- **Post-setup PWA Settings overrides**: After first-boot, open the Control PWA → Settings → Weather and verify auto-populated values are editable. If a city is set, a "Clear" link appears next to the "Currently: …" hint. Tap Clear → city, latitude, longitude all clear together. Weather should stop rendering on the e-ink within ~1 min. Toggling `WEATHER_ENABLED` off WITHOUT tapping Clear must preserve the saved city (regression test for the toggle-only flow). **litclock-dev#337 supersedes this — see the litclock-dev#337 IA section below.**
 
-### #337 — Location/Weather/Temperature IA (post-design-review, A9-A18)
+### litclock-dev#337 — Location/Weather/Temperature IA (post-design-review, A9-A18)
 
-After #337 lands, the Settings tab IA changes substantially. Replace the pre-#337 expectations with these:
+After litclock-dev#337 lands, the Settings tab IA changes substantially. Replace the pre-litclock-dev#337 expectations with these:
 
 - **Section order top-down**: Location → Weather → Temperature → Advanced. ("Units" renamed to "Temperature.")
 - **MODE=specific preserved across reboots (CRITICAL)**: PWA → Location → tap Specific pill → type "Austin, TX" → Save. SSH into Pi, reboot. Verify `WEATHER_LOCATION_NAME` is still "Austin, Texas" (not overwritten by on-boot reresolve). `cat /home/pi/litclock/env.sh | grep WEATHER_LOCATION_MODE` returns `specific`.
@@ -80,10 +80,10 @@ After #337 lands, the Settings tab IA changes substantially. Replace the pre-#33
 sudo rm -f /etc/litclock/.setup-complete /etc/litclock/.handoff-complete && sudo systemctl enable litclock-firstboot.service && sudo reboot
 ```
 
-(Clear `.handoff-complete` too, or the post-WiFi handoff splash is skipped and quotes start immediately — PR2 #388.)
+(Clear `.handoff-complete` too, or the post-WiFi handoff splash is skipped and quotes start immediately — PR2 litclock-dev#388.)
 
 ## Design System (Control PWA)
 
-Always read `DESIGN.md` before making any visual or UI decision in the Control PWA workstream. (`DESIGN.md` is maintainer-local and gitignored — excluded from the public repo per the #82 PII decision, along with `PRD-`/`PLAN-LitClock-Control-PWA.md`.) All font choices, colors, spacing, motion, and aesthetic direction are defined there. Do not deviate without explicit user approval.
+Always read `DESIGN.md` before making any visual or UI decision in the Control PWA workstream. (`DESIGN.md` is maintainer-local and gitignored — excluded from the public repo per the litclock-dev#82 PII decision, along with `PRD-`/`PLAN-LitClock-Control-PWA.md`.) All font choices, colors, spacing, motion, and aesthetic direction are defined there. Do not deviate without explicit user approval.
 
 In code review and `/design-review` mode, flag any code that doesn't match `DESIGN.md`. The hardware-side e-ink rendering (`image-gen/quote_to_image.php`) is governed by its own constraints and is NOT subject to `DESIGN.md`.

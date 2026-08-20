@@ -1,4 +1,4 @@
-"""Post-WiFi PWA handoff endpoints (EPIC #383 PR2, issue #388).
+"""Post-WiFi PWA handoff endpoints (EPIC litclock-dev#383 PR2, issue litclock-dev#388).
 
 Two POST endpoints that complete the handoff phase and let quotes start:
 

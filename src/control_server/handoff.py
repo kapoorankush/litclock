@@ -1,4 +1,4 @@
-"""Post-WiFi PWA handoff phase (EPIC #383 PR2, issue #388).
+"""Post-WiFi PWA handoff phase (EPIC litclock-dev#383 PR2, issue litclock-dev#388).
 
 After first-boot provisioning completes, the e-ink display shows a "Setup
 complete — scan to fine-tune" splash with the PWA QR before quotes start.
@@ -42,11 +42,11 @@ import sys
 import threading
 from pathlib import Path
 
-from control_url import control_base_url  # single source of truth for the PWA URL (#343)
+from control_url import control_base_url  # single source of truth for the PWA URL (litclock-dev#343)
 
 log = logging.getLogger(__name__)
 
-# Wall-clock ceiling for the short-lived splash painter subprocess (#388). The
+# Wall-clock ceiling for the short-lived splash painter subprocess (litclock-dev#388). The
 # paint is ~5s on a Pi Zero 2W; 20s covers a slow/contended paint while bounding
 # how long a WEDGED display can stall control_server startup (kickoff runs the
 # paint synchronously before serve()). Referenced in the timeout log so the two
@@ -304,7 +304,7 @@ def set_timezone_and_complete(app, timezone: str) -> tuple[bool, str | None]:
     allowed to run with latitude empty — the user has explicitly confirmed the
     tz, which is all quote rendering needs (weather stays off until a location
     is set)."""
-    # #414 maintainability item #5: tz setter moved to geocoding (lighter
+    # litclock-dev#414 maintainability item #5: tz setter moved to geocoding (lighter
     # imports than setup_server). Original "pulls hardware deps; import
     # lazily" rationale no longer applies — geocoding has no hardware deps —
     # but the lazy import is preserved so create_app() stays cheap.
@@ -323,7 +323,7 @@ def set_timezone_and_complete(app, timezone: str) -> tuple[bool, str | None]:
 def resolve_lan_ip() -> str | None:
     """Primary LAN IPv4 via the stdlib connect-trick (no packet leaves the
     box). Returns None for loopback / link-local / no-route. Canonical
-    implementation + rationale: literary_clock._resolve_lan_ip (#306). Inlined
+    implementation + rationale: literary_clock._resolve_lan_ip (litclock-dev#306). Inlined
     here to keep the hardware-free control_server import graph clean."""
     sock = None
     try:
@@ -373,7 +373,7 @@ def _sanitize_ssid_for_render(ssid: str) -> str:
 
 def connected_ssid() -> str:
     """Best-effort read of the SSID the clock is currently connected to.
-    Used by the e-ink handoff splash (#399) to tell the user which WiFi
+    Used by the e-ink handoff splash (litclock-dev#399) to tell the user which WiFi
     their phone must be on for the QR to scan-and-load — the QR encodes
     a LAN-only IP, so a phone on cellular / a different WiFi gets a
     silent dead link.
@@ -458,7 +458,7 @@ def render_eink_splash(app) -> bool:
     and a render failure on the Pi must not crash control_server startup.
     Returns True iff a frame was pushed.
 
-    #388 fresh-flash fix (test-Pi QA 2026-07-06): control_server is LONG-LIVED, so
+    litclock-dev#388 fresh-flash fix (test-Pi QA 2026-07-06): control_server is LONG-LIVED, so
     it must NOT paint the e-ink in its own process. The lgpio line claims a paint
     makes are held for the process lifetime — ``epd.sleep()`` only deep-sleeps the
     panel and ``module_exit``/gpiozero-close does NOT free the claims; only PROCESS
@@ -470,7 +470,7 @@ def render_eink_splash(app) -> bool:
     stack here."""
     try:
         # The splash needs tz + QR url + SSID the banner doesn't — compute them
-        # here (once, at kickoff), all hardware-free. connected_ssid is a #399
+        # here (once, at kickoff), all hardware-free. connected_ssid is a litclock-dev#399
         # addition: the splash paints a "phone must be on this WiFi" caveat next to
         # the QR so a phone on cellular / a different network doesn't silently fail.
         ctx = handoff_context(app)
@@ -499,7 +499,7 @@ def render_eink_splash(app) -> bool:
     except subprocess.TimeoutExpired:
         # NOT `exc` in the message (/review): str(TimeoutExpired) embeds the full
         # argv, which carries the settings JSON (SSID + location name). redact_text
-        # doesn't scrub those, so it would leak PII into the #416 diagnostics log
+        # doesn't scrub those, so it would leak PII into the litclock-dev#416 diagnostics log
         # buffer + journald — exactly when a wedged display gets debugged/shared.
         log.warning("handoff: splash painter timed out after %ss (non-fatal)", _SPLASH_PAINT_TIMEOUT_S)
         return False

@@ -1,13 +1,13 @@
 """Threshold-boundary tests for ``_compute_anomalies``.
 
-The pre-#419 tests in ``tests/test_control_server_diagnostics.py`` use
+The pre-litclock-dev#419 tests in ``tests/test_control_server_diagnostics.py`` use
 the real wall clock, which makes "exactly at the threshold" assertions
 flaky AND lets hardcoded ISO timestamps silently rot past their own age
 thresholds (see the pre-existing ``last_dhcp_at`` drift in
 ``TestAnomalyDetector._baseline`` that PR1 fixed as a drive-by).
 
 This file pins the clock via :mod:`pytest`'s ``monkeypatch`` (no
-freezegun dependency per #419 D6) and asserts behavior at:
+freezegun dependency per litclock-dev#419 D6) and asserts behavior at:
 
 - exactly at the threshold,
 - 1 ms over (anomaly trips),
@@ -272,7 +272,7 @@ class TestFrozenClockSanity:
 
 
 class TestServicesOneshotLifecycle:
-    """#443 — oneshot units (``litclock.service``) cycle through
+    """litclock-dev#443 — oneshot units (``litclock.service``) cycle through
     ``activating``/``deactivating`` every minute during the per-minute quote
     paint. A ``/diagnostics`` poll landing in that window must NOT trip the
     services anomaly (which escalates the banner to the oxblood "Clock isn't
@@ -343,7 +343,7 @@ class TestServicesOneshotLifecycle:
         # the last-quote anomaly: a hung paint stops advancing picked_at, so
         # once it ages past ANOMALY_QUOTE_AGE_S the clock still surfaces as
         # broken — via a more accurate signal than a per-minute services flap.
-        # Lock that backstop so a future change can't weaken it silently (#443).
+        # Lock that backstop so a future change can't weaken it silently (litclock-dev#443).
         v = self._with_service(frozen_clock, "litclock.service", "activating")
         v["picked_at"] = frozen_clock.timestamp() - (_anomalies.ANOMALY_QUOTE_AGE_S + 1)
         result = _anomalies._compute_anomalies(v)
@@ -352,8 +352,8 @@ class TestServicesOneshotLifecycle:
 
 
 class TestOneshotLockstep:
-    """#443 — the anomaly verdict (``_compute_anomalies``) and the lazy-tail
-    journal-fetch decision (``_is_obviously_healthy``, #433) are driven by the
+    """litclock-dev#443 — the anomaly verdict (``_compute_anomalies``) and the lazy-tail
+    journal-fetch decision (``_is_obviously_healthy``, litclock-dev#433) are driven by the
     SAME ``DIAG_ONESHOT_NONANOMALY_STATES`` constant. Pin the semantic
     invariant so the two can never disagree on a oneshot lifecycle state — a
     unit flagged anomalous but denied its journal tail would lose the debug

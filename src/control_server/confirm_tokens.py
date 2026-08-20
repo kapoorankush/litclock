@@ -68,7 +68,7 @@ TTL_SECONDS: Final[int] = 300
 # of being misread as "expired" and silently re-fired by a refresh-and-retry
 # client (litclock-dev#317 item 1 codex /review P2). 600s covers realistic double-submit
 # / bfcache windows; after the tombstone expires we fall back to the
-# pre-#317-followup behavior (no tombstone → "invalid" rather than
+# pre-litclock-dev#317-followup behavior (no tombstone → "invalid" rather than
 # "consumed"), which is acceptable because that window is 2x the TTL and
 # the consumed-token hash space is collision-resistant.
 TOMBSTONE_TTL_SECONDS: Final[int] = 600
@@ -97,7 +97,7 @@ EXPIRED_TTL_SECONDS: Final[int] = 24 * 60 * 60
 # LAN client hammering /system would accrete hash entries for the full 24h
 # horizon and could OOM a 512MB Pi Zero. The cap bounds memory regardless of
 # request rate; eviction is oldest-first and only ever degrades a very stale tap
-# back to the pre-#597 "invalid" dead-end — never to anything unsafe. 4096 is
+# back to the pre-litclock-dev#597 "invalid" dead-end — never to anything unsafe. 4096 is
 # orders of magnitude above a real single-user device's daily issuance.
 EXPIRED_MAX_ENTRIES: Final[int] = 4096
 

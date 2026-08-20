@@ -1,7 +1,7 @@
 [Unit]
 Description=LitClock Display Update
 Documentation=https://github.com/kapoorankush/litclock
-# EPIC #383 PR2 (#388): hold quotes until the post-WiFi handoff completes.
+# EPIC litclock-dev#383 PR2 (litclock-dev#388): hold quotes until the post-WiFi handoff completes.
 # control_server writes /etc/litclock/.handoff-complete once the user taps Done
 # (or confirms a timezone, or the 120s timer fires WITH a known tz). Until then
 # the timer keeps firing but this oneshot is a no-op (condition unmet, recorded

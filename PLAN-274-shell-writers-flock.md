@@ -1,8 +1,8 @@
-# PLAN — Issue #274: shell writers bypass env.sh flock
+# PLAN — Issue litclock-dev#274: shell writers bypass env.sh flock
 
 ## Problem statement
 
-Three shell writers mutate `/home/pi/litclock/env.sh` outside the `fcntl.flock` sidecar that `config.atomic_update` introduced in PR #272 (#253). A concurrent PWA Settings save and weekly auto-update, gift-prep, or reset-setup can interleave: shell does non-atomic `>>` / `cat >`, Python does read+`os.replace`. Last-writer-wins either silently drops a user save or drops the new sample-merged var, and a power loss mid-`>>` can leave env.sh half-written.
+Three shell writers mutate `/home/pi/litclock/env.sh` outside the `fcntl.flock` sidecar that `config.atomic_update` introduced in PR litclock-dev#272 (litclock-dev#253). A concurrent PWA Settings save and weekly auto-update, gift-prep, or reset-setup can interleave: shell does non-atomic `>>` / `cat >`, Python does read+`os.replace`. Last-writer-wins either silently drops a user save or drops the new sample-merged var, and a power loss mid-`>>` can leave env.sh half-written.
 
 ## Current state
 
@@ -83,7 +83,7 @@ with_env_lock() {
 - If env.sh does not exist yet (first-boot, before `cp env.sh.sample env.sh` at `update.sh:511`): create the lockfile anyway via `: > "$lock"` / `sudo touch`. The lock has no contents; only its inode matters. Owner can be `pi` or `root`; flock works regardless.
 - Lockfile parent dir is `$INSTALL_DIR` (always exists on a provisioned Pi). No `mkdir -p` needed.
 
-### Self-modifying update.sh interaction (PR #94)
+### Self-modifying update.sh interaction (PR litclock-dev#94)
 
 The Phase 3 sample merge runs at `update.sh:484`, *after* the self-reexec checksum guard at `update.sh:404-408`. So by the time we acquire the env.sh flock, we're already executing from the new on-disk `update.sh` bytes — no risk of a stale-fd interaction with the flock subshell.
 
@@ -96,7 +96,7 @@ The other flock that update.sh holds is `/var/lib/litclock/update.lock` (`update
 | 1 | env.sh missing (first-boot) | Lockfile is independent; create it. The pre-existing fallback at `update.sh:509-512` (`cp env.sh.sample env.sh`) stays outside the lock — no concurrent writer exists at that point in the boot sequence (litclock-control gated by `.setup-complete`, see `systemd/litclock-control.service:10`). |
 | 2 | Lockfile dir missing | `$INSTALL_DIR` always exists once we are inside any of these scripts (they all reference `$INSTALL_DIR/env.sh`). No extra `mkdir`. |
 | 3 | `set -e` semantics | `update.sh` has no `set -e` — keep helper return-code-based, never let an inner `chown`/`stat` failure abort. `prepare-for-cloning.sh` has `set -e` — wrap the helper call in an explicit `|| log_warn …` so a lock timeout doesn't kill the whole prep flow. |
-| 4 | update.sh self-modification (#94) | Phase 3 is post-checksum-reexec; safe. |
+| 4 | update.sh self-modification (litclock-dev#94) | Phase 3 is post-checksum-reexec; safe. |
 | 5 | Failure mode — block forever? | NO. `update.sh` runs in systemd weekly; blocking on a stuck PWA lock would defer the update indefinitely. **Use `flock -w 30 -E 75` (30s wait, exit 75 on timeout)** for all three callers. Rationale: a healthy `atomic_update` holds the lock for ~5ms; 30s is 6000× headroom. `update.sh` on timeout: warn + skip Phase 3 (resume next tick). `reset-setup.sh` + `prepare-for-cloning.sh` on timeout: warn + abort the env.sh step but continue the rest (user can rerun; the WiFi-wipe / .setup-complete clear is the more important part of those flows). |
 | 6 | Ownership preservation | `atomic_write_env_sh` does `stat -c '%U:%G' "$dest"` + `chown` on the staged tmp BEFORE `mv`. Matches Python side (`config.py` uses fchown on tmp fd). |
 | 7 | Atomicity on shell side | Move from `>>` / `cat >` to write-tmp-then-`mv -f` so a power loss mid-write leaves either pre- or post-state, never torn. (`mv` within the same filesystem is `rename(2)` — atomic on ext4.) Matches the `os.replace` guarantee (issue Acceptance criterion 3). |
@@ -157,7 +157,7 @@ JS tests: N/A.
 
 ## Rollout / risk
 
-- **Single PR, file-disjoint at directory level from active Triangle D candidates** (#264 src/literary_clock, #355 tests/test_wifi_retry_flow) per MEMORY.md — safe to ship in parallel.
+- **Single PR, file-disjoint at directory level from active Triangle D candidates** (litclock-dev#264 src/literary_clock, litclock-dev#355 tests/test_wifi_retry_flow) per MEMORY.md — safe to ship in parallel.
 - **No release tag needed for the fix itself** — pure shell + helper addition. Will land via auto-update once a v0.211.x bump fires.
 - **Risk vectors**:
   1. Holding the flock longer than expected in `update.sh` Phase 3 would defer concurrent PWA Settings saves. Phase 3 loops over ~10 lines of env.sh.sample; bounded ms. The 30s timeout on the *opposite* side (PWA) protects user UX.

@@ -1,4 +1,4 @@
-"""Drift guard for requirements-apt.txt (#214).
+"""Drift guard for requirements-apt.txt (litclock-dev#214).
 
 requirements-apt.txt is the single source of truth for Python package
 names that come from apt on the Pi and must NOT be pip-installed into
@@ -13,7 +13,7 @@ This test catches the drift scenarios we care about:
   1. A new python3-* GPIO package is added to pi-gen and a corresponding
      pip entry is added to requirements.txt, but the operator forgets to
      add the pip name to requirements-apt.txt → venv rebuild on-device
-     tries to compile the package as a sdist → fail (#214 repeat).
+     tries to compile the package as a sdist → fail (litclock-dev#214 repeat).
 
   2. An apt package is removed from pi-gen but its pip name is left in
      requirements-apt.txt → filter excludes something that should now be
@@ -95,7 +95,7 @@ class TestAptProvisionedDrift:
         subsequent drift check is meaningless."""
         assert REQUIREMENTS_APT.is_file(), (
             "requirements-apt.txt must exist at the repo root — it's the "
-            "source of truth for apt-provisioned package filtering (#214)"
+            "source of truth for apt-provisioned package filtering (litclock-dev#214)"
         )
 
     def test_every_apt_entry_has_known_mapping(self):
@@ -113,7 +113,7 @@ class TestAptProvisionedDrift:
         )
 
     def test_pi_gen_gpio_packages_are_in_requirements_apt(self):
-        """#214 core guard: every python3-* GPIO-family package that
+        """litclock-dev#214 core guard: every python3-* GPIO-family package that
         pi-gen installs MUST have its pip name in requirements-apt.txt.
         Otherwise an on-device venv rebuild tries to pip-compile it as
         sdist and fails on a gcc-less image."""
@@ -126,7 +126,7 @@ class TestAptProvisionedDrift:
         assert not missing, (
             f"pi-gen installs these apt packages but requirements-apt.txt "
             f"doesn't filter their pip equivalents — on-device venv "
-            f"rebuild would try to pip-compile them (#214): {missing}"
+            f"rebuild would try to pip-compile them (litclock-dev#214): {missing}"
         )
 
     def test_requirements_apt_entries_map_to_installed_apt_packages(self):
@@ -155,26 +155,26 @@ class TestAptProvisionedDrift:
         )
 
     def test_rpi_gpio_not_reintroduced(self):
-        """#214 guard: RPi.GPIO was removed from requirements.txt because
+        """litclock-dev#214 guard: RPi.GPIO was removed from requirements.txt because
         the runtime chain (waveshare_epd.epd7in5_V2 → epdconfig.py) binds
         to gpiozero's lgpio pin factory and never imports RPi.GPIO. Having
         RPi.GPIO installed in the venv creates a subtle risk: gpiozero can
         silently fall back to RPi.GPIO as its pin_factory, which uses
         /dev/gpiomem with different reset-pulse timing than lgpio's
         /dev/gpiochip0 — a known correlate with flaky Waveshare 7.5\"V2
-        init. Removing it also eliminates the #214 gcc-compile failure.
+        init. Removing it also eliminates the litclock-dev#214 gcc-compile failure.
         Do not reintroduce without re-running the pin-factory probe.
         """
         req_names = _parse_requirements_names(REQUIREMENTS)
         assert "RPi.GPIO" not in req_names, (
-            "RPi.GPIO was removed from requirements.txt in #214 because it's "
+            "RPi.GPIO was removed from requirements.txt in litclock-dev#214 because it's "
             "unused at runtime (proven via pin-factory probe on clean Pi) and "
             "its presence risks gpiozero silently picking it over lgpio. Do "
             "not reintroduce without re-verifying the pin_factory binding."
         )
         pi_gen_pkgs = _parse_nonblank_lines(PI_GEN_PACKAGES)
         assert "python3-rpi.gpio" not in pi_gen_pkgs, (
-            "python3-rpi.gpio was removed from pi-gen 00-packages in #214 "
+            "python3-rpi.gpio was removed from pi-gen 00-packages in litclock-dev#214 "
             "(see test_rpi_gpio_not_reintroduced docstring for full rationale)."
         )
 

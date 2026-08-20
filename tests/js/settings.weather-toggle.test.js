@@ -1,8 +1,8 @@
 // Tests for the Weather "Show on display" toggle auto-save (settings.js).
 //
-// #346 introduced this toggle with a hand-rolled AbortController auto-save
-// handler. #458 converged it onto the shared `wireBooleanToggleAutoSave`
-// helper (same path as the Advanced toggles), and #457 changed that helper
+// litclock-dev#346 introduced this toggle with a hand-rolled AbortController auto-save
+// handler. litclock-dev#458 converged it onto the shared `wireBooleanToggleAutoSave`
+// helper (same path as the Advanced toggles), and litclock-dev#457 changed that helper
 // to serialize saves instead of aborting. The toggle had NO dedicated JS
 // coverage before; this suite pins the convergence: the Weather toggle must
 // still PATCH section="weather"/WEATHER_ENABLED, surface its own failure
@@ -15,7 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { installFetchMock, loadScript } from "./helpers/loadScript.js";
 
-// Mirror the Weather section markup (settings.html.j2, post-#337-A9 — the
+// Mirror the Weather section markup (settings.html.j2, post-litclock-dev#337-A9 — the
 // section is reduced to the visibility toggle; city/zip moved to Location).
 function buildWeatherDom({ enabled = false } = {}) {
   const chk = enabled ? "checked" : "";
@@ -57,7 +57,7 @@ afterEach(() => {
   document.documentElement.classList.remove("has-js");
 });
 
-describe("Weather toggle auto-save (#458 convergence onto wireBooleanToggleAutoSave)", () => {
+describe("Weather toggle auto-save (litclock-dev#458 convergence onto wireBooleanToggleAutoSave)", () => {
   it("toggling on POSTs section=weather + WEATHER_ENABLED=true to /api/settings", async () => {
     buildWeatherDom({ enabled: false });
     mock.register(/^\/api\/settings$/, { status: 200, body: { ok: true } });

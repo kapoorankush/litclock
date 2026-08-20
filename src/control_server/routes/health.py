@@ -28,7 +28,7 @@ def health() -> tuple[object, int]:
     resp = jsonify(
         {
             "ok": True,
-            # Identity marker for the cross-origin mDNS bookmark probe (#487).
+            # Identity marker for the cross-origin mDNS bookmark probe (litclock-dev#487).
             # The probe reads this to confirm the responder is actually THIS
             # LitClock and not some other `.local` device answering on the port.
             "app": "litclock",
@@ -36,7 +36,7 @@ def health() -> tuple[object, int]:
             "uptime_s": int(time.monotonic() - _APP_START_MONOTONIC),
         }
     )
-    # CORS (#487): the mDNS bookmark probe in status.js fetches this endpoint
+    # CORS (litclock-dev#487): the mDNS bookmark probe in status.js fetches this endpoint
     # cross-origin (the PWA is loaded from the IP origin, the probe targets the
     # `litclock.local` origin) and must READ the body to verify identity. Before
     # this, the probe used an opaque `mode:'no-cors'` fetch that could only tell

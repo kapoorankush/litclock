@@ -1,4 +1,4 @@
-/* Diagnostics shortcut ribbon + live-logs drawer (#416 PR3b).
+/* Diagnostics shortcut ribbon + live-logs drawer (litclock-dev#416 PR3b).
  *
  * The ribbon and drawer live in base.html.j2 because they're cross-cutting
  * — every tab can open the drawer to peek at the live log stream. CSS here

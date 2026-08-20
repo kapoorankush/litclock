@@ -1,9 +1,9 @@
-// vitest + jsdom harness for control_server static/js/* (#338).
+// vitest + jsdom harness for control_server static/js/* (litclock-dev#338).
 //
 // pretendToBeVisual:true is required because src/control_server/static/js/
 // updates.js uses requestAnimationFrame inside openConfirmSheet() without a
 // fallback. jsdom only exposes rAF when this flag is set; without it the
-// dialog never reaches its open state and the optimistic-tick test for #329
+// dialog never reaches its open state and the optimistic-tick test for litclock-dev#329
 // can't get past the confirm modal.
 //
 // isolate:true gives each test FILE a fresh jsdom (default since v0.34, pinned

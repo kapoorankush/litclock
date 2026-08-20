@@ -26,7 +26,7 @@ cd /home/pi/litclock
 # Ensure piwheels is configured in /etc/pip.conf. Raspberry Pi OS ships
 # this by default, but reinforce so on-device pip installs (update.sh)
 # always see pre-built aarch64 wheels and don't fall back to sdist
-# compilation on a gcc-less image (#214). Idempotent: only write if
+# compilation on a gcc-less image (litclock-dev#214). Idempotent: only write if
 # piwheels isn't already configured, so we don't clobber settings a
 # future Pi OS release might add.
 if [ ! -f /etc/pip.conf ] || ! grep -q 'piwheels' /etc/pip.conf 2>/dev/null; then
@@ -37,7 +37,7 @@ EOF
 fi
 
 # Create venv with access to system packages (GPIO libs are apt-installed
-# to avoid QEMU compilation issues — see #127)
+# to avoid QEMU compilation issues — see litclock-dev#127)
 python3 -m venv --system-site-packages venv
 ./venv/bin/pip install --upgrade pip
 
@@ -45,17 +45,17 @@ python3 -m venv --system-site-packages venv
 # listed in requirements-apt.txt are apt-provisioned and visible via
 # --system-site-packages — skip them here so pip doesn't try to install
 # (and fail to compile) what apt already provides. Single source of truth
-# for apt-provisioned names is requirements-apt.txt (#214).
+# for apt-provisioned names is requirements-apt.txt (litclock-dev#214).
 EXCLUDE_RE=$(grep -vE '^[[:space:]]*(#|$)' requirements-apt.txt | sed 's/\./\\./g' | paste -sd'|')
 grep -vE "^(${EXCLUDE_RE})==" requirements.txt > /tmp/requirements-pigen.txt
-# --upgrade mirrors update.sh (#321). Image build is a fresh
+# --upgrade mirrors update.sh (litclock-dev#321). Image build is a fresh
 # venv so this is a no-op here, but parity matters: anyone reading these
 # three install paths should see the same pip posture. Eager strategy
 # intentionally NOT used — see update.sh comment for the rationale.
 ./venv/bin/pip install --upgrade -r /tmp/requirements-pigen.txt
 rm -f /tmp/requirements-pigen.txt
 
-# Clean pip cache to reduce image size (#112)
+# Clean pip cache to reduce image size (litclock-dev#112)
 rm -rf /root/.cache/pip /home/pi/.cache/pip
 
 # WiFi provisioning now uses native nmcli (NetworkManager) instead of the

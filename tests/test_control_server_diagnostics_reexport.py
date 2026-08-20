@@ -20,7 +20,7 @@ import pytest
 from control_server.routes import diagnostics
 
 # Symbols every existing test or production importer reaches into via the
-# package namespace. Derived from grep across master pre-#419 PR1.
+# package namespace. Derived from grep across master pre-litclock-dev#419 PR1.
 EXPECTED_PUBLIC = {
     # Route + blueprint
     "bp",
@@ -109,7 +109,7 @@ EXPECTED_PUBLIC = {
     "_format_log_ts",
     # _coerce_float is used by anomaly logic + tests may reach in
     "_coerce_float",
-    # Format helper (canonical name; pre-#419's leading-underscore alias
+    # Format helper (canonical name; pre-litclock-dev#419's leading-underscore alias
     # was dropped in PR1 because grep across master found zero callers
     # and the alias was misleading — calls inside _collectors.py use
     # format_uptime directly, so monkey-patching ``diagnostics._format_uptime``

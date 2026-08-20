@@ -1,4 +1,4 @@
-"""Cached subprocess helper for control_server consumers (#416 / design C2=A).
+"""Cached subprocess helper for control_server consumers (litclock-dev#416 / design C2=A).
 
 Factored out of ``routes/status.py:_cached_subprocess`` so /api/status,
 /api/diagnostics, and any future route that shells out for a cheap fact
@@ -7,14 +7,14 @@ implementation. Status keeps its existing 5-second TTL via the default;
 Diagnostics passes ``ttl=20`` for steady-state cache warmth on the cold-
 cache 30s-poll cycle (per /plan-eng-review C2=A).
 
-Two return-type contracts (#428 PR1a):
+Two return-type contracts (litclock-dev#428 PR1a):
 
 - :func:`cached_subprocess` — returns ``str`` on success (rc=0), ``""``
   on non-zero exit (a SUCCESS that produced no stdout), and ``None`` on
   subprocess failure (timeout / missing binary / SubprocessError). The
   ``None`` distinction lets classifier callers (anomaly logic) tell
   "binary ran fine, produced nothing" from "binary couldn't run."
-- Failure cache window (#428 PR1b /plan-eng-review P-2): success entries
+- Failure cache window (litclock-dev#428 PR1b /plan-eng-review P-2): success entries
   use the caller's ``ttl``; failure entries (``None``) use
   ``min(ttl, FAILURE_TTL_CAP_S)`` (5s). A wedged binary that timed
   out yesterday doesn't keep poisoning a 20s diagnostics cache; recovery
@@ -49,7 +49,7 @@ from collections import OrderedDict
 DEFAULT_TTL_S = 5.0
 DEFAULT_TIMEOUT_S = 2.0
 
-# Short cache window for subprocess failures (#428 PR1b /plan-eng-review P-2).
+# Short cache window for subprocess failures (litclock-dev#428 PR1b /plan-eng-review P-2).
 # A wedged binary that times out at ``timeout`` seconds would otherwise pin
 # the failure (cached as ``None``) for the caller's full ``ttl`` (20s for
 # diagnostics), keeping the next 6-7 poll cycles from re-trying. 5s strikes
@@ -61,7 +61,7 @@ DEFAULT_TIMEOUT_S = 2.0
 FAILURE_TTL_CAP_S = 5.0
 
 # Module-level cache, shared across threads. Bounded with LRU eviction
-# (#416 PR1 /review ASK-5=A) so a future caller varying the key per call
+# (litclock-dev#416 PR1 /review ASK-5=A) so a future caller varying the key per call
 # (e.g. embedding a hostname) can't leak entries across the process
 # lifetime. Today's known callers use 3-4 fixed string literals, well
 # under the cap; the cap is a hard invariant, not a tuning parameter.
@@ -75,7 +75,7 @@ FAILURE_TTL_CAP_S = 5.0
 # call stays OUTSIDE the lock so a slow shell-out doesn't serialise the
 # whole cache.
 #
-# Entry value is ``str | None`` (#428 PR1a): ``None`` is the cached
+# Entry value is ``str | None`` (litclock-dev#428 PR1a): ``None`` is the cached
 # representation of a subprocess failure, distinct from ``""`` (the
 # cached representation of a successful run that produced empty stdout).
 MAX_CACHE_ENTRIES = 64
@@ -107,7 +107,7 @@ def cached_subprocess(
     The short failure-cache window still applies — display callers also
     benefit from quicker recovery once a wedged binary unwedges.
 
-    The cache is bounded at :data:`MAX_CACHE_ENTRIES` (#416 PR1 /review
+    The cache is bounded at :data:`MAX_CACHE_ENTRIES` (litclock-dev#416 PR1 /review
     ASK-5=A) with LRU eviction — a cache miss on a full cache evicts the
     least-recently-used entry before inserting. Cache hits on the warm
     path call ``move_to_end`` to refresh the LRU position.
@@ -121,7 +121,7 @@ def cached_subprocess(
     with _cache_lock:
         hit = _cache.get(key)
         if hit is not None:
-            # #428 PR1b (P-2): failure entries (cached ``None``) expire at
+            # litclock-dev#428 PR1b (P-2): failure entries (cached ``None``) expire at
             # ``min(ttl, FAILURE_TTL_CAP_S)`` instead of the caller's
             # ``ttl``. Diagnostics (ttl=20s) sees failures rotate every 5s
             # so a transient wedged binary stops poisoning the page for
@@ -144,11 +144,11 @@ def cached_subprocess(
         )
         out = result.stdout.strip() if result.returncode == 0 else ""
     except (FileNotFoundError, subprocess.SubprocessError):
-        # #428 PR1a: distinguish "binary couldn't run" (None) from
+        # litclock-dev#428 PR1a: distinguish "binary couldn't run" (None) from
         # "binary ran but produced no stdout" ("") so classifier callers
         # can tell a transient failure from a steady-state empty result.
         out = None
-    # #428 PR1b /review ADV-1 (cross-model Claude+Codex): capture the
+    # litclock-dev#428 PR1b /review ADV-1 (cross-model Claude+Codex): capture the
     # write-time monotonic AFTER subprocess.run returns. The pre-call
     # ``now`` (line 120) is correct for the cache-hit window check (it
     # represents the caller's request arrival), but using it for the
@@ -187,9 +187,9 @@ def cached_subprocess_or_empty(
     ``_collectors.py``'s readers that immediately ``.splitlines()``/
     ``.strip()`` the result). Use raw :func:`cached_subprocess` in
     classifier callers where the ``None`` vs ``""`` distinction matters
-    (#428 PR1b will branch the anomaly classifier on that distinction).
+    (litclock-dev#428 PR1b will branch the anomaly classifier on that distinction).
 
-    Per #428 PR1a /plan-eng-review CQ-1: one helper at the boundary is
+    Per litclock-dev#428 PR1a /plan-eng-review CQ-1: one helper at the boundary is
     DRY-positive vs ``cached_subprocess(...) or ""`` repeated at every
     site, and the name reads as a contract ("I accept failure as empty").
     """

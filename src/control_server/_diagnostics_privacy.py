@@ -1,4 +1,4 @@
-"""Per-row privacy policy for the /diagnostics surface (#416 / design C1=A, OV-6=A).
+"""Per-row privacy policy for the /diagnostics surface (litclock-dev#416 / design C1=A, OV-6=A).
 
 The diagnostic payload is designed to be pasted into a public GitHub issue,
 which means three classes of data need different treatment:

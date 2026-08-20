@@ -1,6 +1,6 @@
-"""Tests for scripts/litclock-lkg-record.sh (issues #209, #241).
+"""Tests for scripts/litclock-lkg-record.sh (issues litclock-dev#209, litclock-dev#241).
 
-The LKG writer is a fast oneshot driven by litclock-lkg.timer (#241).
+The LKG writer is a fast oneshot driven by litclock-lkg.timer (litclock-dev#241).
 It records HEAD to /var/lib/litclock/lkg-sha when three gates pass:
 
   1. Post-update grace marker is absent or older than GRACE_SECONDS.
@@ -269,13 +269,13 @@ class TestAtomicWrite:
 
 
 class TestStructural:
-    """Grep invariants pinning the post-#241 design decisions."""
+    """Grep invariants pinning the post-litclock-dev#241 design decisions."""
 
     def _body(self):
         return SCRIPT.read_text()
 
     def test_no_sleep_in_script(self):
-        """Issue #241 — `sleep` was the source of the heartbeat-window
+        """Issue litclock-dev#241 — `sleep` was the source of the heartbeat-window
         race. The polling design must have NO sleep at all."""
         body = self._body()
         for line in body.splitlines():
@@ -285,7 +285,7 @@ class TestStructural:
             assert not stripped.startswith("sleep "), f"sleep found in non-comment line: {line!r}"
 
     def test_no_systemctl_is_active_check(self):
-        """Issue #241 — `systemctl is-active` was the buggy gate. The
+        """Issue litclock-dev#241 — `systemctl is-active` was the buggy gate. The
         replacement gate is the heartbeat mtime check."""
         body = self._body()
         assert "systemctl is-active" not in body, "is-active gate was the bug; do not reintroduce"

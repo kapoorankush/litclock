@@ -2296,7 +2296,7 @@ class TestConfirmSheetModal:
 
     def test_prepare_for_gift_modal_uses_locked_copy_verbatim(self, client):
         """DESIGN.md §"Confirm modals — copy library" — Prepare for Gifting
-        row. Pinned post-#317 item 7 move so a future refactor can't drift
+        row. Pinned post-litclock-dev#317 item 7 move so a future refactor can't drift
         the destructive copy."""
         body = client.get("/system").data
         assert b"Prepare for Gifting?" in body

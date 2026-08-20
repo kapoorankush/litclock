@@ -1,5 +1,5 @@
 """Tests for the shared bounded readers in src/control_server/update_state.py
-(#336 — DoS / hardening guards reused by every status-file consumer).
+(litclock-dev#336 — DoS / hardening guards reused by every status-file consumer).
 
 The route-level coverage for these helpers lives in:
     tests/test_control_server.py::TestLastUpdateBoundedReads

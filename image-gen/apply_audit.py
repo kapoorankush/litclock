@@ -1,4 +1,4 @@
-"""Apply the reviewed #192 audit to produce litclock_annotated_audited.csv.
+"""Apply the reviewed litclock-dev#192 audit to produce litclock_annotated_audited.csv.
 
 Reads a reviewed CSV (audit_fails.csv with a `decision` column filled in by
 hand) and writes a new corpus with DROP rows removed. Decisions:

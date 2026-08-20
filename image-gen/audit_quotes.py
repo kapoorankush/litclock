@@ -2,7 +2,7 @@
 
 Uses the Anthropic API (claude-sonnet-4-6) as an LLM judge. Each quote is classified
 PASS (scene happens at the label time) or FAIL (substring is a duration, coincidental
-number, or the scene is set at a different time). See issue #192.
+number, or the scene is set at a different time). See issue litclock-dev#192.
 
 Usage:
     # Full audit (~5-10 min, ~$4-5 on ~4800 rows):
@@ -52,7 +52,7 @@ _PROGRAMMING_ERRORS = (TypeError, NameError, AttributeError, KeyError, IndexErro
 # so a runaway model response can't bloat the output file.
 RATIONALE_MAX_LEN = 300
 
-# Gold-set calibration thresholds (see issue #192).
+# Gold-set calibration thresholds (see issue litclock-dev#192).
 GOLD_TUNE_SIZE = 20
 GOLD_PRECISION_GATE = 0.80
 GOLD_RECALL_GATE = 0.90

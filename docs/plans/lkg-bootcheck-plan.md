@@ -1,7 +1,7 @@
-# Plan: LKG auto-revert (`litclock-bootcheck.service`) — TODOS.md follow-up to #209
+# Plan: LKG auto-revert (`litclock-bootcheck.service`) — TODOS.md follow-up to litclock-dev#209
 
 ## Goal
-Close the "smoke passed but runtime crashes" brick class. The #209 writer records the last-known-good SHA to `/var/lib/litclock/lkg-sha`; this ships the consumer that self-heals a bricked device with no SSH / no SD reflash. Hard prerequisite for #82 (public release: SSH is off, recipients have no other recovery path).
+Close the "smoke passed but runtime crashes" brick class. The litclock-dev#209 writer records the last-known-good SHA to `/var/lib/litclock/lkg-sha`; this ships the consumer that self-heals a bricked device with no SSH / no SD reflash. Hard prerequisite for litclock-dev#82 (public release: SSH is off, recipients have no other recovery path).
 
 ## What exists (from recon)
 - `litclock-lkg.service` + `.timer` run `scripts/litclock-lkg-record.sh`, writing a raw 40-char SHA to `/var/lib/litclock/lkg-sha` only when 3 gates pass: post-update grace expired (`post-update-grace-until` mtime > 900s), heartbeat fresh (`/run/litclock/heartbeat` mtime < 180s), and HEAD != recorded.
@@ -50,7 +50,7 @@ Per the TODO wording ("reverts … after 3 consecutive failed boots, then reboot
 - When it arms a fresh `lkg-sha` (all gates pass, write succeeds): also clear `rollback-sha` (new code is now the known-good; old rollback target retired).
 
 ### Reboot authorization
-`020_litclock-control` already authorizes `/usr/bin/systemctl reboot`. bootcheck runs as pi and uses the same scoped grant — no new sudoers entry, works after #387 drops `010`. Verify the exact authorized form (`reboot` vs `reboot --no-block`).
+`020_litclock-control` already authorizes `/usr/bin/systemctl reboot`. bootcheck runs as pi and uses the same scoped grant — no new sudoers entry, works after litclock-dev#387 drops `010`. Verify the exact authorized form (`reboot` vs `reboot --no-block`).
 
 ## Reboot-loop bound (safety)
 Worst case: bad update → 3 natural power-cycles → revert + 1 reboot → reverted code also bad → 3 more cycles → give-up splash, no further reboots. Bounded. The give-up splash tells the user to reflash (last resort).

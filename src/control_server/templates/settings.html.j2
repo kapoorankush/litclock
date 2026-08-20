@@ -45,7 +45,7 @@
   </div>
 {% endif %}
 
-{# #274 follow-up #2 — Update-in-progress banner. Surfaces when an
+{# litclock-dev#274 follow-up #2 — Update-in-progress banner. Surfaces when an
    update.sh run is mid-flight (state=running) and currently in Phase 3
    (env.sh merge — holds the shared sidecar flock) or Phase 4 (pip
    install — the long-running phase where users are most likely to see
@@ -57,7 +57,7 @@
 
    Rendered hidden by default; settings.js polls /api/status and toggles
    [hidden] based on update_state + update_phase_index. Always rendered
-   so the JS doesn't have to manage element creation (same #290 pattern
+   so the JS doesn't have to manage element creation (same litclock-dev#290 pattern
    as the status-page stale-banner).
 
    role=status + aria-live=polite — informational, not interrupting. #}
@@ -70,22 +70,22 @@
 </div>
 
 {# Pre-compute a few state flags so Jinja conditionals below stay readable.
-   #337 A1: WEATHER_LOCATION_MODE defaults to 'auto' for pre-S2 envs and
+   litclock-dev#337 A1: WEATHER_LOCATION_MODE defaults to 'auto' for pre-S2 envs and
    for envs where the IP-geo resolver hasn't run yet — see config.py
    _validate_weather_location_mode for the read-side default semantics.
-   #337 A17: Advanced (`<details>`) starts EXPANDED when raw coords are in
+   litclock-dev#337 A17: Advanced (`<details>`) starts EXPANDED when raw coords are in
    use, detected as MODE=specific + lat/lon populated + LOCATION_NAME
    empty (geocoded saves write a name; raw-coord saves don't). Else
    collapsed by default.
-   Env-key naming note (#337 A9 / A4): keys keep the WEATHER_* prefix for
+   Env-key naming note (litclock-dev#337 A9 / A4): keys keep the WEATHER_* prefix for
    backward compat with literary_clock.py + weather_providers/, even though
    the data is conceptually location data that drives weather + timezone +
-   units. Renaming is out of scope for #337 — too many consumers. #}
+   units. Renaming is out of scope for litclock-dev#337 — too many consumers. #}
 {%- set current_mode = (s.get('WEATHER_LOCATION_MODE') or 'auto') -%}
 {%- set has_coords = (s.get('WEATHER_LATITUDE') and s.get('WEATHER_LONGITUDE')) -%}
 {%- set advanced_in_use = current_mode == 'specific' and has_coords and not s.get('WEATHER_LOCATION_NAME') -%}
 
-{# ─── Location (#337 A9/A10 — promoted to first; was buried at #4) ────── #}
+{# ─── Location (litclock-dev#337 A9/A10 — promoted to first; was buried at #4) ────── #}
 <section class="settings-section" role="region" aria-labelledby="settings-location-h">
   <h2 id="settings-location-h" class="settings-section__title">Location</h2>
   <p class="settings-section__hint">Used for weather and timezone.</p>
@@ -98,7 +98,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="section" value="location">
 
-    {# #337 A12: segmented horizontal pill (Automatic | Specific). The pill is
+    {# litclock-dev#337 A12: segmented horizontal pill (Automatic | Specific). The pill is
        a styled wrapper around two `<input type=radio>` so it degrades to a
        working radio group with no JS (server-side validation handles
        MODE=specific + empty Place per A14). JS clicks the actual radio when
@@ -179,7 +179,7 @@
         {% endif %}
       </div>
 
-      {# #337 A5 worldwide checkbox. NOT persisted — form-state only.
+      {# litclock-dev#337 A5 worldwide checkbox. NOT persisted — form-state only.
          The checkbox is a per-query disambiguator: when checked, the
          server passes `country_code=None` to Nominatim, letting a US-WiFi
          user resolve UK postcodes like SW1A 1AA. Composite preview cache
@@ -199,7 +199,7 @@
         </p>
       </div>
 
-      {# #337 A17: <details> for the power-user raw-coords escape hatch.
+      {# litclock-dev#337 A17: <details> for the power-user raw-coords escape hatch.
          Open by default when Advanced is in use (raw coords without a
          geocoded name). Help text under the summary tells the user that
          these override the Place input when saved. #}
@@ -242,7 +242,7 @@
     </fieldset>
 
     <div class="settings-form__actions">
-      {# #337 A10 + A14: Save disabled when MODE=specific AND Place is empty.
+      {# litclock-dev#337 A10 + A14: Save disabled when MODE=specific AND Place is empty.
          JS keeps this in sync as the user types / switches pills; the
          server backstops with a "Type a place or pick Automatic." field
          error if a no-JS client submits the empty Specific state. #}
@@ -255,10 +255,10 @@
     </div>
   </form>
 
-  {# #337 A18: browser-timezone fallback row. Renders only when location is
+  {# litclock-dev#337 A18: browser-timezone fallback row. Renders only when location is
      unresolvable (no coords). The detected tz from `Intl.DateTimeFormat()`
      is injected into the button label by JS so the user confirms the value
-     before tapping. Tapping POSTs to /api/handoff/set-timezone (#388
+     before tapping. Tapping POSTs to /api/handoff/set-timezone (litclock-dev#388
      existing endpoint). Hidden by default; JS shows after detecting the
      condition + Intl availability. #}
   {% if not has_coords %}
@@ -272,7 +272,7 @@
   {% endif %}
 </section>
 
-{# ─── Weather (#337 A9 — toggle only; lat/lon moved to Location) ──────── #}
+{# ─── Weather (litclock-dev#337 A9 — toggle only; lat/lon moved to Location) ──────── #}
 <section class="settings-section" role="region" aria-labelledby="settings-weather-h">
   <h2 id="settings-weather-h" class="settings-section__title">Weather</h2>
 
@@ -294,8 +294,8 @@
              {% if s.get('WEATHER_ENABLED', 'true') == 'true' %}checked{% endif %}>
     </div>
 
-    {# No Save button — the toggle auto-saves via the #346 settings.js pattern
-       (serialized saves + 504 lock-timeout handling + revert-on-failure, #457).
+    {# No Save button — the toggle auto-saves via the litclock-dev#346 settings.js pattern
+       (serialized saves + 504 lock-timeout handling + revert-on-failure, litclock-dev#457).
        The no-JS fallback Save still works via this hidden form-actions row that
        JS removes on load. #}
     <div class="settings-form__actions" data-no-js-only>
@@ -304,7 +304,7 @@
   </form>
 </section>
 
-{# ─── Temperature (#337 A11 — renamed from Units; A13 — auto-save pill) ── #}
+{# ─── Temperature (litclock-dev#337 A11 — renamed from Units; A13 — auto-save pill) ── #}
 <section class="settings-section" role="region" aria-labelledby="settings-temperature-h">
   <h2 id="settings-temperature-h" class="settings-section__title">Temperature</h2>
 
@@ -316,7 +316,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="section" value="units">
 
-    {# #337 A13: segmented pill, auto-saves on click via JS. No-JS fallback
+    {# litclock-dev#337 A13: segmented pill, auto-saves on click via JS. No-JS fallback
        is the radios + Save below. Per A11 we drop the "/ mph" + "/ km/h"
        wind labels because literary_clock.py only renders temperature; the
        wind units never surface in any UI. #}
@@ -392,7 +392,7 @@
              {% if allow_nsfw_on %}checked{% endif %}>
     </div>
 
-    {# #416 PR3c (F31) — opt-in for the diagnostics ribbon's full-label
+    {# litclock-dev#416 PR3c (F31) — opt-in for the diagnostics ribbon's full-label
        state. OV-D-C protects the owner persona by defaulting to a
        dots-three icon; the helper persona who actually uses the drawer
        flips this on so the affordance is discoverable for them. CSS in
@@ -419,9 +419,9 @@
     </div>
 
     {# No Save button for JS users — these are discrete toggles, so per the
-       DESIGN.md "Save-button rule" (#337 A13) they auto-save on change via the
+       DESIGN.md "Save-button rule" (litclock-dev#337 A13) they auto-save on change via the
        settings.js autoSavePatch pattern (serialized saves + revert-on-failure +
-       504 handling, #457), exactly like the Weather toggle + Temperature pill. The
+       504 handling, litclock-dev#457), exactly like the Weather toggle + Temperature pill. The
        no-JS fallback Save still works via this row, which CSS hides under
        html.has-js (settings.css [data-no-js-only]). Each toggle saves ONLY its
        own field as a JSON PATCH, so the sibling toggle is never touched. #}

@@ -1,6 +1,6 @@
 """Per-row reader tests for ``control_server.routes.diagnostics._collectors``.
 
-Pre-#419 the readers were tested indirectly via :func:`collect_diagnostics`
+Pre-litclock-dev#419 the readers were tested indirectly via :func:`collect_diagnostics`
 which depended on the real ``ip``/``nmcli``/``iw``/``journalctl``/
 ``systemctl``/``timedatectl`` binaries being installed on the test host.
 This file isolates each reader by monkey-patching ``cached_subprocess``
@@ -43,7 +43,7 @@ def fake_subprocess(monkeypatch):
     D8-honest pattern — Python binds names at import time per module, so
     a single monkeypatch can miss a binding the reader actually uses.
 
-    #428 PR1a: readers at the call sites now go through
+    litclock-dev#428 PR1a: readers at the call sites now go through
     ``cached_subprocess_or_empty`` (CQ-1 helper). Patch BOTH names at
     BOTH bindings so a test setting ``responses[key]`` hits whichever
     path the reader takes. Pre-existing tests don't care about the
@@ -55,7 +55,7 @@ def fake_subprocess(monkeypatch):
         def __init__(self):
             self.responses: dict[str, str] = {}
             self.calls: list[tuple[str, list[str]]] = []
-            # Parallel record of the keyword contract per call (#444): the
+            # Parallel record of the keyword contract per call (litclock-dev#444): the
             # per-call ``timeout`` and ``ttl`` the reader passed. Kept in a
             # separate list so the existing ``key, argv = calls[-1]`` unpack
             # sites stay untouched. ``calls`` and ``calls_kw`` are appended in
@@ -63,7 +63,7 @@ def fake_subprocess(monkeypatch):
             self.calls_kw: list[dict[str, float]] = []
 
         def __call__(self, key: str, argv: list[str], *, timeout: float, ttl: float) -> str:
-            # timeout/ttl are required keyword-only (#444 /review): every
+            # timeout/ttl are required keyword-only (litclock-dev#444 /review): every
             # diagnostics reader passes them explicitly, so a reader that
             # drops one should raise TypeError here rather than silently
             # recording a fake default that masks the regression.
@@ -74,7 +74,7 @@ def fake_subprocess(monkeypatch):
         def kw_for(self, key: str) -> dict[str, float]:
             """Return the timeout/ttl kwargs of the single call for ``key``.
 
-            Asserts EXACTLY ONE call was recorded for ``key`` (#444 /review,
+            Asserts EXACTLY ONE call was recorded for ``key`` (litclock-dev#444 /review,
             Codex): "most recent call" would let a wrong-then-retried-right
             call site pass while production still paid the bad first call.
             Raises ``AssertionError`` on zero or duplicate calls so a test
@@ -213,7 +213,7 @@ class TestReadSignalDbm:
 
 
 class TestCacheKeyContract:
-    """Pin the cache_key / ttl / timeout triple per reader (#419 F6 + D8).
+    """Pin the cache_key / ttl / timeout triple per reader (litclock-dev#419 F6 + D8).
 
     The whole point of the cache_key parameterization in _network.py is
     that status (default 5 s / 2 s) and diagnostics (20 s / 3 s with
@@ -288,7 +288,7 @@ class TestBatchedIsActive:
 
 
 class TestIsObviouslyHealthy:
-    """#443 — the lazy-tail filter (#433) must stay in lockstep with the
+    """litclock-dev#443 — the lazy-tail filter (litclock-dev#433) must stay in lockstep with the
     ``_compute_anomalies`` oneshot carve-out: oneshot units cycling through
     ``activating``/``deactivating`` during the per-minute quote paint are
     NOT anomalies and so should not pull a journal tail either. A ``failed``
@@ -317,7 +317,7 @@ class TestIsObviouslyHealthy:
 
 
 class TestFastReaderTimeoutContract:
-    """#444 — pin that the FAST diagnostics readers pass the short
+    """litclock-dev#444 — pin that the FAST diagnostics readers pass the short
     ``DIAG_SUBPROC_TIMEOUT_S`` (3 s) budget at their call sites.
 
     This is the converse of the journalctl-outlier coverage that already
@@ -325,7 +325,7 @@ class TestFastReaderTimeoutContract:
 
     - ``test_read_journal_tail_uses_journal_timeout_not_fast_timeout`` — the
       journalctl call site uses ``DIAG_JOURNAL_TIMEOUT_S`` (8 s) + 20 s ttl
-      + exactly one fork (the #427 regression guard).
+      + exactly one fork (the litclock-dev#427 regression guard).
     - ``test_journal_timeout_exceeds_fast_call_timeout`` — the constant
       relationship ``DIAG_JOURNAL_TIMEOUT_S > DIAG_SUBPROC_TIMEOUT_S``.
 
@@ -337,9 +337,9 @@ class TestFastReaderTimeoutContract:
     call's ``timeout``/``ttl`` (via ``kw_for``), so this asserts the
     *argument value* — no wall-clock race, no latency model.
 
-    The other two motivating #444 hotfix classes are also already covered:
-    #428 failure-TTL cap by ``TestFailureTtl`` (``test_subprocess_helper.py``,
-    fake-clock), #433 lazy-tail forks by ``TestLazyTailFilter``
+    The other two motivating litclock-dev#444 hotfix classes are also already covered:
+    litclock-dev#428 failure-TTL cap by ``TestFailureTtl`` (``test_subprocess_helper.py``,
+    fake-clock), litclock-dev#433 lazy-tail forks by ``TestLazyTailFilter``
     (``test_control_server_diagnostics.py``, call-count spy).
     """
 
@@ -347,7 +347,7 @@ class TestFastReaderTimeoutContract:
         # Every non-journalctl reader uses a short per-call budget so a wedged
         # nmcli/systemctl/timedatectl can't stall a page render. Two
         # representative call sites: one single-shot (timedatectl), one
-        # batched (systemctl is-active). #430 split the single shared budget
+        # batched (systemctl is-active). litclock-dev#430 split the single shared budget
         # into per-call constants; assert each site reads ITS own constant.
         units = ("litclock.service", "litclock-control.service")
         with app.app_context():
@@ -360,7 +360,7 @@ class TestFastReaderTimeoutContract:
         for kw in (tz_kw, active_kw):
             assert kw["ttl"] == _collectors.DIAG_SUBPROC_TTL_S
 
-    # #430 — every fast reader reads its OWN per-call timeout constant.
+    # litclock-dev#430 — every fast reader reads its OWN per-call timeout constant.
     # Parametrized + sentinel-monkeypatched so the assertion BITES even while
     # the constants are seeded equal (DIAG_*_TIMEOUT_S == DIAG_SUBPROC_TIMEOUT_S
     # today): a call site still wired to the shared base would record the base
@@ -392,5 +392,5 @@ class TestFastReaderTimeoutContract:
             reader()
         assert fake_subprocess.kw_for(cache_key)["timeout"] == sentinel, (
             f"{cache_key} did not read {const_name} — it's likely still wired to the shared "
-            f"DIAG_SUBPROC_TIMEOUT_S base, which defeats the #430 per-call tuning."
+            f"DIAG_SUBPROC_TIMEOUT_S base, which defeats the litclock-dev#430 per-call tuning."
         )

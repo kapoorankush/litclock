@@ -1,4 +1,4 @@
-"""Tests for scripts/boot-splash.sh and scripts/shutdown-splash.sh (issue #160)."""
+"""Tests for scripts/boot-splash.sh and scripts/shutdown-splash.sh (issue litclock-dev#160)."""
 
 from pathlib import Path
 
@@ -30,7 +30,7 @@ class TestBootSplash:
 
     def test_does_not_invoke_runtheclock_directly(self, boot_content):
         """boot-splash must NOT call runtheclock.sh directly — that races the
-        timer-fired litclock.service for SPI/GPIO (issue #269). The on-boot
+        timer-fired litclock.service for SPI/GPIO (issue litclock-dev#269). The on-boot
         clock render is triggered via ExecStartPost in litclock-splash.service
         so systemd's job queue serializes it against timer fires."""
         assert "runtheclock" not in boot_content, (
@@ -40,7 +40,7 @@ class TestBootSplash:
 
     def test_does_not_block_on_sleep(self, boot_content):
         """The original 15-second sleep delayed the first-quote render past
-        the timer's first tick (issue #269). Match any blocking `sleep` so
+        the timer's first tick (issue litclock-dev#269). Match any blocking `sleep` so
         a future regression with `sleep 30` or `sleep $DELAY` still fails."""
         import re
 
@@ -101,7 +101,7 @@ class TestShutdownSplash:
         assert "LitClock-Setup" in shutdown_content
 
     def test_welcome_message_file_is_consumed_if_present(self, shutdown_content):
-        """#280: when /etc/litclock/.welcome-message exists, use its content
+        """litclock-dev#280: when /etc/litclock/.welcome-message exists, use its content
         as the TITLE so the gifter's personalized welcome lands on the e-ink.
         Falls back to 'Welcome to LitClock' when missing/empty."""
         assert "/etc/litclock/.welcome-message" in shutdown_content
@@ -117,7 +117,7 @@ class TestShutdownSplash:
         assert ":-Welcome to LitClock}" in shutdown_content
 
     def test_suppress_marker_exits_without_painting(self, shutdown_content):
-        """#529: the Setup-Incomplete poweroff paints its recovery copy and
+        """litclock-dev#529: the Setup-Incomplete poweroff paints its recovery copy and
         needs it to persist through shutdown. The root-only suppress marker
         must short-circuit the script BEFORE any action resolution (welcome
         marker included) so nothing repaints over it."""
@@ -133,7 +133,7 @@ class TestShutdownSplash:
         assert "exit 0" in block
 
     def test_suppress_marker_is_root_owned_path_not_hint_dir(self, shutdown_content):
-        """#529 security: suppression must NOT be plantable by a pi-level
+        """litclock-dev#529 security: suppression must NOT be plantable by a pi-level
         process (it could hide the gift welcome, which pi can't otherwise
         touch). The marker therefore lives directly in root-owned /run,
         not in pi-owned /run/litclock/ where the action hint lives, and
@@ -193,7 +193,7 @@ JOB UNIT                         TYPE  STATE
 
 
 class TestShutdownActionHint:
-    """Issue #282 — explicit /run/litclock/shutdown-action hint takes
+    """Issue litclock-dev#282 — explicit /run/litclock/shutdown-action hint takes
     precedence over the racy `systemctl list-jobs` detection so callers
     that stop litclock-shutdown.service mid-script (reset-setup.sh
     --reboot) get the right splash."""
@@ -203,7 +203,7 @@ class TestShutdownActionHint:
 
     def test_hint_checked_before_list_jobs(self, shutdown_content):
         """Priority order: welcome-mode → hint file → list-jobs → poweroff.
-        Hint file must beat list-jobs (which is the racy signal #282 fixes)."""
+        Hint file must beat list-jobs (which is the racy signal litclock-dev#282 fixes)."""
         hint_idx = shutdown_content.find("/run/litclock/shutdown-action")
         list_jobs_idx = shutdown_content.find("list-jobs")
         assert hint_idx != -1 and list_jobs_idx != -1
@@ -226,7 +226,7 @@ class TestShutdownActionHint:
 
 
 class TestShutdownActionHintHardening:
-    """/review of PR #304 — hint resolver runs as User=pi but reads from
+    """/review of PR litclock-dev#304 — hint resolver runs as User=pi but reads from
     pi-owned /run/litclock/, so a hostile pi-level process can plant
     symlinks, FIFOs, or arbitrary content. Defenses below."""
 

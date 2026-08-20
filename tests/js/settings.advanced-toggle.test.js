@@ -1,12 +1,12 @@
 // Tests for the Advanced section toggle auto-save (settings.js).
 //
-// DESIGN.md "Save-button rule" (#337 A13) requires discrete controls (toggles,
+// DESIGN.md "Save-button rule" (litclock-dev#337 A13) requires discrete controls (toggles,
 // segmented pills) to auto-save on change with no Save button. The Advanced
 // section's two toggles (ALLOW_NSFW_QUOTES, SHOW_DIAGNOSTICS_SHORTCUT) were the
 // last holdout still rendering a Save button; this suite pins their conformance
 // to the same autoSavePatch pattern as the Weather toggle + Temperature pill.
 //
-// Pattern mirrors the #337 A13 Temperature-pill tests in
+// Pattern mirrors the litclock-dev#337 A13 Temperature-pill tests in
 // settings.location-pill.test.js: DOM stubbed to the post-fix template shape,
 // fetch mocked, loadScript runs the IIFE, change events drive the handler.
 
@@ -154,7 +154,7 @@ describe("Advanced toggle auto-save (DESIGN.md Save-button rule)", () => {
     globalThis.alert = origAlert;
   });
 
-  // ─── #457: serialized, coalescing saves (replaces the old abort path) ──
+  // ─── litclock-dev#457: serialized, coalescing saves (replaces the old abort path) ──
   // The helper now keeps at most ONE save in flight per control and
   // coalesces rapid taps to the latest desired value, instead of aborting
   // the in-flight fetch. These pin the convergence guarantee the old
@@ -211,7 +211,7 @@ describe("Advanced toggle auto-save (DESIGN.md Save-button rule)", () => {
   });
 
   it("on→off during an in-flight save sends the second save only AFTER the first settles (no concurrent overlap)", async () => {
-    // The headline #457 fix: because the two saves never overlap, the env.sh
+    // The headline litclock-dev#457 fix: because the two saves never overlap, the env.sh
     // flock applies them in send order, so the persisted state converges to
     // the value the user landed on (OFF) — it can never end up opposite.
     buildAdvancedDom({ nsfw: false });

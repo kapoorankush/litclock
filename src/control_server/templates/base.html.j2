@@ -18,7 +18,7 @@
   <meta name="apple-mobile-web-app-title" content="LitClock">
   <title>{% block title %}LitClock{% endblock %}</title>
   {# Inline critical CSS. iOS PWA cold launch was showing ~2s of black
-     screen (hardware-found PR #252) because the external stylesheet
+     screen (hardware-found PR litclock-dev#252) because the external stylesheet
      blocks first paint. Inlining the bg + color tokens lets the browser
      paint the antique-paper canvas as soon as the HTML head reaches the
      parser, eliminating the black flash. The full tokens.css still loads
@@ -42,7 +42,7 @@
   <link rel="icon" type="image/png" sizes="512x512" href="{{ url_for('static', filename='icons/icon-512.png') }}">
   {# Apple touch icon matrix. iOS 17 falls back to an initial-letter placeholder
      when no apple-touch-icon matches the device's pixel density — caught by hardware
-     QA on PR #252 ("logo on the homescreen 'app' just shows a capital L"). The
+     QA on PR litclock-dev#252 ("logo on the homescreen 'app' just shows a capital L"). The
      bg-baked variants ship the logo on solid --bg so iOS's auto-shaped mask doesn't
      leave transparent corners. The unsized link is the universal fallback. #}
   <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='icons/icon-bg-baked-180.png') }}">
@@ -103,7 +103,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/aths-hint.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/banners.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/handoff.css') }}">
-  {# #416 PR3b — diagnostics shortcut ribbon + live-logs drawer are
+  {# litclock-dev#416 PR3b — diagnostics shortcut ribbon + live-logs drawer are
      cross-cutting (reachable from every tab), so the CSS ships here in
      base.html.j2 rather than per-tab. ~6KB; bounded surface. #}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/drawer.css') }}">
@@ -113,7 +113,7 @@
   {% block extra_head %}{% endblock %}
 </head>
 <body{% if handoff.active %} data-handoff-active{% endif %}{% if diag_shortcut_expanded %} data-diag-ribbon-expanded{% endif %}>
-  {# EPIC #383 PR2 (#388) — post-WiFi handoff top-sheet. Renders only during
+  {# EPIC litclock-dev#383 PR2 (litclock-dev#388) — post-WiFi handoff top-sheet. Renders only during
      the handoff window; data-handoff-active above drives the Status-hero dim
      and the AtHS-hint suppression server-side. #}
   {% include '_handoff-banner.html.j2' %}
@@ -125,7 +125,7 @@
        would compete with the quote for attention. Stub tabs (M3-M5) ship
        milestone-named copy alone — the browser tab title and the home-
        screen icon both already say LitClock. Hardware-QA decision
-       2026-04-28 (user testing PR #261). #}
+       2026-04-28 (user testing PR litclock-dev#261). #}
     {% if stub_message %}
       <p>{{ stub_message }}</p>
     {% else %}
@@ -194,7 +194,7 @@
     </aside>
   </main>
 
-  {# #416 PR3b — diagnostics shortcut ribbon + live-logs drawer.
+  {# litclock-dev#416 PR3b — diagnostics shortcut ribbon + live-logs drawer.
      OV-D-C: dots-three default (owner-persona protection). Drawer is a
      non-modal sheet (aria-modal=false per D6+D32) so the tabbar stays
      interactive and tapping a tab closes-and-navigates.
@@ -374,7 +374,7 @@ sudo reboot</code></pre>
      `aria-hidden` on the SVG so screen readers only announce the visible
      text label; sighted users get the visual anchor for scanning.
 
-     Issue #256: this is a navigation landmark, not an ARIA tabs widget.
+     Issue litclock-dev#256: this is a navigation landmark, not an ARIA tabs widget.
      Each <a> takes the user to a separate page (PRD §7.5 + PLAN C5 lock
      no-JS HTML form POST + redirect = page navigation, not in-place panel
      swap). role="tablist"/role="tab"/aria-selected announce "tab N of 4"
@@ -418,13 +418,13 @@ sudo reboot</code></pre>
      on isSecureContext (D9) — iOS Safari at our private-IP origin short-
      circuits without registering, Android registers + caches the shell. #}
   <script src="{{ url_for('static', filename='js/sw-register.js') }}" defer></script>
-  {# EPIC #383 PR2 (#388) — handoff banner controller. Loaded before aths-hint
+  {# EPIC litclock-dev#383 PR2 (litclock-dev#388) — handoff banner controller. Loaded before aths-hint
      so the suppression coordination is wired before the hint's first-run
      logic runs. #}
   <script src="{{ url_for('static', filename='js/handoff.js') }}" defer></script>
   <script src="{{ url_for('static', filename='js/aths-hint.js') }}" defer></script>
 
-  {# #416 PR3b — cross-cutting drawer controller. Loaded on every tab
+  {# litclock-dev#416 PR3b — cross-cutting drawer controller. Loaded on every tab
      (NOT in {% block extra_body %}) because the ribbon + drawer are
      reachable globally. Deferred so it doesn't block first paint. #}
   <script src="{{ url_for('static', filename='js/drawer.js') }}" defer></script>

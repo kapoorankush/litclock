@@ -3,7 +3,7 @@ Description=LitClock Control PWA
 Documentation=https://github.com/kapoorankush/litclock/issues/245
 After=sysinit.target NetworkManager.service litclock-firstboot.service
 Wants=NetworkManager.service
-# #343: never give up permanently. If the port-80 bind fails because the
+# litclock-dev#343: never give up permanently. If the port-80 bind fails because the
 # ip_unprivileged_port_start sysctl hasn't applied (e.g. an OTA where the live
 # `sysctl -w` errored), the default StartLimit (5 starts / 10s) would wedge the
 # unit in `failed` — a bricked management surface with no SSH recovery on a
@@ -15,7 +15,7 @@ StartLimitIntervalSec=0
 # setup_server owns the device during provisioning (HTTPS on 8443 for the iOS
 # captive trust dance); control_server takes over once
 # /etc/litclock/.setup-complete exists (locked PLAN A2). They're mutually
-# exclusive in time by design — not by port: #343 moved control_server to
+# exclusive in time by design — not by port: litclock-dev#343 moved control_server to
 # plain HTTP on port 80 (so a recipient never types a port), while setup_server
 # stays on 8443. The port-80 bind works because After=sysinit.target orders this
 # unit after systemd-sysctl.service applies
@@ -26,7 +26,7 @@ ConditionPathExists=/etc/litclock/.setup-complete
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/litclock
-# Self-heal the port-80 bind precondition on every start (#343 follow-up,
+# Self-heal the port-80 bind precondition on every start (litclock-dev#343 follow-up,
 # litclock-dev#527). control_server binds port 80 as the non-root `pi` user,
 # which only works when net.ipv4.ip_unprivileged_port_start<=80. If the
 # persistent /etc/sysctl.d drop-in ever fails to apply — a silently-swallowed
@@ -49,7 +49,7 @@ RestartSec=5
 TimeoutStopSec=10
 StandardOutput=journal
 StandardError=journal
-# #416 (eng-review E1=B): LITCLOCK_CONTROL_THREADS bumped from default 4
+# litclock-dev#416 (eng-review E1=B): LITCLOCK_CONTROL_THREADS bumped from default 4
 # to 8 so the live-logs SSE stream + a small handful of concurrent /api/*
 # polls can coexist without thread starvation. Each waitress thread
 # allocates a ~1 MB stack only when active; idle threads are cheap. The

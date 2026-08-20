@@ -12,10 +12,10 @@
 (function () {
   "use strict";
 
-  // #317 item 7 — Prepare-for-Gifting moved to /system. The textarea→hidden
+  // litclock-dev#317 item 7 — Prepare-for-Gifting moved to /system. The textarea→hidden
   // mirror that lived here is now in system.js, scoped to the System tab.
 
-  // #274 follow-up #2 — Update-in-progress banner. Polls /api/status every
+  // litclock-dev#274 follow-up #2 — Update-in-progress banner. Polls /api/status every
   // 15s when the Settings tab is visible and toggles a hidden banner when
   // update.sh is mid-flight in Phase 3 or 4. Phase 3 is when the env.sh
   // sidecar flock is actually held; Phase 4 is the long-running pip-install
@@ -129,23 +129,23 @@
     }
   })();
 
-  // #337 design-review: mark <html> as JS-enabled so the no-JS Save buttons
+  // litclock-dev#337 design-review: mark <html> as JS-enabled so the no-JS Save buttons
   // hide via the [data-no-js-only] CSS rule. Without this, JS users would
   // see redundant Save buttons next to the auto-save Weather toggle and
   // Temperature pill.
   document.documentElement.classList.add("has-js");
 
-  // ─── #414 item #3 / #458: shared auto-save POST helper ────────────────
-  // All three auto-save Settings controls — the Weather toggle (#346), the
-  // Temperature pill (#337 A13), and the Advanced toggles (#456) — PATCH
+  // ─── litclock-dev#414 item #3 / litclock-dev#458: shared auto-save POST helper ────────────────
+  // All three auto-save Settings controls — the Weather toggle (litclock-dev#346), the
+  // Temperature pill (litclock-dev#337 A13), and the Advanced toggles (litclock-dev#456) — PATCH
   // /api/settings with the same scaffolding: refresh CSRF, POST JSON,
   // surface 504 env_lock_timeout's structured message, throw on failure.
-  // Pre-#414 the block was duplicated ~70 lines per call site; #458
+  // Pre-litclock-dev#414 the block was duplicated ~70 lines per call site; litclock-dev#458
   // converged the remaining hand-rolled call sites onto the two wiring
   // helpers below (wireBooleanToggleAutoSave / wireSegmentedAutoSave) so
   // there's a single code path to fix.
   //
-  // #457 — the wiring helpers SERIALIZE saves per control (at most one
+  // litclock-dev#457 — the wiring helpers SERIALIZE saves per control (at most one
   // request in flight, rapid taps coalesced to the latest desired value)
   // rather than the old AbortController "abort the in-flight fetch on
   // re-tap" strategy. Aborting only cancels the client's read of the
@@ -166,7 +166,7 @@
     const csrfBody = await csrfResp.json();
     const csrfToken = csrfBody && csrfBody.ok ? csrfBody.csrf_token : null;
     if (!csrfToken) throw new Error("csrf token unavailable");
-    // #415 /review (maintainability): merge `fields` FIRST, then overlay the
+    // litclock-dev#415 /review (maintainability): merge `fields` FIRST, then overlay the
     // safety-critical keys (section, csrf_token). Without this ordering, a
     // future caller that forwards a raw form-data object containing a
     // `section` or `csrf_token` key would silently overwrite the helper's
@@ -182,7 +182,7 @@
       body: JSON.stringify(payload),
     });
     if (!resp.ok) {
-      // #274 follow-up #4 — on HTTP 504 with env_lock_timeout, surface
+      // litclock-dev#274 follow-up #4 — on HTTP 504 with env_lock_timeout, surface
       // the server's structured message so the user understands the
       // Save was rejected because another writer is mid-flight (and
       // a retry will work once the lock releases). Other failure
@@ -207,7 +207,7 @@
   const queryInput = document.getElementById("location_query");
   const currentSpan = document.querySelector("[data-current-location]");
 
-  // Blur preview (#337 A14). Composite cache key (q + "|" + worldwide) so
+  // Blur preview (litclock-dev#337 A14). Composite cache key (q + "|" + worldwide) so
   // toggling the worldwide checkbox without changing text invalidates the
   // cache and re-fires the preview. Stale-on-typing dimming handled below.
   let lastQuery = "";
@@ -242,7 +242,7 @@
 
   if (queryInput) {
     queryInput.addEventListener("blur", preview);
-    // #337 A14: dim the Currently sublabel on any keystroke after the last
+    // litclock-dev#337 A14: dim the Currently sublabel on any keystroke after the last
     // preview, signalling that the displayed value is stale. The next blur
     // (or successful Save) restores it. Cheap visual cue that prevents the
     // false-confidence trap of "Currently says X but I just typed Y."
@@ -252,7 +252,7 @@
     });
   }
   if (worldwideInput) {
-    // #337 A14: re-fire blur preview when the user flips the worldwide
+    // litclock-dev#337 A14: re-fire blur preview when the user flips the worldwide
     // checkbox if the Place input has content. Without this the composite
     // cache key would invalidate but the preview wouldn't actually run
     // until the next blur — leaving the user staring at a "Couldn't find"
@@ -272,7 +272,7 @@
     });
   });
 
-  // ─── #337 A12: Location mode pill (Automatic | Specific) ─────────────
+  // ─── litclock-dev#337 A12: Location mode pill (Automatic | Specific) ─────────────
   // Click handler on the segmented pill labels. The radio inputs under
   // each label provide the actual form-submit semantics + a11y; this just
   // syncs the .is-selected visual class and shows/hides the per-mode
@@ -288,7 +288,7 @@
     const locationSaveBtn = document.querySelector("[data-location-save]");
 
     function updateSaveDisabled() {
-      // #337 A10 + A14: Save disabled when MODE=specific AND Place is empty
+      // litclock-dev#337 A10 + A14: Save disabled when MODE=specific AND Place is empty
       // (treat raw-coords Advanced as filling Specific too — if either lat
       // or lon has text, the form is non-empty for Specific purposes).
       if (!locationSaveBtn) return;
@@ -330,7 +330,7 @@
         if (autoPanel) autoPanel.hidden = mode !== "auto";
         if (specificPanel) {
           specificPanel.hidden = mode !== "specific";
-          // #337 /review P0 (Codex): toggle the `disabled` attribute on the
+          // litclock-dev#337 /review P0 (Codex): toggle the `disabled` attribute on the
           // <fieldset> alongside `hidden`. Hidden alone doesn't prevent
           // form submission — the inner Place/Advanced inputs would still
           // post as empty strings, triggering the all-or-none guard and
@@ -339,7 +339,7 @@
           specificPanel.disabled = mode !== "specific";
         }
         if (mode === "auto") {
-          // #337 A17: switching to Automatic clears the Advanced lat/lon
+          // litclock-dev#337 A17: switching to Automatic clears the Advanced lat/lon
           // inputs visually. Transient form-state only — no env write
           // until Save. Restores empty inputs if the user toggles back.
           if (advancedLat) advancedLat.value = "";
@@ -364,15 +364,15 @@
     updateSaveDisabled();
   }
 
-  // #337 A13 Temperature pill auto-save + #346 Weather toggle auto-save are
-  // both wired below via the shared serialized helpers (#458 convergence).
+  // litclock-dev#337 A13 Temperature pill auto-save + litclock-dev#346 Weather toggle auto-save are
+  // both wired below via the shared serialized helpers (litclock-dev#458 convergence).
 
-  // ─── #337 A18: Browser-timezone fallback button ──────────────────────
+  // ─── litclock-dev#337 A18: Browser-timezone fallback button ──────────────────────
   // Shows the row + populates the detected tz label when:
   //   (a) the row exists in the DOM (server renders it only when no coords)
   //   (b) Intl.DateTimeFormat is available (effectively all phones 2017+)
   // Tapping POSTs the detected tz to /api/handoff/set-timezone — same
-  // endpoint #388 uses during the first-boot handoff splash.
+  // endpoint litclock-dev#388 uses during the first-boot handoff splash.
   const tzRow = document.querySelector("[data-tz-fallback]");
   if (tzRow) {
     let detectedTz = null;
@@ -401,7 +401,7 @@
             const csrfBody = await csrfResp.json();
             const csrfToken = csrfBody && csrfBody.ok ? csrfBody.csrf_token : null;
             if (!csrfToken) throw new Error("csrf token unavailable");
-            // #337 /review — POST to /api/system/set-timezone (CSRF-guarded,
+            // litclock-dev#337 /review — POST to /api/system/set-timezone (CSRF-guarded,
             // always-on). The earlier draft posted to /api/handoff/set-timezone
             // which is gated on is_handoff_active and silently no-ops post-
             // handoff — fake success that left the tz unchanged. The new
@@ -437,15 +437,15 @@
   }
 
 
-  // ─── #456 / #458: shared auto-save wiring helpers ─────────────────────
-  // DESIGN.md "Save-button rule" (#337 A13): discrete controls (boolean
+  // ─── litclock-dev#456 / litclock-dev#458: shared auto-save wiring helpers ─────────────────────
+  // DESIGN.md "Save-button rule" (litclock-dev#337 A13): discrete controls (boolean
   // toggles + segmented pills) auto-save on change with no Save button (the
   // no-JS fallback Save is CSS-hidden under html.has-js). Two helpers cover
   // every auto-save control on the Settings tab:
   //   • wireBooleanToggleAutoSave — checkbox toggles (Weather "Show on
-  //     display" #346; Advanced NSFW + diagnostics-shortcut #456)
-  //   • wireSegmentedAutoSave     — segmented radio pills (Temperature #337 A13)
-  // #458 converged the previously hand-rolled Weather-toggle + Temperature-
+  //     display" litclock-dev#346; Advanced NSFW + diagnostics-shortcut litclock-dev#456)
+  //   • wireSegmentedAutoSave     — segmented radio pills (Temperature litclock-dev#337 A13)
+  // litclock-dev#458 converged the previously hand-rolled Weather-toggle + Temperature-
   // pill bodies onto these so there's a single code path to fix.
   //
   // Each save is a JSON PATCH of ONLY the control's own key. That's
@@ -454,7 +454,7 @@
   // and never synthesises a missing boolean to "false" (that synthesis is
   // form-path-only) — so saving one control can't silently flip a sibling.
   //
-  // #457 — SERIALIZED, COALESCING saves (replaces the old AbortController
+  // litclock-dev#457 — SERIALIZED, COALESCING saves (replaces the old AbortController
   // "abort the in-flight fetch on re-tap" strategy). Each helper keeps at
   // most ONE save in flight per control. While a save is in flight, further
   // taps only update `desired`; when the in-flight save settles, if `desired`
@@ -462,7 +462,7 @@
   // exactly one more save carrying the latest `desired`. Two consequences:
   //   1. The helper never issues two overlapping requests for one control, so
   //      the flock can't apply an older save after a newer one — persisted
-  //      state always converges to the value the user landed on (the #457
+  //      state always converges to the value the user landed on (the litclock-dev#457
   //      bug). A burst of N taps costs at most 2 round-trips.
   //   2. There is no AbortError path anymore (we never abort). On a real
   //      failure the helper drops any queued intent, reverts the visual to
@@ -479,8 +479,8 @@
   //
   // Known residual divergences (all self-heal on the next page load, which
   // re-seeds every control from env.sh — same "heals on reload" class as the
-  // original #457 bug; full convergence would need server read-back, the
-  // reconcile alternative #457 weighed and set aside):
+  // original litclock-dev#457 bug; full convergence would need server read-back, the
+  // reconcile alternative litclock-dev#457 weighed and set aside):
   //   • Multi-client: two *different* devices editing the same control at the
   //     same instant is still last-flock-wins — inherent to a shared LAN device.
   //   • Lost response after commit: if a save commits server-side but its
@@ -492,7 +492,7 @@
   //     resolves. /api/settings is server-bounded (~30s flock wait → 504) and
   //     /api/csrf is in-memory, so this is bounded, not an indefinite wedge.
   //
-  // Keeping the control ENABLED in flight is load-bearing (codex F2, #346): a
+  // Keeping the control ENABLED in flight is load-bearing (codex F2, litclock-dev#346): a
   // disabled control is dropped from native form submission. The Advanced
   // section renders its two toggles in ONE form, so disabling a toggle mid-save
   // would drop its key from a no-JS fallback submit and the form path would
@@ -615,14 +615,14 @@
     "SHOW_DIAGNOSTICS_SHORTCUT",
     "Couldn't save the diagnostics-shortcut setting. Try again."
   );
-  // #346 — Weather "Show on display" toggle (converged from inline in #458).
+  // litclock-dev#346 — Weather "Show on display" toggle (converged from inline in litclock-dev#458).
   wireBooleanToggleAutoSave(
     document.getElementById("weather_enabled"),
     "weather",
     "WEATHER_ENABLED",
     "Could not save the weather toggle. Try again."
   );
-  // #337 A13 — Temperature pill (converged from inline in #458).
+  // litclock-dev#337 A13 — Temperature pill (converged from inline in litclock-dev#458).
   wireSegmentedAutoSave(
     document.querySelector("[data-temp-pill]"),
     "units",

@@ -82,7 +82,7 @@ def test_index_renders_pwa_shell(client) -> None:
 
 
 def test_index_renders_diagnostics_drawer_shell(client) -> None:
-    """#416 PR3b — the diagnostics shortcut ribbon + drawer are cross-cutting:
+    """litclock-dev#416 PR3b — the diagnostics shortcut ribbon + drawer are cross-cutting:
     they render in base.html.j2 so every tab can open the drawer. Verifies
     the markup hooks land + the drawer ships closed/inert/aria-hidden by
     default (JS removes those on open).
@@ -253,7 +253,7 @@ def test_tab_routes_active_marker(client, path: str, active_tab: str) -> None:
     assert "aria-current" in decoded[anchor_start:label_pos]
 
 
-# ---------- Plain-HTTP shape (per locked decision in #257) ----------
+# ---------- Plain-HTTP shape (per locked decision in litclock-dev#257) ----------
 
 
 class TestPlainHttpShape:
@@ -271,7 +271,7 @@ class TestPlainHttpShape:
         from control_server import app as ctl_app
 
         assert not hasattr(ctl_app, "_serve_tls"), (
-            "TLS terminator removed per #257 — re-introducing requires re-decision"
+            "TLS terminator removed per litclock-dev#257 — re-introducing requires re-decision"
         )
         assert not hasattr(ctl_app, "_build_tls_context")
         assert not hasattr(ctl_app, "_handle_tls_conn")
@@ -280,7 +280,7 @@ class TestPlainHttpShape:
         from control_server import app as ctl_app
 
         assert isinstance(ctl_app.PORT, int)
-        # #343: plain HTTP on port 80 so the URL a user scans/types carries no
+        # litclock-dev#343: plain HTTP on port 80 so the URL a user scans/types carries no
         # port. PORT is sourced from the shared control_url.CONTROL_PORT (default
         # 80) — the same value the clock's QR encodes, so they can't drift.
         assert ctl_app.PORT == 80
@@ -366,7 +366,7 @@ class TestDesignTokensAccentScope:
 
 
 class TestIosLargerTextScaling:
-    """Hardware-found regression on PR #252: iOS Larger Text scaled the
+    """Hardware-found regression on PR litclock-dev#252: iOS Larger Text scaled the
     Safari address bar but not the PWA body. Root cause: setting
     `font-size: clamp(15px, 1rem, 20px)` on `html` is circular — `1rem`
     resolves against the value being computed, falls back to 16px, and
@@ -445,18 +445,19 @@ class TestIosLargerTextScaling:
         assert "font-family: var(--font-sans)" in block
 
     def test_tabbar_caption_ceiling_raised_above_global(self) -> None:
-        """Hardware-found 2026-04-27 (PR #252): tab labels weren't scaling
+        """Hardware-found 2026-04-27 (PR litclock-dev#252): tab labels weren't scaling
         under iOS Dynamic Type because --fs-caption ceilings at 14px and
         0.75rem at iOS Larger 3 root (23px) computes to 17.25px — clipped
         instantly. M5 fixed via tactical local override on .tabbar a; M6
-        D6 (#258) raised the global ceiling 14 → 18px so the local
+        D6 (litclock-dev#258) raised the global ceiling 14 → 18px so the local
         override is no longer needed AND tabs still scale. The fix now
         lives on the global token; pin both halves here so a future edit
         can't silently revert either side."""
         css = self._tokens_css()
         # Global ceiling lifted to 18px.
         assert "--fs-caption: clamp(11px, 0.75rem, 18px)" in css, (
-            "M6 D6 / #258: --fs-caption ceiling must be 18px so iOS Dynamic Type can grow tab labels past iOS Larger 1."
+            "M6 D6 / litclock-dev#258: --fs-caption ceiling must be 18px so iOS Dynamic Type can grow "
+            "tab labels past iOS Larger 1."
         )
         # Tabbar uses the global token now (M5 tactical override removed).
         tabbar_a_start = css.find(".tabbar a {")
@@ -507,7 +508,7 @@ class TestColdLaunchPaint:
 
 
 class TestAppleTouchIconMatrix:
-    """Hardware-found regression on PR #252: iOS Add-to-Home-Screen showed a
+    """Hardware-found regression on PR litclock-dev#252: iOS Add-to-Home-Screen showed a
     capital "L" placeholder instead of the logo. iOS 17 generates the
     initial-letter placeholder when no apple-touch-icon matches the
     device's pixel density. Pinning the size matrix so each iPhone/iPad
@@ -549,7 +550,7 @@ class TestAppleTouchIconMatrix:
         assert 'rel="apple-touch-icon" href=' in body or 'apple-touch-icon" href=' in body
 
 
-# ---------- M2: /api/status + Status hero render (PR #245) ----------
+# ---------- M2: /api/status + Status hero render (PR litclock-dev#245) ----------
 
 
 def _write_status_payload(path: Path, **overrides) -> None:
@@ -612,7 +613,7 @@ class TestApiStatus:
         assert "wifi_ssid" in body
         assert "weather_city" in body
         # last_update_at can be null when neither update.status nor lkg-sha
-        # exists in the test sandbox; the keys must always be present (#330).
+        # exists in the test sandbox; the keys must always be present (litclock-dev#330).
         assert "last_update_at" in body
         assert "last_update_at_relative" in body
         assert "last_update_version" in body
@@ -730,7 +731,7 @@ class TestApiStatus:
 
 
 class TestLastUpdateRowResolution:
-    """#330: Status hero 'Last update' row was rendering em-dash right after
+    """litclock-dev#330: Status hero 'Last update' row was rendering em-dash right after
     a successful update because the route queried systemctl
     ActiveEnterTimestamp on litclock-update.service, which doesn't reliably
     populate for the PWA-triggered apply path. The fix reads the on-disk
@@ -886,16 +887,16 @@ class TestLastUpdateRowResolution:
         assert "hidden" in body[sep_pos:sep_tag_end]
 
     def test_template_pins_parent_and_child_hooks_for_status_js(self, status_file) -> None:
-        """#335 + post-#333 contract: the SSR'd `/` must carry BOTH
+        """litclock-dev#335 + post-litclock-dev#333 contract: the SSR'd `/` must carry BOTH
 
         - the parent `[data-status-last-update]` element (the fallback target
           status.js writes a combined string to when child hooks are absent),
         - all three child hooks (`-version`, `-sep`, `-relative`) that the
-          post-#333 patch path queries.
+          post-litclock-dev#333 patch path queries.
 
-        If a future template change drops the parent, the #335 service-worker-
+        If a future template change drops the parent, the litclock-dev#335 service-worker-
         backward-compat shim quietly stops working. If it drops the children,
-        post-#333 in-place patching stops working AND the shim takes over
+        post-litclock-dev#333 in-place patching stops working AND the shim takes over
         unconditionally — both regressions silent in the browser. This test
         fires loudly instead.
         """
@@ -907,21 +908,21 @@ class TestLastUpdateRowResolution:
         # dropping ONLY the parent attribute still fails this assertion. The
         # plain `"data-status-last-update" in body` form was satisfied by any
         # child hook and would have silently passed a parent removal — exactly
-        # the regression #335 added this test to prevent (review C4).
+        # the regression litclock-dev#335 added this test to prevent (review C4).
         assert re.search(r"data-status-last-update(?!-)", body), (
-            "parent [data-status-last-update] hook missing — #335 shim has nothing to fall back to"
+            "parent [data-status-last-update] hook missing — litclock-dev#335 shim has nothing to fall back to"
         )
-        # Children: post-#333 in-place patch hooks.
+        # Children: post-litclock-dev#333 in-place patch hooks.
         for hook in (
             "data-status-last-update-version",
             "data-status-last-update-sep",
             "data-status-last-update-relative",
         ):
-            assert hook in body, f"child hook missing — post-#333 patch path broken: {hook}"
+            assert hook in body, f"child hook missing — post-litclock-dev#333 patch path broken: {hook}"
 
 
 class TestPhase3SkipMarkerSurface:
-    """#274 follow-up #5 — /api/status surfaces `phase3_skipped_at_unix`
+    """litclock-dev#274 follow-up #5 — /api/status surfaces `phase3_skipped_at_unix`
     when the Phase 3 skip marker is fresh, and the Status hero template
     renders a hidden banner whose state status.js toggles.
 
@@ -1065,7 +1066,7 @@ class TestPhase3SkipMarkerSurface:
 
 
 class TestUpdateProgressSurface:
-    """#274 follow-up #2 — /api/status surfaces `update_state` and
+    """litclock-dev#274 follow-up #2 — /api/status surfaces `update_state` and
     `update_phase_index` for the Settings tab's "Update in progress"
     banner. Both null when no update.sh is in flight (the common
     steady-state). When update.status has `state=running`, the fields
@@ -1208,7 +1209,7 @@ class TestUpdateProgressSurface:
     def test_running_state_without_started_at_surfaces(self, status_file, tmp_path):
         """If `started_at_unix` is absent (old update.sh schema), don't
         apply the clamp — surface the state. Backward-compat with any
-        pre-#274 writer that omitted the field."""
+        pre-litclock-dev#274 writer that omitted the field."""
         import json
 
         _write_status_payload(status_file)
@@ -1258,7 +1259,7 @@ class TestUpdateProgressSurface:
 
 
 class TestUpdatesJsSeenRunningArmed:
-    """#329 (review C2): the optimistic-tick branch in updates.js depends on a
+    """litclock-dev#329 (review C2): the optimistic-tick branch in updates.js depends on a
     module-local `seenRunning` flag that MUST be armed at user-action time
     (inside `fireApply`) AND from poll observations (inside
     `handleStatusPayload`). If a refactor drops the fireApply assignment, the
@@ -1267,7 +1268,7 @@ class TestUpdatesJsSeenRunningArmed:
     exists to prevent.
 
     Primary behavior coverage now lives in
-    tests/js/updates.optimistic-tick.test.js (vitest + jsdom, #338). These
+    tests/js/updates.optimistic-tick.test.js (vitest + jsdom, litclock-dev#338). These
     structural greps stay as belt-and-suspenders — they fail fast on a
     literal-token drop without spinning up the JS runner, complementing the
     behavior tests rather than replacing them.
@@ -1322,9 +1323,9 @@ class TestUpdatesJsSeenRunningArmed:
 
 
 class TestUpdatesJsSchedulePollGuard:
-    """#348 + codex adversarial findings 1+2: the polling state machine has
+    """litclock-dev#348 + codex adversarial findings 1+2: the polling state machine has
     TWO scheduled units (pending setTimeout AND in-flight pollStatusOnce fetch)
-    that can each independently re-arm the cycle. The shallow #348 fix only
+    that can each independently re-arm the cycle. The shallow litclock-dev#348 fix only
     covered the pending-timer case and left a 1-2s window where a delayed
     `fireApply.catch()` could slip past the `if (pollTimer)` guard (timer is
     null mid-fetch) and arm a NEW timer in parallel with an in-flight fetch
@@ -1344,9 +1345,9 @@ class TestUpdatesJsSchedulePollGuard:
        stale callback somehow slips through, a second call can't fork
        a parallel `pollHealth` loop.
 
-    Vitest infra landed in #338 (tests/js/updates.optimistic-tick.test.js
-    covers the #329 optimistic-tick branch with real DOM behavior tests).
-    The #348/#352/#354 race-logic pinned by this class does NOT yet have a
+    Vitest infra landed in litclock-dev#338 (tests/js/updates.optimistic-tick.test.js
+    covers the litclock-dev#329 optimistic-tick branch with real DOM behavior tests).
+    The litclock-dev#348/litclock-dev#352/litclock-dev#354 race-logic pinned by this class does NOT yet have a
     behavior counterpart in tests/js/ — porting these invariants to vitest
     is the natural next follow-up. Keep these structural greps live until
     that port lands.
@@ -1395,18 +1396,18 @@ class TestUpdatesJsSchedulePollGuard:
     def test_schedule_poll_has_sentinel_guard(self) -> None:
         """schedulePoll must early-return when pollTimer is already armed.
         Without this, two callers in quick succession arm parallel polling
-        cycles (#348 base scenario)."""
+        cycles (litclock-dev#348 base scenario)."""
         src = self.UPDATES_JS.read_text()
         body = self._extract_function_body(src, "schedulePoll")
         assert re.search(r"if\s*\(\s*pollTimer\s*\)\s*return\s*;", body), (
             "schedulePoll() must early-return when pollTimer is already set so "
-            "two callers in quick succession can't double-arm parallel polling cycles (#348)"
+            "two callers in quick succession can't double-arm parallel polling cycles (litclock-dev#348)"
         )
 
     def test_schedule_poll_clears_timer_at_callback_start(self) -> None:
         """The setTimeout callback must clear `pollTimer = null` BEFORE
         invoking pollStatusOnce, so handleStatusPayload's recursive
-        schedulePoll() can arm the next tick (#348)."""
+        schedulePoll() can arm the next tick (litclock-dev#348)."""
         src = self.UPDATES_JS.read_text()
         body = self._extract_function_body(src, "schedulePoll")
         inner = re.search(
@@ -1414,15 +1415,15 @@ class TestUpdatesJsSchedulePollGuard:
             body,
             re.DOTALL,
         )
-        assert inner, "setTimeout(function () { ... }, ...) shape changed — review #348 guard"
+        assert inner, "setTimeout(function () { ... }, ...) shape changed — review litclock-dev#348 guard"
         inner_body = inner.group("inner")
         null_pos = inner_body.find("pollTimer = null")
         poll_pos = inner_body.find("pollStatusOnce(")
-        assert null_pos != -1, "setTimeout callback missing `pollTimer = null` (#348)"
+        assert null_pos != -1, "setTimeout callback missing `pollTimer = null` (litclock-dev#348)"
         assert poll_pos != -1, "pollStatusOnce(...) call missing from schedulePoll callback"
         assert null_pos < poll_pos, (
             "`pollTimer = null` must appear BEFORE pollStatusOnce(...) — clearing "
-            "after would block handleStatusPayload's recursive schedulePoll() (#348)"
+            "after would block handleStatusPayload's recursive schedulePoll() (litclock-dev#348)"
         )
 
     def test_cancel_polling_helper_exists(self) -> None:
@@ -1534,7 +1535,7 @@ class TestUpdatesJsSchedulePollGuard:
 
 
 class TestUpdatesJsProbeRendersTerminalCopy:
-    """#352: the page-load probe (the top-level `pollStatusOnce(function (payload) { ... })`
+    """litclock-dev#352: the page-load probe (the top-level `pollStatusOnce(function (payload) { ... })`
     immediately under `refreshCheck()`) was a cold-load gap. When a user navigated
     to /updates AFTER a failed update — rather than being on the page when it failed —
     the probe called `enterReadingList(payload)` only. So the phase reading-list
@@ -1551,10 +1552,10 @@ class TestUpdatesJsProbeRendersTerminalCopy:
           (consistency — otherwise the user sees different copy depending on
           whether they were on the page during the failure).
 
-    Vitest infra is deferred to #338, so this is a structural grep: it isolates
+    Vitest infra is deferred to litclock-dev#338, so this is a structural grep: it isolates
     the probe block (top-level pollStatusOnce ... pre-`fireApply`) and asserts
     the failed_* state names + `showTerminal(` symbol both appear inside it.
-    Cheap and durable until #338 lands real JS unit tests.
+    Cheap and durable until litclock-dev#338 lands real JS unit tests.
     """
 
     UPDATES_JS = Path(__file__).resolve().parents[1] / "src" / "control_server" / "static" / "js" / "updates.js"
@@ -1563,7 +1564,7 @@ class TestUpdatesJsProbeRendersTerminalCopy:
     # copy that must stay consistent across cold-load and in-flight terminal
     # renders. If either string changes, update BOTH locations or the user
     # sees different copy depending on whether they were on the page during
-    # the failure (UX inconsistency #352 fix exists to prevent).
+    # the failure (UX inconsistency litclock-dev#352 fix exists to prevent).
     REVERTED_DEFAULT = "Update failed verification — rolled back. Your clock is running normally."
     UNRECOVERED_DEFAULT = (
         "Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab."
@@ -1571,7 +1572,7 @@ class TestUpdatesJsProbeRendersTerminalCopy:
 
     def _extract_probe_block(self, src: str) -> str:
         """Return the body of the cold-load probe handler. Was an anonymous
-        `pollStatusOnce(function (payload) {...})` callback; #354 codex P2
+        `pollStatusOnce(function (payload) {...})` callback; litclock-dev#354 codex P2
         follow-up extracted it to a named `handleProbePayload(payload)` so
         the dialog 'close' listener can replay deferred payloads through the
         same logic. Accept either shape so a future intentional re-inline
@@ -1600,21 +1601,21 @@ class TestUpdatesJsProbeRendersTerminalCopy:
     def test_probe_block_references_both_failed_states(self) -> None:
         """Sanity: the probe block must explicitly mention BOTH failed state
         names. Without this, the fix could quietly drop one branch and only
-        half the failure surface gets terminal copy on cold load (#352)."""
+        half the failure surface gets terminal copy on cold load (litclock-dev#352)."""
         src = self.UPDATES_JS.read_text()
         probe = self._extract_probe_block(src)
         assert "failed_reverted" in probe, (
             "probe block must reference 'failed_reverted' so cold-load renders "
-            "rolled-back terminal copy after a failed update (#352)"
+            "rolled-back terminal copy after a failed update (litclock-dev#352)"
         )
         assert "failed_unrecovered" in probe, (
             "probe block must reference 'failed_unrecovered' so cold-load renders "
-            "manual-recovery terminal copy after a failed update (#352)"
+            "manual-recovery terminal copy after a failed update (litclock-dev#352)"
         )
 
     def test_probe_block_calls_show_terminal(self) -> None:
         """The probe block must call showTerminal so the user sees recovery
-        copy on cold load — not just a frozen phase reading-list (#352).
+        copy on cold load — not just a frozen phase reading-list (litclock-dev#352).
 
         Pre-fix the probe called enterReadingList only; the failure state was
         rendered as a static row with no banner, indistinguishable from a
@@ -1624,31 +1625,31 @@ class TestUpdatesJsProbeRendersTerminalCopy:
         assert "showTerminal(" in probe, (
             "probe block must call showTerminal(...) on failed_* states so a "
             "cold-load navigation to /updates after a failed update surfaces "
-            "recovery copy, not just a frozen phase reading-list (#352)"
+            "recovery copy, not just a frozen phase reading-list (litclock-dev#352)"
         )
 
     def test_probe_block_uses_canonical_default_messages(self) -> None:
         """The cold-load defaults must match the in-flight handler's defaults
         verbatim — otherwise the user sees different copy depending on whether
-        they were on the page during the failure (UX inconsistency #352 was
+        they were on the page during the failure (UX inconsistency litclock-dev#352 was
         filed to prevent)."""
         src = self.UPDATES_JS.read_text()
         probe = self._extract_probe_block(src)
         assert self.REVERTED_DEFAULT in probe, (
             "probe block's failed_reverted default must match handleStatusPayload's "
-            f"verbatim: {self.REVERTED_DEFAULT!r} (#352)"
+            f"verbatim: {self.REVERTED_DEFAULT!r} (litclock-dev#352)"
         )
         assert self.UNRECOVERED_DEFAULT in probe, (
             "probe block's failed_unrecovered default must match handleStatusPayload's "
-            f"verbatim: {self.UNRECOVERED_DEFAULT!r} (#352)"
+            f"verbatim: {self.UNRECOVERED_DEFAULT!r} (litclock-dev#352)"
         )
 
 
 class TestUpdatesJsProbeRaceGuards:
-    """#354 (codex adversarial on PR #353) + claude adversarial on PR #359:
+    """litclock-dev#354 (codex adversarial on PR litclock-dev#353) + claude adversarial on PR litclock-dev#359:
     three narrow second-order races where the page-load probe interacts
     with concurrent user action. All are pre-existing edge windows that
-    #353's cold-load showTerminal call exposed (Races 1+2) or that the
+    litclock-dev#353's cold-load showTerminal call exposed (Races 1+2) or that the
     Race 2 guard's branch-local placement left half-covered (Race 3).
 
     Race 1 (MEDIUM) — stale terminal banner inside fresh running list:
@@ -1658,7 +1659,7 @@ class TestUpdatesJsProbeRaceGuards:
         fireApply.then POSTs → enterReadingList({state:'running', ...})
         un-hides the reading list. Without a Race 1 clear, the OLD
         failure banner is now visible inside the NEW reading list.
-        #345's `readingList.hidden` probe guard blocks the cold-load
+        litclock-dev#345's `readingList.hidden` probe guard blocks the cold-load
         probe from re-entering on top of fireApply, so the banner can
         only come from in-DOM residue, not a racing probe.
         Fix: enterReadingList clears terminalMsg when payload.state === 'running'.
@@ -1679,8 +1680,8 @@ class TestUpdatesJsProbeRaceGuards:
         Fix: hoist `if (dialog && dialog.open) return;` ABOVE the state
         switch so it covers both failed_* AND running probe transitions.
 
-    Vitest infra is deferred to #338, so these are structural greps. Pair
-    with TestUpdatesJsProbeRendersTerminalCopy (#352) which pins the probe
+    Vitest infra is deferred to litclock-dev#338, so these are structural greps. Pair
+    with TestUpdatesJsProbeRendersTerminalCopy (litclock-dev#352) which pins the probe
     block shape.
     """
 
@@ -1704,7 +1705,7 @@ class TestUpdatesJsProbeRaceGuards:
     def _extract_probe_block(self, src: str) -> str:
         """Body of `handleProbePayload(payload)` — the cold-load probe's
         handler. Was an anonymous `pollStatusOnce(function (payload) {...})`
-        callback until the #354 codex P2 follow-up extracted it to a named
+        callback until the litclock-dev#354 codex P2 follow-up extracted it to a named
         function so the dialog 'close' listener can replay deferred payloads
         through the same logic path. Both shapes are accepted so an
         intentional refactor either direction doesn't break this helper."""
@@ -1732,7 +1733,7 @@ class TestUpdatesJsProbeRaceGuards:
         return src[match.end() : i - 1]
 
     def test_enter_reading_list_clears_terminal_on_running(self) -> None:
-        """#354 Race 1: enterReadingList must clear terminalMsg when entering
+        """litclock-dev#354 Race 1: enterReadingList must clear terminalMsg when entering
         for a fresh `running` payload. Actual sequence: a prior failed_*
         run left its banner copy in terminalMsg (the node persists in
         the DOM, hidden underneath the hidden reading list — only the
@@ -1741,7 +1742,7 @@ class TestUpdatesJsProbeRaceGuards:
         which un-hides the reading list. Without this clear, the OLD
         failure banner is now visible INSIDE the NEW reading list —
         the user sees `Update failed verification…` while a fresh update
-        is actually advancing. #345's `readingList.hidden` probe guard
+        is actually advancing. litclock-dev#345's `readingList.hidden` probe guard
         blocks a racing cold-load probe from re-entering on top of
         fireApply, so the stale banner can only come from in-DOM
         residue. The clear has to live inside enterReadingList — not
@@ -1751,24 +1752,24 @@ class TestUpdatesJsProbeRaceGuards:
         # The running-state clear must reference terminalMsg + payload.state === 'running'.
         assert re.search(r"payload\.state\s*===\s*['\"]running['\"]", body), (
             "enterReadingList must gate the terminalMsg clear on payload.state === 'running' "
-            "so it only fires for fresh running updates, not on every entry (#354 Race 1)"
+            "so it only fires for fresh running updates, not on every entry (litclock-dev#354 Race 1)"
         )
         assert "terminalMsg.hidden = true" in body, (
             "enterReadingList must set `terminalMsg.hidden = true` on running entry so a "
             "stale failure banner from a prior probe doesn't sit above the new reading "
-            "list (#354 Race 1)"
+            "list (litclock-dev#354 Race 1)"
         )
         assert "terminalMsg.textContent = ''" in body, (
             "enterReadingList must clear terminalMsg.textContent on running entry — "
-            "leaving the text in DOM lets a CSS-only override re-expose it (#354 Race 1)"
+            "leaving the text in DOM lets a CSS-only override re-expose it (litclock-dev#354 Race 1)"
         )
         assert "delete terminalMsg.dataset.tone" in body, (
             "enterReadingList must delete terminalMsg.dataset.tone on running entry so "
-            "the stale tone class doesn't bleed into the next render (#354 Race 1)"
+            "the stale tone class doesn't bleed into the next render (litclock-dev#354 Race 1)"
         )
 
     def test_probe_failed_branch_bails_when_modal_open(self) -> None:
-        """#354 Race 2 + claude adversarial Race 3: the probe must early-return
+        """litclock-dev#354 Race 2 + claude adversarial Race 3: the probe must early-return
         when the confirm modal is open BEFORE dispatching to either the
         running or failed_* branches. Otherwise the probe flips the card
         surface to the reading list mid-confirm and the user confirms
@@ -1781,7 +1782,7 @@ class TestUpdatesJsProbeRaceGuards:
         # The bail-out must exist. Match either the bare single-line form
         # `if (dialog && dialog.open) return;` (Race 2/3 original) OR the
         # multi-line form that also stashes a deferred payload before
-        # returning (#354 codex P2 follow-up). Both short-circuit the same
+        # returning (litclock-dev#354 codex P2 follow-up). Both short-circuit the same
         # way for the modal-guard contract; only the no-state-mutation
         # invariant matters here.
         bare = re.search(r"if\s*\(\s*dialog\s*&&\s*dialog\.open\s*\)\s*return\s*;", probe)
@@ -1793,7 +1794,7 @@ class TestUpdatesJsProbeRaceGuards:
         assert bare or with_stash, (
             "probe must short-circuit when `dialog && dialog.open` is true — either bare "
             "`return;` or a block that stashes and returns. Without it the probe yanks the "
-            "card surface out from under an open confirm modal (#354 Race 2 + Race 3)."
+            "card surface out from under an open confirm modal (litclock-dev#354 Race 2 + Race 3)."
         )
 
     def test_probe_modal_guard_lives_above_state_switch(self) -> None:
@@ -1810,7 +1811,7 @@ class TestUpdatesJsProbeRaceGuards:
         src = self.UPDATES_JS.read_text()
         probe = self._extract_probe_block(src)
         # Accept both the bare-return form and the stash-then-return form
-        # (#354 codex P2 follow-up). The position-pinning invariant is the
+        # (litclock-dev#354 codex P2 follow-up). The position-pinning invariant is the
         # same either way.
         guard_match = re.search(
             r"if\s*\(\s*dialog\s*&&\s*dialog\.open\s*\)\s*(?:return\s*;|\{[^{}]*?return\s*;[^{}]*?\})",
@@ -1824,12 +1825,12 @@ class TestUpdatesJsProbeRaceGuards:
             "the `dialog && dialog.open` early-return must appear ABOVE the first "
             "`payload.state ===` switch arm so it covers BOTH the running branch "
             "(claude adversarial Race 3: auto-update / sibling-tab POST lands mid-confirm) "
-            "AND the failed_* branch (#354 Race 2). A branch-local placement inside "
+            "AND the failed_* branch (litclock-dev#354 Race 2). A branch-local placement inside "
             "failed_* leaves the running path uncovered."
         )
 
     def test_probe_modal_guard_defers_instead_of_dropping(self) -> None:
-        """#354 codex P2 follow-up: the modal-open bail must NOT permanently
+        """litclock-dev#354 codex P2 follow-up: the modal-open bail must NOT permanently
         discard the only cold-load probe sample. The probe is one-shot — if
         the user cancels the modal after the guard fired, there's no other
         path to transition the page out of the stale card. Stash the payload
@@ -1881,7 +1882,7 @@ class TestUpdatesJsProbeRaceGuards:
         )
 
     def test_fireApply_replays_deferred_probe_on_error(self) -> None:
-        """#354 codex P2 round 5: if the deferred probe captured a `running`
+        """litclock-dev#354 codex P2 round 5: if the deferred probe captured a `running`
         state (auto-update or sibling-tab apply already in flight) and the
         user confirms the modal, fireApply POSTs and gets 409
         update_in_progress. The original close-handler-replays-on-cancel
@@ -1909,7 +1910,7 @@ class TestUpdatesJsProbeRaceGuards:
         assert "deferredProbePayload = null" in body, (
             "fireApply must clear deferredProbePayload on success — otherwise the close "
             "listener's cancel-path replay could double-fire on a later modal cycle "
-            "(#354 codex round 5)"
+            "(litclock-dev#354 codex round 5)"
         )
         assert "handleProbePayload(stashed)" in body or re.search(
             r"handleProbePayload\s*\(\s*\w+\s*\)",
@@ -1917,12 +1918,12 @@ class TestUpdatesJsProbeRaceGuards:
         ), (
             "fireApply must replay the deferred probe payload (handleProbePayload(stashed)) on "
             "non-OK response so the page enters the in-flight reading-list instead of sitting "
-            "on a stale card after an alert (#354 codex round 5)"
+            "on a stale card after an alert (litclock-dev#354 codex round 5)"
         )
 
 
 class TestLastUpdatePersistentMirror:
-    """#334: persistent /var/lib/litclock/last-update.json mirror of the
+    """litclock-dev#334: persistent /var/lib/litclock/last-update.json mirror of the
     tmpfs /run/litclock/update.status. update.sh writes both on terminal
     state=complete; the persistent file lets the Status hero "Last update"
     row survive the tmpfs clear at reboot during the 15-min LKG soak window
@@ -1932,7 +1933,7 @@ class TestLastUpdatePersistentMirror:
     Resolver order pinned by these tests:
         1. update.status (state=complete) — freshest signal
         2. last-update.json — persistent mirror (NEW)
-        3. lkg-sha mtime — pre-#334 fallback
+        3. lkg-sha mtime — pre-litclock-dev#334 fallback
     """
 
     def _make_app(
@@ -2103,7 +2104,7 @@ class TestLastUpdatePersistentMirror:
 
 
 class TestLastUpdateBoundedReads:
-    """#336 — DoS / hardening guards on the three "Last update" sources.
+    """litclock-dev#336 — DoS / hardening guards on the three "Last update" sources.
     A 1MB junk file, FIFO, symlink, or directory at any of the three paths
     must NOT crash /api/status, must NOT pull garbage into memory, and
     must NOT hang the request handler. The fallback chain still produces
@@ -2250,7 +2251,7 @@ class TestStatusHeroRendering:
         # "— {Author}, *{Title}* · {HH:MM}".
         assert "— Charles Dickens" in body
         assert "<em" in body and "A Tale of Two Cities</em>" in body
-        # #290 /review fix: '·&nbsp;' separator lives OUTSIDE the inner
+        # litclock-dev#290 /review fix: '·&nbsp;' separator lives OUTSIDE the inner
         # [data-status-attr-time] node so JS's setText() can patch the bare
         # time without wiping the locked separator. Verify the separator is
         # present and the bare time is inside the JS-patched node.
@@ -2266,7 +2267,7 @@ class TestStatusHeroRendering:
     def test_hero_uses_blockquote_for_screen_reader_semantics(self, status_client, status_file) -> None:
         _write_status_payload(status_file)
         body = status_client.get("/").data.decode()
-        # #290 added a data-status-quote hook for client-side polling — the
+        # litclock-dev#290 added a data-status-quote hook for client-side polling — the
         # blockquote element + hero-quote class are what screen readers and
         # CSS depend on, not the verbatim opening-tag string.
         assert '<blockquote class="hero-quote"' in body
@@ -2287,7 +2288,7 @@ class TestStatusHeroRendering:
 
         _write_status_payload(status_file, picked_at=_time.time() - 200)
         body = status_client.get("/").data.decode()
-        # #290 keeps the banner element in the DOM always (so status.js can
+        # litclock-dev#290 keeps the banner element in the DOM always (so status.js can
         # toggle visibility without DOM creation); when stale, the [hidden]
         # attribute must NOT be present on the banner.
         banner_start = body.find("data-status-stale-banner")
@@ -2310,13 +2311,15 @@ class TestStatusHeroRendering:
         assert "min ago" in body
 
     def test_stale_banner_absent_when_quote_is_fresh(self, status_client, status_file) -> None:
-        """#290: the banner DOM element is always present (so status.js can
+        """litclock-dev#290: the banner DOM element is always present (so status.js can
         un-hide it on a poll that turns stale), but when the quote is fresh
         the element must carry the `hidden` attribute so it's invisible."""
         _write_status_payload(status_file)
         body = status_client.get("/").data.decode()
         banner_start = body.find("data-status-stale-banner")
-        assert banner_start >= 0, "stale-banner DOM element should always be present for #290 client-side toggle"
+        assert banner_start >= 0, (
+            "stale-banner DOM element should always be present for litclock-dev#290 client-side toggle"
+        )
         banner_open_tag_end = body.find(">", banner_start)
         banner_open_tag = body[banner_start:banner_open_tag_end]
         assert "hidden" in banner_open_tag, (
@@ -2352,7 +2355,7 @@ class TestStatusHeroRendering:
 
 
 class TestStatusLivePoll:
-    """#290: status.js polls /api/status every 30s + on visibilitychange and
+    """litclock-dev#290: status.js polls /api/status every 30s + on visibilitychange and
     patches the SSR'd hero/banner/row DOM in place. These tests pin the wiring
     contract — every node the JS patches must carry a data-status-* hook and
     the script must be wired into the Status page (only)."""
@@ -2410,9 +2413,9 @@ class TestStatusLivePoll:
         assert "visibilitychange" in text, "status.js missing focus-refresh trigger"
 
     def test_status_js_in_service_worker_precache(self, status_client, status_file) -> None:
-        """#290 /review fix: every per-tab JS asset must be in the SW precache
+        """litclock-dev#290 /review fix: every per-tab JS asset must be in the SW precache
         list. The other three (settings.js, system.js, updates.js) all are.
-        status.js was missing in the initial #290 patch, so Android offline
+        status.js was missing in the initial litclock-dev#290 patch, so Android offline
         cold-starts served the cached navigation HTML but 404'd on status.js
         — breaking auto-refresh in exactly the scenario the SW was designed
         to defend against."""
@@ -2431,7 +2434,7 @@ class TestStatusLivePoll:
             )
 
     def test_hidden_attribute_overrides_display_flex(self, status_client, status_file) -> None:
-        """#290 /review fix: status.js relies on toggling the [hidden]
+        """litclock-dev#290 /review fix: status.js relies on toggling the [hidden]
         attribute to show/hide the stale banner and the hero branches.
         Without an `!important` author rule (or a higher-specificity
         attribute selector), `.stale-banner { display: flex }` ties with
@@ -2455,12 +2458,12 @@ class TestStatusLivePoll:
         assert "display: none !important" in match.group(0), (
             "[hidden] rule must use `display: none !important` to defeat author class "
             "rules like `.stale-banner { display: flex }`. Without it, the [hidden]-toggle "
-            "pattern in #290 silently fails to hide elements that have their own display rule."
+            "pattern in litclock-dev#290 silently fails to hide elements that have their own display rule."
         )
 
 
 class TestM2DesignTweaks:
-    """Hardware-QA 2026-04-28 design decisions (user testing PR #261):
+    """Hardware-QA 2026-04-28 design decisions (user testing PR litclock-dev#261):
 
     1. Drop the LitClock h1 from base.html.j2 default block. The literary
        hero on Status IS the brand; a header above competes with the quote
@@ -2514,7 +2517,7 @@ class TestM2DesignTweaks:
 
 
 class TestM2ReviewFixups:
-    """Pin the fixes from /review on PR #261 so a future refactor can't
+    """Pin the fixes from /review on PR litclock-dev#261 so a future refactor can't
     silently undo them."""
 
     def test_stale_banner_uses_phosphor_svg_not_emoji(self, status_client, status_file) -> None:

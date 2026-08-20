@@ -1,4 +1,4 @@
-"""Tests for control_server/_redaction.py (#416 OV-1=A).
+"""Tests for control_server/_redaction.py (litclock-dev#416 OV-1=A).
 
 The RedactingFilter is the safety net for the live-logs drawer: every log
 record gets sanitized BEFORE it lands in the in-memory buffer. The tests
@@ -245,7 +245,7 @@ class TestCoordinatePattern:
         assert "WEATHER_LONGITUDE" in out_lon
 
     def test_leading_sign_and_scientific_rounded(self):
-        # #498: value group accepts an optional sign + scientific notation, both
+        # litclock-dev#498: value group accepts an optional sign + scientific notation, both
         # a dotted mantissa (.331234e2) and a bare-integer mantissa with an
         # exponent (331234e-4 — float() accepts it, so it's storable/loggable).
         assert "33.1234" not in redact_text("export WEATHER_LATITUDE=+33.1234")
@@ -258,7 +258,7 @@ class TestCoordinatePattern:
         assert "33.12" in out_intexp
 
     def test_comma_decimal_and_lists_untouched(self):
-        # #498 (post-/review): comma-decimals are DELIBERATELY not matched — a
+        # litclock-dev#498 (post-/review): comma-decimals are DELIBERATELY not matched — a
         # comma is ambiguous with a list separator and a comma coord is
         # unreachable (the validator's float() rejects it). The redaction must
         # never fabricate a coordinate out of a comma-separated integer list.
@@ -266,7 +266,7 @@ class TestCoordinatePattern:
             assert redact_text(text) == text, f"comma list corrupted: {text!r}"
 
     def test_json_keyed_coords_rounded(self):
-        # #498: the optional quote after the keyword catches JSON quoted-key
+        # litclock-dev#498: the optional quote after the keyword catches JSON quoted-key
         # forms. Output is lossy (structure mangled) but never leaky.
         out_q = redact_text('{"lat": "33.1234", "lon": "-96.876"}')
         assert "33.1234" not in out_q
@@ -277,7 +277,7 @@ class TestCoordinatePattern:
         assert "33.12" in out_bare
 
     def test_adjacent_coords_no_separator_both_rounded(self):
-        # #498: the zero-width lookbehind lets a coord immediately following
+        # litclock-dev#498: the zero-width lookbehind lets a coord immediately following
         # another (no separator) still match — the consuming lead-in could not.
         out = redact_text("lat=11.1234lon=22.5678")
         assert "11.1234" not in out
@@ -285,7 +285,7 @@ class TestCoordinatePattern:
         assert "11.12" in out and "22.57" in out
 
     def test_no_over_redaction_of_lookalike_words(self):
-        # #498 guard: the lookbehind blocks a LETTER before the keyword, so
+        # litclock-dev#498 guard: the lookbehind blocks a LETTER before the keyword, so
         # words that merely contain lat/lon/long are untouched; a comma-
         # separated integer list is not mistaken for a comma-decimal.
         for text in (
@@ -442,7 +442,7 @@ class TestNmcliArgvSecrets:
     line, journald is persistent, and the Diagnostics support bundle exports
     that journal — so the setup PSK left the device in a file users attach to
     GitHub issues. Tolerable while the password was regenerated every cycle;
-    #620 makes it the device's PERMANENT setup key.
+    litclock-dev#620 makes it the device's PERMANENT setup key.
     """
 
     def test_sudo_audit_line_no_longer_leaks_the_hotspot_password(self):

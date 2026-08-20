@@ -2,12 +2,12 @@
 
 Both the control_server (which binds the port) and the e-ink clock renderer
 (which paints the scan-to-open QR) need the same port and the same URL shape.
-Before #343 this was duplicated: the port default lived in ``app.py`` AND
+Before litclock-dev#343 this was duplicated: the port default lived in ``app.py`` AND
 ``handoff.py``, and the URL was hardcoded ``http://<host>:8443`` in three
 places (``literary_clock.py`` twice, ``handoff.py`` once). This module
 collapses all of that into one constant + one builder.
 
-#343: the control_server moved to **port 80** so a recipient never has to type
+litclock-dev#343: the control_server moved to **port 80** so a recipient never has to type
 a port — the QR / mDNS bookmark / typed URL is bare ``http://litclock.local``
 or ``http://<ip>``. The port is bound by ``pi`` (a non-root service account)
 via the ``net.ipv4.ip_unprivileged_port_start=80`` sysctl drop-in, NOT a
@@ -23,7 +23,7 @@ URL stays correct.
 import os
 from typing import Final
 
-# The one port knob. Default 80 (#343). Overridable via env for dev / tests /
+# The one port knob. Default 80 (litclock-dev#343). Overridable via env for dev / tests /
 # a non-standard deployment; control_server binds it and the clock's QR
 # encodes it, so an override stays consistent across both surfaces.
 CONTROL_PORT: Final[int] = int(os.environ.get("LITCLOCK_CONTROL_PORT", "80"))

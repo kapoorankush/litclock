@@ -1,4 +1,4 @@
-"""Renderer tests for the e-ink status splash word-wrap helper (#319).
+"""Renderer tests for the e-ink status splash word-wrap helper (litclock-dev#319).
 
 These run in CI — unlike ``test_eink_display.py``, the wrap helper has no
 waveshare-driver dependency. It only needs PIL + the bundled Literata
@@ -6,7 +6,7 @@ font, both already required by the control-server tests.
 
 Background: a 36-char personalized welcome ("This is a test message! Love,
 Alexis") rendered at the 48pt title font measures ~900px wide, which is
-wider than the 800px e-ink canvas. The pre-#319 renderer computed
+wider than the 800px e-ink canvas. The pre-litclock-dev#319 renderer computed
 ``title_x = (800 - width) // 2`` → negative → text fell off both edges.
 The fix word-wraps to at most 2 lines centered with 40px gutters, with
 explicit ``\\n`` honored as a hard break and an ellipsis truncation when
@@ -67,7 +67,7 @@ class TestWrapTitle:
     def test_bug_case_wraps_to_two_lines_within_canvas(self):
         """The exact message from hardware QA on 2026-05-10 that rendered
         with leading 'Th' and trailing 'h' clipped off both edges. After
-        #319, it must wrap to ≤ MAX_TITLE_LINES whose widths fit inside
+        litclock-dev#319, it must wrap to ≤ MAX_TITLE_LINES whose widths fit inside
         DISPLAY_SIZE - 2 * TITLE_SIDE_MARGIN."""
         font = _title_font()
         max_width = DISPLAY_SIZE[0] - 2 * TITLE_SIDE_MARGIN
@@ -156,11 +156,11 @@ class TestCreateStatusImage:
         assert img.size == DISPLAY_SIZE
 
 
-# ── #399 handoff splash SSID caveat ─────────────────────────────────
+# ── litclock-dev#399 handoff splash SSID caveat ─────────────────────────────────
 
 
 class TestFitSsidToBand:
-    """Issue #399: the handoff splash paints an SSID caveat under the QR
+    """Issue litclock-dev#399: the handoff splash paints an SSID caveat under the QR
     so a phone on cellular / a different network knows where to switch
     first. The wrap helper is testable in isolation here so we don't
     need pixel-OCR on the rendered splash."""
@@ -314,7 +314,7 @@ class TestHandoffSplashSsidCaveat:
     def test_caveat_suppressed_when_ssid_missing_from_settings(self):
         """A caller that doesn't set connected_ssid at all (older code
         path) must still render without crashing, with the caveat
-        suppressed. Backward-compatible with pre-#399 callers."""
+        suppressed. Backward-compatible with pre-litclock-dev#399 callers."""
         from eink_display import create_handoff_splash_image
 
         settings = self._make_settings()
@@ -380,7 +380,7 @@ class TestHandoffSplashSsidCaveat:
 
 
 class TestFitTitleAutoShrink:
-    """#280 gift-message fix: `_fit_title` shrinks the font (and grows the line
+    """litclock-dev#280 gift-message fix: `_fit_title` shrinks the font (and grows the line
     budget) so a personalized welcome renders in FULL instead of losing its
     tail to an ellipsis. Truncating "…a good time to read!" off someone's gift
     was the field bug (hardware photo, 2026-07-15)."""
@@ -454,11 +454,11 @@ class TestPanelTextClamps:
 
     The handoff row values are a live bug: WEATHER_LOCATION_NAME_MAX_LEN admits
     120 characters and the value column leaves ~37, so a place name typed in
-    PWA Location > Specific (preserved across reboots by #337, and repainted
+    PWA Location > Specific (preserved across reboots by litclock-dev#337, and repainted
     because a WiFi reset clears .handoff-complete) runs off the glass.
 
     The status message/submessage are a guard, not a bug: every shipped English
-    string fits today. They are in scope for the #532 catalogs, where a
+    string fits today. They are in scope for the litclock-dev#532 catalogs, where a
     translation ~30% longer is the normal case.
     """
 
@@ -760,7 +760,7 @@ class TestHandoffRowsClearTheQrBlock:
         return {**self.BASE, **over}
 
     def test_a_typed_120_char_place_name_never_touches_the_qr(self):
-        """The PWA accepts 120 chars in Location > Specific and #337 preserves
+        """The PWA accepts 120 chars in Location > Specific and litclock-dev#337 preserves
         it across reboots, so it genuinely reaches this splash."""
         baseline = self._qr_region(self.BASE)
         assert self._qr_region(self._long(location_name="L" * 120)) == baseline, (
@@ -862,7 +862,7 @@ class TestHandoffRowsClearTheQrBlock:
             )
 
     def test_a_shrunk_label_shares_the_row_baseline(self):
-        """Same invariant on the label column, which is the one #532 will push
+        """Same invariant on the label column, which is the one litclock-dev#532 will push
         hardest: the value column moved left, so translated labels take the
         ladder before values do. All-caps, descender-free, so ink bottom is the
         baseline exactly.
@@ -931,7 +931,7 @@ class TestHandoffRowsClearTheQrBlock:
     def test_the_shipped_caveat_label_stays_in_its_lane(self):
         """Pins the measurement the lane boundary was derived from. If the copy
         changes and grows, this fails HERE with a clear reason rather than
-        silently eating the gutter. #532: translating this string is the likely
+        silently eating the gutter. litclock-dev#532: translating this string is the likely
         trigger — de is 282px, which crosses the boundary.
         """
         draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 255))
@@ -1330,7 +1330,7 @@ class TestQrScreenTextClamps:
         assert "handoff f contained line breaks" in caplog.text, caplog.text
 
     def test_control_characters_are_stripped_like_the_sibling_splash(self, caplog):
-        """_sanitize_render_text has guarded the setup splash since #589; this
+        """_sanitize_render_text has guarded the setup splash since litclock-dev#589; this
         surface takes the same CLI-supplied strings and did not call it."""
         with caplog.at_level(logging.WARNING):
             eink_display.create_qr_display_image(self.URL, title="Scan\x07\x00 Me")

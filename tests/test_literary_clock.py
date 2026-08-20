@@ -1,4 +1,4 @@
-"""In-process tests for src/literary_clock.py M2 additions (PR #245).
+"""In-process tests for src/literary_clock.py M2 additions (PR litclock-dev#245).
 
 Complements tests/test_literary_clock_dry_run.py (subprocess smoke tests
 for the --dry-run contract). These exercise the pure helpers directly:
@@ -314,27 +314,27 @@ class TestQrComposite:
                 assert image.getpixel((x, y)) == 255, f"quiet zone dirty at ({x}, {y}) in composed frame"
 
     def test_qr_url_fallback_locked_to_plain_http(self) -> None:
-        """Pin the QR_URL fallback. #257 dropped TLS (plain HTTP only); #343
+        """Pin the QR_URL fallback. litclock-dev#257 dropped TLS (plain HTTP only); litclock-dev#343
         moved control_server to port 80 so the URL carries NO port — a
         recipient scans/types bare `http://litclock.local`. The port is built
         by control_url.control_base_url, which omits `:80`.
 
-        Issue #306: this is the FALLBACK now — the runtime path prefers
+        Issue litclock-dev#306: this is the FALLBACK now — the runtime path prefers
         the IP-encoded URL via _resolve_lan_ip() because mDNS is
         unreliable on Android Chrome and many home networks. The
         hostname stays here for the no-network kiosk case."""
         assert literary_clock.QR_URL == "http://litclock.local"
         assert "https://" not in literary_clock.QR_URL, (
-            "QR URL must be plain HTTP per #257; control_server has no TLS listener"
+            "QR URL must be plain HTTP per litclock-dev#257; control_server has no TLS listener"
         )
-        # #343: the port must be OMITTED at 80 — a visible port defeats the change.
+        # litclock-dev#343: the port must be OMITTED at 80 — a visible port defeats the change.
         assert "litclock.local:" not in literary_clock.QR_URL, "QR URL must not carry a port at 80"
         assert literary_clock.QR_POSITION == (713, 0)
         assert literary_clock.QR_VERSION == 2
         assert literary_clock.QR_BOX_SIZE == 3
 
 
-# ---------- LAN IP resolution + IP-encoded QR (#306) ----------
+# ---------- LAN IP resolution + IP-encoded QR (litclock-dev#306) ----------
 
 
 class _StubSocket:
@@ -566,7 +566,7 @@ class TestStructural:
         assert "def get_current_quote(" in src
 
     def test_weather_gated_on_coordinates(self) -> None:
-        """EPIC #383 PR2 / design-review A2 (T27): weather must stay gated on
+        """EPIC litclock-dev#383 PR2 / design-review A2 (T27): weather must stay gated on
         BOTH coordinates being set, and empty coords must take the explicit
         "no location → skip weather" path. If a refactor dropped this gate, a
         Pi whose IP-geo failed (empty WEATHER_LATITUDE) would fetch weather
@@ -588,7 +588,7 @@ class TestStructural:
     def test_status_file_default_lives_under_run_litclock(self) -> None:
         """Codex /review on M2 caught: /var/run is root-owned, so the
         per-minute write under User=pi gets Permission-denied. The
-        existing #241 tmpfiles.d entry creates /run/litclock (tmpfs,
+        existing litclock-dev#241 tmpfiles.d entry creates /run/litclock (tmpfs,
         pi:pi-owned) — status file lives there too. Pinning to prevent
         a future copy-paste from a `/var/run` doc."""
         src = self._src()
@@ -616,7 +616,7 @@ class TestStructural:
         assert "x0 = w - 16" not in src
 
     def test_resolve_lan_ip_helper_exists(self) -> None:
-        """#306: IP-encoded QR URL replaces the hardcoded mDNS hostname for
+        """litclock-dev#306: IP-encoded QR URL replaces the hardcoded mDNS hostname for
         the scan path. Pin the helper so a refactor can't silently regress
         to QR_URL only."""
         src = self._src()
@@ -625,7 +625,7 @@ class TestStructural:
         assert "_resolve_lan_ip()" in src
 
     def test_qr_composite_uses_resolved_ip_format(self) -> None:
-        """#306 + #343 contract: when an IP is available, the QR encodes the
+        """litclock-dev#306 + litclock-dev#343 contract: when an IP is available, the QR encodes the
         control URL for that IP via the shared control_url helper (which emits
         plain http and omits the port at 80). Pin the call so a refactor can't
         silently drop the scheme (camera apps need it to recognize the URL) or

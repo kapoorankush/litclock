@@ -15,14 +15,14 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
 # Weather responses are a purely derived cache (WEATHER_TTL, default 1h, then
 # re-fetched on demand), so they belong on tmpfs rather than the SD-backed
 # project root. Writing them under _PROJECT_ROOT cost ~8,760 SD writes/yr when
-# weather is enabled — the largest recurring app-layer flash writer (#434).
+# weather is enabled — the largest recurring app-layer flash writer (litclock-dev#434).
 # /run/litclock is the pi-owned tmpfs dir created every boot by
 # systemd/tmpfiles.d/litclock.conf (same dir as the heartbeat + status files);
 # it's cleared on reboot, which is fine — a cold cache just triggers one fetch
 # on the next tick. Overridable for tests + non-Pi hosts.
 _CACHE_DIR = os.environ.get("LITCLOCK_WEATHER_CACHE_DIR", "/run/litclock")
 # Sweeping the legacy SD-backed project root for stale caches is a one-time
-# #434 migration, not a steady-state concern — record the (root, prefix) pairs
+# litclock-dev#434 migration, not a steady-state concern — record the (root, prefix) pairs
 # already swept in this process so subsequent hourly fetches don't keep
 # readdir-ing the flash-backed repo root for the life of the install. Reset on
 # reboot (fresh process), which re-sweeps once — cheap.
@@ -57,7 +57,7 @@ class BaseWeatherProvider(ABC):
     # OpenWeatherMap have different schemas and must never share a cache).
     # The active `units` value is appended so WEATHER_UNITS changes write to
     # a fresh file and never serve wrong-unit values under a new-unit label
-    # (bug caught during issue #175 QA, 2026-04-11: the cache layer was
+    # (bug caught during issue litclock-dev#175 QA, 2026-04-11: the cache layer was
     # units-agnostic and a celsius-populated cache was being read back and
     # displayed with a °F label after the user changed units).
     _cache_prefix = "weather-cache"
@@ -168,7 +168,7 @@ class BaseWeatherProvider(ABC):
         Always sweeps the active tmpfs cache dir (`_CACHE_DIR`) — units/coords
         can change on any tick. The legacy SD-backed project root
         (`_PROJECT_ROOT`) is swept only ONCE per process (via
-        `_legacy_roots_swept`): #434 moved the cache onto tmpfs, so scanning
+        `_legacy_roots_swept`): litclock-dev#434 moved the cache onto tmpfs, so scanning
         the old root is a one-time migration that drops any stale flash-
         resident file on the first fetch — no need to readdir the SD card on
         every hourly fetch thereafter.
@@ -212,7 +212,7 @@ class BaseWeatherProvider(ABC):
     def _write_cache(self, cache_file_name, payload):
         """Persist a fetched response to the cache, best-effort + atomic.
 
-        Best-effort: the tmpfs cache dir (#434) is normally present (created at
+        Best-effort: the tmpfs cache dir (litclock-dev#434) is normally present (created at
         boot by systemd/tmpfiles.d and kept warm by the heartbeat writer), but
         if it's missing/unwritable we log and return rather than propagate —
         the caller already holds the live data and must still render.
@@ -274,7 +274,7 @@ class BaseWeatherProvider(ABC):
                 raise
             # Persisting the response is best-effort and happens AFTER the fetch
             # try-block so a cache-write failure can never sink the render — we
-            # already hold the freshly-fetched data (#434 review). On a real Pi
+            # already hold the freshly-fetched data (litclock-dev#434 review). On a real Pi
             # the pi user can't create /run/litclock if it's somehow missing
             # (root-owned /run parent), so a hard failure here would drop
             # weather entirely; instead we log and return the live data.

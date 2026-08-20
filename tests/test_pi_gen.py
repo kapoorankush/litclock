@@ -72,7 +72,7 @@ class TestPackageList:
     by tests/test_apt_provisioned_drift.py::test_pi_gen_gpio_packages_are_in_requirements_apt,
     which never depended on install.sh.
 
-    Kept here: the list must parse, and must not regain the packages #214
+    Kept here: the list must parse, and must not regain the packages litclock-dev#214
     deliberately removed.
     """
 
@@ -102,7 +102,7 @@ class TestPackageList:
         "libjpeg-dev",
         "zlib1g-dev",
         "libfreetype6-dev",
-        # CJK fonts: the corpus is EN today, but #19/#532 land per-language
+        # CJK fonts: the corpus is EN today, but #19/litclock-dev#532 land per-language
         # corpora and a missing font renders tofu rather than failing loudly.
         "ttf-wqy-zenhei",
         "ttf-wqy-microhei",
@@ -153,7 +153,7 @@ class TestPackageList:
         assert "qrencode" not in self._parse_pi_gen_packages()
 
     def test_rpi_gpio_apt_package_not_reintroduced(self):
-        """#214 removed python3-rpi.gpio — the runtime chain
+        """litclock-dev#214 removed python3-rpi.gpio — the runtime chain
         (display_driver -> waveshare_epd.epd7in5_V2 -> epdconfig.py) binds to
         gpiozero's lgpio pin factory and never imports RPi.GPIO."""
         assert "python3-rpi.gpio" not in self._parse_pi_gen_packages()
@@ -1693,7 +1693,7 @@ class TestJournaldConfig:
     """Journald must be persistent so boot-time failures are debuggable.
 
     Volatile storage (the prior default) wiped logs on every reboot, making
-    it impossible to debug failed first-boots on real hardware (#172).
+    it impossible to debug failed first-boots on real hardware (litclock-dev#172).
     """
 
     JOURNALD_CONF = os.path.join(
@@ -1725,7 +1725,7 @@ class TestJournaldConfig:
 
 
 class TestPiGenVenvPosture:
-    """The #214/#321/#323 venv invariants, asserted against the IMAGE build.
+    """The litclock-dev#214/litclock-dev#321/litclock-dev#323 venv invariants, asserted against the IMAGE build.
 
     These were previously covered for scripts/install.sh (tests/test_install_sh.py,
     deleted with it in litclock-dev#547) and for scripts/update.sh (tests/test_update_sh.py).
@@ -1744,16 +1744,16 @@ class TestPiGenVenvPosture:
             return f.read()
 
     def test_venv_uses_system_site_packages(self):
-        """#214: the apt-provisioned GPIO/SPI wheels are only visible to the
+        """litclock-dev#214: the apt-provisioned GPIO/SPI wheels are only visible to the
         venv with --system-site-packages. Without it the driver chain cannot
         import lgpio and the panel never paints."""
         body = self._setup_app()
         assert "python3 -m venv --system-site-packages" in body, (
-            "pi-gen must create the venv with --system-site-packages (#214)"
+            "pi-gen must create the venv with --system-site-packages (litclock-dev#214)"
         )
 
     def test_pip_install_filters_apt_provisioned_names(self):
-        """#214: requirements-apt.txt is the single source of truth for names
+        """litclock-dev#214: requirements-apt.txt is the single source of truth for names
         pip must NOT install. The filter builds EXCLUDE_RE from that file, so
         a hand-edited list here would silently drift."""
         # Comments stripped first: mutation showed `"requirements-apt.txt" in
@@ -1761,7 +1761,7 @@ class TestPiGenVenvPosture:
         # executable line could stop reading the file and this stayed green.
         body = _strip_comments(self._setup_app())
         assert re.search(r"EXCLUDE_RE=.*requirements-apt\.txt", body), (
-            "pi-gen must build EXCLUDE_RE from requirements-apt.txt itself (#214) — "
+            "pi-gen must build EXCLUDE_RE from requirements-apt.txt itself (litclock-dev#214) — "
             "a hand-maintained list here is exactly the drift that file exists to prevent"
         )
         assert re.search(r"grep -vE .*EXCLUDE_RE.* requirements\.txt", body), (
@@ -1769,15 +1769,15 @@ class TestPiGenVenvPosture:
         )
 
     def test_pip_install_is_not_eager(self):
-        """#322: eager upgrade-strategy silently bumps transitives fleet-wide;
+        """litclock-dev#322: eager upgrade-strategy silently bumps transitives fleet-wide;
         the smoke test never imports Flask, so a break would ship."""
         body = self._setup_app()
         assert "--upgrade-strategy eager" not in body, (
-            "pi-gen must NOT use eager upgrade-strategy (#322) — transitive breaks ship unnoticed"
+            "pi-gen must NOT use eager upgrade-strategy (litclock-dev#322) — transitive breaks ship unnoticed"
         )
 
     def test_pip_installs_filtered_requirements_with_upgrade(self):
-        """#321 / litclock-dev#605 item 19: the deleted installer test pinned
+        """litclock-dev#321 / litclock-dev#605 item 19: the deleted installer test pinned
         `pip install --upgrade -r`; nothing re-pinned it against pi-gen. pip
         without --upgrade may silently SKIP an already-satisfied pin — this
         exact class has shipped before in this repo — and the
@@ -1786,6 +1786,6 @@ class TestPiGenVenvPosture:
         body = _strip_comments(self._setup_app())
         assert re.search(r"venv/bin/pip install --upgrade -r \S*requirements-pigen", body), (
             "pi-gen must `venv/bin/pip install --upgrade -r` the filtered requirements "
-            "file (#321/litclock-dev#605) — venv-pip specifically, a bare `pip` is the documented "
+            "file (litclock-dev#321/litclock-dev#605) — venv-pip specifically, a bare `pip` is the documented "
             "wrong-interpreter pitfall class"
         )

@@ -1,4 +1,4 @@
-"""P2 memory sentinel for control_server (issue #262).
+"""P2 memory sentinel for control_server (issue litclock-dev#262).
 
 PLAN-LitClock-Control-PWA.md P2 specifies: "<40MB RSS for control_server.
 CI perf-sentinel test fails on regression to >50MB."
@@ -8,7 +8,7 @@ Why this test spawns a subprocess instead of measuring in-process
 An in-process `resource.getrusage(RUSAGE_SELF).ru_maxrss` check is useless
 as a sentinel: the pytest interpreter has the dev venv loaded (and may
 have many earlier test modules' imports lingering), which dwarfs the
-actual control_server footprint. Issue #262 explicitly calls this out.
+actual control_server footprint. Issue litclock-dev#262 explicitly calls this out.
 
 So we shell out to a clean ``python3 -m control_server.app`` subprocess,
 wait for it to bind its port (warm + serve /api/health), exercise

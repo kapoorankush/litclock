@@ -1,4 +1,4 @@
-"""Tests for control_server/routes/diagnostics.py (#416 PR2 T6 + T7b).
+"""Tests for control_server/routes/diagnostics.py (litclock-dev#416 PR2 T6 + T7b).
 
 Covers:
 - collect_diagnostics() schema gate (matches PRIVACY_POLICY keys exactly).
@@ -165,7 +165,7 @@ class TestAnomalyDetector:
         # timestamp; the original hardcoded "2026-06-07T00:00:00+00:00"
         # silently rotted past the old 24h DHCP-age window (removed in litclock-dev#552) on
         # 2026-06-08, tripping a spurious network anomaly. Drive-by fix
-        # in #419 PR1 alongside the package split.
+        # in litclock-dev#419 PR1 alongside the package split.
         from datetime import UTC as _UTC
         from datetime import datetime as _datetime
         from datetime import timedelta as _timedelta
@@ -223,14 +223,14 @@ class TestAnomalyDetector:
         assert "services" in diagnostics._compute_anomalies(v)
 
     def test_active_service_with_empty_journal_does_not_trip_services(self):
-        # #433 Iron-Rule regression: the v0.214.x oxblood "Clock isn't
+        # litclock-dev#433 Iron-Rule regression: the v0.214.x oxblood "Clock isn't
         # running" banner false-positive came from a slow journalctl on
         # Pi Zero 2W returning empty stdout for an active service →
         # ``has_journal_access`` flipped to False → services anomaly →
         # banner. PR3 dropped the ``has_journal_access`` field entirely
         # (per /plan-eng-review A-3 + CMT-2). Pin the new contract: an
         # active service with an empty journal_tail must NOT trip the
-        # anomaly. If this test fails, the pre-#433 false-positive class
+        # anomaly. If this test fails, the pre-litclock-dev#433 false-positive class
         # has been re-introduced.
         v = self._baseline()
         v["service_states"]["litclock.service"] = {
@@ -270,16 +270,16 @@ class TestAnomalyDetector:
         # Regression: isinstance(True, int) is True in Python; a
         # handcrafted writer emitting JSON `true` could surface as
         # picked_at=True, which time.time() - 1.0 would treat as a 56-year-
-        # old quote.  _is_numeric filters booleans now. (LitClock #372.)
+        # old quote.  _is_numeric filters booleans now. (LitClock litclock-dev#372.)
         v = self._baseline()
         v["picked_at"] = True
         assert "last-quote" not in diagnostics._compute_anomalies(v)
 
-    # ---- #453: the wedged-oneshot backstop -----------------------------
+    # ---- litclock-dev#453: the wedged-oneshot backstop -----------------------------
     # A oneshot (litclock.service) caught mid-paint in activating/deactivating
-    # is intentionally NOT a services anomaly (#443 carve-out) — it cycles
+    # is intentionally NOT a services anomaly (litclock-dev#443 carve-out) — it cycles
     # through that window every minute in 2-5 s. The cross-model /review on
-    # #449 worried that a oneshot *genuinely wedged* in activating for minutes
+    # litclock-dev#449 worried that a oneshot *genuinely wedged* in activating for minutes
     # would then read fully-green with no banner. It does not: the clock
     # publishes /run/litclock/current-quote.json ATOMICALLY and only AFTER
     # ``epd.display()`` returns (literary_clock.py:_write_status_file), so a
@@ -290,15 +290,15 @@ class TestAnomalyDetector:
     # only wedge detector.
 
     def test_wedged_oneshot_surfaces_via_stale_quote_age(self):
-        # The headline #453 scenario: litclock.service stuck in `activating`
-        # (services stays OK via the #443 carve-out) but the last painted
+        # The headline litclock-dev#453 scenario: litclock.service stuck in `activating`
+        # (services stays OK via the litclock-dev#443 carve-out) but the last painted
         # quote is now stale → `last-quote` fires, so the wedge IS surfaced.
         v = self._baseline()
         v["service_states"] = {"litclock.service": {"state": "activating"}}
         v["picked_at"] = time.time() - (diagnostics.ANOMALY_QUOTE_AGE_S + 30)
         anomalies = diagnostics._compute_anomalies(v)
-        assert "services" not in anomalies, "oneshot mid-paint must NOT trip services (#443)"
-        assert "last-quote" in anomalies, "a wedged paint must surface via stale quote age (#453)"
+        assert "services" not in anomalies, "oneshot mid-paint must NOT trip services (litclock-dev#443)"
+        assert "last-quote" in anomalies, "a wedged paint must surface via stale quote age (litclock-dev#453)"
 
     def test_oneshot_activating_with_fresh_quote_is_clean(self):
         # The normal 2-5 s paint window: oneshot in `activating` + a fresh
@@ -310,9 +310,9 @@ class TestAnomalyDetector:
         assert diagnostics._compute_anomalies(v) == []
 
     def test_present_quote_with_absent_picked_at_does_not_trip(self):
-        # The one residual gap #453 names: a present quote whose `picked_at`
+        # The one residual gap litclock-dev#453 names: a present quote whose `picked_at`
         # is absent/non-numeric can't be age-checked, so `last-quote` does
-        # NOT fire. This is intentional and consistent with the #372 bool
+        # NOT fire. This is intentional and consistent with the litclock-dev#372 bool
         # filter — and unreachable from real writers, which always publish a
         # numeric `picked_at` alongside the quote. Pinned so the deliberate
         # behavior is a documented decision, not an accident.
@@ -376,7 +376,7 @@ class TestAnomalyDetector:
 
 
 class TestBuildServiceStatesTailless:
-    """#436: ``_build_service_states`` NO LONGER fetches journal tails — a cold
+    """litclock-dev#436: ``_build_service_states`` NO LONGER fetches journal tails — a cold
     ``journalctl`` is ~5-7 s on a Pi Zero 2W and it sat on the synchronous SSR
     render path, so ``/diagnostics`` blocked first paint by that much exactly
     when a unit was unhealthy. Tails now hydrate per-unit via
@@ -388,7 +388,7 @@ class TestBuildServiceStatesTailless:
     - ``_build_service_states`` fires ZERO journalctl forks, always.
     - every unit's ``journal_tail`` is ``[]``.
     - the ``healthy`` flag matches :func:`_is_obviously_healthy` per state — the
-      SAME state->tail matrix the pre-#436 lazy-tail filter used, now surfaced
+      SAME state->tail matrix the pre-litclock-dev#436 lazy-tail filter used, now surfaced
       as ``data-diag-healthy`` to gate client-side hydration instead of a
       server-side fetch.
     """
@@ -472,13 +472,13 @@ class TestBuildServiceStatesTailless:
 
 
 class TestServiceStateModifier:
-    """#449/#463 — the per-row chip COLOR is driven by ``state_modifier`` (the
+    """litclock-dev#449/litclock-dev#463 — the per-row chip COLOR is driven by ``state_modifier`` (the
     chip TEXT stays the literal systemd state). A oneshot caught mid-paint in
     ``activating``/``deactivating`` emits the neutral ``transient-ok`` tone so
-    the row matches the OK section pill (#443 fixed the verdict but left the
+    the row matches the OK section pill (litclock-dev#443 fixed the verdict but left the
     row ochre); a oneshot settled at its by-design ``inactive`` resting state
     emits the green ``settled-ok`` tone so it reads healthy, not idle-broken
-    (#463). Every other unit/state keeps its literal modifier so the existing
+    (litclock-dev#463). Every other unit/state keeps its literal modifier so the existing
     CSS (green ``--active``, ochre ``--failed``/``--activating``/
     ``--deactivating``) still applies.
     """
@@ -532,7 +532,7 @@ class TestServiceStateModifier:
         assert mods["litclock.service"] == "failed"
 
     def test_oneshot_inactive_emits_settled_ok(self, no_tails, monkeypatch, diag_env):
-        # #463 — a oneshot settled at its by-design ``inactive`` resting state
+        # litclock-dev#463 — a oneshot settled at its by-design ``inactive`` resting state
         # is healthy, not idle-broken. It emits ``settled-ok`` (green --success
         # tone) so a non-tech recipient reads "fine", not a fault. Every
         # DIAG_ONESHOT_UNITS member is covered, incl. firstboot (permanently
@@ -551,7 +551,7 @@ class TestServiceStateModifier:
         assert mods["litclock-reresolve-location.service"] == "settled-ok"
 
     def test_non_oneshot_inactive_keeps_literal_modifier(self, no_tails, monkeypatch, diag_env):
-        # #463 guard — settled-ok is ONESHOT-only. A long-running unit going
+        # litclock-dev#463 guard — settled-ok is ONESHOT-only. A long-running unit going
         # ``inactive`` IS a real services anomaly, so it must keep its literal
         # modifier (never green): litclock-control.service is not a oneshot.
         mods = self._modifiers(monkeypatch, diag_env, {"litclock-control.service": "inactive"})
@@ -571,7 +571,7 @@ class TestApiDiagnostics:
         assert "anomalies" in body and isinstance(body["anomalies"], list)
         assert "copy_payload" in body and isinstance(body["copy_payload"], str)
         assert "section_order" in body and body["section_order"] == list(diagnostics.SECTION_IDS)
-        # #449 — pin the per-row service_states contract at the envelope
+        # litclock-dev#449 — pin the per-row service_states contract at the envelope
         # boundary: every row carries state + state_modifier (drives the chip
         # color) + journal_tail. A serializer refactor that dropped
         # state_modifier would otherwise only surface as an untinted chip on
@@ -627,7 +627,7 @@ class TestApiDiagnostics:
         # When any section is anomalous, the banner swaps to warning state
         # AND the matching <details> renders with the `open` attribute.
         # Forge a high CPU temp so the system section trips.
-        # Patch the actual binding site in _collectors.py (#419 D8) — the
+        # Patch the actual binding site in _collectors.py (litclock-dev#419 D8) — the
         # package namespace re-exports the name, but collect_diagnostics
         # looks it up inside _collectors.py at call time.
         monkeypatch.setattr(
@@ -663,7 +663,7 @@ class TestApiDiagnostics:
         assert finder.system_open, "expected <details data-diag-section='system' open>"
 
     def test_diagnostics_page_oneshot_transient_chip_is_neutral(self, diag_env, monkeypatch):
-        # #449 — the SSR template path (distinct fallback chain from the JS
+        # litclock-dev#449 — the SSR template path (distinct fallback chain from the JS
         # patch path) must also neutralize a oneshot mid-paint chip. Forge
         # litclock.service into the activating window and assert the rendered
         # HTML carries the transient-ok modifier, NOT the ochre --activating.
@@ -678,11 +678,11 @@ class TestApiDiagnostics:
         assert b"diag-service__state--transient-ok" in body
         # ...but the ochre activating modifier must NOT be applied to the chip.
         assert b"diag-service__state--activating" not in body
-        # Section pill reads OK (the #443 carve-out), not a services alert.
+        # Section pill reads OK (the litclock-dev#443 carve-out), not a services alert.
         assert b'data-diag-section="services"' in body
 
     def test_diagnostics_page_oneshot_inactive_chip_is_green(self, diag_env, monkeypatch):
-        # #463 — the SSR template path must paint a settled oneshot ``inactive``
+        # litclock-dev#463 — the SSR template path must paint a settled oneshot ``inactive``
         # with the healthy green ``settled-ok`` tone, not the neutral base chip.
         # Forge firstboot (the permanently-inactive gift-recipient case) inactive.
         monkeypatch.setattr(
@@ -732,7 +732,7 @@ class TestApiDiagnostics:
                 "weather_enabled": True,
             }
 
-        # Patch the route's binding (#419 D8). The package re-exports
+        # Patch the route's binding (litclock-dev#419 D8). The package re-exports
         # collect_diagnostics for plain imports, but the route in _sse.py
         # bound the name at import time and looks it up there at call time.
         monkeypatch.setattr(
@@ -767,7 +767,7 @@ class TestApiDiagnostics:
         def drift_collect():
             return {"unknown_extra_key": 42}  # missing every real key
 
-        # Patch the route binding (#419 D8) — see comment above for why.
+        # Patch the route binding (litclock-dev#419 D8) — see comment above for why.
         monkeypatch.setattr(
             "control_server.routes.diagnostics._sse.collect_diagnostics",
             drift_collect,
@@ -787,7 +787,7 @@ class TestApiDiagnostics:
     def test_api_diagnostics_500_envelope_when_collect_raises(self, diag_env, monkeypatch):
         # The /api/diagnostics route wraps collect_diagnostics in a final-
         # bailout try/except that returns the project's standard envelope
-        # shape on failure. #419 T11 — pre-#419 the success path was
+        # shape on failure. litclock-dev#419 T11 — pre-litclock-dev#419 the success path was
         # well-covered but the 500 envelope path was untested. A
         # regression that flipped the error to a plain Flask 500 (HTML
         # instead of JSON) would have shipped silently.
@@ -795,7 +795,7 @@ class TestApiDiagnostics:
         def boom():
             raise RuntimeError("simulated collector crash")
 
-        # Patch the route's actual binding site (#419 D8).
+        # Patch the route's actual binding site (litclock-dev#419 D8).
         monkeypatch.setattr(
             "control_server.routes.diagnostics._sse.collect_diagnostics",
             boom,
@@ -866,7 +866,7 @@ class TestApiDiagnostics:
         assert isinstance(envelope_values["recent_log_entries"], list)
 
     def test_journal_tail_redacted_by_endpoint(self, diag_env, monkeypatch):
-        # F-LEAK-B regression, moved to the per-unit endpoint (#436): tails no
+        # F-LEAK-B regression, moved to the per-unit endpoint (litclock-dev#436): tails no
         # longer flow through /api/diagnostics (build returns empty). The
         # per-unit /api/diagnostics/journal endpoint is now the ingest point
         # that must run redact_text() on every line. openweathermap.py logs
@@ -900,7 +900,7 @@ class TestApiDiagnostics:
 
 
 class TestJournalEndpoint:
-    """#436 — ``GET /api/diagnostics/journal?unit=`` is the per-unit tail
+    """litclock-dev#436 — ``GET /api/diagnostics/journal?unit=`` is the per-unit tail
     hydration source, split off the SSR/poll path so a cold journalctl never
     blocks first paint. SECURITY: ``unit`` feeds ``journalctl -u``, so it MUST
     be a member of the DIAG_UNITS allowlist or we'd expose arbitrary unit logs.
@@ -954,10 +954,10 @@ class TestJournalEndpoint:
 
 
 class TestVerdictIndependentOfTails:
-    """#436 CRITICAL REGRESSION GUARD: dropping journal tails off the SSR/poll
+    """litclock-dev#436 CRITICAL REGRESSION GUARD: dropping journal tails off the SSR/poll
     path is only SAFE because the section/anomaly verdict never reads them
     (``_compute_anomalies`` looks at ``state`` only). If a future change makes
-    the verdict depend on ``journal_tail``, this trips — and #436's whole basis
+    the verdict depend on ``journal_tail``, this trips — and litclock-dev#436's whole basis
     (SSR paints the same verdict without the tails) would be broken.
     """
 
@@ -1021,8 +1021,8 @@ class TestCopyPayloadRedaction:
         assert "MyWiFi" in payload
         assert "San Francisco" in payload
 
-    # --- Edge-case payload shapes (#419 T9) -------------------------------
-    # The pre-#419 tests covered the happy-path shape. These pin behavior
+    # --- Edge-case payload shapes (litclock-dev#419 T9) -------------------------------
+    # The pre-litclock-dev#419 tests covered the happy-path shape. These pin behavior
     # against the four edge cases the issue body called out: empty machine,
     # multi-service journal_tail, non-dict entries in recent_log_entries,
     # and string timestamps in log entries.
@@ -1149,7 +1149,7 @@ if __name__ == "__main__":  # pragma: no cover
 
 
 class TestJournalEndpointDeepLines:
-    """#416 follow-up — the ?lines= param lets a helper pull a DEEPER tail than
+    """litclock-dev#416 follow-up — the ?lines= param lets a helper pull a DEEPER tail than
     the 3-line page preview, capped, with a distinct (non-poisoning) cache key."""
 
     def test_custom_lines_reads_deep_key_and_slices(self, diag_env, monkeypatch):
@@ -1208,7 +1208,7 @@ class TestJournalEndpointDeepLines:
 
 
 class TestSupportLogsEndpoint:
-    """#416 follow-up — GET /api/diagnostics/support-logs: one downloadable text
+    """litclock-dev#416 follow-up — GET /api/diagnostics/support-logs: one downloadable text
     bundle (system state + deep per-unit logs) for shell-less support."""
 
     def test_returns_text_attachment_with_deep_logs(self, diag_env, monkeypatch):
@@ -1306,7 +1306,7 @@ class TestSupportLogsBundleAssembler:
 
 
 class TestParseLinesParam:
-    """#416 fu — the clamp is DoS-critical: `journalctl -n 0` means 'all lines'
+    """litclock-dev#416 fu — the clamp is DoS-critical: `journalctl -n 0` means 'all lines'
     (unbounded), so lines=0 MUST clamp to 1, and the max must hold exactly."""
 
     import pytest as _pytest
@@ -1332,7 +1332,7 @@ class TestParseLinesParam:
 
 
 class TestSupportLogsBundleBudgetBoundary:
-    """#416 fu — pin the mid-loop truncation math + the strict `>` boundary."""
+    """litclock-dev#416 fu — pin the mid-loop truncation math + the strict `>` boundary."""
 
     def test_mid_loop_truncation_names_only_skipped(self):
         from control_server.routes.diagnostics._copy_payload import build_support_logs_bundle
@@ -1354,7 +1354,7 @@ class TestSupportLogsBundleBudgetBoundary:
 
 
 class TestSupportLogsEndpointMore:
-    """#416 fu — HTTP-layer wiring for truncation, allowlist, empty, deep redaction."""
+    """litclock-dev#416 fu — HTTP-layer wiring for truncation, allowlist, empty, deep redaction."""
 
     def test_budget_truncation_reaches_response(self, diag_env, monkeypatch):
         from control_server.routes.diagnostics import _sse

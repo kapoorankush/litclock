@@ -87,7 +87,7 @@ github_api_curl() {
 # See https://github.com/orgs/community/discussions/49276 (open since
 # March 2023) and https://github.com/orgs/community/discussions/162365.
 # Empirically on the LitClock test Pi: /releases/latest 4-of-5 404s,
-# /tags is reliable. Issue #247 has the full diagnostic.
+# /tags is reliable. Issue litclock-dev#247 has the full diagnostic.
 #
 # Trade-offs vs /releases/latest:
 #   - Loses GitHub's automatic draft/prerelease filtering. Mitigated by

@@ -2,7 +2,7 @@
 
 Validates boot ordering, dependency chains, and critical properties
 of all LitClock systemd units. Covers the validation checklist from
-issue #111 (first-boot flow for image-based deployment).
+issue litclock-dev#111 (first-boot flow for image-based deployment).
 """
 
 import configparser
@@ -77,7 +77,7 @@ def _parse_systemd_duration_to_seconds(value):
     return total if total > 0 else None
 
 
-# ── Boot ordering (#111, updated for #128) ──────────────────────────
+# ── Boot ordering (litclock-dev#111, updated for litclock-dev#128) ──────────────────────────
 
 
 class TestBootOrdering:
@@ -120,7 +120,7 @@ class TestBootOrdering:
         assert "litclock-splash.service" in after
 
     def test_firstboot_has_no_network_online_dependency(self):
-        """Critical fix from #111 / PR #117: firstboot must NOT depend on
+        """Critical fix from litclock-dev#111 / PR litclock-dev#117: firstboot must NOT depend on
         network-online.target because WiFi isn't configured on a fresh image."""
         unit = parse_unit("litclock-firstboot.service")
         after = unit.get("Unit", "After", fallback="")
@@ -187,7 +187,7 @@ class TestServiceProperties:
         assert "shutdown.target" in conflicts_tokens
 
     def test_shutdown_conflicts_covers_all_poweroff_paths(self):
-        """Issue #186: `shutdown -h now` isolates to halt.target, which doesn't
+        """Issue litclock-dev#186: `shutdown -h now` isolates to halt.target, which doesn't
         reliably pull in shutdown.target. Without halt.target + poweroff.target
         in Conflicts=, ExecStop doesn't fire on `shutdown -h now` even though
         it fires on `poweroff`. Must cover all four targets."""
@@ -200,14 +200,14 @@ class TestServiceProperties:
             )
 
     def test_shutdown_orders_against_all_shutdown_paths(self):
-        """Issue #186 / pre-#268 invariant: Before= must order our
+        """Issue litclock-dev#186 / pre-litclock-dev#268 invariant: Before= must order our
         ExecStop against every shutdown path (reboot / poweroff / halt /
         shutdown) so the paint completes before each path's terminal
         target. A prior PR briefly replaced these four entries with
-        Before=final.target as an attempted #268 fix, but codex review
+        Before=final.target as an attempted litclock-dev#268 fix, but codex review
         flagged that Before=final.target only constrains stop-finish
         (not stop-start), so it doesn't actually defer the paint. Keep
-        the four-target form for correctness; #268 stays open with a
+        the four-target form for correctness; litclock-dev#268 stays open with a
         proper late-hook design TBD."""
         unit = parse_unit("litclock-shutdown.service")
         before = unit.get("Unit", "Before", fallback="")
@@ -222,9 +222,9 @@ class TestServiceProperties:
         assert unit.get("Unit", "DefaultDependencies") == "no"
 
     def test_shutdown_does_NOT_conflict_with_litclock_service(self):
-        """Issue #271 codex-review regression guard.
+        """Issue litclock-dev#271 codex-review regression guard.
 
-        An earlier draft of the #271 fix added Conflicts=litclock.service
+        An earlier draft of the litclock-dev#271 fix added Conflicts=litclock.service
         to force a stop of any mid-render service before ExecStop. That
         was WRONG: Conflicts= is bidirectional, and this unit is kept
         active by RemainAfterExit=yes — so every timer-fired start of
@@ -256,7 +256,7 @@ class TestServiceProperties:
         )
 
     def test_shutdown_before_litclock_service(self):
-        """Issue #271: Before=litclock.service is the ordering anchor that
+        """Issue litclock-dev#271: Before=litclock.service is the ordering anchor that
         closes the SPI/GPIO race. In shutdown direction, Before= reverses
         to mean 'our stop runs after theirs' — so ExecStop only fires
         once the mid-render clock.service has fully stopped and released
@@ -269,7 +269,7 @@ class TestServiceProperties:
         before = unit.get("Unit", "Before", fallback="")
         before_tokens = set(before.split())
         assert "litclock.service" in before_tokens, (
-            "Before=litclock.service required for #271 — orders our ExecStop after mid-render stop"
+            "Before=litclock.service required for litclock-dev#271 — orders our ExecStop after mid-render stop"
         )
 
     def test_shutdown_does_NOT_conflict_with_litclock_timer(self):
@@ -292,7 +292,7 @@ class TestServiceProperties:
         )
 
     def test_litclock_service_has_bounded_stop_timeout(self):
-        """Issue #271 follow-up — wedged-render timeout guard.
+        """Issue litclock-dev#271 follow-up — wedged-render timeout guard.
 
         litclock.service is Type=oneshot and inherits
         DefaultTimeoutStopSec (90s on Bookworm systemd 252). If a render
@@ -317,11 +317,11 @@ class TestServiceProperties:
         )
 
 
-# ── Splash ExecStartPost trigger (#269) ──────────────────────────────
+# ── Splash ExecStartPost trigger (litclock-dev#269) ──────────────────────────────
 
 
 class TestSplashExecStartPost:
-    """Issue #269 — the on-boot clock render moved from a direct
+    """Issue litclock-dev#269 — the on-boot clock render moved from a direct
     runtheclock.sh call inside boot-splash.sh into ExecStartPost on
     litclock-splash.service. systemd's job queue then serializes the trigger
     against timer-fired litclock.service runs (no GPIO contention), and the
@@ -434,11 +434,11 @@ class TestExecPaths:
         assert os.path.exists(script_path), f"{script} not found in repo"
 
 
-# ── #241 LKG writer regression rules ─────────────────────────────────
+# ── litclock-dev#241 LKG writer regression rules ─────────────────────────────────
 
 
 class TestLkgWriterUnitShape:
-    """Issue #241 — the previous unit shape (Requisite= + WantedBy= +
+    """Issue litclock-dev#241 — the previous unit shape (Requisite= + WantedBy= +
     Type=simple) caused the writer to fail-start at boot. Pin the new
     design so a refactor can't silently bring back any of those bugs."""
 
@@ -455,7 +455,7 @@ class TestLkgWriterUnitShape:
         be an error. The timer is the user-facing enable surface."""
         unit = parse_unit("litclock-lkg.service")
         assert not unit.has_section("Install"), (
-            "litclock-lkg.service must have NO [Install] — the timer is the enable surface (#241)"
+            "litclock-lkg.service must have NO [Install] — the timer is the enable surface (litclock-dev#241)"
         )
 
     def test_litclock_lkg_service_is_oneshot(self):
@@ -504,7 +504,7 @@ class TestLkgWriterUnitShape:
         assert " pi pi " in directive, "ownership must be pi:pi so the clock can write the heartbeat"
 
 
-# ── #245 M1 Control PWA — pin the unit shape ────────────────────────
+# ── litclock-dev#245 M1 Control PWA — pin the unit shape ────────────────────────
 
 
 class TestControlServiceUnitShape:
@@ -515,7 +515,7 @@ class TestControlServiceUnitShape:
     - User=pi (the rest of the project runs as pi; matching avoids env-var
       drift and keeps file ownership consistent on env.sh writes).
     - After=litclock-firstboot.service (setup_server owns the device during
-      provisioning until .setup-complete is written). Post-#343 the two are on
+      provisioning until .setup-complete is written). Post-litclock-dev#343 the two are on
       DIFFERENT ports (control_server 80, setup_server 8443), so this is a
       phase/state ordering, not a bind-clash avoidance.
     - ConditionPathExists=/etc/litclock/.setup-complete (the only signal
@@ -572,7 +572,7 @@ class TestControlServiceUnitShape:
         )
 
     def test_threads_env_var_set_to_8(self):
-        """#416 / eng-review E1=B bumped waitress threads from default 4 to 8.
+        """litclock-dev#416 / eng-review E1=B bumped waitress threads from default 4 to 8.
 
         The cap of 6 SSE connections (OV-2=A) plus the existing /api/* poll
         cadence means the prior 4-thread budget could starve under household
@@ -679,7 +679,7 @@ class TestControlServiceUnitShape:
 
 
 class TestHandoffUnits:
-    """EPIC #383 PR2 (#388) — handoff gate on litclock.service + the
+    """EPIC litclock-dev#383 PR2 (litclock-dev#388) — handoff gate on litclock.service + the
     last-resort fallback completer units."""
 
     def _raw(self, filename):
@@ -717,7 +717,7 @@ class TestHandoffUnits:
 
 
 class TestReresolveLocationUnit:
-    """#337 A2/A8: the new on-boot reresolve oneshot. Pins the static shape
+    """litclock-dev#337 A2/A8: the new on-boot reresolve oneshot. Pins the static shape
     properties — handoff-complete gate (A2), best-effort ordering (NO
     Before=litclock.service per A8), correct ExecStart path (fixed by
     /review — `python -m location_resolver` would ModuleNotFoundError on the
@@ -748,7 +748,7 @@ class TestReresolveLocationUnit:
         fresh-flash boot where setup_server is still resolving."""
         unit = parse_unit(self.UNIT)
         assert unit.get("Unit", "ConditionPathExists", fallback="") == "/etc/litclock/.handoff-complete", (
-            "#337 A2 regression: ConditionPathExists must gate on /etc/litclock/.handoff-complete"
+            "litclock-dev#337 A2 regression: ConditionPathExists must gate on /etc/litclock/.handoff-complete"
         )
 
     def test_after_network_online_ordering(self):
@@ -782,7 +782,7 @@ class TestReresolveLocationUnit:
         )
 
     def test_does_not_block_first_quote_tick(self):
-        """#337 A8 (locked, deliberately rejected during /review): NO
+        """litclock-dev#337 A8 (locked, deliberately rejected during /review): NO
         `Before=litclock.service`. Best-effort boot. Blocking the first
         quote on a 1-33s IP-geo would be a real boot-delay regression.
 
@@ -792,12 +792,12 @@ class TestReresolveLocationUnit:
         non_comment_lines = [ln for ln in raw.splitlines() if not ln.lstrip().startswith("#")]
         body = "\n".join(non_comment_lines)
         assert "Before=litclock.service" not in body, (
-            "#337 A8: must NOT block first quote tick on the IP-geo. "
+            "litclock-dev#337 A8: must NOT block first quote tick on the IP-geo. "
             "Best-effort by design (first tick may show stale data, second is fresh)."
         )
 
     def test_execstart_uses_script_path_not_dash_m(self):
-        """#337 /review (Codex maintainability + my-own-trace): `python -m
+        """litclock-dev#337 /review (Codex maintainability + my-own-trace): `python -m
         location_resolver` searches cwd + venv site-packages, NOT src/. On
         the Pi this would ModuleNotFoundError at first boot. The script-path
         form makes Python add the script's dir to sys.path, matching every
@@ -805,7 +805,7 @@ class TestReresolveLocationUnit:
         unit = parse_unit(self.UNIT)
         exec_start = unit.get("Service", "ExecStart", fallback="")
         assert "python -m location_resolver" not in exec_start, (
-            "#337 /review P1 regression: -m form would ModuleNotFoundError on Pi. "
+            "litclock-dev#337 /review P1 regression: -m form would ModuleNotFoundError on Pi. "
             "Use the script path: /home/pi/litclock/src/location_resolver.py"
         )
         assert exec_start.endswith("src/location_resolver.py"), (

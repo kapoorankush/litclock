@@ -123,7 +123,7 @@ def test_lookup_real_corpus_first_row_smoke() -> None:
     CSV-vs-filename contract holds with the actual production data,
     catching any drift between PHP-side numbering and our Python-side
     index. ``quote_0000_0`` was Towles' "A Gentleman in Moscow" at the
-    time M2 shipped; if PR #218 (or later) renumbers, this needs an
+    time M2 shipped; if PR litclock-dev#218 (or later) renumbers, this needs an
     update."""
     quote_corpus.reset_cache()
     # Reset to the project-bundled CSV path.

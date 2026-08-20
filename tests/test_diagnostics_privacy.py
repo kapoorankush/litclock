@@ -1,4 +1,4 @@
-"""Tests for control_server/_diagnostics_privacy.py (#416 T3 + OV-6=A).
+"""Tests for control_server/_diagnostics_privacy.py (litclock-dev#416 T3 + OV-6=A).
 
 Covers:
 - safe-clear / redacted / rounded behavior for each policy class

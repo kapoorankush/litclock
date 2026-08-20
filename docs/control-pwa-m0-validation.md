@@ -1,7 +1,7 @@
 # Control PWA — M0 Validation Checklist
 
 This file collects the hardware/visual evidence that gates the M0 PR for the
-LitClock Control PWA epic (issue #245). Each row has a status box; record
+LitClock Control PWA epic (issue litclock-dev#245). Each row has a status box; record
 evidence (photo path, eyedropper value, terminal output, observation notes)
 beside it.
 

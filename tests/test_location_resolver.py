@@ -1,4 +1,4 @@
-"""Tests for src/location_resolver.py (#337 A4 extraction + A1/A6/A6.1/A7/A12/A15 behaviors).
+"""Tests for src/location_resolver.py (litclock-dev#337 A4 extraction + A1/A6/A6.1/A7/A12/A15 behaviors).
 
 The most important test in this file is ``test_main_no_ops_when_mode_specific``:
 the on-boot reresolve oneshot MUST NEVER overwrite env.sh when the user has
@@ -43,7 +43,7 @@ def _stub_ip_geo(monkeypatch, response):
 
 def _stub_set_system_timezone(monkeypatch, ok=True, err=None):
     """Stub ``geocoding.set_system_timezone`` so tests don't shell out
-    (moved here from setup_server in #414 item #5)."""
+    (moved here from setup_server in litclock-dev#414 item #5)."""
     monkeypatch.setattr(geocoding, "set_system_timezone", lambda tz: (ok, err))
 
 
@@ -64,7 +64,7 @@ class TestMainModeSpecificGate:
     test consciously (not accidentally)."""
 
     def test_main_no_ops_when_mode_specific(self, tmp_env_file, monkeypatch):
-        """CRITICAL (#337 A1): the on-boot oneshot must NEVER overwrite env.sh
+        """CRITICAL (litclock-dev#337 A1): the on-boot oneshot must NEVER overwrite env.sh
         when ``WEATHER_LOCATION_MODE=specific``. The user picked Specific in
         the PWA; their typed city is sacred. Silent overwrite would be the
         worst class of corruption this feature could introduce."""
@@ -131,7 +131,7 @@ class TestMainModeSpecificGate:
         assert called == [1], "MODE=auto must trigger exactly one IP-geo call"
 
     def test_main_treats_empty_mode_as_auto(self, tmp_env_file, monkeypatch):
-        """Migration guard (#337 A1): pre-S2 envs with empty MODE must run
+        """Migration guard (litclock-dev#337 A1): pre-S2 envs with empty MODE must run
         the resolver (auto is the migration default)."""
         _write_env(tmp_env_file, {"WEATHER_LOCATION_MODE": ""})
         monkeypatch.setenv("LITCLOCK_ENV_FILE", tmp_env_file)
@@ -420,7 +420,7 @@ class TestAtomicityContract:
         assert before == after, "failed IP-geo must leave env.sh byte-identical"
 
     def test_incomplete_coords_skip_write(self, tmp_env_file, monkeypatch):
-        """update_env_location refuses partial coord pairs (#393) — no env
+        """update_env_location refuses partial coord pairs (litclock-dev#393) — no env
         write happens. Test that a tz-less coord pair also skips."""
         _write_env(
             tmp_env_file,
@@ -443,7 +443,7 @@ class TestAtomicityContract:
         assert before == after, "partial coord pair must skip the write entirely"
 
     def test_tz_set_failure_skips_env_write(self, tmp_env_file, monkeypatch):
-        """A15 + #393: if set_system_timezone fails, env.sh must not be
+        """A15 + litclock-dev#393: if set_system_timezone fails, env.sh must not be
         partially written. Worst failure case = tz set + env stale, never
         env populated + tz stale (wrong-time clock)."""
         _write_env(tmp_env_file, {"WEATHER_UNITS": "imperial"})
@@ -466,7 +466,7 @@ class TestAtomicityContract:
 
 class TestUpdateEnvLocationNewKwargs:
     """Direct tests for the public ``update_env_location`` surface — exercises
-    the new ``mode`` and ``ip_country`` kwargs added by #337 A1/A6.1."""
+    the new ``mode`` and ``ip_country`` kwargs added by litclock-dev#337 A1/A6.1."""
 
     @pytest.fixture(autouse=True)
     def _tz_ok(self, monkeypatch):
@@ -474,7 +474,7 @@ class TestUpdateEnvLocationNewKwargs:
 
     @pytest.fixture(autouse=True)
     def _isolate_collected_marker(self, tmp_path, monkeypatch):
-        """#445 wiring: update_env_location now best-effort writes the
+        """litclock-dev#445 wiring: update_env_location now best-effort writes the
         time-location collected-marker. Redirect it into tmp_path so these
         tests stay hermetic (otherwise a successful resolve writes a real
         /var/lib/litclock/.last-collected-marker.json on a Pi/CI box where
@@ -484,7 +484,7 @@ class TestUpdateEnvLocationNewKwargs:
         self._marker_path = marker
 
     def test_records_time_location_collected(self, tmp_env_file):
-        """#445: a successful resolve+write records the time-location key in
+        """litclock-dev#445: a successful resolve+write records the time-location key in
         the persistent collected-marker. Pins the integration seam so a
         regression in the mark_collected call (wrong key, broken import, the
         broad except swallowing it) fails CI instead of shipping silently."""
@@ -585,7 +585,7 @@ class TestCountryDefaultUnits:
 
 
 class TestEnvFileForwarding:
-    """#337 /review P0 regression. Codex caught that `resolve_location_from_ip`
+    """litclock-dev#337 /review P0 regression. Codex caught that `resolve_location_from_ip`
     was passing `env_file` to itself but the inner call to the
     `setup_server._update_env_location` shim hardcoded ENV_FILE from the
     setup_server module — which is None in PWA + on-boot oneshot contexts.

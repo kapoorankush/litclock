@@ -4,7 +4,7 @@
 # requirements.txt is the GENERATED lockfile with every transitive
 # explicitly pinned — DO NOT hand-edit requirements.txt.
 #
-# Workflow (closes #323 eager-strategy gap):
+# Workflow (closes litclock-dev#323 eager-strategy gap):
 #
 #   1. Edit pins below.
 #   2. Regenerate the lock:    pip-compile --upgrade requirements.in
@@ -23,7 +23,7 @@
 # resolver has the full constraint graph. The install paths
 # (scripts/update.sh, pi-gen) filter these names
 # out of the generated lock before pip-install via requirements-apt.txt —
-# they come from apt at runtime via --system-site-packages (#214).
+# they come from apt at runtime via --system-site-packages (litclock-dev#214).
 
 astral==3.2
 colorzero==2.0
@@ -47,7 +47,7 @@ waitress==3.0.2
 # CVE-floor constraint — not directly imported.
 # urllib3 is a transitive of `requests`, but we pin it here so the
 # resolver can never roll us BELOW the floor that closed
-# CVE-2026-44431 / CVE-2026-44432 (PR #322, commit a5c0b355). Bump
+# CVE-2026-44431 / CVE-2026-44432 (PR litclock-dev#322, commit a5c0b355). Bump
 # this pin when a newer urllib3 ships further security fixes; running
 # `pip-compile --upgrade` will pick up newer compatible releases
 # automatically once this floor is raised.

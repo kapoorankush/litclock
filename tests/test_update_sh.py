@@ -1,4 +1,4 @@
-"""Tests for scripts/update.sh (issue #160).
+"""Tests for scripts/update.sh (issue litclock-dev#160).
 
 Two layers of coverage:
 
@@ -56,7 +56,7 @@ class TestUpdateScriptStructure:
         semantics — and we want a guard against regressing to blocking start
         if update.sh ever gets wired into a service.
 
-        Post-#209: the smoke-test failure path (Phase 4.5) also restarts the
+        Post-litclock-dev#209: the smoke-test failure path (Phase 4.5) also restarts the
         timer before exiting so the clock keeps ticking on the OLD SHA. The
         ordering invariant we care about is the NORMAL path (Phase 7), i.e.
         the LAST timer-start in the script must come after 'Refreshing display'.
@@ -71,7 +71,7 @@ class TestUpdateScriptStructure:
         )
 
     def test_newly_enabled_timers_started_no_block(self, update_sh_content):
-        """#249/#251: enabling a unit registers it with systemd but does not
+        """litclock-dev#249/litclock-dev#251: enabling a unit registers it with systemd but does not
         activate it in the current session — newly-installed timers idle
         until reboot. update.sh must iterate ENABLED_UNITS, filter to
         *.timer, and `systemctl start --no-block` each one."""
@@ -85,7 +85,7 @@ class TestUpdateScriptStructure:
         )
 
     def test_timer_start_only_targets_timers_not_services(self, update_sh_content):
-        """#251 explicit ask: 'only timers, not services — services should
+        """litclock-dev#251 explicit ask: 'only timers, not services — services should
         remain start-on-trigger via their existing systemd hooks.' The new
         loop's filter must be a *.timer suffix check, not a blanket
         iteration over all enabled units."""
@@ -199,7 +199,7 @@ class TestUpdateScriptStructure:
         assert new_timer_loop_idx < phase_7_idx, "new-timer start loop must run BEFORE Phase 7 service restarts"
 
     def test_self_reexec_checksum_guard(self, update_sh_content):
-        """PR #94: update.sh re-execs itself if its own bytes changed mid-run,
+        """PR litclock-dev#94: update.sh re-execs itself if its own bytes changed mid-run,
         otherwise bash reads stale content from the old fd."""
         assert "OLD_SELF_HASH" in update_sh_content
         assert "NEW_SELF_HASH" in update_sh_content
@@ -253,7 +253,7 @@ class TestUpdateScriptStructure:
         hash_write_idx = update_sh_content.find('echo "$PACKAGES_HASH" > "$HASH_FILE"')
         assert hash_write_idx != -1
         # Match the requirements-file pip invocation regardless of intermediate
-        # flags (e.g. --upgrade added in #321).
+        # flags (e.g. --upgrade added in litclock-dev#321).
         pip_install_match = None
         for m in re.finditer(r'"\$PIP"\s+install\s+[^\n]*-r\s+"\$REQUIREMENTS_FILTERED"', update_sh_content):
             if m.start() < hash_write_idx:
@@ -270,7 +270,7 @@ class TestUpdateScriptStructure:
         assert 'grep -q "^[# ]*export[[:space:]]\\+${varname}=" "$INSTALL_DIR/env.sh"' in update_sh_content
 
     def test_stale_symlinks_removed(self, update_sh_content):
-        """Post-#79 reorg: root-level script symlinks (boot-splash.sh etc.)
+        """Post-litclock-dev#79 reorg: root-level script symlinks (boot-splash.sh etc.)
         are obsolete and must be cleaned up."""
         for stale in ("boot-splash.sh", "first-boot.sh", "runtheclock.sh", "shutdown-splash.sh"):
             assert f'"$INSTALL_DIR/{stale}"' in update_sh_content, f"{stale} missing from stale-files cleanup list"
@@ -283,7 +283,7 @@ class TestUpdateScriptStructure:
         assert "Removed obsolete systemd unit" in update_sh_content
 
     def test_phase7_writes_post_update_grace_marker(self, update_sh_content):
-        """#241 — Phase 7 must touch $POST_UPDATE_GRACE_FILE BEFORE any
+        """litclock-dev#241 — Phase 7 must touch $POST_UPDATE_GRACE_FILE BEFORE any
         service restart, not after. The grace gate must be true throughout
         the restart sequence so a poll firing in the restart window can't
         bypass the soak gate.
@@ -314,7 +314,7 @@ class TestUpdateScriptStructure:
         )
 
     def test_phase7_does_not_restart_litclock_shutdown(self, update_sh_content):
-        """#331 — `litclock-shutdown.service` is a stop-hook unit
+        """litclock-dev#331 — `litclock-shutdown.service` is a stop-hook unit
         (Type=oneshot, ExecStart=/bin/true, ExecStop=shutdown-splash.sh
         which paints "Powered Off" on the e-ink). `systemctl restart`
         = stop+start, so the stop half fires ExecStop mid-update — the
@@ -341,12 +341,12 @@ class TestUpdateScriptStructure:
             assert match is None, (
                 f"update.sh:{lineno} must not stop/restart "
                 f"litclock-shutdown.service — its ExecStop paints "
-                f"'Powered Off' on the e-ink mid-update (#331). "
+                f"'Powered Off' on the e-ink mid-update (litclock-dev#331). "
                 f"Offending line: {line.strip()}"
             )
 
     def test_sources_lib_state(self, update_sh_content):
-        """#241 D3 — atomic helpers were factored to scripts/lib/state.sh.
+        """litclock-dev#241 D3 — atomic helpers were factored to scripts/lib/state.sh.
         update.sh must source it instead of redefining them inline."""
         assert "lib/state.sh" in update_sh_content, "update.sh must source scripts/lib/state.sh"
         # And the helpers must NOT be redefined inside update.sh itself.
@@ -357,7 +357,7 @@ class TestUpdateScriptStructure:
         assert local_def is None, "atomic_write_file must NOT be defined inline in update.sh — source from lib"
 
     def test_phase5_migrates_legacy_lkg_service_install(self, update_sh_content):
-        """#241 — pre-#241 Pis have litclock-lkg.service enabled with
+        """litclock-dev#241 — pre-litclock-dev#241 Pis have litclock-lkg.service enabled with
         WantedBy=litclock.service, which created a stale .wants/ symlink.
         Phase 5 must disable the OLD unit before cp'ing the new one (which
         has no [Install]) so the symlink is cleaned up and the rewritten
@@ -375,7 +375,7 @@ class TestUpdateScriptStructure:
         )
 
     def test_phase5_respects_user_disabled_units(self, update_sh_content):
-        """Regression for #209 hardware-found defect: Phase 5 must NOT
+        """Regression for litclock-dev#209 hardware-found defect: Phase 5 must NOT
         re-enable units that the user explicitly disabled via
         `systemctl disable --now litclock-update.timer` (the appliance
         opt-out path documented in the README). The pre-fix logic enabled
@@ -422,11 +422,11 @@ class TestUpdateScriptStructure:
         assert was_pre_existing_assign.start() < if_is_enabled.start(), (
             "was_pre_existing assignment must precede the `if systemctl "
             "is-enabled` runtime check so user-disabled units are not "
-            "silently re-enabled (#209 D2 fix)"
+            "silently re-enabled (litclock-dev#209 D2 fix)"
         )
 
     def test_venv_creation_uses_system_site_packages(self, update_sh_content):
-        """#214 regression: every `python3 -m venv` call MUST include
+        """litclock-dev#214 regression: every `python3 -m venv` call MUST include
         --system-site-packages. Without it, a venv rebuild on-device loses
         access to apt-provisioned GPIO libs and pip tries to recompile
         them from sdist (no gcc on the image → fail).
@@ -441,11 +441,11 @@ class TestUpdateScriptStructure:
             assert "--system-site-packages" in call, (
                 f"venv creation missing --system-site-packages — venv rebuild "
                 f"would lose apt-provisioned GPIO libs and try to pip-compile "
-                f"them (#214). Offending line: {call.strip()}"
+                f"them (litclock-dev#214). Offending line: {call.strip()}"
             )
 
     def test_pip_install_filters_apt_provisioned(self, update_sh_content):
-        """#214 regression: pip install must filter requirements.txt through
+        """litclock-dev#214 regression: pip install must filter requirements.txt through
         requirements-apt.txt before installing. Otherwise pip tries to
         install the same packages apt already provides, which on a gcc-less
         image means sdist compilation and failure.
@@ -453,16 +453,18 @@ class TestUpdateScriptStructure:
         Must stay in sync with pi-gen/stage3/01-setup-app/00-run.sh:34.
         """
         assert "requirements-apt.txt" in update_sh_content, (
-            "update.sh must read apt-provisioned names from requirements-apt.txt (#214)"
+            "update.sh must read apt-provisioned names from requirements-apt.txt (litclock-dev#214)"
         )
-        assert "grep -vE" in update_sh_content, "update.sh must filter requirements.txt with a grep -vE regex (#214)"
+        assert "grep -vE" in update_sh_content, (
+            "update.sh must filter requirements.txt with a grep -vE regex (litclock-dev#214)"
+        )
         # The filtered requirements file, not the raw one, must reach pip.
         assert 'install --upgrade -r "$REQUIREMENTS_FILTERED"' in update_sh_content, (
-            "pip install must target the filtered requirements, not the raw file (#214)"
+            "pip install must target the filtered requirements, not the raw file (litclock-dev#214)"
         )
 
     def test_pip_install_uses_upgrade(self, update_sh_content):
-        """#321: without `--upgrade`, pip silently keeps an already-installed
+        """litclock-dev#321: without `--upgrade`, pip silently keeps an already-installed
         version of a pinned package even when requirements.txt bumps the pin
         (urllib3==2.6.3 → 2.7.0 was the trigger). Every existing Pi venv
         would skip future security bumps via the weekly auto-update path.
@@ -488,12 +490,12 @@ class TestUpdateScriptStructure:
         flags = req_install.group(1)
         assert "--upgrade" in flags, (
             "requirements-file pip install must use --upgrade — without it, pinned-version bumps "
-            "silently fail to propagate to existing venvs (#321)"
+            "silently fail to propagate to existing venvs (litclock-dev#321)"
         )
         assert "--upgrade-strategy eager" not in flags, (
             "requirements-file pip install must NOT use --upgrade-strategy eager — it would "
             "weekly-upgrade Flask's unpinned transitives and Phase 4.5 smoke wouldn't catch the "
-            "blast (#321 adversarial review). Use a release-cut-time lockfile instead."
+            "blast (litclock-dev#321 adversarial review). Use a release-cut-time lockfile instead."
         )
 
 
@@ -563,7 +565,7 @@ class TestUpdateScriptExecution:
         assert "First-boot setup not yet complete" in result.stdout + result.stderr
 
     def test_proceeds_when_firstboot_marker_present(self, script_sandbox, tmp_path):
-        """Regression for #209 hardware-found defect: after firstboot's
+        """Regression for litclock-dev#209 hardware-found defect: after firstboot's
         Type=oneshot service exits successfully it stays in state
         active(exited) forever. The marker file is the correct signal —
         update.sh must proceed past the guard once the marker exists,
@@ -600,7 +602,7 @@ class TestUpdateScriptExecution:
 
         assert "First-boot setup not yet complete" not in (result.stdout + result.stderr), (
             "update.sh exited at the firstboot guard despite "
-            "/etc/litclock/.setup-complete being present (#209 regression)"
+            "/etc/litclock/.setup-complete being present (litclock-dev#209 regression)"
         )
 
     def test_aborts_if_not_a_git_repo(self, script_sandbox):
@@ -616,7 +618,7 @@ class TestUpdateScriptExecution:
         assert "not a git repository" in result.stdout + result.stderr
 
 
-# ── #209 structural tests ─────────────────────────────────────────────
+# ── litclock-dev#209 structural tests ─────────────────────────────────────────────
 # The weekly auto-update cycle adds state (LKG marker, update-failed marker)
 # and a new revert path (Phase 4.5 smoke failure). Existing execution-sandbox
 # tests can't cover these without a real Python venv + network, so these are
@@ -625,7 +627,7 @@ class TestUpdateScriptExecution:
 
 class TestAutoUpdateStructure:
     def test_phase1_does_not_clear_lkg_marker(self, update_sh_content):
-        """LKG auto-revert (#209 follow-up) INVERTED the old invariant: Phase 1
+        """LKG auto-revert (litclock-dev#209 follow-up) INVERTED the old invariant: Phase 1
         must NOT clear lkg-sha. The heartbeat-gated writer only replaces it once
         the NEW code paints, so retaining the old value means lkg-sha always
         points at the last code that actually rendered — a dead-on-arrival
@@ -702,7 +704,7 @@ class TestAutoUpdateStructure:
         import setup_logging` which only resolves when Python adds src/ to
         sys.path (script-style does this automatically). Module-style
         invocation hits ModuleNotFoundError on every device, reverts every
-        update, and pins the fleet (#209 hardware-found regression)."""
+        update, and pins the fleet (litclock-dev#209 hardware-found regression)."""
         assert 'timeout 60 "$PYTHON" src/literary_clock.py --dry-run' in update_sh_content, (
             "smoke test must invoke literary_clock.py script-style (matching "
             "runtheclock.sh), not via `python -m src.literary_clock`"
@@ -711,7 +713,7 @@ class TestAutoUpdateStructure:
         # creep back in.
         assert "-m src.literary_clock" not in update_sh_content, (
             "smoke test must NOT use module-style invocation — breaks the "
-            "absolute `from log import` resolution. See #209 hardware QA."
+            "absolute `from log import` resolution. See litclock-dev#209 hardware QA."
         )
 
     def test_smoke_failure_reverts_head_and_wipes_hash(self, update_sh_content):
@@ -722,7 +724,7 @@ class TestAutoUpdateStructure:
 
         REVERT_SHA == OLD_SHA in a normal update; in bootcheck rollback mode it
         is the LKG target, so a failure stays on the last-known-good rather than
-        the bad code (#209 LKG auto-revert)."""
+        the bad code (litclock-dev#209 LKG auto-revert)."""
         # Locate the smoke-fail branch.
         fail_idx = update_sh_content.find("Smoke test failed")
         assert fail_idx != -1, "smoke-fail branch must exist"
@@ -749,7 +751,7 @@ class TestAutoUpdateStructure:
         )
 
     def test_pip_install_failure_reverts_and_exits(self, update_sh_content):
-        """#324 + codex adversarial review of PR #349: when pip install
+        """litclock-dev#324 + codex adversarial review of PR litclock-dev#349: when pip install
         fails, update.sh must revert the git tree, wipe the pip hash, write
         the update-failed marker, and exit non-zero — NEVER fall through to
         Phase 4.5 with a partially-upgraded venv on the new SHA.
@@ -767,7 +769,7 @@ class TestAutoUpdateStructure:
         fail_idx = update_sh_content.find('log_error "pip install failed')
         assert fail_idx != -1, "pip-install failure branch must exist"
         assert "reverting code to $REVERT_SHA" in update_sh_content[fail_idx : fail_idx + 300], (
-            "pip-install failure must log a revert, not just a will-retry message (#324)"
+            "pip-install failure must log a revert, not just a will-retry message (litclock-dev#324)"
         )
 
         # The branch must terminate with exit 1 BEFORE Phase 4.5 smoke runs.
@@ -776,20 +778,21 @@ class TestAutoUpdateStructure:
         assert exit_idx != -1, "pip-install failure branch must exit non-zero"
         assert phase4_5_idx != -1, "Phase 4.5 heading missing"
         assert exit_idx < phase4_5_idx, (
-            "pip-install failure must exit BEFORE Phase 4.5 smoke runs (#324) — otherwise the "
+            "pip-install failure must exit BEFORE Phase 4.5 smoke runs (litclock-dev#324) — otherwise the "
             "partial venv proceeds against smoke, which can pass on dep gaps it never imports"
         )
 
         fail_block = update_sh_content[fail_idx:exit_idx]
         assert 'git reset --hard "$REVERT_SHA"' in fail_block, (
             "pip-install failure branch must revert git to REVERT_SHA "
-            "(== OLD_SHA normally; the LKG target in bootcheck rollback mode) (#324)"
+            "(== OLD_SHA normally; the LKG target in bootcheck rollback mode) (litclock-dev#324)"
         )
         assert 'rm -f "$HASH_FILE"' in fail_block, (
-            "pip-install failure branch must delete the pip hash so the next run re-attempts pip install (#324)"
+            "pip-install failure branch must delete the pip hash so the next run re-attempts pip "
+            "install (litclock-dev#324)"
         )
         assert "$UPDATE_FAILED_FILE" in fail_block, (
-            "pip-install failure branch must write the update-failed marker for the e-ink glyph (#324)"
+            "pip-install failure branch must write the update-failed marker for the e-ink glyph (litclock-dev#324)"
         )
 
         # Codex Finding 1 (HIGH): terminal status MUST be failed_unrecovered,
@@ -798,7 +801,7 @@ class TestAutoUpdateStructure:
         assert "update_status_failed_unrecovered" in fail_block, (
             "pip-install failure must record terminal status as failed_unrecovered — venv state "
             "is indeterminate after mid-stream pip failure, so failed_reverted would lie about "
-            "the clock being back on a known-good state (codex Finding 1 / #324)"
+            "the clock being back on a known-good state (codex Finding 1 / litclock-dev#324)"
         )
         assert "update_status_failed_reverted" not in fail_block, (
             "pip-install failure must NOT call update_status_failed_reverted — the venv could "
@@ -813,7 +816,7 @@ class TestAutoUpdateStructure:
         # `running`. Setting it first lets the trap's failed_unrecovered
         # fallback still fire on a status-write crash.
         assert "_LITCLOCK_UPDATE_FINALIZED=1" in fail_block, (
-            "pip-install failure must set _LITCLOCK_UPDATE_FINALIZED=1 (#324)"
+            "pip-install failure must set _LITCLOCK_UPDATE_FINALIZED=1 (litclock-dev#324)"
         )
         finalized_idx = fail_block.find("_LITCLOCK_UPDATE_FINALIZED=1")
         status_write_idx = fail_block.find("update_status_failed_unrecovered")
@@ -927,7 +930,7 @@ class TestAutoUpdateStructure:
         """State writes to /var/lib/litclock/ must use .tmp + mv pattern so
         an SD power-cycle mid-write can never leave a half-written marker.
 
-        Post-#241 the helper lives in scripts/lib/state.sh — verify the
+        Post-litclock-dev#241 the helper lives in scripts/lib/state.sh — verify the
         definition there and that update.sh sources the lib."""
         import re
         from pathlib import Path
@@ -948,7 +951,7 @@ class TestAutoUpdateStructure:
 
     def test_update_sh_sources_github_api_lib(self, update_sh_content):
         """The resolver depends on scripts/lib/github_api.sh. Source must
-        tolerate a missing lib (fresh-image runs before #209 lands)."""
+        tolerate a missing lib (fresh-image runs before litclock-dev#209 lands)."""
         assert "lib/github_api.sh" in update_sh_content
         # Guard: the source must be conditional, not unconditional.
         import re
@@ -960,7 +963,7 @@ class TestAutoUpdateStructure:
 
 
 class TestPersistentLastUpdateWriter:
-    """#334 — update.sh writes a persistent /var/lib/litclock/last-update.json
+    """litclock-dev#334 — update.sh writes a persistent /var/lib/litclock/last-update.json
     after update_status_complete validates. Pins the four invariants the
     eng-review plan locked in:
 
@@ -976,7 +979,7 @@ class TestPersistentLastUpdateWriter:
     """
 
     def test_flock_guard_at_script_entry(self, update_sh_content):
-        """#334 Tension 3 — flock-based single-flight guard. Two concurrent
+        """litclock-dev#334 Tension 3 — flock-based single-flight guard. Two concurrent
         update.sh invocations (user taps Apply + weekly timer fires) would
         race on update.status / last-update.json / lkg-sha-clear. The
         guard wraps the script body under an exclusive flock; the second
@@ -1027,7 +1030,7 @@ class TestPersistentLastUpdateWriter:
         )
 
     def test_finalized_set_before_persistent_write(self, update_sh_content):
-        """#334 Tension 1 — `_LITCLOCK_UPDATE_FINALIZED=1` must be set
+        """litclock-dev#334 Tension 1 — `_LITCLOCK_UPDATE_FINALIZED=1` must be set
         BEFORE the persistent last-update.json write. Otherwise, an OS
         kill between update_status_complete and the persist would let
         the EXIT trap overwrite update.status with state=failed_unrecovered,
@@ -1054,7 +1057,7 @@ class TestPersistentLastUpdateWriter:
         )
 
     def test_validate_then_cp_uses_jq_with_to_version_and_freshness(self, update_sh_content):
-        """#334 Tension 2 — before staging the persistent file, update.sh
+        """litclock-dev#334 Tension 2 — before staging the persistent file, update.sh
         must read /run/litclock/update.status back through jq -e and
         validate that state == "complete" AND to_version matches the
         just-installed SHA AND finished_at_unix is fresh (within the
@@ -1119,7 +1122,7 @@ class TestPersistentLastUpdateWriter:
         )
 
     def test_freshness_window_widened_for_late_ntp(self, update_sh_content):
-        """#342 I2 — the validate-then-cp gate's freshness floor must be
+        """litclock-dev#342 I2 — the validate-then-cp gate's freshness floor must be
         widened to 3600s so a Pi Zero 2W cold-boot update fired before
         chrony has synced (timestamp lands pre-1970 relative to real-2026)
         doesn't silently lose the persistent last-update.json write.
@@ -1130,7 +1133,7 @@ class TestPersistentLastUpdateWriter:
         block = update_sh_content[finalized_idx:]
         # The floor is computed via `now_unix - <seconds>`. Pin the value.
         assert "now_unix - 3600" in block, (
-            "freshness floor must be 3600s (widened from 60s in #342 I2) — narrower "
+            "freshness floor must be 3600s (widened from 60s in litclock-dev#342 I2) — narrower "
             "windows lose the persist write on cold-boot updates that race chrony"
         )
         # And the prior tight 60s window must NOT linger.
@@ -1139,8 +1142,8 @@ class TestPersistentLastUpdateWriter:
         )
 
     def test_persist_sweeps_orphan_tmp_files(self, update_sh_content):
-        """#342 I4 — orphan sweep before staging the new .tmp.<pid> file.
-        Mirrors the manifest-sweep pattern from PR #293: if a prior persist
+        """litclock-dev#342 I4 — orphan sweep before staging the new .tmp.<pid> file.
+        Mirrors the manifest-sweep pattern from PR litclock-dev#293: if a prior persist
         died between staging and mv (disk full, OOM, kill -9), the .tmp.<pid>
         sibling lingers. Sweep on the next persist entry keeps
         /var/lib/litclock clean over time."""
@@ -1164,7 +1167,7 @@ class TestPersistentLastUpdateWriter:
 
 
 class TestPhase3SkipMarker:
-    """#274 follow-up #5 — Phase 3 flock-timeout marker.
+    """litclock-dev#274 follow-up #5 — Phase 3 flock-timeout marker.
 
     When `with_env_lock` returns rc=75 (env.sh sidecar held > 30s),
     update.sh skips the env.sh.sample merge but the skip itself isn't
@@ -1292,7 +1295,7 @@ class TestPhase3SkipMarker:
 
 
 def test_migrates_handoff_complete_for_existing_devices():
-    """EPIC #383 PR2 (#388) Option-A migration: the upgraded litclock.service
+    """EPIC litclock-dev#383 PR2 (litclock-dev#388) Option-A migration: the upgraded litclock.service
     is gated on .handoff-complete, which pre-PR2 devices never wrote. update.sh
     must touch it (after confirming .setup-complete) so quotes don't stop on
     upgrade. Without this, a Pi glued in its case would go dark."""

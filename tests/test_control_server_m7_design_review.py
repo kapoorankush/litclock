@@ -388,12 +388,12 @@ class TestUpdatesCssTokenMigration:
 
 
 # ============================================================
-# #305 — confirm-sheet slide-up didn't render on iOS Safari
+# litclock-dev#305 — confirm-sheet slide-up didn't render on iOS Safari
 # ============================================================
 
 
 class TestConfirmSheetSlideAnimation:
-    """#305: iOS Safari pre-17.5 doesn't fire CSS keyframes gated on the
+    """litclock-dev#305: iOS Safari pre-17.5 doesn't fire CSS keyframes gated on the
     native `<dialog>` `[open]` attribute because top-layer promotion +
     display flip happen in the same paint. Fix: animate `.is-opening`
     instead, added by JS via double-rAF after `showModal()`."""
@@ -406,7 +406,7 @@ class TestConfirmSheetSlideAnimation:
         css = self._confirm_css(client)
         # The slide-up + fade-in must trigger on the class, not [open].
         assert "dialog.confirm-sheet.is-opening" in css, (
-            "#305: slide-up must animate `.is-opening` so iOS Safari's "
+            "litclock-dev#305: slide-up must animate `.is-opening` so iOS Safari's "
             "top-layer promotion doesn't eat the keyframe `from` state"
         )
         # The legacy `[open]` selector for the keyframes must be gone.
@@ -437,7 +437,7 @@ class TestConfirmSheetSlideAnimation:
         # Two nested requestAnimationFrames separate top-layer promotion
         # from the class toggle. Pin the structural pattern.
         assert js.count("requestAnimationFrame") >= 2, (
-            "#305: openConfirmSheet must use a double-rAF chain to defer "
+            "litclock-dev#305: openConfirmSheet must use a double-rAF chain to defer "
             "the `.is-opening` toggle past iOS Safari's top-layer promotion"
         )
         assert "classList.add('is-opening')" in js
@@ -455,7 +455,7 @@ class TestConfirmSheetSlideAnimation:
         assert "openConfirmSheet(dialog)" in js
 
     def test_open_helpers_guard_against_stale_is_opening_class(self, client) -> None:
-        """Codex /review on #305 PR: if the user cancels within the ~33ms
+        """Codex /review on litclock-dev#305 PR: if the user cancels within the ~33ms
         double-rAF window, the pending rAF still adds `.is-opening` to a
         closed dialog. The next open inherits the stale class and the
         animation is suppressed (defeats the fix). Two defensive guards:
@@ -479,11 +479,11 @@ class TestConfirmSheetSlideAnimation:
             # Guard 2: check `.open` inside the rAF callback before adding.
             assert ".open" in body, (
                 f"{path}: rAF callback must guard `classList.add('is-opening')` "
-                "behind a `dialog.open` check — codex /review #305"
+                "behind a `dialog.open` check — codex /review litclock-dev#305"
             )
 
     def test_pre_opening_state_pre_positions_dialog_at_keyframe_from(self, client) -> None:
-        """Codex /review on #305 PR: showModal() paints the dialog at its
+        """Codex /review on litclock-dev#305 PR: showModal() paints the dialog at its
         final resting position for ≥1 frame before `.is-opening` triggers
         the keyframe from translateY(100%). Without a pre-opening CSS
         rule, users see the dialog flash at its final position, then snap
@@ -494,15 +494,16 @@ class TestConfirmSheetSlideAnimation:
         # Phone variant: pre-opening transform must be translateY(100%).
         # Find the rule for `[open]:not(.is-opening)` inside the ≤640px MQ.
         assert "dialog.confirm-sheet[open]:not(.is-opening) {\n    transform: translateY(100%)" in css, (
-            "#305 codex: phone-variant pre-opening rule missing — dialog will flash at final position before sliding"
+            "litclock-dev#305 codex: phone-variant pre-opening rule missing — dialog will flash at "
+            "final position before sliding"
         )
         # Tablet variant: pre-opening opacity must be 0.
         assert "dialog.confirm-sheet[open]:not(.is-opening) {\n    opacity: 0" in css, (
-            "#305 codex: tablet-variant pre-opening rule missing — dialog will flash before fading in"
+            "litclock-dev#305 codex: tablet-variant pre-opening rule missing — dialog will flash before fading in"
         )
 
     def test_backdrop_fade_synced_with_sheet_animation(self, client) -> None:
-        """Codex /review on #305 PR: backdrop animation was unconditional
+        """Codex /review on litclock-dev#305 PR: backdrop animation was unconditional
         on `::backdrop`, so it fired on showModal() while the sheet
         animation was still in the pre-opening hold. Sheet + backdrop
         de-synced. Fix: scope backdrop fade to `.is-opening` and hide it
@@ -519,7 +520,7 @@ class TestConfirmSheetSlideAnimation:
         assert idx > 0
         block = css[idx : css.find("}", idx)]
         assert "animation" not in block, (
-            "#305 codex: backdrop animation must be scoped to `.is-opening` "
+            "litclock-dev#305 codex: backdrop animation must be scoped to `.is-opening` "
             "so it stays in lockstep with the sheet's slide-up"
         )
 
@@ -538,19 +539,20 @@ class TestConfirmSheetSlideAnimation:
         block = css[idx : css.find("}\n}", idx) + 3]
         # Both selectors must be inside the override.
         assert "[open]:not(.is-opening)" in block, (
-            "#305 codex: reduced-motion must override the pre-opening rule so users opting out get a true snap-cut"
+            "litclock-dev#305 codex: reduced-motion must override the pre-opening rule so users "
+            "opting out get a true snap-cut"
         )
         assert "transform: none" in block
         assert "opacity: 1" in block
 
 
 # ============================================================
-# #300 — confirm button always rendered destructive red
+# litclock-dev#300 — confirm button always rendered destructive red
 # ============================================================
 
 
 class TestConfirmSheetDestructiveAttribute:
-    """#300: `.confirm-sheet__confirm` hardcoded `--error` red regardless
+    """litclock-dev#300: `.confirm-sheet__confirm` hardcoded `--error` red regardless
     of action. Restart (recoverable) and Apply Update (non-destructive
     upgrade) opened sheets with red confirm buttons. Fix: default to
     `--accent`; opt into `--error` via `data-destructive="true"` on the
@@ -567,11 +569,11 @@ class TestConfirmSheetDestructiveAttribute:
         assert idx > 0
         block = css[idx : css.find("}", idx)]
         assert "color: var(--accent)" in block, (
-            '#300: default confirm must be --accent; only `data-destructive="true"` '
+            'litclock-dev#300: default confirm must be --accent; only `data-destructive="true"` '
             "dialogs should render destructive red"
         )
         assert "color: var(--error)" not in block, (
-            "#300: hard-coded --error in the base rule defeats the data-destructive scope"
+            "litclock-dev#300: hard-coded --error in the base rule defeats the data-destructive scope"
         )
 
     def test_destructive_variant_scopes_error_color(self, client) -> None:
@@ -606,26 +608,26 @@ class TestConfirmSheetDestructiveAttribute:
         body = client.get("/system").data.decode()
         block = self._dialog_block(body, "reboot")
         assert 'data-destructive="false"' in block, (
-            "#300: Restart is recoverable — confirm button should NOT be destructive red"
+            "litclock-dev#300: Restart is recoverable — confirm button should NOT be destructive red"
         )
 
     def test_poweroff_dialog_marked_destructive(self, client) -> None:
         body = client.get("/system").data.decode()
         block = self._dialog_block(body, "poweroff")
         assert 'data-destructive="true"' in block, (
-            "#300: Power off is unrecoverable from the PWA — confirm should be red"
+            "litclock-dev#300: Power off is unrecoverable from the PWA — confirm should be red"
         )
 
     def test_wifi_reset_dialog_marked_destructive(self, client) -> None:
         body = client.get("/system").data.decode()
         block = self._dialog_block(body, "wifi_reset")
         assert 'data-destructive="true"' in block, (
-            "#300: Reset WiFi wipes saved profiles + drops the LAN — confirm should be red"
+            "litclock-dev#300: Reset WiFi wipes saved profiles + drops the LAN — confirm should be red"
         )
 
     def test_update_apply_dialog_marked_non_destructive(self, client) -> None:
         body = client.get("/updates").data.decode()
         block = self._dialog_block(body, "update_apply")
         assert 'data-destructive="false"' in block, (
-            "#300: Apply Update is an upgrade, not destruction — confirm should be accent"
+            "litclock-dev#300: Apply Update is an upgrade, not destruction — confirm should be accent"
         )

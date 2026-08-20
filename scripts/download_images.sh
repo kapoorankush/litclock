@@ -677,7 +677,7 @@ fi
 # Three cases, deliberately NOT collapsed (litclock-dev#561 review — the first version
 # collapsed 2 and 3 and failed open on exactly the input the guard exists for):
 #
-#   1. manifest.json ABSENT      -> skip. Legacy pre-#299 releases bundle none,
+#   1. manifest.json ABSENT      -> skip. Legacy pre-litclock-dev#299 releases bundle none,
 #                                   and a slim deploy may ship no CSV. Genuine
 #                                   absence is not evidence of mismatch.
 #   2. present but UNUSABLE      -> refuse. Unparseable, or corpus_hash missing

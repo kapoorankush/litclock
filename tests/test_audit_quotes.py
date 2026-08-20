@@ -1,4 +1,4 @@
-"""Tests for image-gen/audit_quotes.py (the #192 corpus audit judge)."""
+"""Tests for image-gen/audit_quotes.py (the litclock-dev#192 corpus audit judge)."""
 
 import asyncio
 import json

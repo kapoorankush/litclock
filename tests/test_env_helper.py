@@ -1,4 +1,4 @@
-"""Tests for control_server/_env.py (#416 T1 extraction).
+"""Tests for control_server/_env.py (litclock-dev#416 T1 extraction).
 
 Covers the env_file lookup order, error handling, and that the existing
 status.py thin-wrapper continues to delegate correctly.
@@ -74,7 +74,7 @@ class TestReadEnvSettings:
         assert isinstance(result, dict)
 
     def test_status_wrapper_delegates_to_env(self, tmp_path, monkeypatch):
-        """The pre-#416 name `_read_env_file_settings` on status.py keeps
+        """The pre-litclock-dev#416 name `_read_env_file_settings` on status.py keeps
         working and delegates straight to the new module."""
         path = _write_env(tmp_path, "WEATHER_UNITS=imperial\n")
         monkeypatch.delenv("LITCLOCK_ENV_FILE", raising=False)

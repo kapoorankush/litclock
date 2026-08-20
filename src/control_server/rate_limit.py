@@ -1,4 +1,4 @@
-"""Per-IP token-bucket rate limiter for /api/system/* (#245 M4).
+"""Per-IP token-bucket rate limiter for /api/system/* (litclock-dev#245 M4).
 
 5 actions/minute per ``request.remote_addr`` covering /confirm-token,
 /reboot, and /poweroff together — so spamming the cheap issuance endpoint

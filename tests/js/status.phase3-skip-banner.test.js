@@ -1,4 +1,4 @@
-// Behavior coverage for the #274 follow-up #5 Status hero "Phase 3 skip"
+// Behavior coverage for the litclock-dev#274 follow-up #5 Status hero "Phase 3 skip"
 // banner in status.js. The banner shows when update.sh's last Phase 3 run
 // hit a flock timeout (rc=75) and skipped the env.sh.sample merge — the
 // reader-side staleness clamp lives server-side (status route returns null
@@ -81,7 +81,7 @@ async function flushRefresh() {
   }
 }
 
-describe("status.js — Phase 3 skip banner (#274 followup #5)", () => {
+describe("status.js — Phase 3 skip banner (litclock-dev#274 followup #5)", () => {
   let mock;
 
   beforeEach(() => {

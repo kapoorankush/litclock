@@ -17,7 +17,7 @@ Conflicts=shutdown.target reboot.target halt.target poweroff.target
 # Before= controls ordering. In shutdown direction Before= reverses to mean
 # "our stop runs after theirs". The four shutdown targets keep our ExecStop
 # ordered before each shutdown path completes (pre-PR state). Adding
-# litclock.service (#271) makes ExecStop wait until the mid-render clock
+# litclock.service (litclock-dev#271) makes ExecStop wait until the mid-render clock
 # service — which has its own default Conflicts=shutdown.target, so it IS
 # being stopped in the same shutdown transaction — has fully stopped and
 # released the SPI bus. Without it, systemd is free to stop both units
@@ -32,10 +32,10 @@ Conflicts=shutdown.target reboot.target halt.target poweroff.target
 # redesign. See follow-up issue.
 #
 # An earlier draft used Before=final.target as a single-line cover for all
-# four shutdown paths AND as an attempted #268 fix. Codex review pointed out
+# four shutdown paths AND as an attempted litclock-dev#268 fix. Codex review pointed out
 # Before=final.target only constrains when our stop must *finish*, not when
 # it *starts* — Conflicts= queues the stop immediately at the beginning of
-# the shutdown transaction either way. #268 needs a proper late-shutdown-hook
+# the shutdown transaction either way. litclock-dev#268 needs a proper late-shutdown-hook
 # design, not a one-liner. Tracked separately.
 Before=shutdown.target reboot.target halt.target poweroff.target litclock.service
 After=local-fs.target

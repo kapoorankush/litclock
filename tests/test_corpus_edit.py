@@ -370,7 +370,7 @@ def shipping(sandbox, monkeypatch):
     """Layer subprocess + git diff mocking on top of the file sandbox."""
     sandbox.write_corpus(HEAD_ROWS)
     # Work tree: retag row 0 from 21:10 to 22:10, then re-sort by bucket so
-    # the 22:10 rows stay contiguous (post-#299/E this is required — the
+    # the 22:10 rows stay contiguous (post-litclock-dev#299/E this is required — the
     # ship-time validator rejects non-contiguous buckets).
     work_rows = [r[:] for r in HEAD_ROWS]
     work_rows[0][0] = "22:10"

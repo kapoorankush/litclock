@@ -1,4 +1,4 @@
-"""End-to-end deny-list gate against the diagnostics surface (#416 PR2 A6=A).
+"""End-to-end deny-list gate against the diagnostics surface (litclock-dev#416 PR2 A6=A).
 
 The /plan-eng-review A6=A decision was: allowlist (locked at the schema
 level) PLUS deny-list (substring/regex scan of the rendered output). The
@@ -172,7 +172,7 @@ class TestJournalTailRedactionIntegration:
                 "ip-geo Authorization: Bearer ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
             ],
         }
-        # #433 P-1 lazy-tail (per /review P-1): _build_service_states
+        # litclock-dev#433 P-1 lazy-tail (per /review P-1): _build_service_states
         # only calls _batched_journal_tails for units that aren't
         # obviously-healthy. In the test env, _batched_is_active would
         # return "unknown" for every unit (no systemctl mock) — that's
@@ -290,7 +290,7 @@ class TestCopyPayloadDenyList:
 
 
 class TestDenyListPositiveControlFromEnvSh:
-    """End-to-end positive control (#419 T12).
+    """End-to-end positive control (litclock-dev#419 T12).
 
     Pre-existing positive controls (:class:`TestDenyListScanReversedFromKnownLeak`)
     proved each regex catches a synthetic string. This class proves the

@@ -1,6 +1,6 @@
 """``/api/diagnostics`` + ``/diagnostics`` + ``/api/logs*`` route package.
 
-Split out of the pre-#419 monolithic ``routes/diagnostics.py`` (M1, see
+Split out of the pre-litclock-dev#419 monolithic ``routes/diagnostics.py`` (M1, see
 the GitHub issue body for the full follow-up bucket). Submodules:
 
 - :mod:`._collectors` — per-row readers + :func:`collect_diagnostics` +

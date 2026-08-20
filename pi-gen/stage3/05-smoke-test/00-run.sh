@@ -1,5 +1,5 @@
 #!/bin/bash
-# In-chroot smoke test (#114, PR #202).
+# In-chroot smoke test (litclock-dev#114, PR litclock-dev#202).
 #
 # Runs inside the pi-gen chroot jail via qemu-user-static binfmt. Because we're
 # in the target's own filesystem namespace, symlink chains resolve natively and
@@ -9,7 +9,7 @@
 #
 # A failure here fails pi-gen stage3, so no .img is ever produced from a broken
 # rootfs. Post-export (loop-mount) smoke testing was tried and removed — see
-# PR #202 and issue #114 for context.
+# PR litclock-dev#202 and issue litclock-dev#114 for context.
 set -e
 
 on_chroot << 'CHROOT'

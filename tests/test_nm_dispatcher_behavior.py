@@ -150,7 +150,7 @@ class Harness:
         self._write_stub("systemctl", STUB_SYSTEMCTL)
         self._write_stub("install", STUB_INSTALL)
         # The dispatcher only invokes the helper if it is executable, and
-        # deliberately has no repo-copy fallback (#387 C1).
+        # deliberately has no repo-copy fallback (litclock-dev#387 C1).
         if helper_present:
             self._write_stub(
                 str(self.libexec / "litclock-mark-collected.sh"),
@@ -427,7 +427,7 @@ class TestAddressesThatMustNotBeBelieved:
         every repeat event fell through to a full e-ink render.
 
         A clock whose DHCP is permanently broken sits in exactly this state and
-        NM keeps retrying, so this is the #309 /review A4 failure -- unbounded
+        NM keeps retrying, so this is the litclock-dev#309 /review A4 failure -- unbounded
         litclock.service starts, each holding the SPI bus and burning panel
         cycles -- on a device with a finite panel budget and no UPS.
 
@@ -473,7 +473,7 @@ class TestAddressesThatMustNotBeBelieved:
 
     def test_a_planted_observed_marker_cannot_suppress_the_diagnostics_write(self, harness):
         """litclock-dev#667 — /run/litclock is 0755 pi pi, so an unprivileged writer can
-        drop a plain (non-symlink) file at the coalescing marker. The #387 C2
+        drop a plain (non-symlink) file at the coalescing marker. The litclock-dev#387 C2
         symlink guards do not address CONTENT, and this file gates an early
         exit that now sits above the $MARKER write.
 
@@ -505,7 +505,7 @@ class TestAddressesThatMustNotBeBelieved:
         assert harness.recorded_ip == LAN_IP, "the believable-address marker must self-heal"
 
     def test_drops_a_symlink_planted_at_the_observed_marker(self, harness, tmp_path):
-        """#387 C2 applies to both markers; only $MARKER had a test."""
+        """litclock-dev#387 C2 applies to both markers; only $MARKER had a test."""
         victim = tmp_path / "victim"
         victim.write_text("do not touch\n")
         observed = harness.run / "last-observed-ip"
@@ -570,7 +570,7 @@ class TestPostHandoff:
         assert "--no-block" in harness.systemctl_invocations
 
     def test_same_ip_does_not_re_render(self, harness):
-        # #309 adversarial finding A4: every lease renewal fires dhcp4-change,
+        # litclock-dev#309 adversarial finding A4: every lease renewal fires dhcp4-change,
         # and each render holds the SPI bus.
         harness.complete_handoff()
         harness.marker.write_text(f"{LAN_IP}\n")
@@ -579,7 +579,7 @@ class TestPostHandoff:
 
         assert result.returncode == 0, result.stderr
         assert not harness.rendered, "unchanged IP must not queue a render"
-        assert harness.collected, "...but the collected marker still refreshes on a renewal (#445)"
+        assert harness.collected, "...but the collected marker still refreshes on a renewal (litclock-dev#445)"
 
     @pytest.mark.parametrize("action", ["up", "dhcp4-change", "dhcp6-change"])
     def test_every_ip_change_action_records_and_renders(self, harness, action):
@@ -609,7 +609,7 @@ class TestFailuresThatMustNotStarveTheRecord:
         assert h.recorded_ip == LAN_IP, "a failing helper must not abort the script before the marker write"
 
     def test_a_missing_collected_helper_still_records_the_ip(self, tmp_path):
-        # #387 C1: deliberately no repo-copy fallback, so an image that never
+        # litclock-dev#387 C1: deliberately no repo-copy fallback, so an image that never
         # installed the helper must still record the IP.
         h = Harness(tmp_path, helper_present=False)
 
@@ -699,7 +699,7 @@ class TestGatesThatMustNotMove:
         assert harness.recorded_ip == LAN_IP
 
     def test_drops_a_symlink_planted_at_the_marker(self, harness):
-        # #387 C2: /run/litclock is 0755 pi pi and this script runs as root.
+        # litclock-dev#387 C2: /run/litclock is 0755 pi pi and this script runs as root.
         harness.complete_handoff()
         victim = harness.root / "victim"
         victim.write_text("do not touch\n")

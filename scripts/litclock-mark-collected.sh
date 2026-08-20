@@ -1,6 +1,6 @@
 #!/bin/sh
 # Record that a diagnostics section's data has been collected on this Pi,
-# in a PERSISTENT JSON marker that survives reboot (#445).
+# in a PERSISTENT JSON marker that survives reboot (litclock-dev#445).
 #
 # Replaces the v0.214.4 "is the tmpfs IP marker present right now" predicate
 # with "has this section EVER been collected" — kills the ~5-10s post-reboot
@@ -30,13 +30,13 @@
 # degrades to the legacy tmpfs check on the read side.
 #
 # Install: the git-tracked source lives in scripts/ (mode 0755) and is the
-# install SOURCE only. #387 C1 installs a ROOT-OWNED copy to
+# install SOURCE only. litclock-dev#387 C1 installs a ROOT-OWNED copy to
 # /usr/local/lib/litclock/litclock-mark-collected.sh (update.sh / pi-gen);
 # the NM dispatcher invokes THAT copy so a root run never executes a
 # pi-writable script. The pi-side writer is the separate src/collected_marker.py.
 #
 # WARNING: do NOT wire anything to run the pi-writable repo copy as root — that
-# reopens the exact pi->root vector #387 C1 closes. Only the installed root-owned
+# reopens the exact pi->root vector litclock-dev#387 C1 closes. Only the installed root-owned
 # copy may be executed with privilege.
 
 set -u
@@ -60,7 +60,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00 2>/dev/null) || exit 0
 
 _write() {
-    # #387 C2: this script runs as ROOT (invoked by the NM dispatcher) and the
+    # litclock-dev#387 C2: this script runs as ROOT (invoked by the NM dispatcher) and the
     # marker lives in the 0755 pi pi /var/lib/litclock dir, so guard every root
     # touch against a pi-planted symlink. Drop a symlink at $MARKER rather than
     # reading or renaming through it.

@@ -1,4 +1,4 @@
-"""Build the gold-set scaffold for the #192 audit calibration.
+"""Build the gold-set scaffold for the litclock-dev#192 audit calibration.
 
 Emits 50 unlabeled rows to `gold_set_192.csv`:
   - First 16 rows: regex-duration candidates (matched substring starts with

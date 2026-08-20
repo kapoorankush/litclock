@@ -10,7 +10,7 @@ Routes:
                                  failure → 200 with re-render + field-error banner.
 - POST /api/settings          — JSON path. PATCH-merge semantics; only keys
                                  present in body are written. Returns the
-                                 project-wide envelope per #254.
+                                 project-wide envelope per litclock-dev#254.
 - GET  /api/geocode?q=...     — City/zip preview lookup; returns resolved
                                  name + lat/lon for live UI feedback before save.
 
@@ -30,13 +30,13 @@ Locked decisions (PLAN-LitClock-Control-PWA.md M3 D1–D8):
       ``config._serialize_value``) and content-allowlists backtick + ``$``.
 - D8: Split URLs — ``/settings`` is HTML PRG; ``/api/settings`` is JSON.
       Both call a shared ``_save_and_apply()`` helper, which orchestrates
-      three phase helpers (#414 item #1):
+      three phase helpers (litclock-dev#414 item #1):
       ``_apply_clear_or_geocode`` → ``_validate_payload`` →
       ``_run_sync_quick_if_needed``.
 
 Bundled into M3: timezone update via ``geocoding.timezone_from_coords`` +
 ``geocoding.set_system_timezone`` when city/zip edit changes coordinates
-(#414 item #5 — was ``setup_server.set_system_timezone`` pre-extraction).
+(litclock-dev#414 item #5 — was ``setup_server.set_system_timezone`` pre-extraction).
 """
 
 from __future__ import annotations
@@ -69,24 +69,24 @@ SECTIONS: Final[tuple[str, ...]] = ("weather", "units", "gift", "location", "adv
 # ALLOW_NSFW_QUOTES). The union of values must be a subset of the
 # config.SETTINGS_ALLOWLIST keys — guarded by a unit test.
 SECTION_KEYS: Final[dict[str, frozenset[str]]] = {
-    # #337 A9: Weather section reduced to the visibility toggle only —
+    # litclock-dev#337 A9: Weather section reduced to the visibility toggle only —
     # the city/zip + radio + worldwide checkbox + raw coords all moved to
-    # the Location section below. Pre-#337 layout had `WEATHER_LATITUDE`
+    # the Location section below. Pre-litclock-dev#337 layout had `WEATHER_LATITUDE`
     # etc. listed here because the Weather section's "City or zip" input
     # wrote them; after the IA shift those keys are owned by Location.
     "weather": frozenset({"WEATHER_ENABLED"}),
-    # #337 A11: section identifier stays "units" (the env key is still
+    # litclock-dev#337 A11: section identifier stays "units" (the env key is still
     # WEATHER_UNITS) but the rendered title is "Temperature". A13 makes
     # the control auto-save on click — no Save button in this section.
     "units": frozenset({"WEATHER_UNITS"}),
-    # #280: gift section is now compose-only. GIFT_MODE_MESSAGE persists as
+    # litclock-dev#280: gift section is now compose-only. GIFT_MODE_MESSAGE persists as
     # a transient draft of the welcome message; the actual "trigger gift
     # mode" action is /api/system/prepare-for-gift on the system blueprint.
     # GIFT_MODE_ENABLED dropped — the M3 toggle had no runtime semantics
     # and the new design treats gift mode as a one-shot action, not a
     # persistent state.
     "gift": frozenset({"GIFT_MODE_MESSAGE"}),
-    # #337 A9 + A10: Location section is the new dominant section — owns
+    # litclock-dev#337 A9 + A10: Location section is the new dominant section — owns
     # the entire location picker (radio pill, Place input, worldwide
     # checkbox, raw lat/lon `<details>`). Per A16 the section is also
     # allowed to write WEATHER_UNITS so the unified country-change reset
@@ -104,7 +104,7 @@ SECTION_KEYS: Final[dict[str, frozenset[str]]] = {
             "WEATHER_UNITS",
         }
     ),
-    # #416 PR3c (F31) — SHOW_DIAGNOSTICS_SHORTCUT is the opt-in for the
+    # litclock-dev#416 PR3c (F31) — SHOW_DIAGNOSTICS_SHORTCUT is the opt-in for the
     # full-label diagnostics ribbon (dots-three default per OV-D-C).
     # Lives in Advanced to keep it out of the owner-persona's primary
     # surface; helper persona can flip it via the section toggle.
@@ -187,7 +187,7 @@ def _fire_ad_hoc_tick_blocking() -> None:
     """
     import time as _time  # noqa: PLC0415
 
-    # #362 D7 — lazy import to avoid a circular import between settings.py
+    # litclock-dev#362 D7 — lazy import to avoid a circular import between settings.py
     # and system.py (both blueprints live under control_server.routes). The
     # ad-hoc tick fires rarely enough that the per-call import cost is
     # invisible.
@@ -198,7 +198,7 @@ def _fire_ad_hoc_tick_blocking() -> None:
         if not _service_is_active("litclock.service"):
             break
         _time.sleep(_AD_HOC_TICK_POLL_INTERVAL_S)
-    # #362 D7 (codex post-review TOCTOU fix) — hold the shutdown-imminent
+    # litclock-dev#362 D7 (codex post-review TOCTOU fix) — hold the shutdown-imminent
     # lock for the duration of the check+act block. Without atomicity, the
     # naive shape (`if is_shutdown_imminent(): return`) had a race: this
     # thread could check the flag, get preempted, then have
@@ -265,13 +265,13 @@ def _resolve_location(query: str, worldwide: bool = False) -> tuple[Mapping[str,
 
     By default uses IP-country biasing so bare zip codes resolve to the
     user's country, matching first-boot behavior. When ``worldwide=True``
-    (#337 A5/A12 — the "Search worldwide (ignore autodetected location)"
+    (litclock-dev#337 A5/A12 — the "Search worldwide (ignore autodetected location)"
     checkbox), skips the IP-geo lookup and passes ``country_code=None`` to
     Nominatim, letting a US-WiFi user resolve UK postcodes like SW1A 1AA.
 
     Result dict carries the geocoder's resolved ``country_code`` (upper-cased
     ISO 3166-1 alpha-2) under the same key when ``geocoding.geocode_location``
-    parsed it from Nominatim's ``address`` sub-dict (#337 A16). Callers thread
+    parsed it from Nominatim's ``address`` sub-dict (litclock-dev#337 A16). Callers thread
     that value into the A6 country-change UNITS-reset logic.
     """
     if not query.strip():
@@ -305,7 +305,7 @@ def _maybe_set_timezone(lat: str, lon: str) -> str | None:
     timezone string on success, None on failure (logged but non-fatal)."""
     try:
         from geocoding import (
-            set_system_timezone,  # noqa: PLC0415  (#414 item #5: extracted from setup_server)
+            set_system_timezone,  # noqa: PLC0415  (litclock-dev#414 item #5: extracted from setup_server)
             timezone_from_coords,  # noqa: PLC0415
         )
 
@@ -398,11 +398,11 @@ def _coerce_payload(
       flip ``WEATHER_ENABLED`` to false even though they never sent it.
     - ``location_query`` is captured separately — it's not an env key, but
       a city/zip string that the route resolves into lat/lon via geocoding.
-    - ``clear_weather`` (issue #325): pre-#337 only. Retained as the
+    - ``clear_weather`` (issue litclock-dev#325): pre-litclock-dev#337 only. Retained as the
       "section=weather + clear=1" Clear button used to fire it — the
       button is removed in A10 but the server-side handling stays as a
       defensive backstop for any orphaned client still POSTing it.
-    - ``worldwide`` (#337 A5/A12): form/JSON-supplied flag indicating the
+    - ``worldwide`` (litclock-dev#337 A5/A12): form/JSON-supplied flag indicating the
       user checked "Search worldwide" on the Location section. Threaded
       through to ``_resolve_location`` so Nominatim is called without an
       IP-country bias. Per A5 the checkbox is form-state only, not
@@ -419,12 +419,12 @@ def _coerce_payload(
     else:
         location_query = None
 
-    # #325 — explicit Clear affordance for the weather section. Only the
+    # litclock-dev#325 — explicit Clear affordance for the weather section. Only the
     # weather Clear form sets clear=1; any other section ignores it. We
     # don't accept clear=true / yes / etc. — it's a hidden field set by
     # the template, so a strict "1" match avoids accidental triggers
     # from a misbehaving client.
-    # #337 A10: the Clear button is removed in the new IA (Automatic radio
+    # litclock-dev#337 A10: the Clear button is removed in the new IA (Automatic radio
     # IS the reset). Defensive backstop kept for any orphaned client
     # still POSTing clear=1; new templates never send it.
     clear_weather = False
@@ -435,7 +435,7 @@ def _coerce_payload(
         elif clear_raw is True:  # JSON callers may send a bool
             clear_weather = True
 
-    # #337 A5/A12: worldwide checkbox flag. Form checkboxes send "on" when
+    # litclock-dev#337 A5/A12: worldwide checkbox flag. Form checkboxes send "on" when
     # checked; JSON callers may send a bool or "1". Absent = unchecked
     # (today's IP-country-bias behavior).
     worldwide = False
@@ -449,7 +449,7 @@ def _coerce_payload(
     bool_keys = {"WEATHER_ENABLED", "ALLOW_NSFW_QUOTES", "SHOW_DIAGNOSTICS_SHORTCUT"}
 
     # Synthesis is form-only. JSON PATCH preserves D2 semantics strictly.
-    # #325 — when clearing, DON'T synthesise WEATHER_ENABLED to false even
+    # litclock-dev#325 — when clearing, DON'T synthesise WEATHER_ENABLED to false even
     # on the form path. Tension 7 was rejected: the locked decision is
     # that WEATHER_ENABLED stays unchanged on clear (the honest label on
     # the Clear button informs the user that weather will pause). If we
@@ -492,18 +492,18 @@ def _apply_clear_or_geocode(
     existing: Mapping[str, str],
     field_errors: dict[str, str],
 ) -> tuple[str | None, str | None]:
-    """#414 item #1 helper: handle the Clear-or-geocode branch and the
+    """litclock-dev#414 item #1 helper: handle the Clear-or-geocode branch and the
     follow-on country-change UNITS-flip.
 
     Mutates ``env_updates`` and ``field_errors`` in place. Returns
     ``(resolved_name, resolved_country)`` — both ``None`` unless a geocode
     succeeded. ``existing`` is the hoisted ``_load_settings()`` snapshot
-    (#414 item #2) so the country lookup doesn't re-read env.sh.
+    (litclock-dev#414 item #2) so the country lookup doesn't re-read env.sh.
     """
     resolved_name: str | None = None
     resolved_country: str | None = None
     if clear_weather:
-        # #337 A10: Clear button removed from the new IA but the codepath
+        # litclock-dev#337 A10: Clear button removed from the new IA but the codepath
         # is retained as a defensive backstop. Zeros the three location keys
         # and the country bookkeeping so the next on-boot reresolve has
         # nothing to preserve and writes fresh defaults.
@@ -528,14 +528,14 @@ def _apply_clear_or_geocode(
             if short:
                 env_updates["WEATHER_LOCATION_NAME"] = short
                 resolved_name = short
-            # #337 A16: Nominatim returned a country_code (via the
+            # litclock-dev#337 A16: Nominatim returned a country_code (via the
             # addressdetails=1 query param). Stash it so the country-change
             # UNITS-reset block below can decide whether to flip UNITS.
             geocoded_country = resolved.get("country_code")
             if isinstance(geocoded_country, str) and geocoded_country:
                 resolved_country = geocoded_country.upper()
 
-    # #337 A16: country-change UNITS-flip for Specific saves with a
+    # litclock-dev#337 A16: country-change UNITS-flip for Specific saves with a
     # geocoded country. Mirrors the on-boot reresolve's A6 rule so the
     # behavior is uniform across all save paths. If the new country
     # differs from persisted WEATHER_IP_COUNTRY (or persisted is empty —
@@ -545,7 +545,7 @@ def _apply_clear_or_geocode(
     # Austin TX → Boston MA shouldn't wipe a user's Celsius pick).
     if resolved_country:
         from location_resolver import (
-            country_default_units,  # noqa: PLC0415  (#414: now public — no longer a private import)
+            country_default_units,  # noqa: PLC0415  (litclock-dev#414: now public — no longer a private import)
         )
 
         persisted_country = (existing.get("WEATHER_IP_COUNTRY") or "").upper().strip()
@@ -563,7 +563,7 @@ def _validate_payload(
     existing: Mapping[str, str],
     field_errors: dict[str, str],
 ) -> None:
-    """#414 item #1 helper: per-key ``validate_setting`` sweep + the I7
+    """litclock-dev#414 item #1 helper: per-key ``validate_setting`` sweep + the I7
     all-or-none triplet guard. Mutates ``field_errors``."""
     import config as _config  # noqa: PLC0415
 
@@ -571,7 +571,7 @@ def _validate_payload(
     # than 422-ing on whichever happens to be first. config.atomic_update
     # would itself fail-fast, but we want the per-field error map.
     #
-    # #325 — empty WEATHER_LATITUDE / WEATHER_LONGITUDE / WEATHER_LOCATION_NAME
+    # litclock-dev#325 — empty WEATHER_LATITUDE / WEATHER_LONGITUDE / WEATHER_LOCATION_NAME
     # are valid "unset" states (matching env.sh.sample's shipped empty
     # WEATHER_LOCATION_NAME=) per the lat/lon validators' empty-string
     # short-circuit. The Clear affordance relies on this.
@@ -581,7 +581,7 @@ def _validate_payload(
             field_errors[key] = err or "invalid value"
 
     # Review I7 — route-level all-or-none guard on the three weather
-    # location keys. #325 widened the lat/lon validators to accept empty
+    # location keys. litclock-dev#325 widened the lat/lon validators to accept empty
     # strings globally so the Clear path works; that widening lets the
     # regular Location form persist incoherent partial states (e.g.
     # WEATHER_LATITUDE="30.27" with WEATHER_LONGITUDE=""). literary_clock
@@ -645,11 +645,11 @@ def _run_sync_quick_if_needed(
     previous_mode: str,
     env_file: str,
 ) -> tuple[bool, bool]:
-    """#414 item #1 helper: #337 A12 Specific→Auto switch sync-quick + the
+    """litclock-dev#414 item #1 helper: litclock-dev#337 A12 Specific→Auto switch sync-quick + the
     Auto-Save-as-refresh path. Returns ``(attempted, succeeded)``.
 
     Detects transitions from the incoming MODE vs the persisted MODE
-    (passed in from the hoisted ``existing`` snapshot — #414 item #2). On
+    (passed in from the hoisted ``existing`` snapshot — litclock-dev#414 item #2). On
     hard-fail the resolver writes nothing; the caller's subsequent
     ``atomic_update`` still lands MODE=auto, and lat/lon stays at the prior
     Specific values until the next on-boot reresolve. The caller surfaces
@@ -674,7 +674,7 @@ def _run_sync_quick_if_needed(
     try:
         from location_resolver import resolve_location_from_ip as _sync_quick  # noqa: PLC0415
 
-        # Use the resolver's explicit success bool (#337 A12 + /review
+        # Use the resolver's explicit success bool (litclock-dev#337 A12 + /review
         # fix). Earlier draft snapshotted env.sh before/after lat/lon,
         # which gave a false "failed" hint when IP-geo legitimately
         # returned the same coords twice (Auto save where the user
@@ -703,14 +703,14 @@ def _save_and_apply(
     checkboxes are synthesised to ``"false"`` (form path) or treated as
     "key not sent" (JSON PATCH path).
 
-    #414 item #1: orchestrator only; the three logical phases live in
+    litclock-dev#414 item #1: orchestrator only; the three logical phases live in
     ``_apply_clear_or_geocode``, ``_validate_payload``, and
     ``_run_sync_quick_if_needed``.
 
-    #414 item #2: ``_load_settings()`` is read once up front and threaded
+    litclock-dev#414 item #2: ``_load_settings()`` is read once up front and threaded
     through the helpers. The post-write response body snapshot is the only
     additional read (it has to be — that's what the snapshot shows). Net:
-    5 reads pre-#414 → 2 reads.
+    5 reads pre-litclock-dev#414 → 2 reads.
     """
     import config as _config  # noqa: PLC0415
 
@@ -718,12 +718,12 @@ def _save_and_apply(
         raw_payload, section, is_form=is_form
     )
 
-    # #414 item #2: single pre-write read. Feeds the country-change check
+    # litclock-dev#414 item #2: single pre-write read. Feeds the country-change check
     # (_apply_clear_or_geocode), the all-or-none guard (_validate_payload),
     # the previous-MODE detect for sync-quick, and the no-op return body.
     existing = _load_settings()
 
-    # #337 A14 + A10 + A12: Specific-mode Save without a typed Place value
+    # litclock-dev#337 A14 + A10 + A12: Specific-mode Save without a typed Place value
     # is rejected at the route. The template's Save button is also
     # JS-disabled in this state (A10), so this server-side guard is the
     # backstop for no-JS clients and JSON callers. The radio-flip-only case
@@ -771,7 +771,7 @@ def _save_and_apply(
         # Nothing to write. Treat as a no-op success so the UI's "Saved." toast
         # still fires — the user submitted; we just had nothing to update.
         # Reuses the hoisted ``existing`` snapshot — no fresh read needed
-        # since by definition nothing was written (#414 item #2).
+        # since by definition nothing was written (litclock-dev#414 item #2).
         return ({"ok": True, "saved": [], "settings": dict(existing)}, 200)
 
     previous_mode = (existing.get("WEATHER_LOCATION_MODE") or "auto").strip() or "auto"
@@ -813,7 +813,7 @@ def _save_and_apply(
             500,
         )
     except TimeoutError as exc:
-        # #274 follow-up #4 — `_exclusive_lock` raises TimeoutError if the
+        # litclock-dev#274 follow-up #4 — `_exclusive_lock` raises TimeoutError if the
         # env.sh sidecar flock is held by another writer for > 30s (default,
         # overridable via LITCLOCK_ENV_LOCK_WAIT). Without bounded wait, the
         # Flask request thread would block indefinitely on a stuck shell
@@ -851,7 +851,7 @@ def _save_and_apply(
 
     _ad_hoc_tick()
 
-    # EPIC #383 PR2 (#388): a successful Settings save during the handoff window
+    # EPIC litclock-dev#383 PR2 (litclock-dev#388): a successful Settings save during the handoff window
     # is an implicit "Done" — but only complete if the timezone is now known
     # (e.g. the user just set a city, resolving coords + tz). No-op outside the
     # handoff phase. Never starts a wrong-time clock (design-review A2).
@@ -866,7 +866,7 @@ def _save_and_apply(
         body["location_resolved"] = resolved_name
     if new_timezone:
         body["timezone"] = new_timezone
-    # #337 A7: surface the sync-quick outcome so the PWA can render the
+    # litclock-dev#337 A7: surface the sync-quick outcome so the PWA can render the
     # right hint. Three states: not attempted (Auto save with no transition),
     # attempted and succeeded (fresh city in `body["settings"]`), attempted
     # and failed (PWA shows "city couldn't auto-detect; next reboot will retry").
@@ -889,7 +889,7 @@ def settings_tab() -> str:
     saved_name = request.args.get("name") or None
 
     csrf_token, _expires_at = _csrf_store().issue(CSRF_ACTION)
-    # #317 item 7 — prepare_for_gift confirm token now minted on /system
+    # litclock-dev#317 item 7 — prepare_for_gift confirm token now minted on /system
     # (where the action card lives). The /settings page no longer renders
     # the destructive form.
     return render_template(
@@ -916,7 +916,7 @@ def settings_post() -> Any:
 
     body, status = _save_and_apply(request.form.to_dict(flat=True), section, is_form=True)
 
-    # #317 item 7 — the gift card lives on /system now, but the writer
+    # litclock-dev#317 item 7 — the gift card lives on /system now, but the writer
     # endpoint stays here (centralised persistence). PRG-redirect the
     # success path to /system?saved=gift so the user lands back on the
     # tab they submitted from.
@@ -935,7 +935,7 @@ def settings_post() -> Any:
     field_errors = err.get("fields", {}) if isinstance(err, dict) else {}
     form_error = err.get("message") if isinstance(err, dict) else None
 
-    # #317 item 7 — gift failure renders on /system so the user sees the
+    # litclock-dev#317 item 7 — gift failure renders on /system so the user sees the
     # field error next to the textarea they were typing in. Other sections
     # keep re-rendering /settings as before. Pass the rejected value
     # through so the textarea reflects what the user actually typed —
@@ -1034,7 +1034,7 @@ def api_geocode() -> Any:
     sees the resolved location before tapping Save. Same geocoding stack
     as the save path (D3) for consistency.
 
-    #337 A5/A12 — ``worldwide=1`` skips the IP-country bias so a US-WiFi
+    litclock-dev#337 A5/A12 — ``worldwide=1`` skips the IP-country bias so a US-WiFi
     user can preview UK postcodes like SW1A 1AA. Any other value (absent,
     "0", "false", etc.) keeps today's behavior (bias to IP country). The
     composite cache key in settings.js (`q + "|" + worldwide`) ensures the
@@ -1070,7 +1070,7 @@ def api_geocode() -> Any:
             "display_name": display,
             "short_name": short_name,
             "timezone": resolved.get("timezone"),
-            # #337 A16 — bubble the resolved country (uppercase ISO 3166-1
+            # litclock-dev#337 A16 — bubble the resolved country (uppercase ISO 3166-1
             # alpha-2) up to the client. PWA can show country context in
             # the preview ("Currently: London, England") and the save path
             # uses it for the unified country-change UNITS rule.
@@ -1081,7 +1081,7 @@ def api_geocode() -> Any:
 
 @bp.route("/api/system/set-timezone", methods=["POST"])
 def api_system_set_timezone() -> Any:
-    """POST /api/system/set-timezone — steady-state timezone setter (#337 A18).
+    """POST /api/system/set-timezone — steady-state timezone setter (litclock-dev#337 A18).
 
     Companion to ``/api/handoff/set-timezone`` which is GATED on
     ``is_handoff_active`` and returns 200 no-op outside the handoff window
@@ -1090,7 +1090,7 @@ def api_system_set_timezone() -> Any:
     button (rendered when location is unresolvable) needs an always-on
     endpoint, hence this one — CSRF-guarded like every other Settings
     write, validates against the IANA tz db via
-    ``geocoding.set_system_timezone`` (moved out of setup_server in #414
+    ``geocoding.set_system_timezone`` (moved out of setup_server in litclock-dev#414
     item #5; the old import path still resolves via the re-export shim),
     returns 422 on invalid value.
 
@@ -1113,7 +1113,7 @@ def api_system_set_timezone() -> Any:
             422,
         )
 
-    from geocoding import set_system_timezone  # noqa: PLC0415  (#414 item #5: extracted from setup_server)
+    from geocoding import set_system_timezone  # noqa: PLC0415  (litclock-dev#414 item #5: extracted from setup_server)
 
     ok, err = set_system_timezone(timezone.strip())
     if not ok:

@@ -16,7 +16,7 @@ from random import randrange
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import quote_corpus
-from control_url import control_base_url  # QR target — single source of truth (#343)
+from control_url import control_base_url  # QR target — single source of truth (litclock-dev#343)
 from log import setup_logging
 
 # Global reference for signal handler cleanup
@@ -52,23 +52,23 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONT_PATH = os.path.join(PROJECT_ROOT, "fonts", "Literata72pt-Regular.ttf")
 DISPLAY_SIZE = (800, 480)
 
-# Status file for the Control PWA (#245 M2 / OV3). literary_clock.py writes
+# Status file for the Control PWA (litclock-dev#245 M2 / OV3). literary_clock.py writes
 # this after each render so /api/status can mirror exactly what's on the
-# e-ink. Lives under /run/litclock (tmpfs, pi:pi-owned via the #241 tmpfiles.d
+# e-ink. Lives under /run/litclock (tmpfs, pi:pi-owned via the litclock-dev#241 tmpfiles.d
 # entry) — /var/run is root-owned and would Permission-denied the per-minute
-# write under `User=pi`. Codex /review caught this on M2 (PR #245). tmpfs
+# write under `User=pi`. Codex /review caught this on M2 (PR litclock-dev#245). tmpfs
 # means zero SD wear from per-minute writes; override via env so dev boxes
 # / CI can point it elsewhere.
 STATUS_FILE = os.environ.get("LITCLOCK_STATUS_FILE", "/run/litclock/current-quote.json")
 
-# Persistent QR code on the e-ink top strip (#245 A6). 75x75 px at x=713,y=0,
+# Persistent QR code on the e-ink top strip (litclock-dev#245 A6). 75x75 px at x=713,y=0,
 # encodes the PWA URL so non-tech users can scan-to-open instead of typing.
 # Geometry locked in M0 (validated via tools/control-pwa/validate_qr_layout.py);
 # nudged (716,2)→(713,0) for the quiet zone (see QR_QUIET_ZONE).
 #
-# URL is plain HTTP — locked decision #257 dropped self-signed TLS for
+# URL is plain HTTP — locked decision litclock-dev#257 dropped self-signed TLS for
 # control_server (iOS PWAs reject self-signed every launch + suppress AtHS icon
-# + suppress Dynamic Type). #343 moved control_server to port 80 so the URL a
+# + suppress Dynamic Type). litclock-dev#343 moved control_server to port 80 so the URL a
 # user scans or types carries NO port (bare `http://<ip>` / `http://litclock.local`)
 # — the port is built by control_url.control_base_url, which omits `:80`. The
 # clock and control_server share that helper so the QR target and the actual
@@ -77,7 +77,7 @@ STATUS_FILE = os.environ.get("LITCLOCK_STATUS_FILE", "/run/litclock/current-quot
 # QR_URL is the FALLBACK — used when _resolve_lan_ip() can't determine the
 # Pi's LAN IP (no network, no default route). The runtime path prefers the IP
 # because mDNS (litclock.local) is unreliable on Android Chrome and many
-# home/guest WiFi networks (issue #306). Resolved IP changes propagate within
+# home/guest WiFi networks (issue litclock-dev#306). Resolved IP changes propagate within
 # ~60s — the e-ink re-renders every minute tick.
 QR_URL = control_base_url("litclock.local")
 QR_POSITION = (713, 0)
@@ -302,7 +302,7 @@ def main():
     location_long = os.getenv("WEATHER_LONGITUDE")
     units = os.getenv("WEATHER_UNITS", "imperial")
     allow_nsfw = os.getenv("ALLOW_NSFW_QUOTES", "false").lower() == "true"
-    # WEATHER_ENABLED master toggle (Control PWA M3, #245). Default true
+    # WEATHER_ENABLED master toggle (Control PWA M3, litclock-dev#245). Default true
     # to preserve pre-M3 behavior on Pis that don't have the key yet —
     # update.sh's env.sh.sample merge will add it on the next update.
     weather_enabled = os.getenv("WEATHER_ENABLED", "true").lower() == "true"
@@ -593,7 +593,7 @@ def get_current_quote(
     available for this HH:MM (caller falls back to drawing the time in
     144pt Literata).
 
-    Pure function (#245 A7) — same selection logic feeds both the e-ink
+    Pure function (litclock-dev#245 A7) — same selection logic feeds both the e-ink
     render path in main() and the /api/status response in
     src/control_server/routes/status.py. Random pick within the bucket
     matches existing per-minute rotation behavior.
@@ -726,7 +726,7 @@ def _resolve_lan_ip() -> str | None:
           phones on the same WiFi rarely land on the matching link-local
           segment, so the IP is effectively unreachable from a scanner)
 
-    Issue #306: mDNS (`litclock.local`) is unreliable on Android Chrome and
+    Issue litclock-dev#306: mDNS (`litclock.local`) is unreliable on Android Chrome and
     many home/guest WiFi networks. Encoding the IP makes the scan path
     bulletproof; the IP refreshes every minute tick so DHCP renewals
     propagate within ~60s.
@@ -752,15 +752,15 @@ def _resolve_lan_ip() -> str | None:
 
 def _composite_settings_qr(image: Image.Image) -> None:
     """Paste the persistent settings QR (75x75) at the top-right of the
-    e-ink top strip (#245 A6). Encodes ``http://<ip>`` (port omitted at 80,
-    #343) when the LAN IP resolves, else falls back to ``QR_URL`` (mDNS
+    e-ink top strip (litclock-dev#245 A6). Encodes ``http://<ip>`` (port omitted at 80,
+    litclock-dev#343) when the LAN IP resolves, else falls back to ``QR_URL`` (mDNS
     hostname). Geometry
     locked in M0; the runtime composite mirrors what
     tools/control-pwa/validate_qr_layout.py proves scans on a real phone
     at ~30cm. White-outs the strip corner first for the ISO 18004 quiet
     zone (see QR_QUIET_ZONE) — this notches the y=78 divider under the QR.
 
-    Issue #306: prefer IP over mDNS because Android Chrome and many home
+    Issue litclock-dev#306: prefer IP over mDNS because Android Chrome and many home
     networks don't resolve `.local` reliably — encoding the IP bypasses
     mDNS for the scan path. The friendly hostname is still typeable for
     users on supportive networks.
@@ -843,8 +843,8 @@ def _stamp_update_failed_glyph(image, draw):
     read (os.path.exists); no locking. Marker is transient; a stale read in
     either direction is harmless for the next render cycle.
 
-    Placement note: pre-#245-M2 the glyph was top-right at x=784. M2 moves
-    the QR to the top-right (#245 A6), so the glyph relocates to x=4 (the
+    Placement note: pre-litclock-dev#245-M2 the glyph was top-right at x=784. M2 moves
+    the QR to the top-right (litclock-dev#245 A6), so the glyph relocates to x=4 (the
     weather block's vertical divider sits at x=225, leaving the 0..16
     margin clear for the glyph).
     """

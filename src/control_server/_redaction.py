@@ -1,5 +1,5 @@
 """Redaction patterns for both the diagnostic snapshot deny-list test and
-the in-memory log buffer's filter (#416 / OV-1=A).
+the in-memory log buffer's filter (litclock-dev#416 / OV-1=A).
 
 The /diagnostics snapshot already redacts user-typed PII via the per-row
 PRIVACY_POLICY in ``_diagnostics_privacy.py``. The live log buffer surfaces
@@ -175,13 +175,13 @@ _LONG_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
 # leak the raw value into the live drawer.
 #
 # Lead-in is a ZERO-WIDTH negative lookbehind ``(?<![A-Za-z])`` — not the ``\b``
-# it started with, nor the captured ``(^|[\W_])`` of the #497 fix:
+# it started with, nor the captured ``(^|[\W_])`` of the litclock-dev#497 fix:
 #   * ``\b`` failed on compound keys — ``WEATHER_LATITUDE=`` has ``_`` (a word
-#     char) before ``LATITUDE``, so no boundary (#497: full-precision home
+#     char) before ``LATITUDE``, so no boundary (litclock-dev#497: full-precision home
 #     coords leaked through the support-logs / journal export).
 #   * A *consuming* lead-in ``(^|[\W_])`` fixed compound keys but still leaked
 #     ADJACENT coords ``lat=11.1lon=22.2`` — consuming the char before ``lon``
-#     leaves nothing for its own lead-in to match (#498).
+#     leaves nothing for its own lead-in to match (litclock-dev#498).
 # A lookbehind is zero-width, fixing BOTH: it permits a digit/underscore/start
 # before the keyword (compound keys AND back-to-back coords match) while still
 # blocking a LETTER before it, so ``belong=``, ``along=``, ``flat=``,
@@ -193,7 +193,7 @@ _LONG_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
 # log could echo). The ``['\"]?`` after the keyword also catches JSON quoted-key
 # forms (``{"lat": "33.1234"}``). These extra shapes were all non-reachable
 # in-tree (geo APIs + ``str(float)`` emit plain dotted decimals), so they are
-# defense-in-depth for the "redaction is safe to share" contract (#498).
+# defense-in-depth for the "redaction is safe to share" contract (litclock-dev#498).
 # Separators/quotes are normalized away in the output — lossy, but the precision
 # (the sensitive part) never survives.
 #
@@ -202,7 +202,7 @@ _LONG_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
 # coordinate), and a comma coordinate is impossible to reach anyway — the
 # ``_validate_latitude`` writer does ``float(value)``, which rejects a comma, so
 # it can never be stored in env.sh or logged. Matching it would only risk
-# corrupting a legitimate list for zero real coverage (#498 /review, both models).
+# corrupting a legitimate list for zero real coverage (litclock-dev#498 /review, both models).
 #
 # A bare integer with no fractional part or exponent (``lat=33``) is left alone —
 # it carries no sub-degree precision to leak.
@@ -275,7 +275,7 @@ class RedactingFilter(logging.Filter):
     """A logging.Filter that rewrites the record's message via :func:`redact_text`.
 
     Installed on the root logger by ``log_buffer.init_memory_handler()`` (see
-    that module's docstring + #416 OV-1=A rationale). The filter applies
+    that module's docstring + litclock-dev#416 OV-1=A rationale). The filter applies
     BEFORE the buffer's append, so the in-memory deque never contains a
     secret-shaped substring even if a future ``log.info("PSK=hunter2")`` call
     lands somewhere in the codebase.

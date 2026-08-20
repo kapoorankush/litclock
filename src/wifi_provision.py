@@ -283,7 +283,7 @@ def _read_persisted_password(path):
     would hoist up to 63 bytes of some other file onto the e-ink and into a
     join QR), and that a planted FIFO cannot wedge the open forever — which
     would hang provisioning and leave the device with no setup AP at all
-    (#497 TOCTOU family).
+    (litclock-dev#497 TOCTOU family).
 
     Never raises: every failure degrades to "no usable stored password".
     Provisioning must never be blocked by the persistence layer.
@@ -300,7 +300,7 @@ def _read_persisted_password(path):
         # by a maintainer running the CLI under sudo, since the shipped writer
         # is pi). We fall through to minting a replacement because refusing
         # would leave the device with no setup AP — but that rotation is
-        # exactly the stale-credential trap #620 exists to remove, so it must
+        # exactly the stale-credential trap litclock-dev#620 exists to remove, so it must
         # never be silent.
         logging.error(
             "Hotspot password %s exists but is unreadable (%s) — minting a REPLACEMENT. "
@@ -341,7 +341,7 @@ def _persist_password(path, password):
     Best-effort by design: a read-only or full filesystem must NOT stop the
     clock being provisioned. On failure the caller keeps the in-memory value,
     so this cycle works and the next one regenerates — degraded to the
-    pre-#620 behaviour rather than broken.
+    pre-litclock-dev#620 behaviour rather than broken.
 
     fsync of both the file and its directory is NOT optional here even though
     it costs a flash write: without it a power cut during provisioning (one of
@@ -401,7 +401,7 @@ def _load_or_create_hotspot_password(path=None):
     The returned value is always the one that is actually ON DISK when a write
     succeeded. That post-condition is the whole invariant: if the AP were
     brought up with a password the file does not hold, the next cycle would
-    strand the phone — #620 all over again, caused by the fix for #620.
+    strand the phone — litclock-dev#620 all over again, caused by the fix for litclock-dev#620.
     """
     path = path or HOTSPOT_PASSWORD_FILE
     stored = _read_persisted_password(path)
@@ -415,7 +415,7 @@ def _load_or_create_hotspot_password(path=None):
     if not _persist_password(path, password):
         logging.error(
             "Hotspot password could not be stored at %s — this cycle only. The next provisioning "
-            "will mint a different one, so a phone that joins now may fail to rejoin later (#620).",
+            "will mint a different one, so a phone that joins now may fail to rejoin later (litclock-dev#620).",
             path,
         )
         return password
@@ -502,8 +502,8 @@ def _setup_captive_portal():
     # Create dnsmasq config directory if needed, then write the wildcard rule.
     #
     # address=/#/IP — wildcard A answer for every name, points at the gateway.
-    # no-resolv    — THE fix for the iOS captive-portal HTTPS-RR probe (#483,
-    #                supersedes the local=/#/ theory of #178). iOS 17+ sends an
+    # no-resolv    — THE fix for the iOS captive-portal HTTPS-RR probe (litclock-dev#483,
+    #                supersedes the local=/#/ theory of litclock-dev#178). iOS 17+ sends an
     #                HTTPS RR (type 65) query for `captive.apple.com` BEFORE the A
     #                query (RFC 9460 HTTPS-upgrade discovery). dnsmasq does NOT
     #                answer type 65 from `address=/#/` (that's an A record only),
@@ -515,7 +515,7 @@ def _setup_captive_portal():
     #                upstream, so the forward fails and dnsmasq returns
     #                `REFUSED (EDE: network error)`. iOS reads that REFUSED as
     #                hostile DNS and SILENTLY DEMOTES the captive-portal sheet
-    #                (the exact failure #178 was chasing; local=/#/ only masked it
+    #                (the exact failure litclock-dev#178 was chasing; local=/#/ only masked it
     #                on client Pis whose inherited upstream happened to be
     #                reachable and answered NODATA). `no-resolv` makes dnsmasq
     #                keep NO upstream at all, so it answers every non-A type
@@ -565,7 +565,7 @@ def _setup_captive_portal():
     #
     # Port 443 is intentionally NOT redirected (the plain HTTP server can't
     # speak TLS — a redirected ClientHello would read as garbage and iOS
-    # demotes the sheet on hostile-looking responses, issue #178). It is
+    # demotes the sheet on hostile-looking responses, issue litclock-dev#178). It is
     # now DROPPED rather than left to the kernel's RST. litclock-dev#526
     # pcap (2026-07-16, iOS 26.5.2): on join the phone's Apple services
     # (iCloud gateway, location, Private Relay QUIC, APNs 5223, cached
@@ -609,12 +609,12 @@ def _setup_captive_portal():
 def _teardown_captive_portal():
     """Remove captive portal DNS config and nftables redirect rules.
 
-    #343 made this teardown load-bearing: the captive table holds an
+    litclock-dev#343 made this teardown load-bearing: the captive table holds an
     ``ip daddr … tcp dport 80 redirect to :8080`` rule, and control_server now
     binds port 80. If the table survives teardown (the first-boot success path
     does NOT reboot — nftables is not cleared for us), inbound PWA traffic on
     :80 would be NAT'd to the now-dead setup_server port 8080, leaving
-    control_server healthy-but-unreachable. Pre-#343 a surviving redirect was
+    control_server healthy-but-unreachable. Pre-litclock-dev#343 a surviving redirect was
     harmless (control_server was on 8443). So we now VERIFY the table is gone,
     retry once, and log loudly if it persists (rather than ignore the delete
     result). A reboot would also clear it, but we must not depend on one.
@@ -645,7 +645,7 @@ def _teardown_captive_portal():
     logging.error(
         "Captive portal nft table 'litclock_captive' survived teardown — its "
         "port-80 redirect to 8080 would make the control PWA unreachable on "
-        "port 80 (#343). Flush manually: sudo nft delete table ip litclock_captive"
+        "port 80 (litclock-dev#343). Flush manually: sudo nft delete table ip litclock_captive"
     )
 
 
@@ -897,7 +897,7 @@ def _snapshot_ssid_psks(ssid):
     The PSK values live in this dict IN MEMORY ONLY. The listing/ssid read is
     unprivileged; only the secret read is sudo. A listing failure or an
     unreadable secret drops that profile and logs a WARNING (never the value)
-    — restore then degrades to the pre-#613 no-op, but LOUDLY, because a
+    — restore then degrades to the pre-litclock-dev#613 no-op, but LOUDLY, because a
     silent miss leaves the fielded device in exactly the litclock-dev#613 brick state with
     no journal trace (litclock-dev#616 review F6)."""
     # The LIST form of `connection show` accepts only profile COLUMNS
@@ -1287,7 +1287,7 @@ def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
 def _clear_wifi_watchdog_counter():
     """Clear the wifi-watchdog reboot counter on successful (re-)provisioning.
 
-    M5 OV1 (#245): wifi-watchdog clears its own counter at the START of every
+    M5 OV1 (litclock-dev#245): wifi-watchdog clears its own counter at the START of every
     tick when the ping target responds, but ticks fire every 5 minutes —
     leaving up to a 5-min window after a successful re-provisioning where a
     stale count==3 could falsely re-trigger the firstboot fallback. Clearing

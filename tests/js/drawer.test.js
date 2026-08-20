@@ -1,4 +1,4 @@
-// Behavior coverage for src/control_server/static/js/drawer.js (#416 PR3b).
+// Behavior coverage for src/control_server/static/js/drawer.js (litclock-dev#416 PR3b).
 //
 // The module is an IIFE; tests drive it through the DOM + a synthetic
 // EventSource. jsdom doesn't ship EventSource, so we stub it.
