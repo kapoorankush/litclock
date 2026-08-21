@@ -12,7 +12,9 @@ Two layers of coverage:
    reaches the right phases and makes the expected subprocess calls.
 """
 
+import fnmatch
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -1362,3 +1364,217 @@ class TestRuntimeMarkerInvalidation:
         assert "-gt 1" in block
         assert block.count('rm -f "$RUNTIME_MARKER"') == 2
         assert "could not verify" in block
+
+
+# --- litclock-dev#682 ------------------------------------------------------
+
+# Every `chmod` in update.sh must be accounted for here. Anything this file
+# cannot classify fails loudly rather than going unchecked: the guard below is
+# only as good as its inventory, and an ADDED chmod line is the likely edit.
+# (An added `chmod +x "${INSTALL_DIR}"/scripts/lib/*.sh` in brace form left an
+# earlier version of these tests green while dirtying three tracked files.)
+CHMOD_NEEDS_NO_TRACKED_MODE = {
+    # target                      why it needs no tracked-mode guard
+    "$ROLLBACK_SELF_SNAPSHOT": "a /tmp snapshot of this script, not a repo path",
+    "$tmp": "a status tempfile, not a repo path (and 0644, not +x)",
+}
+
+# Targets that are a single repo file rather than a glob.
+CHMOD_SINGLE_FILE_TARGETS = {
+    "$SELF_SCRIPT": "scripts/update.sh",  # readlink -f "${BASH_SOURCE[0]}"
+}
+
+
+def _chmod_lines():
+    """Every executable `chmod` line in update.sh, comments excluded."""
+    return [
+        line.strip()
+        for line in UPDATE_SH.read_text().splitlines()
+        if "chmod" in line and not line.lstrip().startswith("#")
+    ]
+
+
+def _classify_chmod(line):
+    """('glob', pattern) | ('file', repo_path) | ('exempt', reason) | None.
+
+    None means "unrecognised", which the inventory test turns into a failure.
+    Deliberately tolerant about the shapes it accepts (braces, `--`, trailing
+    comments, multiple targets) so that a real edit is either checked or
+    reported, never silently dropped.
+    """
+    m = re.match(r"^chmod\s+(?:--\s+)?([0-7]{3,4}|[augo]*\+x)\s+(.*?)(?:\s*(?:#|2>|\|\||&&).*)?$", line)
+    if not m:
+        return None
+    mode, targets = m.group(1), m.group(2)
+    if not mode.endswith("+x"):
+        # Not an executable-bit change; only the tracked +x modes matter here.
+        for exempt in CHMOD_NEEDS_NO_TRACKED_MODE:
+            if exempt in targets:
+                return ("exempt", CHMOD_NEEDS_NO_TRACKED_MODE[exempt])
+        return None
+
+    for exempt, reason in CHMOD_NEEDS_NO_TRACKED_MODE.items():
+        if exempt in targets:
+            return ("exempt", reason)
+    for var, repo_path in CHMOD_SINGLE_FILE_TARGETS.items():
+        if var in targets:
+            return ("file", repo_path)
+
+    m = re.search(r'"?\$\{?INSTALL_DIR\}?"?/"?([^"\s]+)"?', targets)
+    if m:
+        return ("glob", m.group(1))
+    return None
+
+
+def _tracked_modes():
+    """path -> mode, straight from the index.
+
+    `-z` matters: without it `git ls-files -s` C-quotes any path with non-ASCII
+    or special bytes, so `scripts/wünicode.sh` came back as the 25-character
+    escaped string, never matched, and fell through the untracked branch — the
+    guard went green on exactly the violation it exists to catch.
+    """
+    out = subprocess.run(
+        ["git", "ls-files", "-s", "-z"], cwd=REPO_ROOT, capture_output=True, text=True, check=True, timeout=60
+    ).stdout
+    modes = {}
+    for record in out.split("\0"):
+        if not record:
+            continue
+        meta, _, path = record.partition("\t")
+        modes[path] = meta.split()[0]
+    return modes
+
+
+def _bash_glob_match(pattern, path):
+    """Does bash's glob `pattern` match `path`, with the options update.sh runs?
+
+    NOT pathlib's `Path.glob`, which differs from bash in two directions that
+    both matter here: it matches dotfiles (bash needs `dotglob`, which update.sh
+    never sets, so a committed `scripts/.hidden.sh` produced a FALSE failure
+    demanding +x on a file the device never chmods), and it treats `**` as
+    recursive (bash needs `globstar`, also never set, so `scripts/**/*.sh`
+    expands to `scripts/lib/*.sh` ALONE — it replaces the top level rather than
+    adding to it).
+    """
+    pattern_segments = pattern.split("/")
+    path_segments = path.split("/")
+    if len(pattern_segments) != len(path_segments):
+        return False
+    for pattern_segment, path_segment in zip(pattern_segments, path_segments, strict=True):
+        if path_segment.startswith(".") and not pattern_segment.startswith("."):
+            return False
+        if not fnmatch.fnmatchcase(path_segment, pattern_segment):
+            return False
+    return True
+
+
+class TestChmodTargetsAreTrackedExecutable:
+    """Every file update.sh chmods must already be tracked executable.
+
+    Otherwise the chmod is a real mode change on every device on every update:
+    Phase 2's `git reset --hard` overwrites the mode-only dirt exactly as the
+    warning promises, and then Phase 6 of the SAME run re-creates it, so the
+    tree is dirty again before the run ends. The next update then warns the
+    operator about uncommitted changes the previous update caused.
+
+    Nothing breaks. The cost is that ``[WARN] Uncommitted changes detected`` is
+    exactly the line that should make an operator stop and look if they had
+    really hand-edited something on the device, and instead it fires on every
+    update and is wrong every time (litclock-dev#682).
+
+    Observed on the fleet sentinel against v0.224.0, where the tracked mode of
+    ``scripts/qa-reresolve-hw-test.sh`` was 100644. In the development repo it
+    was always 100755; the mode was lost in the port to THIS repo (it arrived
+    100644 in #51) and was repaired as the symptom in #59 — with nothing to
+    stop a recurrence until this guard, which is derived from the chmod lines
+    in update.sh rather than pinned to that one file.
+
+    ``scripts/lib/*.sh`` are deliberately not covered: they are sourced, never
+    run, none has a shebang, and `scripts/*.sh` does not recurse into them. If
+    the glob is ever widened to reach them, the inventory test below fails until
+    someone decides what their modes should be.
+
+    Related but separate: ``tests/test_pi_gen.py::test_chroot_scripts_are_executable``
+    covers pi-gen's chroot scripts. It asserts the FILESYSTEM mode, which passes
+    on any working tree where the bit happens to be set locally even when git
+    records 100644 — precisely the state this class exists to catch. The two file
+    sets are disjoint, so this is a note, not a duplicate.
+    """
+
+    def test_every_chmod_line_is_accounted_for(self):
+        """Fail closed on an unrecognised chmod. The guard is only as good as
+        its inventory, and an ADDED line is the likely edit — an earlier version
+        of this test stayed green while a brace-form chmod dirtied three tracked
+        files."""
+        lines = _chmod_lines()
+        assert lines, "no chmod at all in update.sh — this test went blind"
+
+        unrecognised = [line for line in lines if _classify_chmod(line) is None]
+        assert not unrecognised, (
+            "update.sh has chmod lines this guard cannot classify, so it cannot tell whether they "
+            "dirty tracked files:\n  "
+            + "\n  ".join(unrecognised)
+            + "\n\nAdd the target to CHMOD_SINGLE_FILE_TARGETS or CHMOD_NEEDS_NO_TRACKED_MODE, "
+            "or widen _classify_chmod."
+        )
+        assert any(kind == "glob" for kind, _ in map(_classify_chmod, lines)), (
+            "update.sh no longer chmods any $INSTALL_DIR glob — the guard below now checks nothing"
+        )
+
+    def test_every_chmod_target_is_tracked_executable(self):
+        modes = _tracked_modes()
+        offenders = []
+
+        for line in _chmod_lines():
+            classified = _classify_chmod(line)
+            assert classified is not None, line
+            kind, value = classified
+            if kind == "exempt":
+                continue
+
+            if kind == "file":
+                mode = modes.get(value)
+                assert mode is not None, f"{line!r} chmods {value}, which git does not track"
+                if mode != "100755":
+                    offenders.append(f"{value} (tracked {mode}) via {line!r}")
+                continue
+
+            # kind == "glob": check every TRACKED path it matches. Enumerating
+            # the index rather than the filesystem means a sparse or partially
+            # checked-out worktree cannot hide a path the device would chmod.
+            matched = [path for path in modes if _bash_glob_match(value, path)]
+            assert matched, (
+                f"{line!r} chmods {value!r}, which matches no tracked file — "
+                "either the glob is wrong or this test is checking nothing"
+            )
+            offenders += [f"{path} (tracked {modes[path]}) via {line!r}" for path in matched if modes[path] != "100755"]
+
+        assert not offenders, (
+            "update.sh chmods these files but git records them non-executable, so every update on every "
+            "device re-dirties the tree and the next update's 'Uncommitted changes detected' warning "
+            "becomes noise:\n  " + "\n  ".join(offenders) + "\n\nFix with: git update-index --chmod=+x <path>"
+        )
+
+
+class TestBashGlobMatch:
+    """The matcher the guard above depends on. pathlib's Path.glob was wrong in
+    both directions, so the replacement gets its own coverage rather than being
+    trusted."""
+
+    @pytest.mark.parametrize(
+        "pattern,path,expected",
+        [
+            ("scripts/*.sh", "scripts/update.sh", True),
+            ("scripts/*.sh", "scripts/lib/state.sh", False),  # * does not cross /
+            ("scripts/*.sh", "scripts/.hidden.sh", False),  # dotglob is off
+            ("scripts/*.sh", "scripts/tool.py", False),
+            ("scripts/*.sh", "image-gen/x.sh", False),
+            ("scripts/**/*.sh", "scripts/lib/state.sh", True),  # globstar off: ** is one segment
+            ("scripts/**/*.sh", "scripts/update.sh", False),  # ...so this is NOT covered any more
+            ("scripts/.*.sh", "scripts/.hidden.sh", True),  # explicit leading dot does match
+            ("scripts/*.sh", "scripts/wünicode.sh", True),  # non-ASCII is ordinary
+        ],
+    )
+    def test_it_matches_what_bash_would(self, pattern, path, expected):
+        assert _bash_glob_match(pattern, path) is expected
