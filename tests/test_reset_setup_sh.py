@@ -698,14 +698,16 @@ class TestHotspotPasswordResetSemantics:
             "set -u  # NOT -e: reset-setup.sh deliberately omits it\n"
             'poweroff() { echo "STUB_POWEROFF"; }\n'
             'systemctl() { echo "STUB_SYSTEMCTL $*"; }\n'
-            # This repo's terminal branch calls disable_ssh_for_handoff, which
-            # the development repo does not have (it was authored here, in #52/#53).
-            # Without a stub every harness run emitted "command not found" on
-            # stderr — swallowed, because the harness deliberately omits `set -e`
-            # — which both polluted assertion messages and elided this repo's
-            # security gate from every behavioural test. Re-lost when this file
-            # was taken wholesale in the v0.226.0 port; restored with its
-            # executing assertions.
+            # The terminal branch calls disable_ssh_for_handoff. It was authored
+            # here (#52/#53) and back-ported to the development repo by
+            # litclock-dev#657, so BOTH repos have it today — the parity test
+            # below passes against the counterpart, which proves it. What the
+            # development repo never gained is this stub, so its harness has the
+            # same latent gap (filed there). Without the stub every run emitted
+            # "command not found" on stderr — swallowed, because the harness
+            # deliberately omits `set -e` — which elided the security gate from
+            # every behavioural test while they still passed. Re-lost when this
+            # file was taken wholesale in the v0.226.0 port.
             'disable_ssh_for_handoff() { echo "STUB_SSH_GATE"; }\n'
             f"GIFT_MODE={gift_mode}\n"
             f"DO_POWEROFF={do_poweroff}\n"
@@ -733,6 +735,7 @@ class TestHotspotPasswordResetSemantics:
         pw, result, _ = self._run(reset_sh_content, tmp_path, "true", wipe_wifi="false")
         assert result.returncode == 0, result.stderr
         assert "STUB_POWEROFF" in result.stdout, "gift mode must reach poweroff"
+        assert "STUB_SSH_GATE" in result.stdout, "the SSH gate must run at all on this arm"
         assert result.stdout.index("STUB_SSH_GATE") < result.stdout.index("STUB_POWEROFF"), (
             "the SSH gate must run before poweroff"
         )
@@ -753,6 +756,7 @@ class TestHotspotPasswordResetSemantics:
         pw, result, state = self._run(reset_sh_content, tmp_path, "false", do_poweroff="true", wipe_wifi="true")
         assert result.returncode == 0, result.stderr
         assert "STUB_POWEROFF" in result.stdout, "the --poweroff arm must reach poweroff"
+        assert "STUB_SSH_GATE" in result.stdout, "the SSH gate must run at all on this arm"
         assert result.stdout.index("STUB_SSH_GATE") < result.stdout.index("STUB_POWEROFF"), (
             "the SSH gate must run before poweroff on this arm too (litclock-dev#636)"
         )
@@ -812,14 +816,19 @@ class TestHotspotPasswordResetSemantics:
             "set -u\n"
             'poweroff() { echo "STUB_POWEROFF"; }\n'
             'systemctl() { echo "STUB_SYSTEMCTL $*"; }\n'
-            # This repo's terminal branch calls disable_ssh_for_handoff, which
-            # the development repo does not have (it was authored here, in #52/#53).
-            # Without a stub every harness run emitted "command not found" on
-            # stderr — swallowed, because the harness deliberately omits `set -e`
-            # — which both polluted assertion messages and elided this repo's
-            # security gate from every behavioural test. Re-lost when this file
-            # was taken wholesale in the v0.226.0 port; restored with its
-            # executing assertions.
+            # The terminal branch calls disable_ssh_for_handoff. It was authored
+            # here (#52/#53) and back-ported to the development repo by
+            # litclock-dev#657, so BOTH repos have it today — the parity test
+            # below passes against the counterpart, which proves it. What the
+            # development repo never gained is this stub, so its harness has the
+            # same latent gap (filed there). Without the stub every run emitted
+            # "command not found" on stderr — swallowed, because the harness
+            # deliberately omits `set -e` — which elided the security gate from
+            # every behavioural test while they still passed. Re-lost when this
+            # file was taken wholesale in the v0.226.0 port.
+            # (Defensive here: this arm runs the parser with no flags, so it falls
+            # to the "Reboot to enter setup mode" branch and never reaches the
+            # gate. Kept so the harness stays uniform if that ever changes.)
             'disable_ssh_for_handoff() { echo "STUB_SSH_GATE"; }\n'
             "AUTO_YES=false\nDO_REBOOT=false\nDO_POWEROFF=false\n"
             "STRICT_ENV_WIPE=false\nGIFT_MODE=false\nGIFT_MESSAGE_FILE=''\nENV_WIPE_FAILED=false\n"
@@ -1167,14 +1176,16 @@ class TestHotspotPasswordResetSemantics:
             "set -u\n"
             'poweroff() { echo "STUB_POWEROFF"; }\n'
             'systemctl() { echo "STUB_SYSTEMCTL $*"; }\n'
-            # This repo's terminal branch calls disable_ssh_for_handoff, which
-            # the development repo does not have (it was authored here, in #52/#53).
-            # Without a stub every harness run emitted "command not found" on
-            # stderr — swallowed, because the harness deliberately omits `set -e`
-            # — which both polluted assertion messages and elided this repo's
-            # security gate from every behavioural test. Re-lost when this file
-            # was taken wholesale in the v0.226.0 port; restored with its
-            # executing assertions.
+            # The terminal branch calls disable_ssh_for_handoff. It was authored
+            # here (#52/#53) and back-ported to the development repo by
+            # litclock-dev#657, so BOTH repos have it today — the parity test
+            # below passes against the counterpart, which proves it. What the
+            # development repo never gained is this stub, so its harness has the
+            # same latent gap (filed there). Without the stub every run emitted
+            # "command not found" on stderr — swallowed, because the harness
+            # deliberately omits `set -e` — which elided the security gate from
+            # every behavioural test while they still passed. Re-lost when this
+            # file was taken wholesale in the v0.226.0 port.
             'disable_ssh_for_handoff() { echo "STUB_SSH_GATE"; }\n'
             f"GIFT_MODE={gift}\nDO_POWEROFF={poweroff}\nDO_REBOOT=false\nWIPE_WIFI={wipe}\n"
             "ENV_WIPE_FAILED=false\n"
@@ -1576,10 +1587,14 @@ def test_the_reset_failed_marker_clear_verifies_itself(tmp_path):
 # (/review litclock-dev#711). Non-absolute overrides are rejected for the same
 # reason. LITCLOCK_PUBLIC_CHECKOUT is still read so a shared CI/dev config
 # setting either name keeps working.
+# Deliberately NOT falling back to LITCLOCK_PUBLIC_CHECKOUT: in this repository
+# that variable's documented value is this repository's own path, so honouring it
+# resolves the counterpart to ourselves. The self-comparison guard below would
+# then turn the check into a silent skip on precisely the machine that has both
+# clones — lost coverage in a green suite, which is the failure this guard exists
+# to prevent.
 _COUNTERPART_CHECKOUT = (
-    os.environ.get("LITCLOCK_COUNTERPART_CHECKOUT")
-    or os.environ.get("LITCLOCK_PUBLIC_CHECKOUT")
-    or "/home/ankush/litclock-archive"
+    os.environ.get("LITCLOCK_COUNTERPART_CHECKOUT") or "/home/ankush/litclock-archive"
 )
 if not os.path.isabs(_COUNTERPART_CHECKOUT):
     raise ValueError(

@@ -14,7 +14,13 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/ruff-action@v3
         with:
-          args: check src/ image-gen/ scripts/
+          # Explicit whole-repo scope. astral-sh/ruff-action appends the
+          # repository root to `args` anyway, so a path list here only
+          # LOOKED narrower than what ran — and CLAUDE.md's pre-commit
+          # command was written to match the list, under-covering CI
+          # (tools/ was never linted locally). Say what we mean instead
+          # of depending on a third-party action's undocumented default.
+          args: check .
 
   shellcheck:
     name: Shell lint (shellcheck)
