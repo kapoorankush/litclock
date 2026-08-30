@@ -82,8 +82,18 @@ jobs:
         # sprintf error strings (:205, :241) and one print (:246). Neither is
         # passed to any GD drawing call, so no rendered pixel can move and the
         # layout oracle below still describes this generator. Naming-only.
+        #
+        # The hash is REPO-LOCAL and must not be copied across the port.
+        # This repository's copy of the generator carries qualified issue
+        # references (litclock-dev#584) where the development repository's
+        # carries bare ones (dev#584), so the two files are identical in
+        # every executed line and can never share a sha1. Porting the
+        # development pin here fails this gate on arrival with a diff that
+        # touches no code — which is exactly what happened on the v0.226.0
+        # port. Re-pin to THIS repository's hash when the generator really
+        # changes, after re-verifying the oracle.
         run: |
-          want=7a7a580387a196e601a4599b07a32111a14e3b13
+          want=8901da430fa751e74e55c93b93eb3ea310a4066c
           got=$(sha1sum image-gen/quote_to_image.php | cut -d' ' -f1)
           if [ "$got" != "$want" ]; then
             echo "::error::image-gen/quote_to_image.php changed (sha1 $got != pinned $want)."

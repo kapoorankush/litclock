@@ -4,7 +4,12 @@
 
 Before every commit, run these in order:
 
-1. **Lint**: `ruff check src/ image-gen/ tests/ scripts/` (matches CI — full rule set, not just `--select F`)
+1. **Lint**: `ruff check .` — lint the WHOLE repo, not a path list. CI's
+   `astral-sh/ruff-action` appends the repository root to whatever `args`
+   names, so it effectively lints everything; a path list here silently
+   skips `tools/` and any future top-level directory, and local green then
+   means nothing. That gap shipped a red CI on the v0.226.0 port
+   (`tools/render_invariants.py` E501). Full rule set, not just `--select F`.
 2. **Shell lint** (when the commit touches any `.sh`): `find scripts pi-gen docs/manual -name '*.sh' -type f -print0 | xargs -0 shellcheck --severity=warning` — the exact CI invocation. CI runs this on every push; a local green that skipped it shipped six red Lint runs on 2026-08-21 (orphaned SC2034 constants from litclock-dev#647's branch cleanup).
 3. **Tests**: `python3 -m pytest tests/ --ignore=tests/test_eink_display.py -q`
 4. **JS tests** (when `node_modules/` is present): `npm run test:js` — covers `src/control_server/static/js/*.js` via vitest + jsdom (litclock-dev#338). Dev/CI only; skip if you haven't run `npm install`. Never required on the Pi.
@@ -27,7 +32,7 @@ If the commit touches `image-gen/litclock_annotated.csv`, ship it with `python3 
 ## Linting
 
 - Linter: ruff (configured in `pyproject.toml`)
-- Check: `ruff check src/ image-gen/ tests/ scripts/` (matches CI)
+- Check: `ruff check .` (whole repo — CI's ruff-action appends the repo root, so a path list under-covers; see the pre-commit checklist)
 - Max line length: 120
 
 ## First-boot QA checklist
