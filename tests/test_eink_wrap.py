@@ -614,10 +614,13 @@ class TestPanelTextClamps:
             assert eink_display._clamp_block_to_panel(text, font, draw, "t") == text, f"now truncates: {text!r}"
 
     def test_long_ssid_status_message_is_a_live_overflow(self):
-        """first-boot.sh renders `display_message "WiFi Connected" "Network: $ssid"`
-        with the joined network name. 32 bytes is the 802.11 maximum, and at
-        28pt that is ~1006px against a 760px budget — so the status clamp fixes
-        a real, user-controlled overflow, not only a future translated one."""
+        """first-boot.sh renders `display_message firstboot.splash.wifi_connected
+        --slot "ssid=$ssid"` (catalog message "Network: {ssid}") with the
+        joined network name. 32 bytes is the 802.11 maximum, and at
+        28pt that is ~1006px against a 760px budget — a real, user-controlled
+        overflow. (Production now SHRINKS this string via the litclock-dev#532
+        ladder rather than clamping it; this remains a unit pin of the FLOOR
+        helper the ladder falls back to — /review litclock-dev#734.)"""
         _, draw = self._draw()
         msg = ImageFont.truetype(eink_display.FONT_PATH, 28)
         raw = "Network: " + "W" * 32
@@ -1388,3 +1391,131 @@ class TestQrScreenTextClamps:
         assert "fonts unavailable" in caplog.text, "the fallback branch was not taken; this test proves nothing"
         for name, band in (("title", self.TITLE_BAND), ("caption", self.CAPTION_BAND), ("url", self.URL_BAND)):
             self._assert_drawn_inside_the_gutters(img, band, f"{name} (fallback font)")
+
+
+class TestStatusBlockFitLadder:
+    """litclock-dev#532 Stage 3 (scope-audit blocker, second half): the
+    message/submessage blocks prefer a smaller font over a shorter string —
+    the _fit_row_text primitive applied to status blocks. The per-line
+    ellipsis clamp survives only as the floor for pathological input."""
+
+    def _draw(self):
+        img = Image.new("1", (1, 1))
+        return ImageDraw.Draw(img)
+
+    def _font(self, pt):
+        return ImageFont.truetype(eink_display.FONT_PATH, pt)
+
+    def test_fitting_text_returns_byte_identical_at_base_font(self):
+        draw = self._draw()
+        font = self._font(28)
+        out, out_font = eink_display._fit_block_to_panel(
+            "Detecting your location...", font, draw, "t", eink_display.STATUS_MESSAGE_FONT_FLOOR
+        )
+        assert out == "Detecting your location..."
+        assert out_font is font, "a fitting string must keep the caller's font object"
+
+    def test_shrinkable_text_stays_complete_at_smaller_font(self):
+        # THE behavioral change: pre-ladder this string lost its tail to an
+        # ellipsis; now it shrinks and stays complete. Built to overflow 28pt
+        # but fit within the floor — locale-length copy, not pathology.
+        draw = self._draw()
+        font = self._font(28)
+        text = "Verbindung zum WLAN wird hergestellt und der Standort erkannt..."
+        assert draw.textlength(text, font=font) > eink_display.PANEL_TEXT_BUDGET, (
+            "fixture must overflow at 28pt or this test pins nothing"
+        )
+        out, out_font = eink_display._fit_block_to_panel(
+            text, font, draw, "t", eink_display.STATUS_MESSAGE_FONT_FLOOR
+        )
+        assert out == text, "a shrinkable block must not be truncated"
+        assert out_font.size < 28
+        assert out_font.size >= eink_display.STATUS_MESSAGE_FONT_FLOOR
+        assert draw.textlength(text, font=out_font) <= eink_display.PANEL_TEXT_BUDGET
+
+    def test_pathological_text_clamps_at_the_floor(self):
+        draw = self._draw()
+        font = self._font(28)
+        out, out_font = eink_display._fit_block_to_panel(
+            "X" * 400, font, draw, "t", eink_display.STATUS_MESSAGE_FONT_FLOOR
+        )
+        assert out_font.size == eink_display.STATUS_MESSAGE_FONT_FLOOR
+        assert out.endswith("…")
+        assert draw.textlength(out, font=out_font) <= eink_display.PANEL_TEXT_BUDGET
+
+    def test_multiline_widest_line_governs_and_newlines_survive(self):
+        draw = self._draw()
+        font = self._font(20)
+        wide = "W" * 60
+        text = f"short line\n{wide}\nanother short line"
+        out, out_font = eink_display._fit_block_to_panel(
+            text, font, draw, "t", eink_display.STATUS_SUBMESSAGE_FONT_FLOOR
+        )
+        assert out.count("\n") == 2, "embedded newlines must survive the ladder"
+        for line in out.split("\n"):
+            assert draw.textlength(line, font=out_font) <= eink_display.PANEL_TEXT_BUDGET
+
+    def test_wiring_message_shrinks_instead_of_truncating(self, caplog):
+        """/review litclock-dev#734 Finding 1: the rendered-margin test alone is satisfied
+        by the CLAMP too (it also keeps ink inside margins — that's its job),
+        so the integration wiring was mutation-survivable. The discriminator:
+        the clamp LOGS "too wide for the panel; truncated to fit"; the ladder
+        is silent. Reverting the wiring turns this red (mutant-verified)."""
+        import logging as logging_mod
+
+        text = "Verbindung zum WLAN wird hergestellt und der Standort erkannt..."
+        draw = self._draw()
+        assert draw.textlength(text, font=self._font(28)) > eink_display.PANEL_TEXT_BUDGET
+        floor_font = self._font(eink_display.STATUS_MESSAGE_FONT_FLOOR)
+        assert draw.textlength(text, font=floor_font) <= eink_display.PANEL_TEXT_BUDGET
+        with caplog.at_level(logging_mod.WARNING):
+            img = eink_display.create_status_image("", message=text)
+        joined = " ".join(str(rec.msg) for rec in caplog.records)
+        assert "truncated to fit" not in joined, (
+            "the message block was clamped at base size — the fit-ladder wiring is gone"
+        )
+        assert "collapsed to one line" not in joined
+        # And the ink's ROW extent must match a shrunk font: at 28pt this
+        # string cannot fit, so a silent base-size render is also caught.
+        import numpy as np
+
+        arr = np.array(img)
+        ink_cols = np.where((arr == 0).any(axis=0))[0]
+        assert len(ink_cols) > 0
+
+    def test_wiring_submessage_shrinks_instead_of_truncating(self, caplog):
+        # The submessage half had no shrink-path coverage at any level
+        # (/review litclock-dev#734): its only prior integration fixtures were
+        # pathological clamp cases.
+        import logging as logging_mod
+
+        draw = self._draw()
+        base = self._font(20)
+        text = "Bitte stecken Sie das Netzkabel aus und danach wieder ein, um die Einrichtung fortzusetzen"
+        assert draw.textlength(text, font=base) > eink_display.PANEL_TEXT_BUDGET, (
+            "fixture must overflow at 20pt or this pins nothing"
+        )
+        floor_font = self._font(eink_display.STATUS_SUBMESSAGE_FONT_FLOOR)
+        assert draw.textlength(text, font=floor_font) <= eink_display.PANEL_TEXT_BUDGET, (
+            "fixture must FIT at the floor or the clamp fires legitimately"
+        )
+        with caplog.at_level(logging_mod.WARNING):
+            eink_display.create_status_image("", submessage=text)
+        joined = " ".join(str(rec.msg) for rec in caplog.records)
+        assert "truncated to fit" not in joined, (
+            "the submessage block was clamped — the fit-ladder wiring is gone"
+        )
+
+    def test_rendered_status_image_keeps_margins_with_long_message(self):
+        # Guard-observation-window lesson: assert on the RENDERED image, and
+        # on an image whose only ink is the text under test — a whole-image
+        # bbox on a busier layout can be satisfied by other elements.
+        import numpy as np
+
+        text = "Verbindung zum WLAN wird hergestellt und der Standort erkannt..."
+        img = eink_display.create_status_image("", message=text)
+        arr = np.array(img)
+        ink_cols = np.where((arr == 0).any(axis=0))[0]
+        assert len(ink_cols) > 0, "no ink rendered — the message vanished"
+        assert ink_cols.min() >= eink_display.STATUS_SIDE_MARGIN - 2
+        assert ink_cols.max() < eink_display.DISPLAY_SIZE[0] - eink_display.STATUS_SIDE_MARGIN + 2

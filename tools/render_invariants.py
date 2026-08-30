@@ -26,10 +26,10 @@ Two subcommands:
 
 ``probe``
     Emit the Stage-0 parity fingerprint (``row|fs|breaks`` lines + #inputs
-    header) from the PRODUCTION module, byte-compatible with the GD probe
-    kept in the development repo (``gd_layout_probe.php`` output and
-    ``compare_layout.py --diff``). This is how the port is proven to make
-    the same layout decisions as GD: run the PHP probe, run this, diff.
+    header) from the PRODUCTION module, byte-compatible with
+    spikes/531-runtime-render/gd_layout_probe.php output and
+    compare_layout.py --diff. This is how the port is proven to make the
+    same layout decisions as GD: run the PHP probe, run this, diff.
 
 Ink threshold: any pixel < 255 counts as ink (anti-aliased fringes
 included) — I3/I4 are strict by design.
@@ -165,9 +165,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         for o, t, edge in midword[:15]:
             print(f"  row {o} ({t}): {edge}")
 
-    # WARN tier (litclock-dev#539): fitted-fs floors (canonical values in
-    # quote_renderer). Below the hard floor the panel strains legibility at
-    # shelf distance. Non-gating for the existing
+    # WARN tier (litclock-dev#539): fitted-fs floors (canonical values in quote_renderer). Below the hard floor the panel
+    # strains legibility at shelf distance. Non-gating for the existing
     # corpus (the 126-row backlog is a review queue, not an auto-fail);
     # per-EDIT enforcement lives in corpus_edit.py. Tighten to a gate once
     # the backlog is worked off.

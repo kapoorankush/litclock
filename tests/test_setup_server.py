@@ -3,6 +3,7 @@
 import pathlib
 import re
 import subprocess
+import sys
 
 import pytest
 
@@ -731,7 +732,7 @@ class TestSetupHtmlPivotShape:
 class TestWifiScanCaching:
     def setup_method(self):
         # Reset cache state before each test
-        setup_server._WIFI_SCAN_CACHE = None
+        setup_server._WIFI_SCAN_NETWORKS = None
         setup_server._WIFI_SCAN_TIME = 0
         setup_server._WIFI_SCAN_SSIDS = frozenset()
 
@@ -793,7 +794,7 @@ class TestWifiScanCaching:
         result, was_empty = setup_server._wifi_network_options()
         assert "No networks found" in result
         assert was_empty is True
-        assert setup_server._WIFI_SCAN_CACHE is None
+        assert setup_server._WIFI_SCAN_NETWORKS is None
 
     def test_page_build_empty_scan_preserves_scan_evidence(self, monkeypatch):
         """The item-7 decision, pinned at the SECOND scan site (/review on
@@ -830,7 +831,7 @@ class TestWifiScanCaching:
 
         result, was_empty = setup_server._wifi_network_options()
         assert was_empty is True
-        assert setup_server._WIFI_SCAN_CACHE is None
+        assert setup_server._WIFI_SCAN_NETWORKS is None
         assert setup_server._WIFI_SCAN_SSIDS == frozenset({"homewifi"})
 
     def test_concurrent_page_builds_scan_once_under_the_lock(self, monkeypatch):
@@ -952,12 +953,12 @@ class TestWifiScanCaching:
         assert "No networks found" in result
         assert "LitClock-Setup" not in result
         assert was_empty is True
-        assert setup_server._WIFI_SCAN_CACHE is None
+        assert setup_server._WIFI_SCAN_NETWORKS is None
 
     def test_scan_wifi_endpoint_filters_own_hotspot(self, monkeypatch):
         """The /scan-wifi handler must filter the hotspot from BOTH the JSON it
         returns (the client rebuilds the dropdown from it on Refresh) AND the
-        shared _WIFI_SCAN_CACHE it populates (feeds the server-rendered
+        shared _WIFI_SCAN_NETWORKS it populates (feeds the server-rendered
         dropdown). Regression: filtering only _wifi_network_options left
         /scan-wifi as a bypass that re-exposed the hotspot via Refresh or a
         warm cache."""
@@ -985,9 +986,10 @@ class TestWifiScanCaching:
         assert "LitClock-Setup" not in ssids
         assert "HomeWiFi" in ssids
         # Cache feeding the server-rendered dropdown must also exclude it.
-        assert setup_server._WIFI_SCAN_CACHE is not None
-        assert "LitClock-Setup" not in setup_server._WIFI_SCAN_CACHE
-        assert "HomeWiFi" in setup_server._WIFI_SCAN_CACHE
+        assert setup_server._WIFI_SCAN_NETWORKS is not None
+        cached_ssids = [n["ssid"] for n in setup_server._WIFI_SCAN_NETWORKS]
+        assert "LitClock-Setup" not in cached_ssids
+        assert "HomeWiFi" in cached_ssids
 
     def test_scan_wifi_endpoint_updates_scan_evidence(self, monkeypatch):
         """litclock-dev#605 item 7: _WIFI_SCAN_SSIDS was only ever asserted
@@ -1037,7 +1039,7 @@ class TestWifiScanCaching:
         assert sent["networks"] == []
         assert setup_server._WIFI_SCAN_SSIDS == frozenset({"homewifi"})
         # Empty results are also never cached — the next call retries.
-        assert setup_server._WIFI_SCAN_CACHE is None
+        assert setup_server._WIFI_SCAN_NETWORKS is None
 
     def test_non_empty_scan_unions_into_evidence_not_replaces(self, monkeypatch):
         """litclock-dev#615: scan evidence accumulates (UNION), it does not
@@ -1070,7 +1072,7 @@ class TestWifiScanCaching:
         import sys
         from unittest.mock import MagicMock
 
-        setup_server._WIFI_SCAN_CACHE = None
+        setup_server._WIFI_SCAN_NETWORKS = None
         setup_server._WIFI_SCAN_TIME = 0
         setup_server._WIFI_SCAN_SSIDS = frozenset({"homewifi"})
         mock_wifi = MagicMock()
@@ -1088,14 +1090,14 @@ class TestWifiScanCaching:
 class TestHtmlError:
     def test_retry_link_present(self):
         """Error page contains a retry link that works without JS."""
-        rendered = setup_server.HTML_ERROR.format(error="Test error")
+        rendered = setup_server._error_page("Test error")
         assert 'href="/"' in rendered
         assert 'id="retry-link"' in rendered
         assert "Try again" in rendered
 
     def test_loading_feedback_script(self):
         """Error page includes JS for loading feedback (progressive enhancement)."""
-        rendered = setup_server.HTML_ERROR.format(error="Test error")
+        rendered = setup_server._error_page("Test error")
         assert "Loading..." in rendered
         assert "addEventListener" in rendered
 
@@ -1213,7 +1215,7 @@ class TestWifiErrorBanner:
             wifi_provision.WifiFailure("Incorrect WiFi password", wifi_provision.WIFI_FAIL_BAD_PASSWORD),
         )
         html = setup_server._build_setup_html()
-        banner_start = html.index("Couldn&rsquo;t join your WiFi")
+        banner_start = html.index("Couldn’t join your WiFi")
         banner_end = html.index("</div>", banner_start)
         banner = html[banner_start:banner_end].lower()
         assert "wifi password" in banner
@@ -1245,7 +1247,7 @@ class TestSetupPagePickerCopy:
     def _clean_wifi_scan_state(self, monkeypatch):
         """Reset module-level WiFi scan state + stub the scanner. Without
         this, `_wifi_network_options()` (called by `_build_setup_html` in
-        provisioning mode) reads the shared `_WIFI_SCAN_CACHE` global —
+        provisioning mode) reads the shared `_WIFI_SCAN_NETWORKS` global —
         which earlier tests may have populated with stale options — and
         on a cache miss falls through to the real `wifi_provision.
         scan_wifi_networks()`, which calls nmcli (slow / flaky on a dev
@@ -1253,7 +1255,7 @@ class TestSetupPagePickerCopy:
         import sys
         from unittest.mock import MagicMock
 
-        monkeypatch.setattr(setup_server, "_WIFI_SCAN_CACHE", None)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_NETWORKS", None)
         monkeypatch.setattr(setup_server, "_WIFI_SCAN_TIME", 0)
         mock_wifi = MagicMock()
         mock_wifi.scan_wifi_networks = lambda: [
@@ -1294,23 +1296,6 @@ class TestSetupPagePickerCopy:
         assert "Connecting to WiFi" in html
         # And the new "joining" register subtitle is present.
         assert "Joining your WiFi" in html
-
-    def test_subtitle_drops_wifi_framing_in_pre_connected_path(self, monkeypatch):
-        """The pre-connected path (boot with WiFi already configured via
-        ethernet/wpa_supplicant) renders the same page with no WiFi section
-        — just a Complete Setup button. The subtitle must drop the WiFi
-        framing here, otherwise it reads wrong ("Connect your clock to
-        WiFi" with no WiFi picker visible)."""
-        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", False)
-        monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
-        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", None)
-        html = setup_server._build_setup_html()
-        assert "phone normally uses" not in html.lower()
-        # Pin the FULL pre-connected subtitle string. The previous
-        # `"literary clock" in html.lower()` was too loose — that
-        # substring also appears in the <title> and <h1>, so the
-        # assertion would pass even if the subtitle vanished entirely.
-        assert "Finish setting up your literary clock." in html
 
     def test_picker_section_explains_which_wifi(self, monkeypatch):
         """An explainer next to the dropdown must tell the user which
@@ -1607,8 +1592,10 @@ class TestCaptivePortalProbeRouting:
         assert "x" * 150 in out  # UA no longer truncated at 80 chars
 
     def test_probe_diagnostic_silent_outside_provisioning(self, capsys, monkeypatch):
-        """The diagnostic is provisioning-only — normal-mode HTTPS setup must
-        not spam stdout (and must not touch self.headers when not logging)."""
+        """The diagnostic is provisioning-only. (Defense-in-depth pin: since
+        litclock-dev#715 no production server runs with the flag unset, but
+        the gate must not spam stdout — or touch self.headers — if one ever
+        does.)"""
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", False)
         handler = _make_handler()
         handler.send_html = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
@@ -1763,9 +1750,10 @@ class TestDoGetCaptivePortalDispatch:
         assert 302 not in [c.args[0] for c in handler.send_response.call_args_list]
 
     def test_cna_path_404_in_normal_mode(self, monkeypatch):
-        """/cna is provisioning-only: post-setup there is no hotspot and
-        the bridge would be a dead end, so normal mode 404s it like any
-        other unknown path."""
+        """/cna is provisioning-only: outside provisioning there is no
+        hotspot and the bridge would be a dead end, so the flag-off gate
+        404s it like any other unknown path (defense-in-depth pin,
+        litclock-dev#715)."""
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", False)
         handler = _make_do_get_handler("/cna", "192.168.1.50")
         handler.do_GET()
@@ -1787,8 +1775,10 @@ class TestDoGetCaptivePortalDispatch:
         assert headers["Location"] == setup_server.CNA_URL
 
     def test_provisioning_mode_off_skips_probe_dispatch(self, monkeypatch):
-        """Normal (post-setup) HTTPS server mode must never enter probe
-        dispatch. Cross-verifying the PROVISIONING_MODE guard."""
+        """Defense-in-depth gate pin: with the flag unset, probe dispatch
+        must not fire. No production server runs with PROVISIONING_MODE
+        False since litclock-dev#715 (no-flag mode exits 1), but the guard
+        stays and this pins it."""
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", False)
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", None)
@@ -1796,7 +1786,7 @@ class TestDoGetCaptivePortalDispatch:
         handler.do_GET()
         handler.send_html.assert_called_once()
         sent = handler.send_html.call_args[0][0]
-        # Normal mode serves the setup form; bridge must NOT appear
+        # The bridge must NOT appear when the gate is off
         assert "Open Setup" not in sent, "normal mode must not serve the bridge even to probe hosts"
 
 
@@ -1938,8 +1928,9 @@ class TestScheduleSelfTerminate:
     instead of each carrying its own bare ``os.kill`` call.
     """
 
-    def test_delay_zero_calls_os_kill_synchronously(self, monkeypatch):
-        """delay=0 path signals from the calling thread — no new thread spawn.
+    def test_signals_synchronously_from_calling_thread(self, monkeypatch):
+        """Signals from the calling thread — no new thread spawn (the
+        delay>0 daemon arm was removed with its only caller, litclock-dev#715).
 
         Use the Thread mock pattern (codex C6) rather than
         threading.active_count(): the suite has other daemon threads in
@@ -1953,54 +1944,13 @@ class TestScheduleSelfTerminate:
         monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
 
         with patch("setup_server.threading.Thread") as mock_thread:
-            setup_server._schedule_self_terminate(delay=0.0)
+            setup_server._schedule_self_terminate()
             mock_thread.assert_not_called()
 
         assert kill_calls == [(os.getpid(), signal_mod.SIGTERM)]
 
-    def test_delay_nonzero_spawns_daemon_thread(self, monkeypatch):
-        """delay>0 path spawns a daemon thread and returns immediately."""
-        from unittest.mock import patch
-
-        monkeypatch.setattr("os.kill", lambda pid, sig: None)
-
-        with patch("setup_server.threading.Thread") as mock_thread:
-            setup_server._schedule_self_terminate(delay=0.1)
-            mock_thread.assert_called_once()
-            _, kwargs = mock_thread.call_args
-            assert kwargs.get("daemon") is True
-            # Thread.start() was called on the returned instance
-            mock_thread.return_value.start.assert_called_once()
-
-    def test_delay_nonzero_calls_os_kill_after_sleep(self, monkeypatch):
-        """End-to-end: delay path eventually invokes os.kill with the right args."""
-        import os
-        import signal as signal_mod
-        import threading
-        import time
-
-        kill_event = threading.Event()
-        kill_calls = []
-
-        def mock_kill(pid, sig):
-            kill_calls.append((pid, sig))
-            kill_event.set()
-
-        monkeypatch.setattr("os.kill", mock_kill)
-
-        setup_server._schedule_self_terminate(delay=0.05)
-
-        # Helper returned immediately; the sleep happens in the daemon thread.
-        assert not kill_event.is_set(), "os.kill should not have fired synchronously"
-        # Wait for the daemon thread's sleep to complete (with slack for CI jitter).
-        assert kill_event.wait(timeout=2.0), "os.kill never fired after delay"
-        # Sanity: helper returns before the sleep completes.
-        # (Already proved by the sequence above — the assertion is the wait timeout.)
-        del time  # silence unused-import lint
-        assert kill_calls == [(os.getpid(), signal_mod.SIGTERM)]
-
     def test_signals_current_pid_and_sigterm(self, monkeypatch):
-        """Regardless of delay path, signal target is (getpid(), SIGTERM)."""
+        """Signal target is (getpid(), SIGTERM)."""
         import os
         import signal as signal_mod
         import threading
@@ -2014,14 +1964,9 @@ class TestScheduleSelfTerminate:
 
         monkeypatch.setattr("os.kill", mock_kill)
 
-        # delay=0 path
-        setup_server._schedule_self_terminate(delay=0.0)
+        setup_server._schedule_self_terminate()
+        assert kill_event.is_set()
         assert kill_calls[-1] == (os.getpid(), signal_mod.SIGTERM)
-
-        # delay>0 path
-        kill_event.clear()
-        setup_server._schedule_self_terminate(delay=0.01)
-        assert kill_event.wait(timeout=2.0)
         assert kill_calls[-1] == (os.getpid(), signal_mod.SIGTERM)
 
 
@@ -2181,7 +2126,7 @@ class TestWifiPickerPlaceholderAndSort:
     def test_placeholder_leads_the_list_and_cannot_be_submitted(self):
         result = setup_server._build_wifi_options([{"ssid": "HomeWiFi", "signal": 80, "security": "WPA2"}])
         first = result.split("\n")[0].strip()
-        assert first == f'<option value="" selected disabled>{setup_server.WIFI_PLACEHOLDER_TEXT}</option>'
+        assert first == f'<option value="" selected disabled>{setup_server._wifi_placeholder_text()}</option>'
         # `disabled` is what stops it being chosen; `value=""` is what makes
         # `required` reject it. Both, or the guard has a hole.
         assert "selected" in first and "disabled" in first
@@ -2257,7 +2202,7 @@ class TestWifiPickerPlaceholderAndSort:
         import sys
         from unittest.mock import MagicMock
 
-        monkeypatch.setattr(setup_server, "_WIFI_SCAN_CACHE", None)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_NETWORKS", None)
         monkeypatch.setattr(setup_server, "_WIFI_SCAN_TIME", 0)
         mock_wifi = MagicMock()
         mock_wifi.scan_wifi_networks = lambda: []
@@ -2265,9 +2210,9 @@ class TestWifiPickerPlaceholderAndSort:
 
         result, was_empty = setup_server._wifi_network_options()
         assert setup_server.MANUAL_SSID_VALUE in result
-        assert setup_server.WIFI_PLACEHOLDER_EMPTY_TEXT in result
+        assert setup_server._wifi_placeholder_empty_text() in result
         assert was_empty is True
-        assert setup_server._WIFI_SCAN_CACHE is None
+        assert setup_server._WIFI_SCAN_NETWORKS is None
 
     def test_ssid_is_escaped_in_both_value_and_label(self):
         """An SSID is attacker-chosen text — any neighbour can name their AP —
@@ -2294,7 +2239,7 @@ class TestWifiPickerMarkupAndScript:
         import sys
         from unittest.mock import MagicMock
 
-        monkeypatch.setattr(setup_server, "_WIFI_SCAN_CACHE", None)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_NETWORKS", None)
         monkeypatch.setattr(setup_server, "_WIFI_SCAN_TIME", 0)
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
@@ -2311,6 +2256,59 @@ class TestWifiPickerMarkupAndScript:
         html = setup_server._build_setup_html()
         select = next(line for line in html.split("\n") if 'name="wifi_ssid"' in line)
         assert "required" in select
+
+    def test_nothing_autofocuses_ahead_of_the_network_picker(self):
+        """litclock-dev#671: focus used to land on the password field, which is
+        step 2 of a form whose step 1 is the picker. On a phone that opens the
+        keyboard over the lower half of the page before the user has touched
+        the control the page leads with, so they type a password, hit Submit,
+        and get a validation bubble anchored to a <select> that may now be
+        behind the keyboard. `required` (litclock-dev#554) means no wrong-network
+        submit gets through, so this is friction rather than a correctness bug --
+        but it steers the same audience litclock-dev#554 and litclock-dev#588
+        were written for into the same wrong first move.
+
+        Asserted across EVERY form control, not just the password input: moving
+        `autofocus` to the <select> is NOT the fix. On mobile that can spring
+        the native picker wheel open on load, which is louder than what it
+        replaces, and captive-portal WebViews differ again. If we ever want it
+        there it needs the same two-phone check as the rest of this flow, and
+        this test failing is the prompt to go get one.
+
+        Scoped to the control tags rather than a bare `"autofocus" not in html`
+        (/review). The page embeds its own CSS and JS, so a substring check over
+        the whole document would fail on a comment, a JS string or a
+        `data-no-autofocus` attribute -- failing for a reason that has nothing
+        to do with where the keyboard opens.
+        """
+        html = setup_server._build_setup_html()
+        controls = re.findall(r"<(?:input|select|textarea)\b[^>]*>", html, re.I)
+        # Guard the guard: if the extraction stopped matching, an empty list
+        # would satisfy the assertion below without inspecting anything.
+        assert any('name="wifi_ssid"' in c for c in controls), (
+            f"control extraction missed the network picker; got {len(controls)} tags"
+        )
+        assert any('id="wifi-password"' in c for c in controls), (
+            f"control extraction missed the password input; got {len(controls)} tags"
+        )
+        offenders = [c for c in controls if re.search(r"\bautofocus\b", c, re.I)]
+        assert not offenders, (
+            "no setup-form control may autofocus -- the keyboard opens over the "
+            f"form before the user has picked a network. Offending tags: {offenders}"
+        )
+
+    def test_the_password_field_is_never_focused_programmatically(self):
+        """The sibling half of litclock-dev#671. Dropping the attribute is
+        pointless if a script grabs the same field on load. The page's only
+        `.focus()` is on the manual-SSID input inside `onSsidChange()`, which
+        runs when the user picks "My network isn't listed" -- user-initiated,
+        after the picker, and correct.
+        """
+        html = setup_server._build_setup_html()
+        assert not re.search(r"wifi-password['\"]\s*\)?\s*(?:\.\w+)*\.focus\s*\(", html), (
+            "something focuses the WiFi password field from script; that "
+            "reintroduces litclock-dev#671 with the attribute removed"
+        )
 
     def test_manual_input_is_in_the_dom_not_js_generated(self):
         """<details>, not a JS-revealed field — it has to open with
@@ -2371,7 +2369,7 @@ class TestWifiPickerReviewHardening:
         import sys
         from unittest.mock import MagicMock
 
-        monkeypatch.setattr(setup_server, "_WIFI_SCAN_CACHE", None)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_NETWORKS", None)
         monkeypatch.setattr(setup_server, "_WIFI_SCAN_TIME", 0)
         monkeypatch.setattr(setup_server, "_WIFI_SCAN_SSIDS", frozenset())
         monkeypatch.setattr(setup_server, "WIFI_LAST_MANUAL_SSID", "")
@@ -2468,8 +2466,8 @@ class TestWifiPickerReviewHardening:
         html = setup_server._build_setup_html()
         # Three HTML surfaces (option label, <summary>, the help copy that
         # quotes it) all escaped, plus the JS literal via json.dumps.
-        assert html.count(html_mod.escape(setup_server.MANUAL_SSID_TEXT)) >= 3
-        assert f"opt.textContent = {json.dumps(setup_server.MANUAL_SSID_TEXT)};" in html
+        assert html.count(html_mod.escape(setup_server._manual_ssid_text())) >= 3
+        assert f"opt.textContent = {json.dumps(setup_server._manual_ssid_text())};" in html
 
     # ── Retry render ──
 
@@ -2506,7 +2504,7 @@ class TestWifiPickerReviewHardening:
         mock_wifi.scan_wifi_networks = lambda: []
         monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
         html = setup_server._build_setup_html()
-        assert setup_server.WIFI_PLACEHOLDER_EMPTY_TEXT in html
+        assert setup_server._wifi_placeholder_empty_text() in html
         assert '<details id="manual-ssid" style="margin-bottom:14px;" open>' in html
 
     def test_disclosure_stays_shut_on_a_clean_first_render(self):
@@ -2558,7 +2556,7 @@ class TestScannedSsids:
         import sys
         from unittest.mock import MagicMock
 
-        monkeypatch.setattr(setup_server, "_WIFI_SCAN_CACHE", None)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_NETWORKS", None)
         monkeypatch.setattr(setup_server, "_WIFI_SCAN_TIME", 0)
         monkeypatch.setattr(setup_server, "_WIFI_SCAN_SSIDS", frozenset())
         mock_wifi = MagicMock()
@@ -2636,7 +2634,7 @@ class TestNoHotspotJargonInUserFacingCopy:
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
         monkeypatch.setattr(setup_server, "HOTSPOT_SSID", "LitClock-Setup")
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
-        monkeypatch.setattr(setup_server, "_WIFI_SCAN_CACHE", None)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_NETWORKS", None)
         monkeypatch.setattr(setup_server, "_WIFI_SCAN_TIME", 0)
         mock_wifi = MagicMock()
         mock_wifi.scan_wifi_networks = lambda: [{"ssid": "FakeHomeNet", "signal": 75, "security": "WPA2"}]
@@ -2681,7 +2679,7 @@ class TestNoHotspotJargonInUserFacingCopy:
 
     def test_success_and_error_templates_are_clean(self):
         assert "hotspot" not in setup_server.HTML_SUCCESS.lower()
-        assert "hotspot" not in setup_server.HTML_ERROR.lower()
+        assert "hotspot" not in setup_server._error_page("x").lower()
 
 
 class TestNoHotspotJargonAcrossSurfaces:
@@ -2709,14 +2707,24 @@ class TestNoHotspotJargonAcrossSurfaces:
             assert "hotspot" not in text.lower(), text
 
     def test_first_boot_painted_titles_are_clean(self):
-        """`display_message`/`display_qr` arguments land on the panel via
-        `eink_display.py status`. This is the check whose absence let
-        "Hotspot Failed" survive the first pass."""
+        """`display_message` sites now paint catalog triplets (litclock-dev
+        litclock-dev#532 bulk extraction), so the panel copy to vet lives in the en
+        catalog: collect every prefix the script paints, then check the
+        resolved catalog VALUES. This keeps the guard chain site→key→value
+        — vetting the script's literals alone would observe nothing."""
+        import json as _json
+
         script = (self.REPO / "scripts" / "first-boot.sh").read_text()
-        painted = re.findall(r'display_(?:message|qr)\s+"([^"]*)"', script)
-        assert painted, "no painted titles found — the regex has drifted from the script"
+        prefixes = re.findall(r"display_message(?:_strict)?\s+([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)", script)
+        assert prefixes, "no painted catalog prefixes found — the regex has drifted"
+        catalog = _json.loads((self.REPO / "languages" / "en" / "strings.json").read_text())
+        painted = [v for k, v in catalog.items() if any(k.startswith(p + ".") for p in prefixes)]
+        assert painted, "no catalog values matched the painted prefixes"
         offenders = [t for t in painted if "hotspot" in t.lower()]
         assert not offenders, offenders
+        # display_qr has NO call sites (retired by litclock-dev#647/litclock-dev#715 and pinned
+        # absent by test_first_boot_flow) — no literal sweep for it here; a
+        # sweep over zero sites observes nothing (slice-1 /review).
 
     def test_first_boot_console_banner_is_clean(self):
         """/etc/issue is the HDMI-console twin of the panel labels."""
@@ -2734,14 +2742,28 @@ class TestNoHotspotJargonAcrossSurfaces:
                 assert "hotspot" not in message.lower(), f"{name}: {message}"
 
     def test_pwa_user_facing_copy_is_clean(self):
-        """The confirm sheets and the reconnect cards."""
+        """The confirm sheets and the reconnect cards. The card copy lives
+        in the CATALOG since litclock-dev#532 slice 5, so the sweep's real
+        subject is every catalog VALUE — the source-file scans below only
+        cover what still lives inline (Codex slice-5 /review)."""
+        import json as _json
+
+        catalog = _json.loads(
+            (self.REPO / "languages" / "en" / "strings.json").read_text(encoding="utf-8")
+        )
+        offenders = {
+            k: v
+            for k, v in catalog.items()
+            if not k.startswith("_") and "hotspot" in str(v).lower()
+        }
+        assert not offenders, offenders
         tpl = (self.REPO / "src" / "control_server" / "templates" / "system.html.j2").read_text()
         js = (self.REPO / "src" / "control_server" / "static" / "js" / "system.js").read_text()
         # Template: visible text only, and JS: only the strings that reach innerHTML.
         for text in re.findall(r">([^<>]*hotspot[^<>]*)<", tpl, flags=re.I):
             raise AssertionError(f"system.html.j2: {text.strip()}")
         for line in js.split("\n"):
-            if "reconnect-state__body" in line or "&rsquo;s WiFi list" in line:
+            if "reconnect-state__body" in line:
                 assert "hotspot" not in line.lower(), line
 
     def test_operator_scripts_are_clean(self):
@@ -2800,3 +2822,420 @@ class TestRetryInstructionVariants:
 
         assert eink_display.HOTSPOT_RETRY_CONNECT_FAILED == "connect_failed"
         assert eink_display.HOTSPOT_RETRY_WIFI_PASSWORD == "wifi_password"
+
+
+SRC_DIR = pathlib.Path(__file__).resolve().parents[1] / "src"
+
+
+class TestNormalModeRetired:
+    """litclock-dev#715: the pre-connected normal-mode page (self-signed
+    HTTPS on 8443) is retired. The one remaining no-flag caller is
+    first-boot.sh's missing-env fallback, whose contract is exit-1-loudly →
+    wait_for_setup restart-loop → 1800s Setup-Incomplete ceiling → next-boot
+    retry. These pin the SHAPE of the retirement, not a list of removed
+    names."""
+
+    def test_no_flag_invocation_exits_1_loudly(self, tmp_path):
+        # Executed contract pin: env file PRESENT (so this isn't the
+        # missing-env exit) and no --provisioning → exit 1 with a message,
+        # before any socket is bound.
+        env = tmp_path / "env.sh"
+        env.write_text("# test env\n")
+        result = subprocess.run(
+            [sys.executable, str(SRC_DIR / "setup_server.py"), str(env), str(tmp_path / "sig")],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 1
+        assert "provisioning" in (result.stdout + result.stderr).lower()
+
+    def test_missing_env_still_exits_1(self, tmp_path):
+        # The fallback arm's original trigger — must keep exiting 1 so the
+        # restart-loop → ceiling mechanics are unchanged.
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SRC_DIR / "setup_server.py"),
+                str(tmp_path / "missing-env.sh"),
+                str(tmp_path / "sig"),
+                "--provisioning",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 1
+
+    def test_module_carries_no_tls_server_machinery(self):
+        # Shape assertion: no attribute of the module is an ssl/TLS server
+        # or cert generator, and the module does not import ssl or
+        # https_cert. Asserting on import structure (not on the two removed
+        # names) so a re-introduction under any name is caught.
+        import ast as _ast
+
+        tree = _ast.parse((SRC_DIR / "setup_server.py").read_text())
+        imported = set()
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, _ast.ImportFrom) and node.module:
+                imported.add(node.module)
+        assert "ssl" not in imported, "ssl came back — the TLS server path was retired (litclock-dev#715)"
+        assert "https_cert" not in imported, "https_cert came back (litclock-dev#715)"
+
+    def test_first_boot_fallback_arm_survives(self):
+        # The contract consumer: first-boot.sh's missing-env ELSE-ARM must
+        # route through start_setup_server. Anchored inside the arm itself
+        # (/review litclock-dev#732: a whole-file substring pin would be satisfied by
+        # any future bare use of the name anywhere in the script).
+        body = (SRC_DIR.parent / "scripts" / "first-boot.sh").read_text()
+        anchor = "env.sh missing on the pre-connected path"
+        assert anchor in body, "the missing-env fallback arm's log line vanished"
+        arm = body[body.index(anchor) :]
+        arm = arm[: arm.index("\n        fi\n") if "\n        fi\n" in arm else 400]
+        code = "\n".join(ln for ln in arm.splitlines() if not ln.lstrip().startswith("#"))
+        assert "start_setup_server" in code, (
+            "the missing-env fallback arm no longer calls start_setup_server — "
+            "the litclock-dev#715 retirement depends on that exit-1 restart-loop"
+        )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_language_state(monkeypatch):
+    """/review litclock-dev#742 follow-up F3: the registry fixtures reset the catalog
+    cache BEFORE but never after, positive-caching a two-language registry
+    for process lifetime — any later registry-reading test inherited it
+    (the litclock-dev#355 order-dependence class). Reset around every test here."""
+    import strings_catalog
+
+    monkeypatch.delenv("LITCLOCK_LANGUAGE", raising=False)
+    strings_catalog.reset_cache()
+    yield
+    strings_catalog.reset_cache()
+
+
+def _picker_registry(tmp_path, monkeypatch, de_status="active"):
+    import json as _json
+
+    import strings_catalog
+
+    reg = tmp_path / "languages.json"
+    reg.write_text(_json.dumps({
+        "fleet_default": "en",
+        "languages": {
+            "en": {"code": "en", "native_name": "English", "status": "active",
+                   "strings": "languages/en/strings.json"},
+            "de": {"code": "de", "native_name": "Deutsch", "status": de_status,
+                   "strings": "languages/de/strings.json"},
+        },
+    }))
+    monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", reg)
+    strings_catalog.reset_cache()
+    return reg
+
+
+class TestWifiCopyResolvesPerRequest:
+    """litclock-dev#532 follow-up (Stage-4 gates /review): the picker's
+    manual option and placeholders resolved at MODULE IMPORT, so a language
+    persisted or gift-marker-carried mid-session kept rendering English on
+    the retry re-render. Executed proof: a language switch reaches the
+    copy — and the rendered option list — with no reimport."""
+
+    def test_language_switch_reaches_picker_copy_without_reimport(self, tmp_path, monkeypatch):
+        import json as _json
+
+        import strings_catalog
+
+        de_strings = tmp_path / "de-strings.json"
+        de_strings.write_text(
+            _json.dumps(
+                {
+                    "setup.wifi.manual_option": "DE-MANUAL",
+                    "setup.wifi.placeholder": "DE-PLACEHOLDER",
+                    "setup.wifi.placeholder_empty": "DE-EMPTY",
+                }
+            ),
+            encoding="utf-8",
+        )
+        reg = tmp_path / "languages.json"
+        reg.write_text(
+            _json.dumps(
+                {
+                    "languages": {
+                        "en": {"code": "en", "status": "active", "strings": "languages/en/strings.json"},
+                        "de": {"code": "de", "status": "active", "strings": str(de_strings)},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", reg)
+        strings_catalog.reset_cache()
+        # Baseline: English copy before the switch.
+        assert setup_server._manual_ssid_text() != "DE-MANUAL"
+        # The mid-session switch: no reimport, no restart.
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "de")
+        assert setup_server._manual_ssid_text() == "DE-MANUAL"
+        assert setup_server._wifi_placeholder_text() == "DE-PLACEHOLDER"
+        assert setup_server._wifi_placeholder_empty_text() == "DE-EMPTY"
+        # And the rendered option list carries it — the import-time
+        # constants kept serving English exactly here.
+        options = setup_server._build_wifi_options([])
+        assert "DE-MANUAL" in options and "DE-PLACEHOLDER" in options
+
+    def test_warm_scan_cache_rerenders_after_language_switch(self, tmp_path, monkeypatch):
+        """The /review convergence finding (Codex + both subagents): the scan
+        cache stored RENDERED option HTML, so a warm cache served the old
+        language's placeholder + manual option for up to the 30s TTL after a
+        switch. The cache now holds raw networks; a hit re-renders — in the
+        new language, without touching the radio."""
+        import sys as _sys
+        from unittest.mock import MagicMock
+
+        self._activate_de(tmp_path, monkeypatch)
+        scan_calls = []
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: scan_calls.append(1) or [
+            {"ssid": "HomeWiFi", "signal": 80, "security": "WPA2"}
+        ]
+        monkeypatch.setitem(_sys.modules, "wifi_provision", mock_wifi)
+        setup_server.reset_state()
+        # Warm the cache in English.
+        options, _ = setup_server._wifi_network_options()
+        assert "DE-MANUAL" not in options and len(scan_calls) == 1
+        # Switch mid-session; a warm-cache hit must re-render, not re-scan.
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "de")
+        options, was_empty = setup_server._wifi_network_options()
+        assert "DE-MANUAL" in options and "DE-PLACEHOLDER" in options
+        assert "HomeWiFi" in options and was_empty is False
+        assert len(scan_calls) == 1, "language switch must not trigger a radio rescan"
+
+    def test_empty_scan_placeholder_tracks_language(self, tmp_path, monkeypatch):
+        """placeholder_empty's only production path is the empty-scan branch
+        of _wifi_network_options — cover it through that render (/review:
+        the accessor-only assertion left this key without render-path
+        proof)."""
+        import sys as _sys
+        from unittest.mock import MagicMock
+
+        self._activate_de(tmp_path, monkeypatch)
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: []
+        monkeypatch.setitem(_sys.modules, "wifi_provision", mock_wifi)
+        setup_server.reset_state()
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "de")
+        options, was_empty = setup_server._wifi_network_options()
+        assert was_empty is True and "DE-EMPTY" in options
+
+    def test_env_file_channel_reaches_the_accessors(self, tmp_path, monkeypatch):
+        """The production switch channel is the env.sh WRITE (mtime re-read),
+        not the process env var — prove the accessors flip on a file rewrite
+        with no reimport (/review: the env-var seam alone doesn't cover the
+        channel the setup POST actually uses)."""
+        self._activate_de(tmp_path, monkeypatch)
+        env = tmp_path / "env.sh"
+        env.write_text("export LITCLOCK_LANGUAGE=en\n", encoding="utf-8")
+        monkeypatch.delenv("LITCLOCK_LANGUAGE", raising=False)
+        monkeypatch.setenv("LITCLOCK_ENV_FILE", str(env))
+        assert setup_server._manual_ssid_text() != "DE-MANUAL"
+        import os as _os
+
+        env.write_text("export LITCLOCK_LANGUAGE=de\n", encoding="utf-8")
+        _os.utime(env, (_os.stat(env).st_atime, _os.stat(env).st_mtime + 2))
+        assert setup_server._manual_ssid_text() == "DE-MANUAL"
+
+    def _activate_de(self, tmp_path, monkeypatch):
+        import json as _json
+
+        import strings_catalog
+
+        de_strings = tmp_path / "de-strings.json"
+        de_strings.write_text(
+            _json.dumps(
+                {
+                    "setup.wifi.manual_option": "DE-MANUAL",
+                    "setup.wifi.placeholder": "DE-PLACEHOLDER",
+                    "setup.wifi.placeholder_empty": "DE-EMPTY",
+                }
+            ),
+            encoding="utf-8",
+        )
+        reg = tmp_path / "languages.json"
+        reg.write_text(
+            _json.dumps(
+                {
+                    "languages": {
+                        "en": {"code": "en", "status": "active", "strings": "languages/en/strings.json"},
+                        "de": {"code": "de", "status": "active", "strings": str(de_strings)},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", reg)
+        strings_catalog.reset_cache()
+
+
+class TestLanguagePicker:
+    """litclock-dev#532 pickers, hotspot arm: the no-JS <select> renders only
+    on a multi-language fleet (a one-option select is pure friction), defaults
+    from the gift marker, then Accept-Language, then English."""
+
+    def test_single_language_fleet_renders_no_picker(self, monkeypatch):
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", None)
+        html_out = setup_server._build_setup_html(accept_language="de-DE,de;q=0.9")
+        assert 'name="litclock_language"' not in html_out
+
+    def test_multilang_fleet_renders_picker_with_negotiated_default(self, tmp_path, monkeypatch):
+        _picker_registry(tmp_path, monkeypatch)
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", None)
+        monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(tmp_path / "absent-marker"))
+        html_out = setup_server._build_setup_html(accept_language="de-DE,de;q=0.9,en;q=0.5")
+        assert 'name="litclock_language"' in html_out
+        assert '<option value="de" selected>Deutsch</option>' in html_out
+        assert '<option value="en">English</option>' in html_out
+
+    def test_gift_marker_overrides_negotiation(self, tmp_path, monkeypatch):
+        _picker_registry(tmp_path, monkeypatch)
+        marker = tmp_path / ".gift-language"
+        marker.write_text("de\n")
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", None)
+        monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(marker))
+        # English phone, German gift: the recipient's clock defaults to the
+        # gifter's choice.
+        html_out = setup_server._build_setup_html(accept_language="en-US,en;q=0.9")
+        assert '<option value="de" selected>Deutsch</option>' in html_out
+
+    def test_marker_with_inactive_code_is_ignored(self, tmp_path, monkeypatch):
+        _picker_registry(tmp_path, monkeypatch, de_status="incubating")
+        marker = tmp_path / ".gift-language"
+        marker.write_text("de\n")
+        monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(marker))
+        assert setup_server._default_language("en") == "en"
+
+
+class TestLanguageRetryPrecedence:
+    """/review litclock-dev#742 + 5b adversarial /review: a failed-WiFi retry must not
+    silently reset the picker — this session's submission, then the
+    PERSISTED env value, then the marker outrank Accept-Language. Persisted
+    outranks the marker since 5b: a non-empty persisted value is always an
+    explicit choice, and the old marker-first order let a kept inactive
+    marker silently revert a recipient's pick after an OTA activation."""
+
+    def test_persisted_env_value_beats_the_marker(self, tmp_path, monkeypatch):
+        """The 5b losing-state regression: kept marker de (now active),
+        recipient's persisted pick es — es must win on re-provision."""
+        _picker_registry(tmp_path, monkeypatch)
+        env = tmp_path / "env.sh"
+        env.write_text("export LITCLOCK_LANGUAGE=en\n")
+        marker = tmp_path / ".gift-language"
+        marker.write_text("de")
+        monkeypatch.setattr(setup_server, "ENV_FILE", str(env))
+        monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(marker))
+        monkeypatch.setattr(setup_server, "SUBMITTED_LANGUAGE", "")
+        assert setup_server._default_language("de-DE") == "en"
+
+    def test_persisted_env_value_beats_accept_language(self, tmp_path, monkeypatch):
+        _picker_registry(tmp_path, monkeypatch)
+        env = tmp_path / "env.sh"
+        env.write_text("export LITCLOCK_LANGUAGE=de\n")
+        monkeypatch.setattr(setup_server, "ENV_FILE", str(env))
+        monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(tmp_path / "absent"))
+        monkeypatch.setattr(setup_server, "SUBMITTED_LANGUAGE", "")
+        assert setup_server._default_language("en-US,en;q=0.9") == "de"
+
+    def test_session_submission_beats_the_marker(self, tmp_path, monkeypatch):
+        # A gift recipient who overrode the gifter's choice keeps their
+        # override on retry.
+        _picker_registry(tmp_path, monkeypatch)
+        marker = tmp_path / ".gift-language"
+        marker.write_text("de")
+        monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(marker))
+        monkeypatch.setattr(setup_server, "SUBMITTED_LANGUAGE", "en")
+        assert setup_server._default_language("de-DE") == "en"
+
+    def test_marker_symlink_is_refused(self, tmp_path, monkeypatch):
+        _picker_registry(tmp_path, monkeypatch)
+        target = tmp_path / "target"
+        target.write_text("de")
+        link = tmp_path / ".gift-language"
+        link.symlink_to(target)
+        monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(link))
+        monkeypatch.setattr(setup_server, "SUBMITTED_LANGUAGE", "")
+        monkeypatch.setattr(setup_server, "ENV_FILE", str(tmp_path / "no-env"))
+        # O_NOFOLLOW refuses the symlink → falls through to negotiation.
+        assert setup_server._default_language("de-DE") == "de"  # via Accept-Language
+        assert setup_server._read_marker_code() == ""
+
+    def test_first_boot_consumes_the_marker_conditionally(self):
+        """SUPERSEDED CONTRACT (pickers 5b, trap b): 5a consumed the marker
+        unconditionally in the welcome-marker rm; 5b makes consumption
+        conditional on the code being ACTIVE (honored) so a registry
+        regression / OTA lag can't permanently erase the gifter's intent.
+        The success block must still handle the marker (rm inside the
+        honored branch), and the welcome markers stay unconditional.
+        Deep coverage lives in test_first_boot_flow.py's
+        TestGiftLanguageConditionalConsumption."""
+        from pathlib import Path as _Path
+
+        body = (_Path(setup_server.__file__).resolve().parents[1] / "scripts" / "first-boot.sh").read_text()
+        code = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
+        assert "if gift_language_marker_consumable; then" in code
+        idx = code.find("if gift_language_marker_consumable; then")
+        assert "sudo rm -f /etc/litclock/.gift-language" in code[idx : idx + 300]
+        # Welcome markers stay on the unconditional litclock-dev#316 rm, WITHOUT the
+        # gift-language marker riding along.
+        assert "sudo rm -f /etc/litclock/.welcome-mode /etc/litclock/.welcome-message" in code
+
+
+class TestNegotiationReachableFromFreshBoot:
+    """/review litclock-dev#742 follow-up F1 (the completing pass's catch): the seeded
+    'en' default was indistinguishable from a persisted user choice, so the
+    env-precedence step made Accept-Language negotiation DEAD CODE on every
+    production first boot — the litclock-dev#646 tests-cover-what-production-never-
+    runs class, emergent from two individually-correct review fixes."""
+
+    def test_default_env_seed_lets_negotiation_fire(self, tmp_path, monkeypatch):
+        _picker_registry(tmp_path, monkeypatch)
+        env = tmp_path / "env.sh"
+        env.write_text("export LITCLOCK_LANGUAGE=\n")  # the heredoc seed, verbatim
+        monkeypatch.setattr(setup_server, "ENV_FILE", str(env))
+        monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(tmp_path / "absent"))
+        monkeypatch.setattr(setup_server, "SUBMITTED_LANGUAGE", "")
+        assert setup_server._default_language("de-DE,de;q=0.9,en;q=0.5") == "de", (
+            "a fresh default env must leave negotiation reachable — a seeded "
+            "concrete code is indistinguishable from a user choice"
+        )
+
+    def test_heredocs_seed_the_key_empty(self):
+        from pathlib import Path as _Path
+
+        root = _Path(setup_server.__file__).resolve().parents[1]
+        for script in ("scripts/first-boot.sh", "scripts/reset-setup.sh"):
+            body = (root / script).read_text()
+            assert "export LITCLOCK_LANGUAGE=en" not in body, (
+                f"{script} seeds a concrete language — negotiation goes dead "
+                "on every device it provisions (/review litclock-dev#742 follow-up F1)"
+            )
+            assert "export LITCLOCK_LANGUAGE=" in body, (
+                f"{script} lost the empty seed — the dormant POST would append "
+                "instead of replacing in place"
+            )
+
+    def test_persisted_choice_still_survives_a_server_restart(self, tmp_path, monkeypatch):
+        # The env step's real job: first-boot's crash-restart loop loses
+        # SUBMITTED_LANGUAGE, but the POSTed choice lives in env.sh.
+        _picker_registry(tmp_path, monkeypatch)
+        env = tmp_path / "env.sh"
+        env.write_text("export LITCLOCK_LANGUAGE=de\n")
+        monkeypatch.setattr(setup_server, "ENV_FILE", str(env))
+        monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(tmp_path / "absent"))
+        monkeypatch.setattr(setup_server, "SUBMITTED_LANGUAGE", "")  # fresh process
+        assert setup_server._default_language("en-US") == "de"

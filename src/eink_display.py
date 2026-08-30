@@ -81,6 +81,15 @@ SETUP_QR_X = 40
 SETUP_QR_Y = 80
 SETUP_QR_SIZE = 220
 
+# The right-hand value column: where the SSID and password are drawn, and the
+# width they must fit in. Named because the generated hotspot password is
+# clamped against this budget and an ellipsised password is unjoinable
+# (litclock-dev#670) -- the guard that checks it has to derive the budget from
+# the same place the renderer does, or it measures a copy that can drift.
+SETUP_VALUE_FONT_SIZE = 24
+SETUP_VALUE_X = SETUP_QR_X + SETUP_QR_SIZE + 30
+SETUP_VALUE_BUDGET = DISPLAY_SIZE[0] - SETUP_VALUE_X
+
 # ISO 18004 wants 4 modules of blank around the symbol. generate_qr_image
 # bakes 2 of them in via border=2, so the panel has to supply the other 2.
 # Module size falls out of the QR version, which falls out of how long the
@@ -433,7 +442,9 @@ def create_status_image(title: str, message: str = None, submessage: str = None)
     # the steps list (litclock-dev#319 follow-up to the wrap fix).
     if message:
         message_y = title_y + title_block_height + 30
-        message = _clamp_block_to_panel(message, message_font, draw, "status message")
+        message, message_font = _fit_block_to_panel(
+            message, message_font, draw, "status message", STATUS_MESSAGE_FONT_FLOOR
+        )
         bbox = draw.textbbox((0, 0), message, font=message_font)
         msg_width = bbox[2] - bbox[0]
         msg_x = (DISPLAY_SIZE[0] - msg_width) // 2
@@ -441,7 +452,9 @@ def create_status_image(title: str, message: str = None, submessage: str = None)
 
     # Draw submessage if provided
     if submessage:
-        submessage = _clamp_block_to_panel(submessage, small_font, draw, "status submessage")
+        submessage, small_font = _fit_block_to_panel(
+            submessage, small_font, draw, "status submessage", STATUS_SUBMESSAGE_FONT_FLOOR
+        )
         bbox = draw.textbbox((0, 0), submessage, font=small_font)
         sub_width = bbox[2] - bbox[0]
         sub_x = (DISPLAY_SIZE[0] - sub_width) // 2
@@ -618,15 +631,17 @@ def _clamp_to_width(text: str, font, draw, max_w: int, field: str, surface: str 
 def _clamp_block_to_panel(text: str, font, draw, field: str) -> str:
     """Clamp every line of a status message to the panel width.
 
-    ``create_status_image`` draws its message (28pt) and submessage (20pt) with
-    a single unbounded ``draw.text``: only the TITLE has the fit-and-wrap
-    ladder. Unclamped, ``msg_x = (800 - width) // 2`` goes NEGATIVE for a long
-    string, so the text bleeds off BOTH edges and loses its head as well as its
-    tail.
+    Since the litclock-dev#532 fit ladder, this is the FLOOR fallback of
+    ``_fit_block_to_panel``, not the first line of defense: status blocks
+    shrink to fit first and only land here at the floor size (or when the
+    font has no ladder to walk). Unclamped, ``msg_x = (800 - width) // 2``
+    goes NEGATIVE for a long string, so the text bleeds off BOTH edges and
+    loses its head as well as its tail.
 
     Reachable, but only at the edge — state it precisely, because this docstring
     has been wrong twice already. ``scripts/first-boot.sh`` renders
-    ``display_message "WiFi Connected" "Network: $ssid"`` with the joined
+    ``display_message firstboot.splash.wifi_connected --slot "ssid=$ssid"``
+    (catalog message ``"Network: {ssid}"``) with the joined
     network's name from ``iwgetid``, and SSIDs are user-controlled up to 32
     bytes. WIDTH depends on the glyphs: the rendered message "Network: " + 32
     literal W's measures 1005.9px at the 28pt message font against a 760px
@@ -647,13 +662,10 @@ def _clamp_block_to_panel(text: str, font, draw, field: str) -> str:
     Deliberately a clamp rather than a re-flow so shipped layouts stay
     byte-identical. Line-wise so gift mode's embedded newlines survive.
 
-    KNOWN LIMIT for litclock-dev#532: it truncates character-wise and drops the TAIL, and
-    every shipped submessage puts the actionable part last ("... see the
-    LitClock docs.", "Then plug back in"). For translated instruction copy the
-    right primitive is the font-shrinking ladder ``_fit_title`` uses, on the
-    stated reasoning that silently cutting text is unacceptable there. This is
-    strictly better than the current bleed-off-both-edges behaviour, but it is
-    not the finished answer for translated strings.
+    The former KNOWN LIMIT for litclock-dev#532 (tail truncation is the wrong answer
+    for instruction copy) is resolved: ``_fit_block_to_panel`` now shrinks
+    first, and this clamp fires only for input that overflows even the
+    floor size — where losing the tail beats losing legibility.
     """
     max_w = PANEL_TEXT_BUDGET
     # No `if line` guard: _clamp_to_width already returns "" for falsy input,
@@ -661,6 +673,63 @@ def _clamp_block_to_panel(text: str, font, draw, field: str) -> str:
     return "\n".join(
         _clamp_to_width(line, font, draw, max_w, field, surface="status splash") for line in text.split("\n")
     )
+
+
+# litclock-dev#532 Stage 3 (the scope audit's v1 blocker, second half): the
+# message/submessage floor sizes for _fit_block_to_panel's shrink ladder.
+# Same reasoning as HANDOFF_ROW_FONT_FLOOR — instruction copy is text the
+# reader ACTS ON ("Then plug back in"), so losing a couple of points beats
+# losing the tail; translated strings run ~30% longer than the English the
+# fixed sizes were tuned for. Floors keep glance-legibility on the panel.
+STATUS_MESSAGE_FONT_FLOOR = 20
+STATUS_SUBMESSAGE_FONT_FLOOR = 15
+
+
+def _fit_block_to_panel(text: str, font, draw, field: str, floor: int):
+    """Fit a (possibly multi-line) status block, preferring a smaller font
+    over a shorter string. Returns ``(text, font)``.
+
+    The ``_fit_row_text`` primitive applied to ``create_status_image``'s
+    message/submessage blocks: shrink one point at a time from the base
+    size until the WIDEST line fits ``PANEL_TEXT_BUDGET``, and only at
+    ``floor`` fall back to ``_clamp_block_to_panel``'s per-line ellipsis
+    clamp (which _clamp_block_to_panel's own docstring names as the wrong
+    final answer for instruction copy — this ladder is the answer; the
+    clamp remains the last-resort floor for pathological input).
+
+    Text that already fits at the base size returns byte-identical with the
+    caller's own font object — shipped layouts unchanged.
+    """
+    if not text:
+        return "", font
+    max_w = PANEL_TEXT_BUDGET
+
+    def _widest(candidate_font) -> float:
+        return max(draw.textlength(line, font=candidate_font) for line in text.split("\n"))
+
+    if _widest(font) <= max_w:
+        return text, font
+    # isinstance, not truthiness (/review litclock-dev#734): load_default()'s .path is a
+    # truthy exhausted BytesIO on Pillow 12, so a bare `if path` walked the
+    # ladder into a guaranteed OSError and logged a misleading
+    # "font unavailable at Npt" on exactly the fonts-missing device whose
+    # journal is the only diagnostic channel. No real path → no ladder →
+    # straight to the clamp, silently, as documented.
+    path = getattr(font, "path", None)
+    base_size = getattr(font, "size", None)
+    fitted = font
+    if isinstance(path, (str, os.PathLike)) and base_size:
+        for trial in range(int(base_size) - 1, floor - 1, -1):
+            try:
+                candidate = ImageFont.truetype(path, trial)
+            except Exception as e:
+                logging.error("%s font unavailable at %dpt (%s); stopping ladder", field, trial, e)
+                break
+            fitted = candidate
+            if _widest(candidate) <= max_w:
+                return text, fitted
+    # Floor reached (or no size ladder to walk) — clamp per line.
+    return _clamp_block_to_panel(text, fitted, draw, field), fitted
 
 
 def setup_instruction_lines(
@@ -778,13 +847,13 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
     try:
         title_font = ImageFont.truetype(FONT_PATH_BOLD, 36)
         label_font = ImageFont.truetype(FONT_PATH_BOLD, 22)
-        value_font = ImageFont.truetype(FONT_PATH, 24)
+        value_font = ImageFont.truetype(FONT_PATH, SETUP_VALUE_FONT_SIZE)
         small_font = ImageFont.truetype(FONT_PATH, SETUP_SMALL_FONT_PT)
     except Exception as e:
         logging.error("setup splash fonts unavailable (%s); using scaled default — legible but off-brand", e)
         title_font = ImageFont.load_default(size=36)
         label_font = ImageFont.load_default(size=22)
-        value_font = ImageFont.load_default(size=24)
+        value_font = ImageFont.load_default(size=SETUP_VALUE_FONT_SIZE)
         small_font = ImageFont.load_default(size=SETUP_SMALL_FONT_PT)
 
     # Title — swap to a distinct retry title so the user's eye immediately
@@ -835,13 +904,13 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
     image.paste(qr_image, (qr_x, qr_y))
 
     # Text info on right side
-    text_x = qr_x + qr_size + 30
+    text_x = SETUP_VALUE_X
     text_y = qr_y + 10
 
     # Clamp the values to the right-column budget so a long SSID/password can't
     # clip silently at x=800 with no ellipsis (litclock-dev#589 item 1). The
     # budget is the panel width minus the value's left edge.
-    value_budget = DISPLAY_SIZE[0] - text_x
+    value_budget = SETUP_VALUE_BUDGET
     ssid_line = _clamp_to_width(ssid, value_font, draw, value_budget, "network name")
     password_line = _clamp_to_width(password, value_font, draw, value_budget, "password")
 
@@ -1121,7 +1190,10 @@ def _fit_row_text(text: str, font, draw, budget: int, field: str):
     path = getattr(font, "path", None)
     base_size = getattr(font, "size", None)
     fitted = font
-    if path and base_size:
+    # isinstance, not truthiness — same load_default BytesIO trap as
+    # _fit_block_to_panel (/review litclock-dev#734); this makes the docstring's
+    # "falls back when the font has no loadable path" actually true.
+    if isinstance(path, (str, os.PathLike)) and base_size:
         for trial in range(int(base_size) - 1, HANDOFF_ROW_FONT_FLOOR - 1, -1):
             try:
                 candidate = ImageFont.truetype(path, trial)
@@ -1408,6 +1480,63 @@ def save_image(image: Image.Image, path: str):
     logging.info(f"Image saved to {path}")
 
 
+def _parse_slots(pairs):
+    """--slot NAME=VALUE args → dict. Shared by the status and catalog-get
+    subcommands (slice-1 /review: two diverging copies would silently split
+    their slot semantics)."""
+    slots = {}
+    for pair in pairs:
+        name, _, value = pair.partition("=")
+        if name:
+            slots[name] = value
+    return slots
+
+
+def _resolve_status_parts(args):
+    """The status subcommand's (title, message, submessage).
+
+    ``--catalog-prefix`` fills every part NOT explicitly given; an explicit
+    literal part overrides its catalog counterpart (litclock-dev#532 slice
+    2: shutdown-splash mixes catalog copy with curated farewell quotes and
+    the gifter's custom welcome title, so per-part override is the
+    contract — slice 1's warn-and-ignore was a placeholder). Without a
+    prefix, the literal form is unchanged.
+
+    The catalog import is guarded: the bootcheck/reset-failed doom
+    splashes share a venv that may be half-deployed, and a missing
+    strings_catalog module must degrade to painting the visible key names
+    — same never-blank posture as a missing catalog file — not kill the
+    one paint that outlives a frozen PWA."""
+    if args.catalog_prefix:
+        try:
+            import strings_catalog  # noqa: PLC0415
+
+            title, message, submessage = strings_catalog.get_triplet(
+                args.catalog_prefix, **_parse_slots(args.slot)
+            )
+        except Exception as exc:  # noqa: BLE001 — doom-path paint must survive ANY catalog failure
+            # Not just ImportError (Codex slice-2 /review): a half-deployed
+            # venv can carry a strings_catalog that IMPORTS but is stale or
+            # truncated — AttributeError/SyntaxError must degrade the same
+            # way, because the doom splashes have no literal fallback left.
+            print(f"warning: catalog resolution failed ({exc!r}); painting key names", file=sys.stderr)
+            title, message, submessage = (
+                f"{args.catalog_prefix}.title",
+                f"{args.catalog_prefix}.message",
+                f"{args.catalog_prefix}.submessage",
+            )
+        if args.title is not None:
+            title = args.title
+        if args.message is not None:
+            message = args.message
+        if args.submessage is not None:
+            submessage = args.submessage
+        return title, message, submessage
+    if args.title is None:
+        raise SystemExit("status: a literal title or --catalog-prefix is required")
+    return args.title, args.message, args.submessage
+
+
 def main():
     parser = argparse.ArgumentParser(description="E-ink Display Utility")
     subparsers = parser.add_subparsers(dest="command", help="Command")
@@ -1421,9 +1550,24 @@ def main():
 
     # Status command
     status_parser = subparsers.add_parser("status", help="Display status message")
-    status_parser.add_argument("title", help="Main title")
+    # litclock-dev#532 bulk extraction: the bash surfaces pass a catalog
+    # PREFIX instead of literals — the triplet resolves in THIS process
+    # (strings_catalog.get_triplet), keeping first-boot at one python spawn
+    # per splash. The literal positional form stays for ad-hoc/QA use.
+    status_parser.add_argument("title", nargs="?", default=None, help="Main title (literal form)")
     status_parser.add_argument("--message", "-m", help="Secondary message")
     status_parser.add_argument("--submessage", "-sub", help="Small message at bottom")
+    status_parser.add_argument(
+        "--catalog-prefix",
+        help="resolve title/message/submessage from <prefix>.title/.message/.submessage",
+    )
+    status_parser.add_argument(
+        "--slot",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="fill a {NAME} slot in catalog-resolved parts (repeatable)",
+    )
     status_parser.add_argument("--save", "-s", help="Save to file instead of displaying")
 
     # Hotspot command
@@ -1443,6 +1587,20 @@ def main():
     # long-lived in-process painter would leave litclock.service stuck on
     # 'GPIO busy' (fresh-flash test-Pi QA 2026-07-06). The settings dict is passed
     # as JSON so the subprocess rebuilds the splash without re-deriving context.
+    # litclock-dev#532 Stage 3: the shell surface's string-lookup path. The
+    # scripts that paint panel text (first-boot.sh, shutdown-splash.sh,
+    # bootcheck) already invoke this file as a subprocess, so `catalog-get`
+    # gives bash the same catalog Python uses without parsing JSON in shell.
+    catalog_parser = subparsers.add_parser("catalog-get", help="Print a language-catalog string")
+    catalog_parser.add_argument("key", help="catalog key, e.g. status.relative.just_now")
+    catalog_parser.add_argument(
+        "--slot",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="fill a {NAME} slot (repeatable)",
+    )
+
     handoff_parser = subparsers.add_parser("handoff-splash", help="Display the post-WiFi handoff splash")
     handoff_parser.add_argument("qr_url", help="PWA QR URL encoded on the splash")
     handoff_parser.add_argument("--settings-json", required=True, help="handoff_context dict as JSON")
@@ -1458,7 +1616,8 @@ def main():
             display_image(image)
 
     elif args.command == "status":
-        image = create_status_image(args.title, args.message, args.submessage)
+        title, message, submessage = _resolve_status_parts(args)
+        image = create_status_image(title, message, submessage)
         if args.save:
             save_image(image, args.save)
         else:
@@ -1470,6 +1629,16 @@ def main():
             save_image(image, args.save)
         else:
             display_image(image)
+
+    elif args.command == "catalog-get":
+        import strings_catalog  # noqa: PLC0415
+
+        slots = _parse_slots(args.slot)
+        # The loader never raises; a missing key prints the key itself,
+        # which is the visible-but-safe degradation the catalog contract
+        # promises (litclock-dev#532 audit item 7).
+        print(strings_catalog.get(args.key, **slots))
+        return
 
     elif args.command == "clear":
         image = Image.new("1", DISPLAY_SIZE, 255)

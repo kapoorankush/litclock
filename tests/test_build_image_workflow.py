@@ -6,6 +6,7 @@ Validates workflow structure, triggers, and build configuration.
 import os
 import re
 import subprocess
+import sys
 
 import yaml
 
@@ -542,3 +543,210 @@ class TestConfigSourcingInjection:
         assert "ref=feat/runtime-render-release" in text.splitlines(), text
         version_line = next(ln for ln in text.splitlines() if ln.startswith("version="))
         assert re.fullmatch(r"version=dev-\d{8}-[0-9a-f]{7}", version_line), version_line
+
+
+# --- litclock-dev#681: a tagged release must carry release notes -------------
+
+
+class TestReleaseNotesGate:
+    """The PWA's update card reads CHANGELOG.md AT THE TAG, not the GitHub
+    release body, and renders nothing when no heading matches the tag. v0.223.0
+    and v0.224.0 both shipped that way -- silently, twice -- because the content
+    was still under `## [Unreleased]` when the tag was cut and nothing checked.
+    """
+
+    def test_the_gate_step_exists(self):
+        step = _step("Release notes present for tag")
+        assert "check-changelog-section.py" in step.get("run", ""), (
+            "the gate must invoke the checker script, not reimplement the check inline"
+        )
+
+    def test_the_gate_is_scoped_to_tag_pushes(self):
+        """A workflow_dispatch build is a dev pre-release with no version
+        section to promote yet, so gating it would block every dev image."""
+        step = _step("Release notes present for tag")
+        condition = step.get("if", "")
+        assert "refs/tags/v" in condition, f"gate is not scoped to tag pushes: {condition!r}"
+
+    def test_the_gate_runs_before_the_build(self):
+        """Recoverable by retagging, so it has to fail at minute 1 rather than
+        after a release asset exists."""
+        wf = _load_workflow()
+        names = [s.get("name") for s in wf["jobs"]["build"]["steps"]]
+        assert "Release notes present for tag" in names, "gate step missing"
+        assert names.index("Release notes present for tag") < names.index("Free disk space"), (
+            "the notes gate must run before the 40-minute build"
+        )
+
+    def test_the_gate_passes_the_real_tag_name(self):
+        """GITHUB_REF_NAME is the tag on a tag push. Passing github.sha or a
+        hardcoded version would make the gate check the wrong thing."""
+        step = _step("Release notes present for tag")
+        assert "GITHUB_REF_NAME" in step.get("run", ""), "the gate must check the tag actually being pushed"
+
+
+class TestChangelogSectionChecker:
+    """The checker itself. It calls the PRODUCTION extractor rather than
+    reimplementing the heading regex — a second copy would drift from the one
+    the device runs, and the gate would then pass releases the PWA still renders
+    blank. These tests pin both the pass and the fail direction.
+    """
+
+    SCRIPT = os.path.join(REPO_ROOT, "scripts", "check-changelog-section.py")
+
+    def _run(self, tag, changelog_text, tmp_path):
+        path = tmp_path / "CHANGELOG.md"
+        path.write_text(changelog_text, encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, self.SCRIPT, tag, "--changelog", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+
+    def test_it_uses_the_production_extractor(self):
+        """Parity by construction, not by convention. If this is ever swapped
+        for a local regex the gate can silently disagree with the device."""
+        src = open(self.SCRIPT).read()
+        assert "update_state.py" in src and "_extract_changelog_section" in src, (
+            "the checker must load the real extractor, not restate the regex"
+        )
+
+    def test_it_does_not_import_the_control_server_package(self):
+        """The package __init__ does `from flask import Flask`, and the
+        workflow step that runs this installs only pytest and pyyaml. Importing
+        the package raised ModuleNotFoundError and failed EVERY tag build --
+        with exit 1, the same code as "no CHANGELOG section", so it read as the
+        very thing the gate exists to detect (/review). It loads the module by
+        path instead."""
+        src = open(self.SCRIPT).read()
+        # Statement-level, not substring: the docstring quotes the old import
+        # to explain why it was removed, and a bare `in` check flags that prose.
+        offenders = [
+            ln for ln in src.splitlines() if ln.strip().startswith(("from control_server", "import control_server"))
+        ]
+        assert not offenders, (
+            f"importing the package pulls in flask, which the release workflow does not install: {offenders}"
+        )
+        assert "spec_from_file_location" in src, "the extractor must be loaded by path"
+
+    def test_it_runs_without_the_app_dependencies(self, tmp_path):
+        """The above, executed rather than asserted: run the checker with flask
+        made unavailable, exactly as the release runner has it."""
+        stub = tmp_path / "stubs"
+        stub.mkdir()
+        (stub / "flask.py").write_text("raise ImportError('no flask')\n", encoding="utf-8")
+        cl = tmp_path / "CHANGELOG.md"
+        cl.write_text("# CL\n\n## [v1.2.3] - 2026-01-01\n\n### Fixed\n- a thing\n", encoding="utf-8")
+        r = subprocess.run(
+            [sys.executable, self.SCRIPT, "v1.2.3", "--changelog", str(cl)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={**os.environ, "PYTHONPATH": str(stub), "LC_ALL": "C"},
+        )
+        assert r.returncode == 0, f"gate fails without flask installed: {r.stdout}{r.stderr}"
+
+    def test_non_release_tags_are_skipped(self, tmp_path):
+        """The workflow triggers on `v*`, which catches RC and QA tags that the
+        updater never offers (scripts/lib/github_api.sh filters to
+        vMAJOR.MINOR.PATCH). Gating those would block a QA build for a section
+        it has no reason to carry."""
+        cl = tmp_path / "CHANGELOG.md"
+        cl.write_text("# CL\n\n## [Unreleased]\n- nothing promoted\n", encoding="utf-8")
+        for tag in ("v0.225.0-rc1", "vfoo", "v1.2"):
+            r = subprocess.run(
+                [sys.executable, self.SCRIPT, tag, "--changelog", str(cl)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert r.returncode == 0, f"{tag} should be skipped, got {r.returncode}: {r.stderr}"
+
+    def test_a_release_shaped_tag_is_still_gated(self, tmp_path):
+        """Guard the skip: the shape check must not become a way past the gate."""
+        cl = tmp_path / "CHANGELOG.md"
+        cl.write_text("# CL\n\n## [Unreleased]\n- nothing promoted\n", encoding="utf-8")
+        r = subprocess.run(
+            [sys.executable, self.SCRIPT, "v0.225.0", "--changelog", str(cl)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert r.returncode == 1, "a release-shaped tag with no section must still fail"
+
+    def test_headings_without_entries_fail(self, tmp_path):
+        """`### Changed` with nothing under it is non-empty, so it satisfied the
+        extractor and rendered as a category heading and nothing else on the
+        card (/review)."""
+        cl = tmp_path / "CHANGELOG.md"
+        cl.write_text(
+            "# CL\n\n## [v0.225.0] - 2026-09-01\n\n### Changed\n\n## [v0.224.0] - x\n- old\n",
+            encoding="utf-8",
+        )
+        r = subprocess.run(
+            [sys.executable, self.SCRIPT, "v0.225.0", "--changelog", str(cl)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert r.returncode == 1, "a section with headings but no entries must fail"
+        assert "no entries" in r.stderr, f"the failure must say why: {r.stderr}"
+
+    def test_a_promoted_heading_passes(self, tmp_path):
+        text = "# Changelog\n\n## [v0.225.0] - 2026-09-01\n\n### Fixed\n- a real thing\n"
+        r = self._run("v0.225.0", text, tmp_path)
+        assert r.returncode == 0, f"a properly promoted heading must pass: {r.stdout}{r.stderr}"
+
+    def test_an_unpromoted_unreleased_heading_fails(self, tmp_path):
+        """The exact shape that shipped twice."""
+        text = "# Changelog\n\n## [Unreleased]\n\n### Fixed\n- a real thing\n\n## [v0.222.0] - 2026-07-23\n- old\n"
+        r = self._run("v0.225.0", text, tmp_path)
+        assert r.returncode == 1, f"an [Unreleased]-only changelog must fail the gate: {r.stdout}"
+        assert "no section for v0.225.0" in r.stderr, f"the failure must name the tag: {r.stderr}"
+        assert "[Unreleased]" in r.stderr, "the failure should show what IS there, so the fix is obvious"
+
+    def test_a_heading_for_a_different_version_fails(self, tmp_path):
+        """Guard against 'some heading exists' being mistaken for 'this tag's
+        heading exists' — the previous release's section is always present."""
+        text = "# Changelog\n\n## [v0.224.0] - 2026-08-17\n\n### Fixed\n- old thing\n"
+        r = self._run("v0.225.0", text, tmp_path)
+        assert r.returncode == 1, "a stale heading for a previous version must not satisfy the gate"
+
+    def test_an_empty_section_fails(self, tmp_path):
+        """A heading with nothing under it renders a blank card just the same."""
+        text = "# Changelog\n\n## [v0.225.0] - 2026-09-01\n\n## [v0.224.0] - 2026-08-17\n- old\n"
+        r = self._run("v0.225.0", text, tmp_path)
+        assert r.returncode == 1, "an empty section still renders no notes"
+
+    def test_an_unreadable_changelog_is_a_usage_error_not_a_pass(self, tmp_path):
+        """Fail closed: a missing file must not be read as 'nothing to check'."""
+        r = subprocess.run(
+            [sys.executable, self.SCRIPT, "v0.225.0", "--changelog", str(tmp_path / "nope.md")],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert r.returncode == 2, f"a missing CHANGELOG must be an error, got {r.returncode}"
+
+    def test_it_agrees_with_the_shipped_history(self, tmp_path):
+        """The gate must agree with what the PWA actually rendered: it would
+        have caught v0.224.0, and does not fire on v0.222.0.
+
+        The shapes are INLINED, not read from git (/review). The first version
+        ran `git show <tag>:CHANGELOG.md` and `continue`d when the tag was
+        missing -- and `actions/checkout` is depth 1 in both workflows, so in CI
+        both iterations skipped and the test asserted nothing while reporting
+        green. It only ever ran on a maintainer's full clone.
+        """
+        shipped_blank = (
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n- the v0.224.0 content, never promoted\n\n"
+            "## [v0.222.0] - 2026-07-23\n\n### Fixed\n- the settings QR quiet zone\n"
+        )
+        assert self._run("v0.224.0", shipped_blank, tmp_path).returncode == 1, (
+            "the gate would not have caught the v0.224.0 shape it was written for"
+        )
+        assert self._run("v0.222.0", shipped_blank, tmp_path).returncode == 0, (
+            "the gate fires on v0.222.0, which rendered notes correctly"
+        )

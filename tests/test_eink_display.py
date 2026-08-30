@@ -9,7 +9,14 @@ from PIL import Image, ImageDraw, ImageFont
 # eink_display imports qrcode at module level and calls setup_logging(),
 # which is fine. But waveshare_epd is only imported inside get_display().
 import eink_display
+
+# litclock-dev#670: the shipped password length is a constant now, so a fixture
+# that hardcodes 8 stops testing "the shipped path" the moment it changes.
+# Sliced from the legible alphabet, deterministic, tracks the real length.
+import wifi_provision as _wifi_provision  # noqa: E402
 from eink_display import create_qr_display_image, generate_qr_image
+
+SHIPPED_PW = "Ab3xYz9qKmNpQrTu"[: _wifi_provision.HOTSPOT_PASSWORD_LENGTH]
 
 
 class TestHandoffSplashCliExitCode:
@@ -548,7 +555,7 @@ class TestSetupStepLineClamp:
 
     def _steps_image(self, caplog, ssid):
         with caplog.at_level(logging.WARNING):
-            img = eink_display.create_hotspot_display_image(ssid, "Ab3xYz9q", "10.42.0.1")
+            img = eink_display.create_hotspot_display_image(ssid, SHIPPED_PW, "10.42.0.1")
         assert img.size == eink_display.DISPLAY_SIZE
         return [r.message for r in caplog.records if "setup step" in r.message]
 
@@ -667,7 +674,7 @@ class TestSetupSplashHardening:
         # test, for the VALUES the renderer previously left unclamped).
         draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 255))
         font = ImageFont.truetype(eink_display.FONT_PATH, 24)
-        for value in ("LitClock-Setup", "Ab3xYz9q"):
+        for value in ("LitClock-Setup", SHIPPED_PW):
             assert draw.textlength(value, font=font) < self.VALUE_BUDGET
 
     def test_font_fallback_passes_size_and_logs_not_a_silent_10px(self, monkeypatch, caplog):
@@ -693,7 +700,7 @@ class TestSetupSplashHardening:
         monkeypatch.setattr(eink_display.ImageFont, "truetype", only_our_fonts_fail)
         monkeypatch.setattr(eink_display.ImageFont, "load_default", recording_load_default)
         with caplog.at_level(logging.ERROR):
-            img = eink_display.create_hotspot_display_image("LitClock-Setup", "Ab3xYz9q", "10.42.0.1")
+            img = eink_display.create_hotspot_display_image("LitClock-Setup", SHIPPED_PW, "10.42.0.1")
         assert img.size == eink_display.DISPLAY_SIZE
         assert sizes_used and all(s is not None and s >= 18 for s in sizes_used), (
             f"fallback fonts must pass size= (never the silent 10px default); got {sizes_used}"
@@ -740,3 +747,109 @@ class TestSetupSplashHardening:
         for xy, text, font in value_col:
             right = xy[0] + measure.textlength(text, font=font)
             assert right <= eink_display.DISPLAY_SIZE[0], f"{text!r} overflows the panel ({right}px > 800)"
+
+
+class TestGeneratedPasswordFitsThePanel:
+    """litclock-dev#670 — the generated hotspot key is drawn through
+    `_clamp_to_width`, which ellipsises anything past the right-column budget.
+    An ellipsised password is not a cosmetic problem: it is unjoinable, and the
+    panel is the only place the recipient can read it.
+
+    Nothing connected the generator's length to the renderer's budget, so
+    raising HOTSPOT_PASSWORD_LENGTH (8 -> 9, owner decision) was a change in one
+    module that could have silently truncated output in another. This is the
+    assertion that ties them together.
+    """
+
+    @staticmethod
+    def _budget_and_font():
+        """Read the geometry OFF the module, do not restate it (/review).
+
+        The first version hardcoded 24 / 40 / 220 -- a copy of what
+        create_hotspot_display_image computed, which would have kept passing
+        against stale numbers if the QR moved, resized, or the value font
+        changed. The renderer now derives its column from these same constants,
+        so this measures the real budget by construction.
+        """
+        font = ImageFont.truetype(eink_display.FONT_PATH, eink_display.SETUP_VALUE_FONT_SIZE)
+        return eink_display.SETUP_VALUE_BUDGET, font
+
+    def test_the_widest_possible_generated_password_is_never_clamped(self):
+        """Worst case, not a sample: the widest glyph in the drawing alphabet
+        repeated to the full generated length. A random draw would pass by luck
+        long after the real margin was gone."""
+        import wifi_provision
+
+        budget, font = self._budget_and_font()
+        draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 1))
+
+        alphabet = wifi_provision.HOTSPOT_PASSWORD_ALPHABET
+        widest = max(alphabet, key=lambda c: draw.textlength(c, font=font))
+        worst = widest * wifi_provision.HOTSPOT_PASSWORD_LENGTH
+
+        clamped = eink_display._clamp_to_width(worst, font, draw, budget, "password")
+        assert clamped == worst, (
+            f"a {wifi_provision.HOTSPOT_PASSWORD_LENGTH}-char password of {widest!r} is clamped to "
+            f"{clamped!r} at a {budget}px budget — the recipient cannot type what they cannot read"
+        )
+
+    def test_there_is_real_headroom_not_a_hairline_pass(self):
+        """A pass with 2px to spare is one font change from a broken clock and
+        would not tell anyone.
+
+        Measured, so the numbers here are real rather than reassuring: at the
+        shipped length the worst case is 213px of a 510px budget (42%), the
+        clamp does not bite until length 22, and the 0.75 ratio below trips at
+        17. /review noted the original docstring claimed this made "the next
+        length bump a decision rather than an accident" -- it does not, for the
+        next eight bumps. It is a hairline-pass tripwire, which is worth having
+        under its own name, not a length-policy gate.
+        """
+        import wifi_provision
+
+        budget, font = self._budget_and_font()
+        draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 1))
+        alphabet = wifi_provision.HOTSPOT_PASSWORD_ALPHABET
+        widest = max(alphabet, key=lambda c: draw.textlength(c, font=font))
+        width = draw.textlength(widest * wifi_provision.HOTSPOT_PASSWORD_LENGTH, font=font)
+
+        assert width <= budget * 0.75, (
+            f"worst-case password is {width:.0f}px of a {budget}px budget "
+            f"({100 * width / budget:.0f}%) — too close to justify another character"
+        )
+
+    def test_the_join_qr_stays_at_the_version_it_was_designed_for(self):
+        """The other surface a longer password moves, and the one the text
+        budget says nothing about.
+
+        The WIFI: payload carries the password, so lengthening it can push the
+        symbol to a higher QR version -- more modules inside a FIXED 220px
+        block, i.e. a finer pitch and a NEAREST downscale that need not land on
+        integer pixels. SETUP_QR_QUIET_ZONE_PX is derived from the module count
+        too, so a version change moves the quiet zone the scan depends on.
+
+        Measured rather than assumed: with the shipped SSID the symbol stays
+        version 3 / 29 modules from password length 6 through 27, and only
+        crosses to version 4 at 28. (A /review pass put that boundary at 11;
+        it is 28 — checked directly, both numbers cannot be right.) So this is
+        not a near-term constraint, which is exactly why it should be pinned
+        rather than rediscovered.
+        """
+        import qrcode
+
+        import wifi_provision
+
+        payload = (
+            f"WIFI:T:WPA;S:{eink_display._wifi_qr_escape(wifi_provision.DEFAULT_SSID)};"
+            f"P:{eink_display._wifi_qr_escape('M' * wifi_provision.HOTSPOT_PASSWORD_LENGTH)};;"
+        )
+        qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=2)
+        qr.add_data(payload)
+        qr.make(fit=True)
+
+        assert qr.version == 3, (
+            f"the join QR moved to version {qr.version} ({qr.modules_count} modules) at password "
+            f"length {wifi_provision.HOTSPOT_PASSWORD_LENGTH}. It is rendered into a fixed "
+            f"{eink_display.SETUP_QR_SIZE}px block, so a finer module pitch means a non-integer "
+            "downscale, and SETUP_QR_QUIET_ZONE_PX is derived from the module count."
+        )

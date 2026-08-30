@@ -494,8 +494,8 @@ class TestConfirmSheetSlideAnimation:
         # Phone variant: pre-opening transform must be translateY(100%).
         # Find the rule for `[open]:not(.is-opening)` inside the ≤640px MQ.
         assert "dialog.confirm-sheet[open]:not(.is-opening) {\n    transform: translateY(100%)" in css, (
-            "litclock-dev#305 codex: phone-variant pre-opening rule missing — dialog will flash at "
-            "final position before sliding"
+            "litclock-dev#305 codex: phone-variant pre-opening rule missing — dialog will flash at final position "
+            "before sliding"
         )
         # Tablet variant: pre-opening opacity must be 0.
         assert "dialog.confirm-sheet[open]:not(.is-opening) {\n    opacity: 0" in css, (
@@ -539,8 +539,8 @@ class TestConfirmSheetSlideAnimation:
         block = css[idx : css.find("}\n}", idx) + 3]
         # Both selectors must be inside the override.
         assert "[open]:not(.is-opening)" in block, (
-            "litclock-dev#305 codex: reduced-motion must override the pre-opening rule so users "
-            "opting out get a true snap-cut"
+            "litclock-dev#305 codex: reduced-motion must override the pre-opening rule so users opting out get a true "
+            "snap-cut"
         )
         assert "transform: none" in block
         assert "opacity: 1" in block

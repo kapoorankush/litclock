@@ -26,6 +26,8 @@ from typing import Final
 
 from flask import Blueprint, current_app, jsonify, request
 
+import strings_catalog  # noqa: E402 — src/ on sys.path; hard dep since litclock-dev#532
+
 from .. import update_state
 from ..confirm_tokens import ConfirmTokenStore, envelope_for_consume_outcome
 from ..errors import envelope
@@ -56,7 +58,7 @@ def _check_rate_limit() -> tuple[object, int] | None:
         return None
     body, status = envelope(
         "rate_limited",
-        "Too many destructive actions. Try again shortly.",
+        strings_catalog.get("common.rate_limited.destructive"),
         429,
         retry_after_s=retry_after_s,
     )
@@ -100,7 +102,7 @@ def reset() -> tuple[object, int]:
     if token is None:
         return envelope(
             "confirm_token_invalid",
-            "Couldn't verify that action. Reload the page and try again.",
+            strings_catalog.get("common.alert.token_invalid"),
             401,
         )
     result = _store().consume_classified("wifi_reset", token)
@@ -117,7 +119,7 @@ def reset() -> tuple[object, int]:
         _store().restore("wifi_reset", token, expiry)
         return envelope(
             "update_in_progress",
-            "An update is in progress. Try again in a few minutes.",
+            strings_catalog.get("common.update_in_progress"),
             409,
         )
 
@@ -156,7 +158,7 @@ def reset() -> tuple[object, int]:
         _store().restore("wifi_reset", token, expiry)
         return envelope(
             "wifi_reset_failed",
-            "The WiFi reset could not be started.",
+            strings_catalog.get("api.wifi.reset_failed"),
             500,
         )
     except subprocess.TimeoutExpired as exc:
@@ -172,7 +174,7 @@ def reset() -> tuple[object, int]:
         # so we don't double-fire the WiFi wipe.
         return envelope(
             "wifi_reset_failed",
-            "The WiFi reset could not be started.",
+            strings_catalog.get("api.wifi.reset_failed"),
             500,
         )
 

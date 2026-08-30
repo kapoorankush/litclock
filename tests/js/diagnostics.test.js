@@ -272,6 +272,70 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("diagnostics.js injected-strings blob (litclock-dev#532 /review litclock-dev#739 F4e)", () => {
+  it("tr() prefers the blob value over the baked-in fallback", async () => {
+    // Every other fixture omits the blob, so only the fallback branch had
+    // coverage — a broken blob reader would ship green. Inject a blob with
+    // a sentinel value and drive the settling banner through the poll path.
+    // Reveal-on makes boot fire an immediate refresh (same mechanism as
+    // the Refreshed-sentence pin below).
+    sessionStorage.setItem("litclock.diag.reveal-location", "1");
+    buildDom({ uncollected: ["network"] });
+    const blob = document.createElement("script");
+    blob.type = "application/json";
+    blob.setAttribute("data-litclock-strings", "");
+    blob.textContent = JSON.stringify({
+      "diag.settling.network": "BLOB WINS: network check.",
+    });
+    document.body.appendChild(blob);
+    fetchMock.register(/\/api\/diagnostics/, {
+      body: {
+        ok: true,
+        values: {},
+        anomalies: [],
+        uncollected: ["network"],
+        copy_payload: "",
+        section_order: [],
+        revealed_groups: ["location"],
+      },
+    });
+    loadScript("diagnostics.js");
+    await vi.advanceTimersByTimeAsync(100);
+    const body = document.querySelector("[data-diag-banner-body]");
+    expect(body && body.textContent).toBe("BLOB WINS: network check.");
+  });
+});
+
+describe("diagnostics.js refreshed sentence (litclock-dev#532 slot pin)", () => {
+  it("writes the whole Refreshed sentence after a successful poll", async () => {
+    // /review litclock-dev#736 F1+F2: the first draft left 'Refreshed ' spliced at the
+    // call sites; the template now carries the whole sentence, and this is
+    // the rendered-output pin. The fixture's static copy is overwritten
+    // with a sentinel first, so the assertion can only be satisfied by the
+    // JS actually writing the string (the fixture text would otherwise
+    // satisfy it vacuously).
+    // Reveal-on makes boot fire an immediate refresh (otherwise the SSR
+    // values are trusted and only the 30s poll would write this line).
+    sessionStorage.setItem("litclock.diag.reveal-location", "1");
+    buildDom();
+    const span = document.querySelector("[data-diag-banner-refreshed]");
+    span.textContent = "SENTINEL";
+    fetchMock.register(/\/api\/diagnostics/, {
+      body: {
+        ok: true,
+        values: {},
+        anomalies: [],
+        copy_payload: "",
+        section_order: [],
+        revealed_groups: ["location"],
+      },
+    });
+    loadScript("diagnostics.js");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(span.textContent).toBe("Refreshed just now");
+  });
+});
+
 describe("diagnostics.js boot", () => {
   it("applies Reveal=off UI when sessionStorage is empty", async () => {
     buildDom();

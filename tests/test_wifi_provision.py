@@ -11,9 +11,10 @@ wave these cases through and surface the misleading nmcli error.
 
 from __future__ import annotations
 
+import logging
+import math
 import os
 import re
-import string
 import subprocess
 from types import SimpleNamespace
 
@@ -146,21 +147,151 @@ class TestValidateHotspotCredentials:
     splash step lines can never disagree about what the network is."""
 
     def test_shipped_defaults_are_valid(self):
-        # The production path: DEFAULT_SSID + a generated 8-char password.
+        # The production path: DEFAULT_SSID + a generated password (9 chars
+        # since litclock-dev#670; the length is read off the module below).
         pw = wifi_provision._generate_password()
         assert wifi_provision.validate_hotspot_credentials(wifi_provision.DEFAULT_SSID, pw) is None
 
     def test_generated_password_invariants_are_pinned(self):
         # Don't just sample one random draw: pin the generator's contract so a
         # future alphabet change that could emit a validator-rejected char
-        # fails deterministically (/review, Codex). Length 8, alnum ASCII, and
-        # every char of the drawing alphabet is itself validator-clean.
+        # fails deterministically (/review, Codex). Alnum ASCII, drawn only
+        # from the module's own alphabet, every char of which is itself
+        # validator-clean.
+        #
+        # Reads the alphabet off the module rather than restating
+        # `string.ascii_letters + string.digits`. The literal was the whole
+        # defect in litclock-dev#670: it silently kept asserting the old
+        # 62-character set, so it would have passed unchanged whatever the
+        # generator actually drew from.
+        alphabet = wifi_provision.HOTSPOT_PASSWORD_ALPHABET
         pw = wifi_provision._generate_password()
-        assert len(pw) == 8 and pw.isalnum() and pw.isascii()
-        alphabet = string.ascii_letters + string.digits
+        assert len(pw) == wifi_provision.HOTSPOT_PASSWORD_LENGTH
+        assert pw.isalnum() and pw.isascii()
         assert set(pw) <= set(alphabet)
         for ch in alphabet:
-            assert wifi_provision.validate_hotspot_credentials(wifi_provision.DEFAULT_SSID, ch * 8) is None
+            assert (
+                wifi_provision.validate_hotspot_credentials(
+                    wifi_provision.DEFAULT_SSID, ch * wifi_provision.HOTSPOT_PASSWORD_LENGTH
+                )
+                is None
+            )
+
+    def test_the_alphabet_excludes_every_lookalike(self):
+        """litclock-dev#670. The key is read off a 1-bit e-ink panel and retyped
+        into a phone, and litclock-dev#620 made a bad draw permanent -- the
+        device re-presents that exact string at every future setup for its whole
+        life. The author could not tell `cz7yOjWA`'s O from a zero in his own
+        screenshot.
+
+        Asserted as a property of the alphabet, not of a sample: a sampled test
+        would pass ~21% of the time with the exclusion removed entirely.
+        """
+        alphabet = set(wifi_provision.HOTSPOT_PASSWORD_ALPHABET)
+        # Each group is a FULL confusion family, including the member the
+        # source deliberately keeps. Written as "8B"/"2Z" the `allowed`
+        # carve-out below was dead code -- no group contained b or z, so it was
+        # always the empty set and the assertion collapsed to "nothing leaked"
+        # (/review). Spelling the families out makes the carve-out real.
+        for group in ("0Oo", "1lI", "5Ss", "8Bb", "2Zz"):
+            leaked = alphabet & set(group)
+            allowed = {"b", "z"} & set(group)
+            assert leaked <= allowed, (
+                f"confusion class {group!r} still has {sorted(leaked - allowed)} in the "
+                "drawing alphabet; that character is read off e-ink and retyped"
+            )
+        # The keeps need their own guard: nothing above notices if b and z are
+        # dropped, and the source calls keeping them a deliberate decision.
+        assert {"b", "z"} <= alphabet, (
+            "lowercase b and z are kept deliberately (B/8 and Z/2 are gone, so "
+            "they are unambiguous alone); dropping them costs entropy for nothing"
+        )
+
+    def test_the_alphabet_did_not_quietly_shrink(self):
+        """Guard the guard, two ways.
+
+        Excluding characters is how this fix works, so an over-broad exclusion
+        is the natural way to break it -- and it would make the test above
+        *more* satisfied while cutting entropy. 49 characters at length 8 is
+        44.9 bits, which is the trade recorded in the source comment; anything
+        materially smaller is a different trade and should be argued for.
+        """
+        alphabet = wifi_provision.HOTSPOT_PASSWORD_ALPHABET
+        assert len(alphabet) == len(set(alphabet)), "alphabet contains duplicates"
+        assert len(alphabet) == 49, (
+            f"alphabet is {len(alphabet)} characters, not the 49 the entropy note "
+            "in wifi_provision.py is written against"
+        )
+        # The floor is the PRE-litclock-dev#670 baseline: 62**8 = 47.63 bits,
+        # what the fleet had before the alphabet was narrowed. The owner chose
+        # length 9 specifically so the legibility fix does not cost margin, and
+        # this is the invariant that expresses it -- a silent revert to length 8
+        # (44.9 bits) fails here, where a floor of 44.0 would have waved it
+        # through.
+        #
+        # Still arithmetic on the pinned constants, not an observation of the
+        # generator; the real entropy guard is the distinctness assertion below.
+        bits = wifi_provision.HOTSPOT_PASSWORD_LENGTH * math.log2(len(alphabet))
+        baseline_bits = 8 * math.log2(62)
+        assert bits >= baseline_bits, (
+            f"generated key is {bits:.1f} bits, below the {baseline_bits:.1f} bits the fleet "
+            "had before the alphabet was narrowed (litclock-dev#670). The point of length 9 "
+            "was that legibility should not cost margin."
+        )
+
+    def test_draws_are_unambiguous_distinct_and_cover_the_alphabet(self):
+        """Three properties over one sample, because each alone is satisfiable
+        by a generator nobody wants.
+
+        UNAMBIGUOUS: at 84.8% ambiguity per draw, 400 draws from the old
+        62-character set would contain a lookalike with probability
+        indistinguishable from 1.
+
+        DISTINCT: this is the entropy guard, and it is the one that matters.
+        Absence of lookalikes does not imply entropy, and neither does alphabet
+        coverage -- the first version of this test asserted coverage and was
+        measured to catch the most realistic mutant, `secrets.choice(A) *
+        length` (44.9 bits collapsing to 5.6), only 1.3% of the time. Under
+        that mutant every draw still contributes one uniformly random
+        character, so 400 draws still cover all 49. What it cannot do is
+        produce more than 49 distinct passwords. Verified: real generator 400
+        distinct of 400, mutant 49 of 400.
+
+        COVERS THE ALPHABET: catches the opposite shape, a generator drawing
+        from a smaller set than it advertises (`secrets.choice("abc")`).
+
+        Collision probability for the distinctness bound is negligible: 400
+        draws from 49**8 = 3.3e13 expect ~2e-9 collisions, so a threshold of
+        390 is ~180 collisions clear of anything chance will produce.
+        """
+        confusable = set("0Oo1lI5Ss8B2Z")
+        alphabet = set(wifi_provision.HOTSPOT_PASSWORD_ALPHABET)
+        draws = [wifi_provision._generate_password() for _ in range(400)]
+
+        for pw in draws:
+            # Length asserted inside the loop so an empty draw cannot satisfy
+            # the confusable check vacuously (/review).
+            assert len(pw) == wifi_provision.HOTSPOT_PASSWORD_LENGTH, f"short draw: {pw!r}"
+            assert not (set(pw) & confusable), f"ambiguous password generated: {pw!r}"
+
+        assert len(set(draws)) >= 390, (
+            f"only {len(set(draws))} distinct passwords in 400 draws -- the generator is "
+            "not drawing each position independently, so the key has far less entropy "
+            "than the alphabet implies"
+        )
+
+        for i in range(wifi_provision.HOTSPOT_PASSWORD_LENGTH):
+            variety = len({d[i] for d in draws})
+            assert variety >= 20, (
+                f"position {i} only ever took {variety} values across 400 draws -- "
+                "that position is not being drawn randomly"
+            )
+
+        missing = alphabet - set().union(*(set(d) for d in draws))
+        assert not missing, (
+            f"the generator never drew {sorted(missing)} in 3200 characters -- it is "
+            "drawing from a smaller set than HOTSPOT_PASSWORD_ALPHABET advertises"
+        )
 
     def test_boundary_lengths_are_valid(self):
         assert wifi_provision.validate_hotspot_credentials("S" * 32, "p" * 8) is None
@@ -1523,14 +1654,83 @@ class TestWifiFailureClasses:
         assert f"{err}" == "Incorrect WiFi password"
 
 
+class FakeNmcli:
+    """A stand-in for nmcli that MODELS the contract instead of saying yes.
+
+    litclock-dev#654. The previous fakes returned `rc=0, stdout=""` to every
+    call, which is exactly the structurally-blind shape this repo has been
+    bitten by twice: it would have accepted a `create_hotspot` that never
+    stored a password at all, since the read-back it now does would come back
+    empty and still be waved through. This one carries state — the editor's
+    stdin sets the PSK, the `-s -g …psk` read returns it — so a real defect in
+    the sequence surfaces as a failing assertion rather than a green run.
+
+    It also RECORDS every argv, which is what the PSK-off-argv assertions read.
+    """
+
+    FAKE_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    def __init__(self, fail_on=None, stored_override=None, add_stdout=None, secret_output_calls=None):
+        self.calls = []
+        self.inputs = []
+        self.kwargs = []
+        self.stored_psk = None
+        # The nmcli VERB to fail, matched exactly. It used to be a substring of
+        # the joined argv, and "up" is a substring of "LitClock-Setup" -- so the
+        # `up` sub-case silently re-ran the `add` case, and inverting the real
+        # `up` failure branch left the whole suite green while create_hotspot
+        # reported success for an AP that never came on air (/review).
+        self.fail_on = fail_on
+        self.stored_override = stored_override
+        self.add_stdout = add_stdout
+        self.secret_output_calls = secret_output_calls if secret_output_calls is not None else []
+
+    def __call__(self, args, check=True, sudo=False, timeout=None, secret_output=False, input_text=None):
+        args = list(args)
+        self.calls.append(args)
+        self.kwargs.append({"timeout": timeout, "secret_output": secret_output, "sudo": sudo})
+        if secret_output:
+            self.secret_output_calls.append(args)
+        if input_text is not None:
+            self.inputs.append(input_text)
+            m = re.search(r"set 802-11-wireless-security\.psk (.*)", input_text)
+            if m:
+                self.stored_psk = m.group(1)
+        verb = next((a for a in args if a in ("add", "modify", "edit", "show", "up", "down", "delete")), None)
+        if self.fail_on and verb == self.fail_on:
+            return SimpleNamespace(returncode=1, stdout="", stderr="fake failure")
+        if verb == "add":
+            default = f"Connection 'litclock-hotspot' ({self.FAKE_UUID}) successfully added.\n"
+            return SimpleNamespace(
+                returncode=0, stdout=self.add_stdout if self.add_stdout is not None else default, stderr=""
+            )
+        if "802-11-wireless-security.psk" in args and "show" in args:
+            # `-s` is what makes nmcli print the secret at all; without it the
+            # real tool prints `<hidden>` and every device would refuse to raise
+            # an AP. Model that, so dropping `-s` is a test failure and not a
+            # field-only one.
+            if "-s" not in args:
+                return SimpleNamespace(returncode=0, stdout="<hidden>\n", stderr="")
+            value = self.stored_override if self.stored_override is not None else (self.stored_psk or "")
+            return SimpleNamespace(returncode=0, stdout=value + "\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
 class TestPersistedHotspotPassword:
     """litclock-dev#620 — the hotspot password must survive across provisioning
     cycles, because the SSID does. Every cycle used to mint a fresh one under
     the same name, so a phone that had joined once held a credential that no
-    longer worked. Hardware-measured 2026-08-12: iOS says "Incorrect password"
-    and offers a password field, but Android reports "No Internet Access",
-    never mentions the password, offers no field, and a QR scan does not
-    override the saved entry — no user-discoverable recovery at all.
+    longer worked.
+
+    Measured twice, and the second run disagreed (litclock-dev#648, corrected
+    here per litclock-dev#663). 2026-08-12: iOS said "Incorrect password" and
+    offered a field; Android reported "No Internet Access", offered none, and a
+    QR scan did not override the saved entry. 2026-08-15, different handset:
+    "Connection failed — Wrong password", an offered "Change password", and a
+    QR scan that worked first try. Both readings stand; the strong claim that
+    Android left no user-discoverable recovery is UNPROVEN, not established.
+    The decision is unaffected -- a stable per-device password means a normal
+    owner never reaches any of these screens.
     """
 
     def test_first_call_mints_and_persists(self, tmp_path):
@@ -1538,6 +1738,118 @@ class TestPersistedHotspotPassword:
         pw = wifi_provision._load_or_create_hotspot_password(str(path))
         assert wifi_provision._validate_hotspot_password(pw) is None
         assert path.read_text(encoding="utf-8").strip() == pw
+
+    def test_a_loose_mode_that_cannot_be_tightened_is_refused_not_used(self, tmp_path, monkeypatch):
+        """litclock-dev#663. The fchmod exists so the 0600 promise covers files
+        this code did not create -- "a 0644 file from an older install, a
+        restore, or a hand edit", per the comment above it. On failure the code
+        logged a warning and returned the value ANYWAY, so on the one path the
+        guard exists for it was read, accepted, and kept in service as the
+        device's permanent WPA2 key while staying world-readable forever.
+
+        fchmod is monkeypatched because the real failure needs a file owned by
+        another uid, which the suite cannot create unprivileged -- and the
+        root-run variant would self-skip, which this project has already been
+        bitten by.
+        """
+        path = tmp_path / "hotspot-password"
+        path.write_text("legacyPW1", encoding="utf-8")
+        path.chmod(0o644)
+
+        def refuse(*_a, **_k):
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(wifi_provision.os, "fchmod", refuse)
+
+        assert wifi_provision._read_persisted_password(str(path)) is None, (
+            "a world-readable key that cannot be tightened must be refused, not returned; "
+            "returning it keeps it in service permanently (litclock-dev#620)"
+        )
+
+        # End-to-end, because "returns None" is not the property that matters
+        # (/review). What matters is that the loose key never reaches the AP.
+        # With fchmod refused globally the replacement write cannot persist
+        # either, so the device rotates each cycle -- the pre-litclock-dev#620
+        # degradation, which is recoverable by re-reading the panel. A
+        # world-readable permanent key is not.
+        served = wifi_provision._load_or_create_hotspot_password(str(path))
+        assert served != "legacyPW1", "the untightenable key was still handed to the hotspot"
+        assert wifi_provision._validate_hotspot_password(served) is None, "served an invalid key"
+
+    def test_an_empty_directory_at_the_password_path_self_heals(self, tmp_path):
+        """litclock-dev#663. A symlink or FIFO here is overwritten by
+        os.replace, and the docstring enumerates exactly those, implying the
+        corrupt-shape handling is complete. A directory was the exception:
+        os.replace refuses it, so every cycle minted a fresh key forever --
+        permanently degraded to the pre-litclock-dev#620 behaviour, signalled
+        only by a warning reading "this cycle only", which was precisely wrong.
+        """
+        path = tmp_path / "hotspot-password"
+        path.mkdir()
+
+        first = wifi_provision._load_or_create_hotspot_password(str(path))
+        second = wifi_provision._load_or_create_hotspot_password(str(path))
+
+        assert path.is_file(), "the squatting directory should have been cleared"
+        assert first == second, (
+            "the password changed between cycles -- the directory was never cleared, so the "
+            "device mints a different key every provisioning and phones cannot rejoin"
+        )
+
+    def test_a_non_empty_directory_is_reported_and_never_deleted(self, tmp_path, caplog):
+        """The other half of the same fix: self-healing must not become data
+        loss. rmdir refuses a non-empty directory, so the failure stays -- but
+        it is now named accurately instead of claiming "this cycle only".
+
+        Asserts the REPORTING as well as the survival (/review): without that,
+        a silently failing cycle passes as long as the contents are intact, and
+        silence is the whole defect being fixed here.
+        """
+        path = tmp_path / "hotspot-password"
+        path.mkdir()
+        (path / "keepme").write_text("important", encoding="utf-8")
+
+        with caplog.at_level(logging.ERROR):
+            wifi_provision._load_or_create_hotspot_password(str(path))
+
+        assert path.is_dir(), "clone prep must not delete a non-empty directory"
+        assert (path / "keepme").read_text(encoding="utf-8") == "important", "contents were destroyed"
+        assert any("will NOT self-heal" in r.getMessage() for r in caplog.records), (
+            "a permanently-stuck password path must say so; the old message claimed "
+            f"'this cycle only', which is the opposite. Got: {[r.getMessage() for r in caplog.records]}"
+        )
+
+    def test_an_existing_ambiguous_password_is_kept_not_rotated(self, tmp_path):
+        """litclock-dev#670 must not re-mint litclock-dev#620's permanent key.
+
+        Naming this explicitly because "while we're here, let's upgrade the
+        already-provisioned devices too" is the obvious follow-up thought, and
+        it would be wrong: the key is permanent by design, an owner may have
+        written it down or printed it, and silently changing it on update
+        strands the phone that already knows it. The behaviour was covered only
+        incidentally, by three pre-litclock-dev#670 tests whose stated subjects
+        are whitespace, file modes and boundary lengths, and only because their
+        fixtures happened to contain lookalikes -- anyone tidying those fixtures
+        to lookalike-free strings would have removed the guard silently
+        (/review).
+
+        Every character here is one litclock-dev#670 excludes.
+        """
+        legacy = "O0lI1S5B"
+        assert set(legacy) <= set("0Oo1lI5Ss8B2Z"), "fixture must be all-lookalike to mean anything"
+        assert not (set(legacy) & set(wifi_provision.HOTSPOT_PASSWORD_ALPHABET)), (
+            "fixture shares characters with the new alphabet, so a rotation could go unnoticed"
+        )
+        path = tmp_path / "hotspot-password"
+        path.write_text(legacy, encoding="utf-8")
+
+        got = wifi_provision._load_or_create_hotspot_password(str(path))
+
+        assert got == legacy, (
+            "litclock-dev#670 rotated an existing permanent key; litclock-dev#620 makes "
+            "it permanent on purpose and the owner's phone already knows it"
+        )
+        assert path.read_text(encoding="utf-8").strip() == legacy, "the stored key was rewritten"
 
     def test_second_call_returns_the_SAME_password(self, tmp_path):
         """The whole point of the issue: stability across cycles."""
@@ -1616,18 +1928,21 @@ class TestPersistedHotspotPassword:
         monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
         monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: None)
         monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
-        monkeypatch.setattr(
-            wifi_provision,
-            "_run_nmcli",
-            lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
-        )
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", FakeNmcli())
         result = wifi_provision.create_hotspot()
         assert result is not None
         assert result["password"] == expected
 
     def test_explicit_password_still_wins(self, tmp_path, monkeypatch):
         """--password (and the QA lab) must override the persisted value, and
-        must NOT overwrite the stored one."""
+        must NOT overwrite the stored one.
+
+        This is the behaviour litclock-dev#664 asked about, and it stays: an
+        override exists to look at behaviour on a bench, and letting it rewrite
+        the device's persistent key would turn a debugging flag into a
+        destructive one. What was wrong was the DOCSTRING, which asserted that
+        the live AP and the persisted file can never disagree — true only on
+        the `password=None` path, which is every shipped path."""
         path = tmp_path / "hotspot-password"
         monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", str(path))
         stored = wifi_provision._load_or_create_hotspot_password(str(path))
@@ -1635,14 +1950,271 @@ class TestPersistedHotspotPassword:
         monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
         monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: None)
         monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
-        monkeypatch.setattr(
-            wifi_provision,
-            "_run_nmcli",
-            lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
-        )
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", FakeNmcli())
         result = wifi_provision.create_hotspot(password="override1")
         assert result["password"] == "override1"
         assert path.read_text(encoding="utf-8").strip() == stored
+
+    def test_the_persistence_contract_is_stated_where_it_is_broken(self):
+        """litclock-dev#664 was a false claim, so the guard is against the
+        claim coming back unqualified.
+
+        `_load_or_create_hotspot_password`'s invariant is about that function,
+        not about every hotspot. A future edit that drops the qualification
+        restores a sentence the next person would reason from — and the
+        reasoning would be wrong on exactly the path a bench operator uses.
+        """
+        import inspect
+
+        doc = " ".join((inspect.getdoc(wifi_provision._load_or_create_hotspot_password) or "").split())
+        assert "`create_hotspot(password=X)` never calls it" in doc, (
+            "the docstring must say the invariant does NOT cover an explicit password override"
+        )
+        assert "not about every hotspot" in doc, "and must scope the invariant to this function"
+
+    # --- litclock-dev#654: the PSK must never reach argv -------------------
+
+    def test_the_psk_never_appears_in_any_argv(self, tmp_path, monkeypatch):
+        """The whole point of the change.
+
+        sudo writes the argv of every command it runs to syslog, and the
+        flashed image sets journald Storage=persistent, so an argv token put
+        the setup key on the SD card — where clone prep's 1-day vacuum could
+        not be relied on to remove it, and every clone of that card carried it.
+        """
+        monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", str(tmp_path / "pw"))
+        monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
+        monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: None)
+        monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
+        fake = FakeNmcli()
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", fake)
+
+        result = wifi_provision.create_hotspot(password="Secret12")
+        assert result is not None and result["password"] == "Secret12"
+        for argv in fake.calls:
+            assert "Secret12" not in argv, f"PSK leaked into argv: {argv}"
+            assert "password" not in argv, f"an argv `password` token is back: {argv}"
+        # …and it DID travel, on stdin, exactly once.
+        assert sum("Secret12" in i for i in fake.inputs) == 1
+
+    def test_a_hotspot_is_refused_when_the_psk_does_not_store(self, tmp_path, monkeypatch):
+        """The editor's exit code is a weak signal — it exits 0 after `quit`
+        even when `save` failed (litclock-dev#599) — so the read-back is the authority.
+
+        Raising an AP whose key does not match what the panel prints is worse
+        than raising none: the owner reads a password that cannot work and has
+        no way to discover why."""
+        monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", str(tmp_path / "pw"))
+        monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
+        torn = []
+        monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: torn.append(1))
+        monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
+        # nmcli says yes to everything, but the profile holds a DIFFERENT key —
+        # the shape a silently-failed `save` produces.
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", FakeNmcli(stored_override="somethingelse"))
+        assert wifi_provision.create_hotspot(password="Secret12") is None
+        # TWO: the pre-emptive one at the top of create_hotspot, and the one on
+        # the failure path. Asserting merely "torn" was satisfied by the first
+        # alone, so deleting the failure-path teardown kept the suite green
+        # (/review).
+        assert len(torn) == 2, f"expected a pre-emptive AND a failure-path teardown, got {len(torn)}"
+
+    def test_the_readback_unescapes_before_comparing(self, tmp_path, monkeypatch):
+        """`nmcli -s -g` output is terse-ESCAPED even for a single field
+        (litclock-dev#616): a stored `pa:ss` reads back as `pa\\:ss`. Comparing raw
+        against escaped would refuse every password containing a colon or a
+        backslash — a false refusal on a legitimate key."""
+        monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", str(tmp_path / "pw"))
+        monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
+        monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: None)
+        monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", FakeNmcli(stored_override="pa\\:ssword12"))
+        assert wifi_provision.create_hotspot(password="pa:ssword12") is not None
+
+    def test_a_password_the_editor_cannot_carry_is_refused_before_the_editor_runs(
+        self, tmp_path, monkeypatch
+    ):
+        """Each newline in the editor's stdin executes as another command,
+        under sudo. Generated keys can't contain one and
+        validate_hotspot_credentials rejects non-printable ASCII, but this path
+        re-checks rather than assuming — the consequence of being wrong is root
+        running attacker-shaped lines."""
+        monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", str(tmp_path / "pw"))
+        monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
+        monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: None)
+        monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
+        fake = FakeNmcli()
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", fake)
+        # Bypass validate_hotspot_credentials so the guard under test is the
+        # one being measured, not the one upstream of it.
+        monkeypatch.setattr(wifi_provision, "validate_hotspot_credentials", lambda s, p: None)
+        assert wifi_provision.create_hotspot(password="abc\ndef12") is None
+        assert not any("connection" in c and "edit" in c for c in fake.calls), (
+            "the editor must not run at all for a password it cannot carry"
+        )
+
+    def test_the_profile_pins_wpa2_ccmp_not_just_wpa_psk(self, tmp_path, monkeypatch):
+        """`key-mgmt wpa-psk` alone also permits WPA/TKIP. The call this
+        replaced pinned RSN + CCMP, measured by diffing the two profiles on
+        hardware, and dropping the triple would quietly weaken every setup AP.
+        """
+        monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", str(tmp_path / "pw"))
+        monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
+        monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: None)
+        monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
+        fake = FakeNmcli()
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", fake)
+        wifi_provision.create_hotspot(password="Secret12")
+        modify = next((c for c in fake.calls if "modify" in c), None)
+        assert modify, "no `connection modify` call"
+        for prop, value in [
+            ("802-11-wireless-security.key-mgmt", "wpa-psk"),
+            ("802-11-wireless-security.proto", "rsn"),
+            ("802-11-wireless-security.pairwise", "ccmp"),
+            ("802-11-wireless-security.group", "ccmp"),
+            ("802-11-wireless.mode", "ap"),
+            ("ipv4.method", "shared"),
+            ("ipv6.method", "ignore"),
+        ]:
+            assert prop in modify and modify[modify.index(prop) + 1] == value, f"{prop} must be {value}"
+        # The one property the hardware diff put on the NEW side, i.e. the one
+        # the old call did NOT set. Its absence is the claim; without this the
+        # claim had no guard at all (/review).
+        assert "802-11-wireless.band" not in modify, (
+            "band is deliberately unset — the call this replaced left it unset, and pinning it "
+            "would be a behaviour change smuggled in under a security fix"
+        )
+
+    def test_every_failure_in_the_sequence_tears_down(self, tmp_path, monkeypatch):
+        """first-boot.sh retries hotspot creation with escalating recovery; a
+        leftover half-built profile would poison the retry."""
+        for failing in ("add", "modify", "up"):
+            monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", str(tmp_path / f"pw-{failing}"))
+            monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
+            torn = []
+            monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda t=torn: t.append(1))
+            monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
+            monkeypatch.setattr(wifi_provision, "_run_nmcli", FakeNmcli(fail_on=failing))
+            assert wifi_provision.create_hotspot(password="Secret12") is None, f"{failing} failure not caught"
+            assert len(torn) == 2, f"{failing} failure did not tear down (saw {len(torn)} teardowns, want 2)"
+
+    def test_the_readback_asks_nmcli_to_actually_print_the_secret(self, tmp_path, monkeypatch):
+        """`-s` is the difference between a working device and none.
+
+        Without it nmcli prints `<hidden>`, the comparison fails on EVERY
+        device, and first-boot exhausts all five hotspot attempts and exits 1.
+        A one-token deletion with no test cost until now (/review).
+        """
+        monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", str(tmp_path / "pw"))
+        monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
+        monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: None)
+        monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
+        fake = FakeNmcli()
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", fake)
+        assert wifi_provision.create_hotspot(password="Secret12") is not None
+        read = next((c for c in fake.calls if "802-11-wireless-security.psk" in c and "show" in c), None)
+        assert read and "-s" in read, "the read-back must pass -s or nmcli returns <hidden>"
+
+    def test_the_readback_is_marked_secret_output(self, tmp_path, monkeypatch):
+        """Otherwise `_run_nmcli`'s TimeoutExpired branch logs the partial
+        output at ERROR — and that output IS the PSK, reopening this very leak
+        from the read side (litclock-dev#613/litclock-dev#616)."""
+        monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", str(tmp_path / "pw"))
+        monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
+        monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: None)
+        monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
+        fake = FakeNmcli()
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", fake)
+        wifi_provision.create_hotspot(password="Secret12")
+        marked = [c for c in fake.secret_output_calls if "802-11-wireless-security.psk" in c]
+        assert marked, "the psk read-back must be marked secret_output=True"
+
+    def test_every_profile_building_call_is_bounded(self, tmp_path, monkeypatch):
+        """The constant's comment promises first-boot reaches its escalation.
+
+        `connection up` is the deliberate exception: it talks to the radio, and
+        the call this replaced was unbounded there too."""
+        monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", str(tmp_path / "pw"))
+        monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
+        monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: None)
+        monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
+        fake = FakeNmcli()
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", fake)
+        wifi_provision.create_hotspot(password="Secret12")
+        for argv, kw in zip(fake.calls, fake.kwargs, strict=True):
+            if "up" in argv:
+                assert kw["timeout"] is None, "connection up stays unbounded, as the old call was"
+            else:
+                assert kw["timeout"], f"profile-building call left unbounded: {argv}"
+
+    def test_teardown_is_bounded_too(self):
+        """create_hotspot's failure path calls this, and the failure that gets
+        there most often is a metadata call that timed out because NM is
+        wedged. An unbounded cleanup right after that hangs in exactly the state
+        first-boot's escalation exists to recover from (/review)."""
+        calls = []
+
+        class _Rec:
+            def __call__(self, args, check=True, sudo=False, timeout=None, secret_output=False, input_text=None):
+                calls.append((list(args), timeout))
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        import unittest.mock as _mock
+
+        with _mock.patch.object(wifi_provision, "_run_nmcli", _Rec()), _mock.patch.object(
+            wifi_provision, "_teardown_captive_portal", lambda: None
+        ):
+            wifi_provision.teardown_hotspot()
+        assert calls, "teardown ran no nmcli calls"
+        for argv, timeout in calls:
+            assert timeout, f"teardown call left unbounded: {argv}"
+
+    def test_the_profile_is_addressed_by_uuid_after_it_is_created(self, tmp_path, monkeypatch):
+        """A failed teardown delete leaves two profiles sharing the id
+        `litclock-hotspot` — the documented premise of litclock-dev#653 — and
+        by-name addressing would then modify one, read back another and
+        activate a third. `_restore_ssid_psks` addresses by uuid for the same
+        reason."""
+        monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", str(tmp_path / "pw"))
+        monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
+        monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: None)
+        monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
+        fake = FakeNmcli()
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", fake)
+        wifi_provision.create_hotspot(password="Secret12")
+        for verb in ("modify", "edit", "up"):
+            call = next(c for c in fake.calls if verb in c and "connection" in c)
+            assert "uuid" in call and FakeNmcli.FAKE_UUID in call, f"{verb} must address the profile by uuid: {call}"
+
+    def test_an_unparseable_add_output_falls_back_to_the_name(self, tmp_path, monkeypatch):
+        """By-name is what shipped for months, so a parse miss must degrade to
+        the status quo rather than refusing to raise an AP at all."""
+        monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", str(tmp_path / "pw"))
+        monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
+        monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: None)
+        monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: None)
+        fake = FakeNmcli(add_stdout="Connection added.\n")
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", fake)
+        assert wifi_provision.create_hotspot(password="Secret12") is not None
+        call = next(c for c in fake.calls if "modify" in c)
+        assert "uuid" not in call and wifi_provision.HOTSPOT_CON_NAME in call
+
+    def test_a_padded_password_is_refused_before_any_side_effect(self, tmp_path, monkeypatch):
+        """`validate_hotspot_credentials` accepts " secret1 " (0x20 is
+        printable), but the editor strips it — so the profile would hold a
+        DIFFERENT password than the panel prints. The refusal has to land
+        before the teardown, the captive-portal write and the profile add, or
+        the "no side effects on a rejected pair" contract (litclock-dev#626)
+        stops being true."""
+        monkeypatch.setattr(wifi_provision, "HOTSPOT_PASSWORD_FILE", str(tmp_path / "pw"))
+        monkeypatch.setattr(wifi_provision, "ensure_wifi_ready", lambda: True)
+        torn, portal = [], []
+        monkeypatch.setattr(wifi_provision, "teardown_hotspot", lambda: torn.append(1))
+        monkeypatch.setattr(wifi_provision, "_setup_captive_portal", lambda *a, **k: portal.append(1))
+        fake = FakeNmcli()
+        monkeypatch.setattr(wifi_provision, "_run_nmcli", fake)
+        assert wifi_provision.create_hotspot(password=" secret1 ") is None
+        assert not torn and not portal and not fake.calls, "a rejected password must cause NO side effects"
 
     # --- /review round: gaps found by mutation testing (guards that did not guard) ---
 
@@ -1665,14 +2237,82 @@ class TestPersistedHotspotPassword:
     def test_fifo_does_not_wedge_the_open(self, tmp_path):
         """O_NONBLOCK was never exercised: deleting it left every test green,
         while a planted FIFO would hang provisioning forever and the device
-        would never bring up a setup AP at all."""
+        would never bring up a setup AP at all.
+
+        litclock-dev#662: run it on a worker thread with a bounded join. A
+        dropped O_NONBLOCK makes this block forever on a writer that never
+        comes — a PASS-shaped failure that burns CI to its wall-clock limit and
+        reports a timeout instead of the regression. pytest-timeout is declared
+        too, but this test carries its own bound so it fails fast even where the
+        plugin is not installed.
+        """
         import stat as _stat
+        import threading
 
         path = tmp_path / "hotspot-password"
         os.mkfifo(str(path))  # no writer: a blocking O_RDONLY open never returns
-        pw = wifi_provision._load_or_create_hotspot_password(str(path))
+
+        result = {}
+
+        def _call():
+            result["pw"] = wifi_provision._load_or_create_hotspot_password(str(path))
+
+        worker = threading.Thread(target=_call, daemon=True)
+        worker.start()
+        worker.join(timeout=20)
+        assert not worker.is_alive(), (
+            "the read blocked on a FIFO with no writer — O_NONBLOCK is gone, and on a device this "
+            "wedges provisioning so the setup AP never comes up at all"
+        )
+
+        pw = result["pw"]
         assert wifi_provision._validate_hotspot_password(pw) is None
         assert not _stat.S_ISFIFO(os.stat(str(path)).st_mode)
+
+    def test_it_creates_the_state_dir_when_it_does_not_exist(self, tmp_path):
+        """`os.makedirs(directory, exist_ok=True)` had no coverage: every test
+        points at tmp_path, which always exists, so the create branch — the REAL
+        first-boot condition, where /var/lib/litclock has never been made — never
+        executed (litclock-dev#662, same shape as litclock-dev#646).
+        """
+        nested = tmp_path / "var" / "lib" / "litclock"
+        assert not nested.exists()
+        path = nested / "hotspot-password"
+
+        pw = wifi_provision._load_or_create_hotspot_password(str(path))
+
+        assert wifi_provision._validate_hotspot_password(pw) is None
+        assert path.is_file(), "the state dir was not created, so first boot could not persist the key"
+        assert path.read_text(encoding="utf-8").strip() == pw
+        assert oct(path.stat().st_mode & 0o777) == "0o600"
+
+    def test_the_watchdog_counter_lives_in_the_same_state_dir(self, monkeypatch, tmp_path):
+        """litclock-dev#662 /review found a production drift: this path was
+        hardcoded while scripts/wifi-watchdog.sh derives it from
+        "${LITCLOCK_STATE_DIR:-/var/lib/litclock}". A LITCLOCK_STATE_DIR
+        override therefore moved the hotspot password but NOT the counter,
+        leaving two halves of the same state dir pointing at different places.
+        """
+        import importlib
+
+        monkeypatch.setenv("LITCLOCK_STATE_DIR", str(tmp_path))
+        reloaded = importlib.reload(wifi_provision)
+        try:
+            assert reloaded.STATE_DIR == str(tmp_path)
+
+            counter = tmp_path / "wifi-watchdog-reboots"
+            counter.write_text("3\n", encoding="utf-8")
+            monkeypatch.delenv("LITCLOCK_WIFI_WATCHDOG_COUNTER", raising=False)
+
+            reloaded._clear_wifi_watchdog_counter()
+
+            assert not counter.exists(), (
+                "the watchdog counter was not cleared under the overridden state dir — the path is "
+                "hardcoded again and has drifted from wifi-watchdog.sh"
+            )
+        finally:
+            monkeypatch.delenv("LITCLOCK_STATE_DIR", raising=False)
+            importlib.reload(wifi_provision)
 
     def test_replace_failure_leaves_no_temp_file_holding_the_secret(self, tmp_path, monkeypatch, caplog):
         """Everything after mkstemp was unreachable in the suite. A failing
@@ -1706,12 +2346,25 @@ class TestPersistedHotspotPassword:
         assert wifi_provision._load_or_create_hotspot_password(str(path)) == good
 
     def test_oversized_file_is_rejected_not_truncated(self, tmp_path):
-        """The read cap must never turn a huge file into an accepted prefix."""
+        """The read cap must never turn a huge file into an accepted prefix.
+
+        litclock-dev#662: `pw != "a" * 63` only detects a cap of EXACTLY 63.
+        Move the cap to HOTSPOT_PASSWORD_MIN_CHARS and the function hands back a
+        perfectly valid 8-character password lifted straight out of a 5000-byte
+        corrupt file, with both assertions passing. Assert the general property
+        instead — whatever the cap is, the value returned must not be a prefix
+        of what was on disk.
+        """
         path = tmp_path / "hotspot-password"
-        path.write_text("a" * 5000, encoding="utf-8")
+        corrupt = "a" * 5000
+        path.write_text(corrupt, encoding="utf-8")
         pw = wifi_provision._load_or_create_hotspot_password(str(path))
         assert wifi_provision._validate_hotspot_password(pw) is None
-        assert pw != "a" * 63, "a huge file must not be truncated into a valid password"
+        assert pw, "a fresh password must still be minted"
+        assert not corrupt.startswith(pw), (
+            "the returned password is a PREFIX of the corrupt file — the read cap truncated it into "
+            "something valid instead of rejecting the file"
+        )
 
     def test_returned_password_always_matches_disk_under_a_racing_writer(self, tmp_path, monkeypatch):
         """If the AP advertised a password the file does not hold, the next
@@ -1728,6 +2381,56 @@ class TestPersistedHotspotPassword:
         pw = wifi_provision._load_or_create_hotspot_password(str(path))
         assert pw == path.read_text(encoding="utf-8").strip()
 
+    def test_unreadable_existing_file_logs_loudly_before_rotating_ROOT_PROOF(self, tmp_path, caplog, monkeypatch):
+        """The same branch, reachable as root (litclock-dev#662).
+
+        Its filesystem-permissions twin below self-skips whenever the runner can
+        read a 0000 file, so in a root container the loudest failure path of
+        litclock-dev#620 had NO executing coverage at all. Raising PermissionError from the
+        open is less realistic but always runs, and it is the branch that
+        matters: a rotation caused by EACCES self-heals, which makes it harder
+        to spot, so it must never be silent.
+        """
+        path = tmp_path / "hotspot-password"
+        path.write_text("clockwis\n", encoding="utf-8")
+
+        # The reader uses os.open (O_NOFOLLOW|O_NONBLOCK), not builtins.open.
+        real_os_open = wifi_provision.os.open
+
+        def denied(file, *args, **kwargs):
+            if str(file) == str(path):
+                raise PermissionError(13, "Permission denied")
+            return real_os_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(wifi_provision.os, "open", denied)
+        # DEBUG, not ERROR: the leak assertion below has to see records at every
+        # level, or a disclosure logged at INFO is simply invisible to it
+        # (/review, Codex — mutation-proven).
+        with caplog.at_level("DEBUG"):
+            pw = wifi_provision._load_or_create_hotspot_password(str(path))
+
+        assert wifi_provision._validate_hotspot_password(pw) is None
+
+        # Assert on record.msg — the raw format STRING, before % substitution.
+        # Neither caplog.text nor record.getMessage() works here: both contain
+        # the formatted path, and pytest's tmp_path for this test is
+        # .../test_unreadable_existing_file_0/hotspot-password, so the word
+        # "unreadable" comes from the TEST'S OWN NAME. The first repair of this
+        # guard moved from caplog.text to getMessage() and was still green when
+        # the production message stopped saying it (/review, Codex, then again
+        # on my own mutation run — the same trap one level in).
+        error_templates = [str(r.msg) for r in caplog.records if r.levelname == "ERROR"]
+        assert any("unreadable" in t.lower() for t in error_templates), (
+            f"the EACCES rotation is no longer announced as unreadable: {error_templates}"
+        )
+
+        # The reachable secret on this path is the REPLACEMENT that was just
+        # minted. The old file's contents cannot leak here — the branch raises
+        # out of os.open before anything is read — so asserting on them was
+        # decorative and could not fail (/review).
+        every_message = " ".join(r.getMessage() for r in caplog.records)
+        assert pw not in every_message, "the newly minted hotspot password was written to the log"
+
     def test_unreadable_existing_file_logs_loudly_before_rotating(self, tmp_path, caplog):
         """A rotation caused by EACCES is the exact trap litclock-dev#620 removes, so it
         must never be silent (it self-heals, which makes it HARDER to spot)."""
@@ -1736,11 +2439,16 @@ class TestPersistedHotspotPassword:
         path.chmod(0o000)
         try:
             if os.access(str(path), os.R_OK):
-                pytest.skip("running as root — EACCES not reachable")
-            with caplog.at_level("ERROR"):
+                pytest.skip("running as root — EACCES not reachable (see the root-proof twin below)")
+            with caplog.at_level("DEBUG"):
                 pw = wifi_provision._load_or_create_hotspot_password(str(path))
             assert wifi_provision._validate_hotspot_password(pw) is None
-            assert "unreadable" in caplog.text.lower()
-            assert "clockwis" not in caplog.text
+            # record.msg, not getMessage(): the formatted path carries this
+            # test's own name and would satisfy the check on its own.
+            error_templates = [str(r.msg) for r in caplog.records if r.levelname == "ERROR"]
+            assert any("unreadable" in t.lower() for t in error_templates), error_templates
+            every_message = " ".join(r.getMessage() for r in caplog.records)
+            assert "clockwis" not in every_message
+            assert pw not in every_message, "the newly minted hotspot password was written to the log"
         finally:
             path.chmod(0o600)

@@ -11,10 +11,13 @@ The Control PWA ships at `http://litclock.local` (plain HTTP on **port 80**,
 private IP — litclock-dev#343, so a recipient never types a port). Browsers consider this
 origin **not a "secure context"** per the W3C spec.
 
-> **Note on ports (litclock-dev#343).** `litclock-control.service` (post-setup, always-on)
-> is plain HTTP on **port 80** — no port in the URL. The first-boot
-> `setup_server.py` is HTTPS on **8443** (the iOS captive trust dance needs
-> TLS). They are DIFFERENT ports for different phases; always probe control_server
+> **Note on ports (litclock-dev#343, litclock-dev#715).** `litclock-control.service`
+> (post-setup, always-on) is plain HTTP on **port 80** — no port in the URL.
+> The first-boot `setup_server.py` is plain HTTP on **8080** during hotspot
+> provisioning (captive-portal detection needs plain HTTP; its old
+> normal-mode HTTPS-on-8443 page was retired by litclock-dev#715 — the
+> pre-connected path resolves inline since litclock-dev#647 and serves no
+> page at all). Always probe control_server
 > with `http://` on 80 (or bare), never `https://`. Port 80 is bound by the
 > non-root `pi` service account via the `ip_unprivileged_port_start=80` sysctl
 > (`/etc/sysctl.d/30-litclock-unprivileged-ports.conf`), not a capability — so it

@@ -29,6 +29,8 @@ from typing import Final
 
 from flask import Blueprint, current_app, jsonify, render_template, request
 
+import strings_catalog  # noqa: E402 — src/ on sys.path; hard dep since litclock-dev#532
+
 from .. import update_state
 from ..confirm_tokens import ConfirmTokenStore, envelope_for_consume_outcome
 from ..errors import envelope
@@ -123,7 +125,7 @@ def _check_rate_limit() -> tuple[object, int] | None:
         return None
     body, status = envelope(
         "rate_limited",
-        "Too many destructive actions. Try again shortly.",
+        strings_catalog.get("common.rate_limited.destructive"),
         429,
         retry_after_s=retry_after_s,
     )
@@ -230,9 +232,10 @@ def check() -> tuple[object, int]:
     current_version = get_version(current_app.config.get("VERSION_OVERRIDE"))
     cached = update_state.read_cache()
     if cached and update_state.cache_is_fresh(cached):
-        # Re-stamp current_version in case it changed since last write
-        # (post-update, pre-cache-invalidation window).
-        cached["current_version"] = current_version
+        # Re-stamp current_version AND re-derive `available` from it —
+        # the stored boolean may carry stale semantics (litclock-dev#728:
+        # a pre-fix cache, or the post-update pre-invalidation window).
+        cached = update_state.recompute_available(cached, current_version)
         return jsonify({"ok": True, **cached}), 200
 
     payload = update_state.build_check_payload(current_version)
@@ -267,7 +270,7 @@ def apply_update() -> tuple[object, int]:
     if token is None:
         return envelope(
             "confirm_token_invalid",
-            "Couldn't verify that action. Reload the page and try again.",
+            strings_catalog.get("common.alert.token_invalid"),
             401,
         )
     result = _store().consume_classified("update_apply", token)
@@ -287,14 +290,17 @@ def apply_update() -> tuple[object, int]:
             _store().restore("update_apply", token, expiry)
             return envelope(
                 "update_in_progress",
-                "An update is already running. Watch progress on the Updates tab.",
+                strings_catalog.get("api.updates.already_running"),
                 409,
             )
 
         # Already-up-to-date gate (D10).
         cached = update_state.read_cache()
         if cached and update_state.cache_is_fresh(cached):
-            available = cached.get("available")
+            # Same serve-time re-derivation as check(): never gate the apply
+            # on a cached boolean written under different semantics or a
+            # different current_version (litclock-dev#728).
+            available = update_state.recompute_available(cached, current_version).get("available")
             if available is False:
                 # Issue litclock-dev#328 — pre-side-effect failure: no dispatch happened.
                 # Restore so the user can re-tap after a new release lands
@@ -302,7 +308,7 @@ def apply_update() -> tuple[object, int]:
                 _store().restore("update_apply", token, expiry)
                 return envelope(
                     "already_up_to_date",
-                    f"You're already on {current_version} — nothing to do.",
+                    strings_catalog.get("api.updates.already_up_to_date", version=current_version),
                     409,
                     current_version=current_version,
                 )
@@ -319,7 +325,7 @@ def apply_update() -> tuple[object, int]:
                 _store().restore("update_apply", token, expiry)
                 return envelope(
                     "already_up_to_date",
-                    f"You're already on {current_version} — nothing to do.",
+                    strings_catalog.get("api.updates.already_up_to_date", version=current_version),
                     409,
                     current_version=current_version,
                 )
@@ -367,7 +373,7 @@ def apply_update() -> tuple[object, int]:
             _store().restore("update_apply", token, expiry)
             return envelope(
                 "update_dispatch_failed",
-                "The update could not be started.",
+                strings_catalog.get("api.updates.dispatch_failed"),
                 500,
             )
         except subprocess.TimeoutExpired as exc:
@@ -382,7 +388,7 @@ def apply_update() -> tuple[object, int]:
             # so we don't double-fire the update flow.
             return envelope(
                 "update_dispatch_failed",
-                "The update could not be started.",
+                strings_catalog.get("api.updates.dispatch_failed"),
                 500,
             )
         else:

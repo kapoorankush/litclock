@@ -1,6 +1,11 @@
 ruff>=0.16.0
 pytest>=9.1.1
 pytest-mock>=3.15.1
+# litclock-dev#662: without a per-test timeout a hang burns CI to its
+# wall-clock limit instead of reporting the regression. The concrete case is
+# test_fifo_does_not_wedge_the_open — a dropped O_NONBLOCK makes it block
+# forever on a writer that never comes, which is a PASS-shaped failure.
+pytest-timeout>=2.4.0
 pyyaml>=6.0.3
 # freetype-py moved to requirements.in at Stage 2 (litclock-dev#531) — it is now a
 # runtime dependency of src/quote_renderer.py, pinned in the main lock.

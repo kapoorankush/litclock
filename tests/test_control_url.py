@@ -1,7 +1,9 @@
 """Tests for the single source of truth for the Control PWA port + URL (litclock-dev#343)."""
 
 import importlib
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -131,3 +133,65 @@ class TestPort80Deploy:
         # guarantees the knob is applied before this unit binds 80.
         unit = self._read("systemd/litclock-control.service")
         assert "After=" in unit and "sysinit.target" in unit
+
+    # litclock-dev#527 (back-ported from #15, litclock-dev#657): the
+    # field-incident fix. A silently-swallowed drop-in install let `sysctl -w`
+    # set the live floor to 80, so the update reported success, and the NEXT
+    # reboot reverted to 1024 and crash-looped control_server.
+    #
+    # The UNIT half is pinned in test_systemd_units.py, which is where public
+    # keeps it -- an earlier draft of this back-port hand-rolled a replacement
+    # here on the false belief that #15 shipped no tests. It did, and the
+    # replacement was weaker in two ways the real one is not: it never pinned
+    # the COMMAND (an `ExecStartPre=+-/usr/bin/true ...` mutant survived it) and
+    # it asserted ExecStartPre appears above ExecStart in the file -- exactly the
+    # non-invariant public's own review had removed. Leaving dev without the
+    # real test would also have made the next dev->public port DELETE it.
+    #
+    # Public has no test for the update.sh half, so that one is new here.
+
+    def test_update_warns_only_when_the_persisted_dropin_is_wrong(self):
+        """Lifted and EXECUTED, not grepped.
+
+        A grep-only version of this passed every one-character mutation that
+        matters. Dropping the `!` from `if ! cmp -s` inverts the guard into
+        "warn when correct, stay silent when stale" -- which IS
+        litclock-dev#527, the field incident this exists to prevent -- and left
+        21 tests green. So did wrapping the block in `if false && ...`, and so
+        did deleting the `sudo install` outright, because the filename still
+        appeared in the surviving lines. `assert "cmp -s" in up` was vacuous on
+        its own: four unrelated `sudo cmp -s` calls already live in this file.
+
+        Running the real fragment against a tmp tree asserts the SENSE of the
+        check: quiet when the installed file matches what we shipped, loud when
+        it is stale, loud when it is missing.
+        """
+        up = self._read("scripts/update.sh")
+        # The enclosing guard, exactly. Lifting only the inner `if ! cmp`
+        # fragment cannot see `if false && [[ -f … ]]` wrapped around the whole
+        # block, which makes every line below it dead while the strings all
+        # survive (/review).
+        assert 'if [[ -f "$INSTALL_DIR/sysctl.d/30-litclock-unprivileged-ports.conf" ]]; then' in up, (
+            "the sysctl block's own guard must be a plain existence test, not gated on anything else"
+        )
+        i = up.index("_SYSCTL_CONF=/etc/sysctl.d/")
+        frag = up[up.index("    if ! cmp", i) : up.index("\n    fi\n", up.index("    if ! cmp", i))]
+        assert "WARNING" in frag, "the cmp branch must be the one that prints the warning"
+
+        def run(dst_text):
+            root = Path(tempfile.mkdtemp())
+            (root / "sysctl.d").mkdir()
+            (root / "sysctl.d" / "30-litclock-unprivileged-ports.conf").write_text(
+                "net.ipv4.ip_unprivileged_port_start = 80\n"
+            )
+            dst = root / "installed.conf"
+            if dst_text is not None:
+                dst.write_text(dst_text)
+            script = f'INSTALL_DIR={root}\n_SYSCTL_CONF={dst}\n' + frag + "\nfi\n"
+            return subprocess.run(["bash", "-c", script], capture_output=True, text=True).stdout
+
+        assert "WARNING" not in run("net.ipv4.ip_unprivileged_port_start = 80\n"), (
+            "a drop-in identical to the shipped one must NOT warn"
+        )
+        assert "WARNING" in run("net.ipv4.ip_unprivileged_port_start = 1024\n"), "a stale drop-in must warn"
+        assert "WARNING" in run(None), "a missing drop-in must warn"

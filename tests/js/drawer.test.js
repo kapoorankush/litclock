@@ -203,6 +203,30 @@ describe("drawer.js — SSE handshake + entry append (D7 + PR2 wire)", () => {
     expect(items.length).toBe(2);
     expect(items[1].querySelector(".diag-drawer__entry-msg").textContent).toBe("boom");
   });
+
+  it("renders the hidden-batch sentence byte-identically (litclock-dev#532 slot pin)", () => {
+    // /review litclock-dev#736 F2: the whole-sentence template restructure claimed
+    // byte-identity but no JS test observed a rendered string. This is the
+    // rendered-output pin: overflow VISIBLE_CAP by 3 and assert the exact
+    // sentence with the slot filled.
+    buildDom();
+    loadScript("drawer.js");
+    document.querySelector("[data-diag-ribbon-button]").click();
+    const es = eventSources[0];
+    es.fire("hello", { sid: "test-sid", latest_seq: 0 });
+    for (let i = 1; i <= 203; i++) {
+      es.fire("entry", { seq: i, timestamp: 1717000000 + i, level: "INFO", message: "m" + i });
+    }
+    // The live append path defers cap accounting to rerenderEntries,
+    // which only filter interactions invoke — re-select the "all" level
+    // so the full buffer goes through the VISIBLE_CAP slice.
+    document.querySelector('[data-diag-level=""]').click();
+    const batch = document.querySelector("[data-diag-drawer-hidden-batch]");
+    expect(batch.hidden).toBe(false);
+    expect(batch.textContent).toBe(
+      "Earlier 3 hidden — open the full diagnostics page to see all"
+    );
+  });
 });
 
 describe("drawer.js — F-CAPACITY-EXCEEDED backoff (PR2 wire contract)", () => {

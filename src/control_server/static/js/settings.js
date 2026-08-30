@@ -12,6 +12,23 @@
 (function () {
   "use strict";
 
+  /* litclock-dev#532: catalog strings injected by the template; the English
+     literals are stale-JS-window fallbacks, CI-pinned against the catalog
+     (tests/test_cross_file_string_parity.py). */
+  var STRINGS = (function () {
+    var el = document.querySelector('[data-litclock-strings]');
+    if (!el) return {};
+    try {
+      return JSON.parse(el.textContent) || {};
+    } catch (e) {
+      return {};
+    }
+  })();
+
+  function tr(key, fallback) {
+    return Object.prototype.hasOwnProperty.call(STRINGS, key) ? STRINGS[key] : fallback;
+  }
+
   // litclock-dev#317 item 7 — Prepare-for-Gifting moved to /system. The textarea→hidden
   // mirror that lived here is now in system.js, scoped to the System tab.
 
@@ -230,7 +247,7 @@
         currentSpan.textContent = body.short_name || body.display_name || q;
         currentSpan.classList.remove("is-stale");
       } else {
-        currentSpan.textContent = "Couldn't find that location.";
+        currentSpan.textContent = tr('settings.js.geocode_not_found', "Couldn't find that location.");
         currentSpan.classList.remove("is-stale");
       }
     } catch (_e) {
@@ -311,7 +328,10 @@
       } else {
         locationSaveBtn.disabled = true;
         locationSaveBtn.setAttribute("aria-disabled", "true");
-        locationSaveBtn.setAttribute("title", "Type a place or pick Automatic");
+        locationSaveBtn.setAttribute(
+          "title",
+          tr('settings.location.save_disabled_tooltip', "Type a place or pick Automatic")
+        );
       }
     }
 
@@ -420,12 +440,12 @@
               window.location.reload();
             } else {
               btn.disabled = false;
-              const msg = "Couldn't set timezone (HTTP " + resp.status + "). Try again.";
+              const msg = tr('settings.js.tz_failed_http', "Couldn't set timezone (HTTP {status}). Try again.").split("{status}").join(String(resp.status));
               if (typeof window.alert === "function") window.alert(msg);
             }
           } catch (e) {
             btn.disabled = false;
-            const msg = "Couldn't set timezone. Check your network and try again.";
+            const msg = tr('settings.js.tz_failed_network', "Couldn't set timezone. Check your network and try again.");
             if (typeof window.alert === "function") window.alert(msg);
           }
         });
@@ -544,7 +564,11 @@
     });
   }
 
-  function wireSegmentedAutoSave(pill, section, key, failMsg) {
+  // `onSaved` (optional) fires once the pill state is fully committed —
+  // i.e. after a successful save with no further pending re-tap. Used by
+  // the Language pill (litclock-dev#532 pickers 5b) to reload the page so
+  // catalog-routed copy re-renders in the newly saved language.
+  function wireSegmentedAutoSave(pill, section, key, failMsg, onSaved) {
     if (!pill) return;
     const opts = pill.querySelectorAll(".settings-segmented__opt");
     if (!opts.length) return;
@@ -580,7 +604,11 @@
         await autoSavePatch({ section: section, fields: fields });
         confirmedOpt = target;
         saving = false;
-        pump();
+        if (desiredOpt !== confirmedOpt) {
+          pump(); // a re-tap landed mid-save — chase it before settling.
+        } else if (onSaved) {
+          onSaved();
+        }
       } catch (e) {
         saving = false;
         desiredOpt = confirmedOpt;
@@ -607,27 +635,49 @@
     document.getElementById("allow_nsfw_quotes"),
     "advanced",
     "ALLOW_NSFW_QUOTES",
-    "Couldn't save the NSFW-quotes setting. Try again."
+    tr('settings.js.save_failed.nsfw', "Couldn't save the NSFW-quotes setting. Try again.")
   );
   wireBooleanToggleAutoSave(
     document.getElementById("show_diagnostics_shortcut"),
     "advanced",
     "SHOW_DIAGNOSTICS_SHORTCUT",
-    "Couldn't save the diagnostics-shortcut setting. Try again."
+    tr('settings.js.save_failed.diag_shortcut', "Couldn't save the diagnostics-shortcut setting. Try again.")
   );
   // litclock-dev#346 — Weather "Show on display" toggle (converged from inline in litclock-dev#458).
   wireBooleanToggleAutoSave(
     document.getElementById("weather_enabled"),
     "weather",
     "WEATHER_ENABLED",
-    "Could not save the weather toggle. Try again."
+    tr('settings.js.save_failed.weather', "Could not save the weather toggle. Try again.")
   );
   // litclock-dev#337 A13 — Temperature pill (converged from inline in litclock-dev#458).
   wireSegmentedAutoSave(
     document.querySelector("[data-temp-pill]"),
     "units",
     "WEATHER_UNITS",
-    "Couldn't save temperature units. Try again."
+    tr('settings.js.save_failed.units', "Couldn't save temperature units. Try again.")
+  );
+  // litclock-dev#532 pickers 5b — Language pill. Dormant (no DOM) on a
+  // single-language fleet. Reload on commit so catalog-routed SSR copy
+  // re-renders in the saved language; the fail message below is a plain
+  // English literal like every other failMsg in this file — the whole
+  // class joins the catalog in the bulk-extraction arc.
+  wireSegmentedAutoSave(
+    document.querySelector("[data-language-pill]"),
+    "language",
+    "LITCLOCK_LANGUAGE",
+    tr('settings.js.save_failed.language', "Couldn't save the language. Try again."),
+    function () {
+      // Freeze the pill before navigating: a tap that lands during the
+      // unload would fire a PATCH the navigation then aborts — the user
+      // would see their second choice silently dropped (adversarial
+      // /review F4). Disabled inputs also read as "working" while the
+      // reload happens.
+      document.querySelectorAll("[data-language-pill] .settings-segmented__input").forEach(function (r) {
+        r.disabled = true;
+      });
+      window.location.reload();
+    }
   );
 
   // M6 adversarial /review fix — refresh the CSRF token at submit time so

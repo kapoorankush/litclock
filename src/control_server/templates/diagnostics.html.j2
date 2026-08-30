@@ -57,11 +57,11 @@
    poll always agree. Generic fallback (single key) catches future
    sections without breaking the page. #}
 {% set _settling_body =
-     'Your clock is finishing its first network and location checks.'
+     t('diag.settling.both')
      if ('network' in _uncollected and 'time-location' in _uncollected)
-     else ('Your clock is finishing its first network check.'
+     else (t('diag.settling.network')
            if 'network' in _uncollected
-           else ('Your clock is finishing its first location check.'
+           else (t('diag.settling.time_location')
                  if 'time-location' in _uncollected
                  else '')) %}
 <section class="status-banner status-banner--{{ _severity }}"
@@ -109,13 +109,13 @@
          aria-live="polite">
       <h1 id="status-banner-title" class="status-banner__title" data-diag-banner-title>
         {% if _severity == 'error' %}
-          Clock isn't running
+          {{ t('diag.banner.title.error') }}
         {% elif _severity == 'warning' %}
-          Something needs attention
+          {{ t('diag.banner.title.warning') }}
         {% elif _severity == 'settling' %}
-          Just settling in.
+          {{ t('diag.banner.title.settling') }}
         {% else %}
-          All running
+          {{ t('diag.banner.title.ok') }}
         {% endif %}
       </h1>
       {% if _severity == 'settling' and _settling_body %}
@@ -123,7 +123,7 @@
       {% endif %}
     </div>
     <p class="status-banner__meta" data-diag-banner-meta>
-      <span data-diag-banner-refreshed>Refreshed just now</span><span class="status-banner__sep" aria-hidden="true">&nbsp;·&nbsp;</span><span>Auto every 30s</span>
+      <span data-diag-banner-refreshed>{{ t('diag.refreshed.just_now') }}</span><span class="status-banner__sep" aria-hidden="true">&nbsp;·&nbsp;</span><span>{{ t('diag.banner.auto_interval') }}</span>
     </p>
   </div>
   {# Reveal pill (D1 + D12 ON state spec + F12). Session-scoped state.
@@ -134,14 +134,14 @@
           class="reveal-pill"
           data-diag-reveal
           aria-pressed="false"
-          aria-label="Reveal SSID, city, and exact coordinates">
+          aria-label="{{ t('aria.diag.reveal') }}">
     <svg class="reveal-pill__icon reveal-pill__icon--off" viewBox="0 0 256 256" width="16" height="16" fill="currentColor" aria-hidden="true">
       <path d="M53.92,34.62A8,8,0,1,0,42.08,45.38L61.31,66.55C25,88.84,9.38,123.2,8.69,124.76a8,8,0,0,0,0,6.5c.35.79,8.82,19.57,27.65,38.4C61.43,194.74,93.12,208,128,208a127.11,127.11,0,0,0,52.07-10.83l22,24.21a8,8,0,1,0,11.84-10.76Zm89.18,131.43a32,32,0,0,1-41-41ZM128,192c-30.78,0-57.67-11.19-79.93-33.25A133.16,133.16,0,0,1,25,128c4.69-8.79,19.66-33.39,47.35-49.38l18,19.75a48,48,0,0,0,63.66,69.85l14.73,16.2A112,112,0,0,1,128,192Zm6-95.43a8,8,0,0,1,3-15.72,48.16,48.16,0,0,1,38.77,42.64,8,8,0,0,1-7.22,8.71l-.75,0a8,8,0,0,1-7.95-7.27A32.09,32.09,0,0,0,134,96.57Zm113.28,34.69c-.42.94-10.55,23.37-33.36,43.8a8,8,0,1,1-10.67-11.92A132.77,132.77,0,0,0,231.05,128a133.15,133.15,0,0,0-23.12-30.77C185.67,75.19,158.78,64,128,64a118.37,118.37,0,0,0-19.36,1.57A8,8,0,1,1,106,49.79,134,134,0,0,1,128,48c34.88,0,66.57,13.26,91.66,38.35,18.83,18.83,27.3,37.62,27.65,38.41A8,8,0,0,1,247.31,131.26Z"/>
     </svg>
     <svg class="reveal-pill__icon reveal-pill__icon--on" viewBox="0 0 256 256" width="16" height="16" fill="currentColor" aria-hidden="true" hidden>
       <path d="M247.31,124.76c-.35-.79-8.82-19.58-27.65-38.41C194.57,61.26,162.88,48,128,48S61.43,61.26,36.34,86.35C17.51,105.18,9,124,8.69,124.76a8,8,0,0,0,0,6.5c.35.79,8.82,19.57,27.65,38.4C61.43,194.74,93.12,208,128,208s66.57-13.26,91.66-38.34c18.83-18.83,27.3-37.61,27.65-38.4A8,8,0,0,0,247.31,124.76ZM128,192c-30.78,0-57.67-11.19-79.93-33.25A133.47,133.47,0,0,1,25,128,133.33,133.33,0,0,1,48.07,97.25C70.33,75.19,97.22,64,128,64s57.67,11.19,79.93,33.25A133.46,133.46,0,0,1,231.05,128C223.84,141.46,192.43,192,128,192Zm0-112a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Z"/>
     </svg>
-    <span class="reveal-pill__label" data-diag-reveal-label>Reveal</span>
+    <span class="reveal-pill__label" data-diag-reveal-label>{{ t('diag.reveal.show') }}</span>
   </button>
 </section>
 
@@ -182,13 +182,13 @@
          showed a warning-ochre pill that still read "Not yet collected." #}
       <span class="diag-section__pill diag-section__pill--{{ _pill_state }}"
             data-diag-section-pill
-            data-diag-anomaly-label="{{ anomaly_label or 'Needs attention' }}"
-            {% if is_uncollected %}aria-label="Not yet collected — data has not been recorded on this clock yet"{% endif %}>
+            data-diag-anomaly-label="{{ anomaly_label or t('diag.anomaly.generic') }}"
+            {% if is_uncollected %}aria-label="{{ t('aria.diag.pill.uncollected') }}"{% endif %}>
         <span class="diag-section__pill-dot" aria-hidden="true"></span>
         <span class="diag-section__pill-label">
-          {% if is_anomalous %}{{ anomaly_label or 'Needs attention' }}
-          {% elif is_uncollected %}Not yet collected
-          {% else %}OK{% endif %}
+          {% if is_anomalous %}{{ anomaly_label or t('diag.anomaly.generic') }}
+          {% elif is_uncollected %}{{ t('diag.pill.uncollected') }}
+          {% else %}{{ t('diag.pill.ok') }}{% endif %}
         </span>
       </span>
       <span class="diag-section__caret" aria-hidden="true">
@@ -222,8 +222,8 @@
           <dt>{{ label }}</dt>
           <dd class="mono" data-diag-value="{{ field }}">
             {% if value is none or value == "" %}—
-            {% elif value is sameas true %}Yes
-            {% elif value is sameas false %}No
+            {% elif value is sameas true %}{{ t('diag.value.yes') }}
+            {% elif value is sameas false %}{{ t('diag.value.no') }}
             {% else %}{{ value }}{% endif %}
           </dd>
         </div>
@@ -236,60 +236,60 @@
 
   {{ diag_section(
        'build-version',
-       'Build & version',
+       t('diag.section.build'),
        rows=[
-         ('App version', 'app_version'),
-         ('git HEAD', 'git_head'),
-         ('Images version', 'images_version'),
-         ('Last update', 'last_update_at'),
-         ('Last update version', 'last_update_version'),
+         (t('diag.row.app_version'), 'app_version'),
+         (t('diag.row.git_head'), 'git_head'),
+         (t('diag.row.images_version'), 'images_version'),
+         (t('diag.row.last_update_at'), 'last_update_at'),
+         (t('diag.row.last_update_version'), 'last_update_version'),
        ]
   ) }}
 
   {{ diag_section(
        'system',
-       'System',
-       anomaly_label='Resource alert',
+       t('diag.section.system'),
+       anomaly_label=t('diag.anomaly.system'),
        rows=[
-         ('Kernel', 'kernel'),
-         ('OS', 'os_release'),
-         ('Uptime', 'uptime_human'),
-         ('CPU temp °C', 'cpu_temp_c'),
-         ('Free memory MB', 'memory_free_mb'),
-         ('Free disk %', 'disk_free_pct'),
+         (t('diag.row.kernel'), 'kernel'),
+         (t('diag.row.os_release'), 'os_release'),
+         (t('diag.row.uptime_human'), 'uptime_human'),
+         (t('diag.row.cpu_temp_c'), 'cpu_temp_c'),
+         (t('diag.row.memory_free_mb'), 'memory_free_mb'),
+         (t('diag.row.disk_free_pct'), 'disk_free_pct'),
        ]
   ) }}
 
   {{ diag_section(
        'network',
-       'Network',
-       anomaly_label='Connection issue',
-       uncollected_placeholder='Network details fill in once your clock sees a network event.',
+       t('diag.section.network'),
+       anomaly_label=t('diag.anomaly.network'),
+       uncollected_placeholder=t('diag.uncollected.network'),
        rows=[
-         ('Interface', 'iface'),
-         ('SSID', 'ssid'),
-         ('LAN IP', 'lan_ip'),
-         ('Gateway', 'gateway'),
-         ('Signal dBm', 'signal_dbm'),
-         ('Last DHCP', 'last_dhcp_at'),
+         (t('diag.row.iface'), 'iface'),
+         (t('diag.row.ssid'), 'ssid'),
+         (t('diag.row.lan_ip'), 'lan_ip'),
+         (t('diag.row.gateway'), 'gateway'),
+         (t('diag.row.signal_dbm'), 'signal_dbm'),
+         (t('diag.row.last_dhcp_at'), 'last_dhcp_at'),
        ]
   ) }}
 
   {{ diag_section(
        'time-location',
-       'Time & location',
-       anomaly_label='Location stale',
-       uncollected_placeholder='Location details fill in once your clock resolves its location.',
+       t('diag.section.time_location'),
+       anomaly_label=t('diag.anomaly.time_location'),
+       uncollected_placeholder=t('diag.uncollected.time_location'),
        rows=[
-         ('Timezone', 'timezone'),
-         ('City', 'weather_location_name'),
-         ('Lat', 'weather_lat'),
-         ('Lon', 'weather_lon'),
-         ('Mode', 'weather_location_mode'),
-         ('IP country', 'weather_ip_country'),
-         ('Units', 'weather_units'),
-         ('Weather on?', 'weather_enabled'),
-         ('Last IP-geo', 'last_ip_geo_at'),
+         (t('diag.row.timezone'), 'timezone'),
+         (t('diag.row.weather_location_name'), 'weather_location_name'),
+         (t('diag.row.weather_lat'), 'weather_lat'),
+         (t('diag.row.weather_lon'), 'weather_lon'),
+         (t('diag.row.weather_location_mode'), 'weather_location_mode'),
+         (t('diag.row.weather_ip_country'), 'weather_ip_country'),
+         (t('diag.row.weather_units'), 'weather_units'),
+         (t('diag.row.weather_enabled'), 'weather_enabled'),
+         (t('diag.row.last_ip_geo_at'), 'last_ip_geo_at'),
        ]
   ) }}
 
@@ -301,11 +301,11 @@
            data-diag-section="services"
            {% if is_services_anomalous %}open{% endif %}>
     <summary class="diag-section__summary">
-      <span class="diag-section__title">Services</span>
+      <span class="diag-section__title">{{ t('diag.section.services') }}</span>
       <span class="diag-section__pill diag-section__pill--{{ 'warning' if is_services_anomalous else 'ok' }}"
             data-diag-section-pill>
         <span class="diag-section__pill-dot" aria-hidden="true"></span>
-        <span class="diag-section__pill-label">{% if is_services_anomalous %}Service alert{% else %}OK{% endif %}</span>
+        <span class="diag-section__pill-label">{% if is_services_anomalous %}{{ t('diag.anomaly.services') }}{% else %}{{ t('diag.pill.ok') }}{% endif %}</span>
       </span>
       <span class="diag-section__caret" aria-hidden="true">
         <svg viewBox="0 0 256 256" width="16" height="16" fill="currentColor"><path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z"/></svg>
@@ -324,39 +324,39 @@
         {% if not info.healthy %}
         {# Placeholder — JS hydrates the real tail from /api/diagnostics/journal.
            Doubles as the no-JS state (the <noscript> below explains it). #}
-        <pre class="diag-service__tail" data-diag-tail data-diag-tail-status="loading"><code data-diag-tail-body>loading logs…</code></pre>
+        <pre class="diag-service__tail" data-diag-tail data-diag-tail-status="loading"><code data-diag-tail-body>{{ t('diag.tail.loading') }}</code></pre>
         {% endif %}
       </li>
       {% endfor %}
     </ul>
     <noscript>
-      <p class="diag-services__nojs mono">Enable JavaScript to view service logs.</p>
+      <p class="diag-services__nojs mono">{{ t('diag.services.nojs') }}</p>
     </noscript>
   </details>
 
   {{ diag_section(
        'last-quote',
-       'Last quote',
-       anomaly_label='Stale or empty',
+       t('diag.section.last_quote'),
+       anomaly_label=t('diag.anomaly.last_quote'),
        rows=[
-         ('Quote', 'quote'),
-         ('Author', 'author'),
-         ('Title', 'title'),
-         ('Time', 'time'),
-         ('Render tier', 'render_mode'),
-         ('Picked at', 'picked_at'),
+         (t('diag.row.quote'), 'quote'),
+         (t('diag.row.author'), 'author'),
+         (t('diag.row.title'), 'title'),
+         (t('diag.row.time'), 'time'),
+         (t('diag.row.render_mode'), 'render_mode'),
+         (t('diag.row.picked_at'), 'picked_at'),
        ]
   ) }}
 
   {{ diag_section(
        'setup-markers',
-       'Setup markers',
-       anomaly_label='Setup incomplete',
+       t('diag.section.setup_markers'),
+       anomaly_label=t('diag.anomaly.setup_markers'),
        rows=[
-         ('.setup-complete', 'setup_complete'),
-         ('.handoff-complete', 'handoff_complete'),
-         ('Gift mode', 'gift_mode_active'),
-         ('Allow NSFW', 'allow_nsfw_quotes'),
+         (t('diag.row.setup_complete'), 'setup_complete'),
+         (t('diag.row.handoff_complete'), 'handoff_complete'),
+         (t('diag.row.gift_mode_active'), 'gift_mode_active'),
+         (t('diag.row.allow_nsfw_quotes'), 'allow_nsfw_quotes'),
        ]
   ) }}
 
@@ -368,11 +368,11 @@
            data-diag-section="recent-log-entries"
            {% if is_logs_anomalous %}open{% endif %}>
     <summary class="diag-section__summary">
-      <span class="diag-section__title">Recent log entries</span>
+      <span class="diag-section__title">{{ t('diag.section.log') }}</span>
       <span class="diag-section__pill diag-section__pill--{{ 'warning' if is_logs_anomalous else 'ok' }}"
             data-diag-section-pill>
         <span class="diag-section__pill-dot" aria-hidden="true"></span>
-        <span class="diag-section__pill-label">{% if is_logs_anomalous %}Error in recent logs{% else %}OK{% endif %}</span>
+        <span class="diag-section__pill-label">{% if is_logs_anomalous %}{{ t('diag.anomaly.logs') }}{% else %}{{ t('diag.pill.ok') }}{% endif %}</span>
       </span>
       <span class="diag-section__caret" aria-hidden="true">
         <svg viewBox="0 0 256 256" width="16" height="16" fill="currentColor"><path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z"/></svg>
@@ -385,7 +385,7 @@
         <span class="diag-log-entry__level mono">{{ entry.level or 'INFO' }}</span>
         <span class="diag-log-entry__msg">{{ entry.message or '' }}</span>
         <button type="button" class="diag-log-entry__copy" data-diag-log-copy
-                aria-label="Copy log entry">
+                aria-label="{{ t('aria.diag.copy_entry') }}">
           <svg viewBox="0 0 256 256" width="14" height="14" fill="currentColor" aria-hidden="true">
             <path d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z"/>
           </svg>
@@ -393,11 +393,11 @@
       </li>
       {% endfor %}
       {% if not (values.recent_log_entries or []) %}
-      <li class="diag-log-empty">No log entries yet — the buffer fills as the clock runs.</li>
+      <li class="diag-log-empty">{{ t('diag.log.empty') }}</li>
       {% endif %}
     </ol>
     <p class="diag-log-snapshot__footer">
-      Snapshot only.
+      {{ t('diag.log.snapshot_only') }}
       {# /review fix: pre-/review this was an <a href="#"> which scrolled
          to top on click. Now a disabled button until PR3b wires the
          drawer + a matching round-trip link.
@@ -409,11 +409,16 @@
               data-diag-open-drawer
               disabled
               aria-disabled="true"
-              aria-label="Open live diagnostics drawer"
-              title="Live drawer arrives in litclock-dev#416 PR3b">
-        Open live drawer
+              aria-label="{{ t('aria.shell.drawer_open') }}"
+              title="{{ t('diag.drawer_link.nojs_note') }}">
+        {{ t('diag.drawer_link') }}
       </button>
-      <small class="diag-log-snapshot__pending">(Live drawer arrives in litclock-dev#416 PR3b.)</small>
+      {# drawer.js un-disables the button, drops the title, and hides this
+         note at load — so this copy is the NO-JS state, where the honest
+         message is "needs JavaScript", not the stale "arrives in litclock-dev#416
+         PR3b" (that PR shipped; the claim was false for JS users too
+         until drawer.js loaded). #}
+      <small class="diag-log-snapshot__pending">{{ t('diag.drawer_link.nojs_note') }}</small>
     </p>
   </details>
 
@@ -424,10 +429,10 @@
    server-side; diagnostics.js refreshes the <pre> content on Reveal
    toggle so what you paste matches what you see. #}
 <section class="diag-copy" aria-labelledby="diag-copy-title">
-  <h2 id="diag-copy-title" class="diag-copy__title">Copy support payload</h2>
+  <h2 id="diag-copy-title" class="diag-copy__title">{{ t('diag.copy.title') }}</h2>
+  {%- set cd = t('diag.copy.description').split('{state}') -%}
   <p class="diag-copy__description">
-    Tap Copy, then paste the block below into your GitHub issue or email
-    to a helper. SSID, city, and coordinates are <span data-diag-copy-reveal-state>redacted</span> by default — toggle Reveal above if your helper needs them.
+    {{ cd[0] }}<span data-diag-copy-reveal-state>{{ t('diag.copy.state_redacted') }}</span>{{ cd[1] if cd|length > 1 else '' }}
   </p>
   <pre class="diag-copy__block" data-diag-copy-block><code>{{ copy_payload }}</code></pre>
   <div class="diag-copy__actions">
@@ -435,7 +440,7 @@
       <svg viewBox="0 0 256 256" width="16" height="16" fill="currentColor" aria-hidden="true">
         <path d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z"/>
       </svg>
-      Copy
+      {{ t('diag.copy.button') }}
     </button>
     {# litclock-dev#416 follow-up — deeper on-demand logs export. The Copy block above
        carries the 3-line-per-unit page preview; this downloads a fuller
@@ -447,7 +452,7 @@
       <svg viewBox="0 0 256 256" width="16" height="16" fill="currentColor" aria-hidden="true">
         <path d="M224,152v56a16,16,0,0,1-16,16H48a16,16,0,0,1-16-16V152a8,8,0,0,1,16,0v56H208V152a8,8,0,0,1,16,0Zm-101.66,5.66a8,8,0,0,0,11.32,0l40-40a8,8,0,0,0-11.32-11.32L136,132.69V40a8,8,0,0,0-16,0v92.69L93.66,106.34a8,8,0,0,0-11.32,11.32Z"/>
       </svg>
-      Download full logs
+      {{ t('diag.copy.download') }}
     </a>
   </div>
 </section>
@@ -459,5 +464,51 @@
 {% endblock %}
 
 {% block extra_body %}
+{# litclock-dev#532: the page's catalog strings for client-side re-renders.
+   diagnostics.js reads this blob; its baked-in English fallbacks cover the
+   STALE-JS window (static assets cache up to 15 min / one SW activation, so
+   old JS ignores a new blob — /review litclock-dev#739; /diagnostics HTML itself is
+   never SW-cached), JSON-parse failures, and test DOMs. CI pins the
+   fallbacks against the catalog so the two can't drift.
+   ESCAPING CONTRACT: `| tojson` output is safe ONLY as script-element
+   CONTENT (it \u-escapes <>&' but NOT double quotes) — never move this
+   blob into a quoted attribute. #}
+<script type="application/json" data-litclock-strings>{{ catalog_subset([
+  'diag.settling.network',
+  'diag.settling.time_location',
+  'diag.settling.both',
+  'diag.banner.title.error',
+  'diag.banner.title.warning',
+  'diag.banner.title.settling',
+  'diag.banner.title.ok',
+  'diag.pill.uncollected',
+  'aria.diag.pill.uncollected',
+  'diag.refreshed.just_now',
+  'diag.refreshed.seconds',
+  'diag.refreshed.minutes',
+  'diag.refreshed.hours',
+  'diag.reveal.show',
+  'diag.reveal.hide',
+  'diag.copy.state_redacted',
+  'diag.copy.state_visible',
+  'diag.announce.copied',
+  'diag.announce.copied_payload',
+  'diag.announce.copy_failed',
+  'diag.announce.reveal_on',
+  'diag.announce.reveal_off',
+  'diag.announce.avail_both',
+  'diag.announce.avail_net',
+  'diag.announce.avail_loc',
+  'diag.tail.loading',
+  'diag.tail.error',
+  'diag.tail.empty',
+  'diag.payload.loading',
+  'diag.payload.empty',
+  'diag.payload.unavailable',
+  'diag.pill.ok',
+  'diag.refresh_failed',
+  'diag.value.yes',
+  'diag.value.no',
+]) | tojson }}</script>
 <script src="{{ url_for('static', filename='js/diagnostics.js') }}" defer></script>
 {% endblock %}

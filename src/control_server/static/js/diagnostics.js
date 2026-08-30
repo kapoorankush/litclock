@@ -125,10 +125,10 @@
       if (off) off.hidden = on;
       if (onIcon) onIcon.hidden = !on;
       var label = $('[data-diag-reveal-label]');
-      if (label) label.textContent = on ? 'Hide' : 'Reveal';
+      if (label) label.textContent = on ? tr('diag.reveal.hide', 'Hide') : tr('diag.reveal.show', 'Reveal');
     }
     var copyState = $('[data-diag-copy-reveal-state]');
-    if (copyState) copyState.textContent = on ? 'visible' : 'redacted';
+    if (copyState) copyState.textContent = on ? tr('diag.copy.state_visible', 'visible') : tr('diag.copy.state_redacted', 'redacted');
   }
 
   /* ----- Fetch with timeout --------------------------------------------- */
@@ -182,8 +182,8 @@
        float → trim trailing .0 for integer-valued floats (so cpu_temp_c
        50.0 matches the SSR "50.0" rendering); anything else → str(value). */
     if (value === null || value === undefined || value === '') return '—';
-    if (value === true) return 'Yes';
-    if (value === false) return 'No';
+    if (value === true) return tr('diag.value.yes', 'Yes');
+    if (value === false) return tr('diag.value.no', 'No');
     if (typeof value === 'number') {
       /* Match Jinja's str() on floats: 50.0 → "50.0" (not "50"). */
       if (Number.isFinite(value) && !Number.isInteger(value)) {
@@ -209,13 +209,39 @@
      marker outlives both paths. */
   var _jsOpenInFlight = Object.create(null);
 
+  /* litclock-dev#532: catalog strings injected by the template. The English
+     literals below are FALLBACKS for the stale-JS window (an updated page
+     with this file still cached — up to 15 min / one SW activation), for a
+     JSON-parse failure, and for test DOMs; CI pins each fallback against
+     the catalog so the pair cannot drift
+     (tests/test_cross_file_string_parity.py — the one-sided form of the old
+     duplicate-pin). DESIGN CHOICE (/review litclock-dev#739 F4b): tr() prefers the
+     blob's value even when the server catalog degraded it to a raw key —
+     SSR shows the same degraded key then, and cross-surface CONSISTENCY is
+     the property this pair guards; a "better" local fallback that disagrees
+     with SSR would reintroduce the drift. */
+  var STRINGS = (function () {
+    var el = document.querySelector('[data-litclock-strings]');
+    if (!el) return {};
+    try {
+      return JSON.parse(el.textContent) || {};
+    } catch (e) {
+      return {};
+    }
+  })();
+
+  function tr(key, fallback) {
+    return Object.prototype.hasOwnProperty.call(STRINGS, key) ? STRINGS[key] : fallback;
+  }
+
+
   /* litclock-dev#432 — pill labels for the tri-state. Anomaly labels live in the
      macro caller (not JS-rebuilt) because each section's anomaly_label
      is distinct ("Resource alert" / "Connection issue" / "Location
      stale" / etc.); the OK + Not yet collected labels are constant
      across sections so JS can write them directly. */
-  var PILL_LABEL_OK = 'OK';
-  var PILL_LABEL_UNCOLLECTED = 'Not yet collected';
+  var PILL_LABEL_OK = tr('diag.pill.ok', 'OK');
+  var PILL_LABEL_UNCOLLECTED = tr('diag.pill.uncollected', 'Not yet collected');
 
   /* litclock-dev#432 D6 — section-aware "settling" banner body lookup. Shared between
      SSR Jinja (in diagnostics.html.j2) and the 30s poll handler so the
@@ -227,10 +253,12 @@
   function _settlingBody(uncollected) {
     if (!uncollected || uncollected.length === 0) return '';
     var key = uncollected.slice().sort().join('+');
-    if (key === 'network') return 'Your clock is finishing its first network check.';
-    if (key === 'time-location') return 'Your clock is finishing its first location check.';
+    if (key === 'network') return tr('diag.settling.network', 'Your clock is finishing its first network check.');
+    if (key === 'time-location') {
+      return tr('diag.settling.time_location', 'Your clock is finishing its first location check.');
+    }
     if (key === 'network+time-location') {
-      return 'Your clock is finishing its first network and location checks.';
+      return tr('diag.settling.both', 'Your clock is finishing its first network and location checks.');
     }
     /* Unknown section ID (forward-compat) — return empty so the banner
        renders the headline alone rather than wrong copy. Graceful per
@@ -299,9 +327,9 @@
     if (!ids || ids.length === 0) return;
     var net = ids.indexOf('network') !== -1;
     var loc = ids.indexOf('time-location') !== -1;
-    if (net && loc) announce('Network and location details available.');
-    else if (net) announce('Network details available.');
-    else if (loc) announce('Location details available.');
+    if (net && loc) announce(tr('diag.announce.avail_both', 'Network and location details available.'));
+    else if (net) announce(tr('diag.announce.avail_net', 'Network details available.'));
+    else if (loc) announce(tr('diag.announce.avail_loc', 'Location details available.'));
   }
 
   /* Fix B — patchSection now returns the section's EFFECTIVE post-debounce
@@ -373,7 +401,7 @@
       if (newState === 'uncollected') {
         pill.setAttribute(
           'aria-label',
-          'Not yet collected — data has not been recorded on this clock yet'
+          tr('aria.diag.pill.uncollected', 'Not yet collected — data has not been recorded on this clock yet')
         );
       } else {
         pill.removeAttribute('aria-label');
@@ -467,9 +495,9 @@
   }
 
   function tailStatusText(entry) {
-    if (!entry || entry.status === 'loading') return 'loading logs…';
-    if (entry.status === 'error') return 'couldn’t load logs';
-    return (entry.lines && entry.lines.length) ? entry.lines.join('\n') : 'no recent log lines';
+    if (!entry || entry.status === 'loading') return tr('diag.tail.loading', 'loading logs…');
+    if (entry.status === 'error') return tr('diag.tail.error', 'couldn’t load logs');
+    return (entry.lines && entry.lines.length) ? entry.lines.join('\n') : tr('diag.tail.empty', 'no recent log lines');
   }
 
   /* Update (or create) the tail <pre> for one row from _serviceTails state. */
@@ -543,9 +571,9 @@
     units.forEach(function (unit) {
       var entry = _serviceTails[unit];
       out += '\n### ' + unit + '\n';
-      if (!entry || entry.status === 'loading') out += '(loading)\n';
-      else if (entry.status === 'error') out += '(logs unavailable)\n';
-      else out += ((entry.lines && entry.lines.length) ? entry.lines.join('\n') : '(no recent log lines)') + '\n';
+      if (!entry || entry.status === 'loading') out += tr('diag.payload.loading', '(loading)') + '\n';
+      else if (entry.status === 'error') out += tr('diag.payload.unavailable', '(logs unavailable)') + '\n';
+      else out += ((entry.lines && entry.lines.length) ? entry.lines.join('\n') : tr('diag.payload.empty', '(no recent log lines)')) + '\n';
     });
     return out;
   }
@@ -659,10 +687,10 @@
   }
 
   function bannerTitle(severity) {
-    if (severity === 'error') return "Clock isn't running";
-    if (severity === 'warning') return 'Something needs attention';
-    if (severity === 'settling') return 'Just settling in.';
-    return 'All running';
+    if (severity === 'error') return tr('diag.banner.title.error', "Clock isn't running");
+    if (severity === 'warning') return tr('diag.banner.title.warning', 'Something needs attention');
+    if (severity === 'settling') return tr('diag.banner.title.settling', 'Just settling in.');
+    return tr('diag.banner.title.ok', 'All running');
   }
 
   function patchBanner(anomalies, uncollected, refreshedAtMs) {
@@ -724,16 +752,36 @@
 
     var refreshed = $('[data-diag-banner-refreshed]');
     if (refreshed && refreshedAtMs) {
-      refreshed.textContent = 'Refreshed ' + formatRelative(refreshedAtMs);
+      refreshed.textContent = formatRelative(refreshedAtMs);
     }
+  }
+
+  // litclock-dev#532 (scope-audit item 11): user-visible sentences are WHOLE
+  // templates with a named slot — never assembled by concatenation, so the
+  // future string catalog can swap the template without touching logic
+  // (word order differs across languages; a spliced number pins English's).
+  // The templates carry the WHOLE sentence including "Refreshed" — the
+  // /review litclock-dev#736 pass caught the first draft leaving 'Refreshed ' spliced
+  // at the call sites, which re-committed the exact half-sentence defect
+  // this restructure removes. split/join, not .replace: a string-pattern
+  // replace fills only the FIRST slot and treats '$' in the value as
+  // magic — inert for numbers today, a silent corruption the day a
+  // catalog feeds this a string.
+  var REFRESHED_JUST_NOW = tr('diag.refreshed.just_now', 'Refreshed just now');
+  var REFRESHED_SECONDS = tr('diag.refreshed.seconds', 'Refreshed {n}s ago');
+  var REFRESHED_MINUTES = tr('diag.refreshed.minutes', 'Refreshed {n}m ago');
+  var REFRESHED_HOURS = tr('diag.refreshed.hours', 'Refreshed {n}h ago');
+
+  function fillSlot(template, value) {
+    return template.split('{n}').join(String(value));
   }
 
   function formatRelative(thenMs) {
     var ageS = Math.max(0, Math.round((Date.now() - thenMs) / 1000));
-    if (ageS < 5) return 'just now';
-    if (ageS < 60) return ageS + 's ago';
-    if (ageS < 3600) return Math.floor(ageS / 60) + 'm ago';
-    return Math.floor(ageS / 3600) + 'h ago';
+    if (ageS < 5) return REFRESHED_JUST_NOW;
+    if (ageS < 60) return fillSlot(REFRESHED_SECONDS, ageS);
+    if (ageS < 3600) return fillSlot(REFRESHED_MINUTES, Math.floor(ageS / 60));
+    return fillSlot(REFRESHED_HOURS, Math.floor(ageS / 3600));
   }
 
   /* ----- Copy payload --------------------------------------------------- */
@@ -804,11 +852,11 @@
     if (!li) return;
     copyToClipboard(formatLogEntryForCopy(li))
       .then(function () {
-        announce('Copied');
+        announce(tr('diag.announce.copied', 'Copied'));
         flashCopySuccess(btn);
       })
       .catch(function () {
-        announce('Couldn’t copy. Long-press to select instead.');
+        announce(tr('diag.announce.copy_failed', 'Couldn’t copy. Long-press to select instead.'));
       });
   }
 
@@ -821,11 +869,11 @@
     var text = block ? block.textContent : '';
     copyToClipboard(text)
       .then(function () {
-        announce('Copied support payload');
+        announce(tr('diag.announce.copied_payload', 'Copied support payload'));
         flashCopySuccess(btn);
       })
       .catch(function () {
-        announce('Couldn’t copy. Long-press to select instead.');
+        announce(tr('diag.announce.copy_failed', 'Couldn’t copy. Long-press to select instead.'));
       });
   }
 
@@ -1017,9 +1065,9 @@
       var refreshed = $('[data-diag-banner-refreshed]');
       if (!refreshed) return;
       if (state.consecutiveFailures > 0) {
-        refreshed.textContent = 'Last refresh failed — retrying';
+        refreshed.textContent = tr('diag.refresh_failed', 'Last refresh failed — retrying');
       } else if (state.lastRefreshAt) {
-        refreshed.textContent = 'Refreshed ' + formatRelative(state.lastRefreshAt);
+        refreshed.textContent = formatRelative(state.lastRefreshAt);
       }
     }, META_TICKER_MS);
   }
@@ -1105,8 +1153,8 @@
         var on = !readReveal();
         writeReveal(on);
         applyRevealUI(on);
-        announce(on ? 'Reveal on. SSID, city, and coordinates now visible.'
-                    : 'Reveal off. Sensitive values hidden again.');
+        announce(on ? tr('diag.announce.reveal_on', 'Reveal on. SSID, city, and coordinates now visible.')
+                    : tr('diag.announce.reveal_off', 'Reveal off. Sensitive values hidden again.'));
         /* abort() is a no-op if no fetch is in-flight, so the literal
            sequence ``abort(); refresh();`` reads as the intent: cancel
            whatever's pending, fire a fresh fetch with the new reveal. */

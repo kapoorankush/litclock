@@ -1,6 +1,13 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "image-gen"]
+# litclock-dev#662. A hanging test is a PASS-shaped failure: CI burns to its
+# wall-clock limit and reports a timeout rather than the regression. The
+# concrete case is a dropped O_NONBLOCK in the hotspot-password reader, which
+# blocks forever on a FIFO whose writer never comes. 300s is far above the
+# slowest real test here (the whole suite runs in ~235s), so this only ever
+# fires on a genuine hang.
+timeout = 300
 
 [tool.ruff]
 target-version = "py311"
@@ -13,3 +20,6 @@ select = ["E", "F", "W", "B", "I", "UP"]
 [tool.ruff.lint.per-file-ignores]
 # HTML templates use .format() with CSS braces — can't convert to f-strings
 "src/setup_server.py" = ["UP032"]
+# Embeds a self-contained HTML/CSS/JS tool as a string literal — the inline
+# CSS/JS lines legitimately exceed the Python line length (litclock-dev#532).
+"scripts/build_translator_kit.py" = ["E501"]

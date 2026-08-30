@@ -86,6 +86,45 @@ class TestSudoersFile:
 # ─── Install paths ──────────────────────────────────────────────────────────
 
 
+class TestFirstBootSetupIncompleteSudo:
+    """litclock-dev#657: what the Setup-Incomplete arm needs from sudo.
+
+    Two sudo calls were added there. One is covered by the scoped allowlist and
+    one deliberately is not, and the difference is easy to lose — the code
+    comment states it, and this is what keeps the comment true."""
+
+    _FIRST_BOOT = REPO_ROOT / "scripts" / "first-boot.sh"
+
+    def test_the_poweroff_is_in_the_scoped_allowlist(self):
+        """So it survives a future drop of the broad 010 grant, which is
+        exactly what the code comment claims about this line."""
+        assert "sudo systemctl poweroff" in self._FIRST_BOOT.read_text()
+        # The BARE form, bounded. A plain substring check is satisfied by the
+        # `--no-block` grant that follows it in the same line, so deleting the
+        # bare one left this green while `sudo systemctl poweroff` — the form
+        # first-boot.sh actually runs — was no longer permitted (/review).
+        assert re.search(r"/usr/bin/systemctl poweroff\s*(,|$)", SUDOERS_FILE.read_text(), re.M), (
+            "first-boot.sh's Setup-Incomplete arm runs bare `sudo systemctl poweroff`; 020 must grant that form, "
+            "not only `poweroff --no-block`"
+        )
+
+    def test_the_suppress_marker_touch_is_deliberately_NOT_in_the_allowlist(self):
+        """The inverse assertion, and it is the load-bearing one.
+
+        Granting pi `touch /run/litclock-splash-suppress` would let a pi-level
+        process mute the shutdown splash — including the gift welcome — which
+        is the precise thing shutdown-splash.sh's root-owned path exists to
+        prevent. So this must stay OUT, and the consequence (the marker stops
+        working if 010 is dropped) is recorded rather than silently traded
+        away. If someone adds it, this test says why not to.
+        """
+        assert "/run/litclock-splash-suppress" not in SUDOERS_FILE.read_text(), (
+            "granting pi this touch reinstates the gift-welcome suppression the root-owned path "
+            "prevents (litclock-dev#657 /review). Closing the 010 gap needs a root-owned wrapper, "
+            "like /usr/local/lib/litclock/litclock-set-timezone, not a wider allowlist."
+        )
+
+
 class TestUpdateScriptSyncsSudoers:
     """update.sh must sync sudoers drops on every run, idempotently."""
 

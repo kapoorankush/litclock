@@ -20,7 +20,7 @@
      6. Installing services        — Phase 5 + 5b + 6
      7. Restarting                 — Phase 7
 #}
-{% block title %}Updates — LitClock{% endblock %}
+{% block title %}{{ t('updates.title') }} — LitClock{% endblock %}
 
 {% block extra_head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/updates.css') }}">
@@ -36,6 +36,19 @@
 {% endblock %}
 
 {% block extra_body %}
+{# litclock-dev#532: catalog strings for updates.js's dynamic copy. Safe as
+   script-element CONTENT only (tojson does not escape double quotes). #}
+<script type="application/json" data-litclock-strings>{{ catalog_subset([
+  'updates.terminal.unrecovered',
+  'updates.terminal.reverted',
+  'updates.terminal.dead_updater',
+  'updates.terminal.reconnect_failed',
+  'common.alert.token_invalid',
+  'common.alert.http_status',
+  'common.confirm.timeout',
+  'updates.pill.checking',
+  'updates.pill.check_failed',
+]) | tojson }}</script>
   <script src="{{ url_for('static', filename='js/updates.js') }}" defer></script>
 {% endblock %}
 
@@ -69,30 +82,30 @@
 
   <header class="updates-card__header">
     {% if available %}
-      <span class="updates-pill updates-pill--available" role="status">update available</span>
+      <span class="updates-pill updates-pill--available" role="status">{{ t('updates.pill.available') }}</span>
     {% elif checking %}
-      <span class="updates-pill updates-pill--unknown" role="status">checking…</span>
+      <span class="updates-pill updates-pill--unknown" role="status">{{ t('updates.pill.checking') }}</span>
     {% elif check_failed %}
       {# litclock-dev#381 — terminal-unknown state: the GH /tags call returned null
          (commonly: private repo + missing PAT). Was "checking…" before,
          which left users staring at a spinner that wasn't spinning. #}
-      <span class="updates-pill updates-pill--unknown" role="status">couldn't check</span>
+      <span class="updates-pill updates-pill--unknown" role="status">{{ t('updates.pill.check_failed') }}</span>
     {% else %}
-      <span class="updates-pill updates-pill--ok" role="status">up to date</span>
+      <span class="updates-pill updates-pill--ok" role="status">{{ t('updates.pill.up_to_date') }}</span>
     {% endif %}
   </header>
 
   <dl class="updates-card__facts">
-    <dt>Current version</dt>
+    <dt>{{ t('updates.facts.current') }}</dt>
     <dd class="updates-card__version">{{ current_version }}</dd>
 
     {% if available and latest_tag %}
-      <dt>Available</dt>
+      <dt>{{ t('updates.facts.available') }}</dt>
       <dd class="updates-card__version">{{ latest_tag }}</dd>
     {% endif %}
 
     {% if cached_check and cached_check.fetched_at_unix %}
-      <dt>Last checked</dt>
+      <dt>{{ t('updates.facts.last_checked') }}</dt>
       <dd class="updates-card__last-checked"
           data-fetched-at="{{ cached_check.fetched_at_unix }}">
         {# Server-rendered relative time (M7 F-004). The data-fetched-at
@@ -119,7 +132,7 @@
           action="{{ url_for('updates.apply_update') }}"
           data-confirm-action="update_apply">
       <input type="hidden" name="token" value="{{ token }}">
-      <button type="submit" class="updates-card__apply-btn">Apply update…</button>
+      <button type="submit" class="updates-card__apply-btn">{{ t('updates.apply') }}</button>
     </form>
   {% endif %}
 </section>
@@ -134,13 +147,13 @@
         data-action="update_apply"
         data-destructive="false">
   <div class="confirm-sheet__inner">
-    <h2 id="confirm-update-title" class="confirm-sheet__title">Apply update?</h2>
+    <h2 id="confirm-update-title" class="confirm-sheet__title">{{ t('updates.confirm.title') }}</h2>
     <p id="confirm-update-body" class="confirm-sheet__body">
-      LitClock will pause for about 5 minutes while it updates. Your quote will return when it’s done.
+      {{ t('updates.confirm.body') }}
     </p>
     <div class="confirm-sheet__actions">
-      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>Cancel</button>
-      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>Apply</button>
+      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>{{ t('common.cancel') }}</button>
+      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>{{ t('updates.confirm.confirm') }}</button>
     </div>
   </div>
 </dialog>
@@ -157,11 +170,11 @@
    stale card. Markup is byte-identical to the old hand-written rows;
    only the loop and the conditional data-state are new. #}
 <section class="phase-reading-list" id="phase-reading-list" {% if not update_running %}hidden {% endif %}aria-live="polite">
-  <h2 class="phase-reading-list__title">Updating LitClock</h2>
+  <h2 class="phase-reading-list__title">{{ t('updates.reading.title') }}</h2>
   <ol class="phase-reading-list__rows" role="list">
-    {% for phase_name in ['Checking for updates', 'Pulling new code', 'Syncing quote images',
-                          'Updating Python packages', 'Verifying clock starts',
-                          'Installing services', 'Restarting'] %}
+    {% for phase_key in ['updates.phase.check', 'updates.phase.pull', 'updates.phase.images',
+                          'updates.phase.python', 'updates.phase.verify',
+                          'updates.phase.services', 'updates.phase.restart'] %}
     {%- if update_running and loop.index < update_phase_index %}
       {%- set row_state = 'completed' %}
     {%- elif update_running and loop.index == update_phase_index %}
@@ -171,7 +184,7 @@
     {%- endif %}
     <li class="phase-row" data-phase-index="{{ loop.index }}" data-state="{{ row_state }}">
       <span class="phase-row__icon" aria-hidden="true"></span>
-      <span class="phase-row__name">{{ phase_name }}</span>
+      <span class="phase-row__name">{{ t(phase_key) }}</span>
     </li>
     {%- endfor %}
   </ol>

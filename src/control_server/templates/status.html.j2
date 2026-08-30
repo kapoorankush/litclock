@@ -10,12 +10,12 @@
    hero reflects what the e-ink is currently showing. Without JS, the
    page is frozen on the first-paint values until manual reload. #}
 
-{% block title %}LitClock — {{ s.time or "Now" }}{% endblock %}
+{% block title %}LitClock — {{ s.time or t('status.heading') }}{% endblock %}
 
 {% block content %}
 {# Visually-hidden region heading so screen readers identify the section.
    DESIGN.md a11y: hero is `role="region" aria-labelledby="..."` (lines 287-292). #}
-<h2 id="status-heading" class="visually-hidden">Now</h2>
+<h2 id="status-heading" class="visually-hidden">{{ t('status.heading') }}</h2>
 
 {# Stale-quote banner per locked decision D2. Surface-raised bg, ochre
    --warning border-top. role="status" + aria-live="assertive" — DESIGN.md
@@ -34,9 +34,9 @@
   </svg>
   <span class="stale-banner-text" data-status-stale-text>
     {% if s.picked_at_age_s is not none %}
-      Clock service may be paused — last quote {{ (s.picked_at_age_s / 60) | round(0, "floor") | int }} min ago
+      {{ t('status.stale.with_age', n=(s.picked_at_age_s / 60) | round(0, "floor") | int) }}
     {% else %}
-      Clock service may be paused — no quote published yet
+      {{ t('status.stale.no_quote') }}
     {% endif %}
   </span>
 </div>
@@ -53,7 +53,7 @@
     <path d="M128,24A104,104,0,1,0,232,128,104.12,104.12,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm16-40a8,8,0,0,1-8,8,16,16,0,0,1-16-16V128a8,8,0,0,1,0-16,16,16,0,0,1,16,16v40A8,8,0,0,1,144,176ZM112,84a12,12,0,1,1,12,12A12,12,0,0,1,112,84Z"/>
   </svg>
   <span class="stale-banner-text" data-status-phase3-skip-text>
-    Last update skipped the env-vars merge — will retry next Sunday.
+    {{ t('status.phase3_skip') }}
   </span>
 </div>
 
@@ -87,7 +87,7 @@
     </p>
   </div>
   <p class="hero-empty" data-status-hero-empty {% if s.quote %}hidden{% endif %}>
-    <em>Starting up…</em>&nbsp; Your first quote should appear within a minute.
+    <em>{{ t('status.empty.lead') }}</em>&nbsp; {{ t('status.empty.body') }}
   </p>
   {# litclock-dev#309 — graceful disconnect state. Hidden on SSR; status.js reveals
      this when /api/status polling fails (network error, timeout, non-OK)
@@ -99,16 +99,16 @@
      per the gift-recipient persona. #}
   <div class="hero-unreachable" data-status-hero-unreachable role="alert" hidden>
     <p class="hero-unreachable-headline">
-      <em>Couldn't reach LitClock.</em>
+      <em>{{ t('status.unreachable.headline') }}</em>
     </p>
-    <p class="hero-unreachable-help">A few things that often help:</p>
+    <p class="hero-unreachable-help">{{ t('status.unreachable.help') }}</p>
     <ul class="hero-unreachable-tips">
-      <li>Make sure your clock is plugged in and the screen is lit</li>
-      <li>Try scanning the QR code on the clock again</li>
-      <li>Check that your phone is on the same WiFi as the clock</li>
+      <li>{{ t('status.unreachable.tip_power') }}</li>
+      <li>{{ t('status.unreachable.tip_qr') }}</li>
+      <li>{{ t('status.unreachable.tip_wifi') }}</li>
     </ul>
     <button type="button" class="hero-unreachable-retry" data-status-retry>
-      Tap to retry
+      {{ t('status.unreachable.retry') }}
     </button>
   </div>
 </section>
@@ -117,9 +117,9 @@
    Each row uses an explicit label-value pair so screen readers can pair
    them via `aria-labelledby`. Geist Mono with tabular numerics on the
    value side for SSID / version / uptime per the spec. #}
-<dl class="status-rows" aria-label="System status">
+<dl class="status-rows" aria-label="{{ t('aria.status.rows') }}">
   <div class="status-row">
-    <dt>WiFi</dt>
+    <dt>{{ t('status.rows.wifi') }}</dt>
     {# DESIGN.md "Status row list" line 379 locks SSID truncation at
        18 chars. Jinja's `truncate(length, killwords=True, end='…')`
        hard-cuts at the locked column count regardless of viewport
@@ -128,19 +128,19 @@
     <dd class="mono" data-status-wifi>{{ s.wifi_ssid|truncate(18, true, "…") if s.wifi_ssid else "—" }}</dd>
   </div>
   <div class="status-row">
-    <dt>Weather</dt>
+    <dt>{{ t('status.rows.weather') }}</dt>
     <dd data-status-weather>{{ s.weather_city or "—" }}</dd>
   </div>
   <div class="status-row">
-    <dt>Version</dt>
+    <dt>{{ t('status.rows.version') }}</dt>
     <dd class="mono" data-status-version>{{ s.version or "—" }}</dd>
   </div>
   <div class="status-row">
-    <dt>Uptime</dt>
+    <dt>{{ t('status.rows.uptime') }}</dt>
     <dd class="mono" data-status-uptime>{{ s.uptime_human }}</dd>
   </div>
   <div class="status-row">
-    <dt>Last update</dt>
+    <dt>{{ t('status.rows.last_update') }}</dt>
     {# litclock-dev#330: render to_version + relative time. The version span is hidden
        (via [hidden]) when last_update_version is null so we still degrade
        to "just relative time" on lkg-sha-absent / fresh-install Pis.
@@ -164,22 +164,28 @@
    never competes with the hero — /review caught the original placement
    between hero and rows as a hierarchy violation. #}
 <aside class="mdns-bookmark" data-mdns-bookmark role="region"
-       aria-label="More reliable connection available" hidden>
-  <p class="mdns-bookmark-headline">A more reliable link is available.</p>
+       aria-label="{{ t('aria.status.mdns') }}" hidden>
+  <p class="mdns-bookmark-headline">{{ t('status.mdns.headline') }}</p>
   <p class="mdns-bookmark-body">
-    Helps your clock keep working even when WiFi changes.
+    {{ t('status.mdns.body') }}
   </p>
   <div class="mdns-bookmark-actions">
     <button type="button" class="mdns-bookmark-switch" data-mdns-switch>
-      Switch
+      {{ t('status.mdns.switch') }}
     </button>
     <button type="button" class="mdns-bookmark-dismiss" data-mdns-dismiss>
-      Not now
+      {{ t('status.mdns.dismiss') }}
     </button>
   </div>
 </aside>
 {% endblock %}
 
 {% block extra_body %}
+{# litclock-dev#532: catalog strings for status.js's poll re-renders. Safe
+   as script-element CONTENT only (tojson does not escape double quotes). #}
+<script type="application/json" data-litclock-strings>{{ catalog_subset([
+  'status.stale.with_age',
+  'status.stale.no_quote',
+]) | tojson }}</script>
 <script src="{{ url_for('static', filename='js/status.js') }}" defer></script>
 {% endblock %}

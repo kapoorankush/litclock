@@ -98,12 +98,31 @@
     return '— ' + (s.author || '') + (s.title ? ', ' : '');
   }
 
+  /* litclock-dev#532: catalog strings injected by the template; the English
+     literals are stale-JS-window fallbacks, CI-pinned against the catalog
+     (tests/test_cross_file_string_parity.py). */
+  var STRINGS = (function () {
+    var el = document.querySelector('[data-litclock-strings]');
+    if (!el) return {};
+    try {
+      return JSON.parse(el.textContent) || {};
+    } catch (e) {
+      return {};
+    }
+  })();
+
+  function tr(key, fallback) {
+    return Object.prototype.hasOwnProperty.call(STRINGS, key) ? STRINGS[key] : fallback;
+  }
+
   function formatStaleBannerText(s) {
     if (s.picked_at_age_s !== null && s.picked_at_age_s !== undefined) {
       var mins = Math.floor(s.picked_at_age_s / 60);
-      return 'Clock service may be paused — last quote ' + mins + ' min ago';
+      return tr('status.stale.with_age', 'Clock service may be paused — last quote {n} min ago')
+        .split('{n}')
+        .join(String(mins));
     }
-    return 'Clock service may be paused — no quote published yet';
+    return tr('status.stale.no_quote', 'Clock service may be paused — no quote published yet');
   }
 
   function patch(s) {

@@ -1405,9 +1405,18 @@ class TestPrepareForGiftRoute:
                 t.start()
             for t in threads:
                 t.join(timeout=5)
-        # Both must succeed — the pre-fix race on the shared tmp path
-        # would cause at least one to return 500 with ENOENT.
-        assert all(r == 200 for r in results), f"concurrent calls produced mixed results: {results}"
+        # CONTRACT UPDATED by pickers 5b (adversarial /review F4): the
+        # whole flow is now serialized by _GIFT_FLOW_LOCK, so overlapping
+        # calls yield {200, 409-busy} and naturally serialized ones
+        # {200, 200}. The litclock-dev#316 property this test exists for still holds:
+        # NO 500s, no ENOENT from a shared tmp path (per-request mkstemp
+        # inodes back it up inside each request).
+        assert sorted(results)[0] in (200, 409) and 200 in results, (
+            f"concurrent calls produced unexpected results: {results}"
+        )
+        assert all(r in (200, 409) for r in results), (
+            f"a concurrent call surfaced an error status: {results}"
+        )
         # No stale tmp files left behind.
         leftover = list(tmp_path.glob(".gift-message.*"))
         assert not leftover, f"tmp files leaked: {leftover}"
@@ -2796,3 +2805,361 @@ class TestFactoryResetRoute:
             retry = client.post("/api/system/reset", json={"token": token})
         assert retry.status_code != 200
         mock_run.assert_not_called()
+
+
+class TestPrepareForGiftLanguage:
+    """litclock-dev#532 pickers 5b: the gift-language WRITE path — the
+    optional `language` field staged to /run/litclock/gift-language for
+    reset-setup's --language-file, validated through the same
+    config._validate_language contract as the Settings writer."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_update_busy_gate(self):
+        with patch("control_server.routes.system.update_state.update_is_busy", return_value=False):
+            yield
+
+    @pytest.fixture(autouse=True)
+    def _noop_tz_reset(self):
+        with patch("control_server.routes.system._gift_reset_timezone_to_utc"):
+            yield
+
+    @pytest.fixture(autouse=True)
+    def gift_env_file(self, app, tmp_path):
+        env_file = tmp_path / "env.sh"
+        env_file.write_text("export WEATHER_UNITS=imperial\n")
+        app.config["ENV_FILE"] = str(env_file)
+        return env_file
+
+    @pytest.fixture
+    def two_language_registry(self, tmp_path, monkeypatch):
+        """Registry with en + es active (es strings path absolute →
+        contained in tmp_path)."""
+        import json as _json
+
+        import strings_catalog
+
+        es_strings = tmp_path / "es-strings.json"
+        es_strings.write_text("{}", encoding="utf-8")
+        reg = tmp_path / "languages.json"
+        reg.write_text(
+            _json.dumps(
+                {
+                    "schema_version": 1,
+                    "fleet_default": "en",
+                    "languages": {
+                        "en": {
+                            "code": "en",
+                            "native_name": "English",
+                            "status": "active",
+                            "strings": "languages/en/strings.json",
+                        },
+                        "es": {
+                            "code": "es",
+                            "native_name": "Español",
+                            "status": "active",
+                            "strings": str(es_strings),
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", reg)
+        strings_catalog.reset_cache()
+        yield
+        strings_catalog.reset_cache()
+
+    def _post(self, client, tmp_path, payload):
+        msg_path = tmp_path / "gift-message"
+        lang_path = tmp_path / "gift-language"
+        with (
+            patch("control_server.routes.system.GIFT_MESSAGE_PATH", str(msg_path)),
+            patch("control_server.routes.system.GIFT_LANGUAGE_PATH", str(lang_path)),
+            patch("control_server.routes.system.subprocess.run") as mock_run,
+        ):
+            token = _issue_token(client, "prepare_for_gift")
+            payload = {"token": token, **payload}
+            response = client.post("/api/system/prepare-for-gift", json=payload)
+        return response, lang_path, mock_run
+
+    # ── staging ──
+
+    def test_valid_language_staged_before_dispatch(self, client, tmp_path, two_language_registry):
+        response, lang_path, mock_run = self._post(client, tmp_path, {"language": "es"})
+        assert response.status_code == 200, response.json
+        assert lang_path.read_text(encoding="utf-8") == "es"
+        mock_run.assert_called_once()
+
+    def test_absent_language_removes_stale_staging_file(self, client, tmp_path, two_language_registry):
+        """A previous gift's staged language must not leak into this one —
+        the unit always passes --language-file, so the stale file IS the
+        previous choice unless removed."""
+        stale = tmp_path / "gift-language"
+        stale.write_text("es", encoding="utf-8")
+        response, lang_path, mock_run = self._post(client, tmp_path, {})
+        assert response.status_code == 200, response.json
+        assert not lang_path.exists()
+        mock_run.assert_called_once()
+
+    def test_empty_language_treated_as_no_choice(self, client, tmp_path, two_language_registry):
+        response, lang_path, mock_run = self._post(client, tmp_path, {"language": ""})
+        assert response.status_code == 200, response.json
+        assert not lang_path.exists()
+        mock_run.assert_called_once()
+
+    # ── validation ──
+
+    def test_inactive_language_rejected_pre_side_effect(self, client, tmp_path, two_language_registry):
+        """400 + token restored + nothing staged + no dispatch: same
+        pre-side-effect contract as invalid_message."""
+        msg_path = tmp_path / "gift-message"
+        lang_path = tmp_path / "gift-language"
+        with (
+            patch("control_server.routes.system.GIFT_MESSAGE_PATH", str(msg_path)),
+            patch("control_server.routes.system.GIFT_LANGUAGE_PATH", str(lang_path)),
+            patch("control_server.routes.system.subprocess.run") as mock_run,
+        ):
+            token = _issue_token(client, "prepare_for_gift")
+            response = client.post(
+                "/api/system/prepare-for-gift", json={"token": token, "language": "fr"}
+            )
+            assert response.status_code == 400, response.json
+            assert response.json["error"]["code"] == "invalid_language"
+            assert not lang_path.exists()
+            assert not msg_path.exists()
+            mock_run.assert_not_called()
+            # Token restored: the same token succeeds on retry.
+            retry = client.post(
+                "/api/system/prepare-for-gift", json={"token": token, "language": "es"}
+            )
+            assert retry.status_code == 200, retry.json
+            assert lang_path.read_text(encoding="utf-8") == "es"
+
+    def test_shape_violating_language_rejected(self, client, tmp_path, two_language_registry):
+        """The config validator's raw-exact-match + shape belt applies to
+        this writer too (single contract, no drift)."""
+        for evil in ("\nes", "es;rm -rf /", " es", "ES"):
+            # Fresh bucket per probe — the shared 5/min limiter would 429
+            # the later iterations of this loop before validation runs.
+            client.application.extensions["system_rate_limiter"] = RateLimiter()
+            response, lang_path, mock_run = self._post(client, tmp_path, {"language": evil})
+            assert response.status_code == 400, (evil, response.json)
+            assert not lang_path.exists()
+            mock_run.assert_not_called()
+
+    def test_dormant_fleet_accepts_only_en(self, client, tmp_path):
+        """Real en-only registry: es is rejected, en stages fine."""
+        response, lang_path, mock_run = self._post(client, tmp_path, {"language": "es"})
+        assert response.status_code == 400
+        response, lang_path, mock_run = self._post(client, tmp_path, {"language": "en"})
+        assert response.status_code == 200, response.json
+        assert lang_path.read_text(encoding="utf-8") == "en"
+
+    # ── form path (no-JS) ──
+
+    def test_form_path_carries_language(self, client, tmp_path, two_language_registry):
+        msg_path = tmp_path / "gift-message"
+        lang_path = tmp_path / "gift-language"
+        with (
+            patch("control_server.routes.system.GIFT_MESSAGE_PATH", str(msg_path)),
+            patch("control_server.routes.system.GIFT_LANGUAGE_PATH", str(lang_path)),
+            patch("control_server.routes.system.subprocess.run") as mock_run,
+        ):
+            token = _issue_token(client, "prepare_for_gift")
+            response = client.post(
+                "/api/system/prepare-for-gift",
+                data={"token": token, "language": "es", "message": ""},
+            )
+        assert response.status_code == 200
+        assert lang_path.read_text(encoding="utf-8") == "es"
+        mock_run.assert_called_once()
+
+    # ── template rendering ──
+
+    def test_gift_language_pill_dormant_on_single_language_fleet(self, client):
+        html = client.get("/system").get_data(as_text=True)
+        assert "data-gift-language-pill" not in html
+        assert 'name="language"' not in html
+
+    def test_gift_language_pill_renders_on_multi_language_fleet(self, client, two_language_registry):
+        html = client.get("/system").get_data(as_text=True)
+        assert "data-gift-language-pill" in html
+        assert 'data-gift-language-opt="en"' in html
+        assert 'data-gift-language-opt="es"' in html
+        assert "Español" in html
+        # The pill lives INSIDE the destructive form so the checked radio
+        # rides the no-JS POST natively.
+        destructive = html.split("action-card__form--destructive", 1)[1].split("</form>", 1)[0]
+        assert "data-gift-language-pill" in destructive
+        # Default = current device language (en, nothing persisted).
+        assert (
+            '<label class="settings-segmented__opt is-selected"\n                 data-gift-language-opt="en"'
+            in html
+        )
+
+    # ── negative paths of the language staging (testing /review: both 500
+    #    branches had zero coverage — restore/no-dispatch unpinned) ──
+
+    def test_language_staging_failure_aborts_with_token_restore(self, client, tmp_path, two_language_registry):
+        """mkstemp into a nonexistent parent → 500, no dispatch, token
+        restored (retry with the SAME token succeeds once the path heals)."""
+        msg_path = tmp_path / "gift-message"
+        # A FILE where the parent dir should be: the staging block's own
+        # mkdir (F6 belt) raises NotADirectoryError inside its try.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("", encoding="utf-8")
+        bad_lang_path = blocker / "gift-language"
+        with (
+            patch("control_server.routes.system.GIFT_MESSAGE_PATH", str(msg_path)),
+            patch("control_server.routes.system.GIFT_LANGUAGE_PATH", str(bad_lang_path)),
+            patch("control_server.routes.system.subprocess.run") as mock_run,
+        ):
+            token = _issue_token(client, "prepare_for_gift")
+            response = client.post(
+                "/api/system/prepare-for-gift", json={"token": token, "language": "es"}
+            )
+            assert response.status_code == 500, response.json
+            assert response.json["error"]["code"] == "prepare_for_gift_failed"
+            assert "language" in response.json["error"]["message"]
+            mock_run.assert_not_called()
+        # Path healed → the SAME token must work (restore happened).
+        good_lang_path = tmp_path / "gift-language"
+        with (
+            patch("control_server.routes.system.GIFT_MESSAGE_PATH", str(msg_path)),
+            patch("control_server.routes.system.GIFT_LANGUAGE_PATH", str(good_lang_path)),
+            patch("control_server.routes.system.subprocess.run") as mock_run,
+        ):
+            retry = client.post(
+                "/api/system/prepare-for-gift", json={"token": token, "language": "es"}
+            )
+        assert retry.status_code == 200, retry.json
+        assert good_lang_path.read_text(encoding="utf-8") == "es"
+        mock_run.assert_called_once()
+
+    def test_stale_unlink_failure_aborts_with_token_restore(self, client, tmp_path, two_language_registry):
+        """An un-removable stale staging file would resurrect the PREVIOUS
+        gift's language — must 500, not dispatch, and restore the token."""
+        msg_path = tmp_path / "gift-message"
+        lang_path = tmp_path / "gift-language"
+        lang_path.write_text("es", encoding="utf-8")
+        with (
+            patch("control_server.routes.system.GIFT_MESSAGE_PATH", str(msg_path)),
+            patch("control_server.routes.system.GIFT_LANGUAGE_PATH", str(lang_path)),
+            patch("control_server.routes.system.subprocess.run") as mock_run,
+            patch("control_server.routes.system.os.unlink", side_effect=PermissionError("ro")),
+        ):
+            token = _issue_token(client, "prepare_for_gift")
+            response = client.post("/api/system/prepare-for-gift", json={"token": token})
+            assert response.status_code == 500, response.json
+            assert response.json["error"]["code"] == "prepare_for_gift_failed"
+            assert "stale" in response.json["error"]["message"]
+            mock_run.assert_not_called()
+        # unlink healed → same token works and the stale file is gone.
+        with (
+            patch("control_server.routes.system.GIFT_MESSAGE_PATH", str(msg_path)),
+            patch("control_server.routes.system.GIFT_LANGUAGE_PATH", str(lang_path)),
+            patch("control_server.routes.system.subprocess.run") as mock_run,
+        ):
+            retry = client.post("/api/system/prepare-for-gift", json={"token": token})
+        assert retry.status_code == 200, retry.json
+        assert not lang_path.exists()
+        mock_run.assert_called_once()
+
+    def test_pill_falls_back_when_persisted_language_not_active(
+        self, client, tmp_path, monkeypatch
+    ) -> None:
+        """Template fallback branch: device language degrades to en, en not
+        among the active choices (de+es registry) → exactly one radio
+        checked, the sorted-first active code."""
+        import json as _json
+
+        import strings_catalog
+
+        reg = tmp_path / "languages-no-en.json"
+        reg.write_text(
+            _json.dumps(
+                {
+                    "schema_version": 1,
+                    "fleet_default": "en",
+                    "languages": {
+                        "de": {"code": "de", "native_name": "Deutsch", "status": "active"},
+                        "es": {"code": "es", "native_name": "Español", "status": "active"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", reg)
+        strings_catalog.reset_cache()
+        try:
+            html = client.get("/system").get_data(as_text=True)
+            pill = html.split("data-gift-language-pill", 1)[1].split("</div>", 1)[0]
+            # Exactly one checked radio in the pill (the page has other
+            # "checked" strings — aria attributes, copy — scope the count).
+            assert pill.count("\n                   checked>") == 1, pill
+            assert (
+                '<label class="settings-segmented__opt is-selected"\n                 data-gift-language-opt="de"'
+                in html
+            )
+        finally:
+            strings_catalog.reset_cache()
+
+    def test_concurrent_gift_flow_gets_409_pre_side_effect(self, client, tmp_path, two_language_registry):
+        """5b F4: a second prepare-for-gift while one is mid-flight must
+        409 without consuming its token or staging anything."""
+        from control_server.routes import system as system_mod
+
+        msg_path = tmp_path / "gift-message"
+        lang_path = tmp_path / "gift-language"
+        assert system_mod._GIFT_FLOW_LOCK.acquire(blocking=False)
+        try:
+            with (
+                patch("control_server.routes.system.GIFT_MESSAGE_PATH", str(msg_path)),
+                patch("control_server.routes.system.GIFT_LANGUAGE_PATH", str(lang_path)),
+                patch("control_server.routes.system.subprocess.run") as mock_run,
+            ):
+                token = _issue_token(client, "prepare_for_gift")
+                response = client.post(
+                    "/api/system/prepare-for-gift", json={"token": token, "language": "es"}
+                )
+                assert response.status_code == 409, response.json
+                assert response.json["error"]["code"] == "prepare_for_gift_busy"
+                assert not lang_path.exists()
+                assert not msg_path.exists()
+                mock_run.assert_not_called()
+        finally:
+            system_mod._GIFT_FLOW_LOCK.release()
+        # Lock released → the SAME token works (409 never consumed it).
+        with (
+            patch("control_server.routes.system.GIFT_MESSAGE_PATH", str(msg_path)),
+            patch("control_server.routes.system.GIFT_LANGUAGE_PATH", str(lang_path)),
+            patch("control_server.routes.system.subprocess.run") as mock_run,
+        ):
+            retry = client.post(
+                "/api/system/prepare-for-gift", json={"token": token, "language": "es"}
+            )
+        assert retry.status_code == 200, retry.json
+        assert lang_path.read_text(encoding="utf-8") == "es"
+        mock_run.assert_called_once()
+
+    def test_definitive_dispatch_failure_cleans_both_staged_files(self, client, tmp_path, two_language_registry):
+        """Codex 5b P2: returncode 4/5 (unit didn't start) must unlink the
+        staged message AND language as one bundle."""
+        import subprocess as _subprocess
+
+        msg_path = tmp_path / "gift-message"
+        lang_path = tmp_path / "gift-language"
+        err = _subprocess.CalledProcessError(4, ["systemctl"], stderr=b"unit not found")
+        with (
+            patch("control_server.routes.system.GIFT_MESSAGE_PATH", str(msg_path)),
+            patch("control_server.routes.system.GIFT_LANGUAGE_PATH", str(lang_path)),
+            patch("control_server.routes.system.subprocess.run", side_effect=err),
+        ):
+            token = _issue_token(client, "prepare_for_gift")
+            response = client.post(
+                "/api/system/prepare-for-gift",
+                json={"token": token, "language": "es", "message": "hi"},
+            )
+        assert response.status_code == 500, response.json
+        assert not msg_path.exists()
+        assert not lang_path.exists()

@@ -98,6 +98,66 @@ def create_app(test_config: dict | None = None) -> Flask:
     # freezes its options on first access); jinja_env.autoescape is the
     # one that actually matters.
     app.jinja_env.autoescape = True
+    # litclock-dev#532 Stage 3: templates resolve user-facing strings through
+    # the language catalog. `t` renders one key; `catalog_subset` builds the
+    # dict a page injects for its client-side JS. The JS keeps English
+    # fallback literals for the STALE-JS window (/review litclock-dev#739: static assets
+    # are unversioned — a client can hold diagnostics.js for up to 15 min /
+    # one SW activation after an update, and old JS ignores the blob), for a
+    # JSON-parse failure, and for test DOMs; CI pins those fallbacks against
+    # the catalog so they are verified copies, not a second source.
+    # NOTE: this import is a HARD dependency on the litclock-dev#532 file
+    # chain (strings_catalog + languages.json + languages/) — a port that
+    # carries this line without the chain kills create_app at boot.
+    import strings_catalog as _strings_catalog  # noqa: PLC0415
+
+    app.jinja_env.globals["t"] = _strings_catalog.get
+    app.jinja_env.globals["catalog_subset"] = _strings_catalog.get_many
+    # litclock-dev#532 pickers 5b: the Settings Language section (and,
+    # once the gift-language write path lands, the System tab's gift
+    # field) renders ONLY on a multi-language fleet. Registered as
+    # callables, not values: env.sh is mtime-re-read per request, so a PWA
+    # language save is visible on the next render without a restart. The
+    # REGISTRY, by contrast, is positive-cached for process lifetime by
+    # design (/review litclock-dev#739) — a language ACTIVATION arrives via OTA, and
+    # update.sh restarts litclock-control.service, so the fresh registry
+    # loads exactly when it can legitimately change.
+    app.jinja_env.globals["active_language_choices"] = _strings_catalog.active_languages
+    app.jinja_env.globals["current_language"] = _strings_catalog.active_language
+
+    # litclock-dev#532 slice 6 — rich copy. Catalog values stay PLAIN TEXT;
+    # mid-sentence emphasis is expressed with a tiny whitelisted token
+    # vocabulary ({b}…{/b}, {em}…{/em}, {code}…{/code}) so translators can
+    # move the emphasis where their language needs it. t_rich resolves the
+    # key (slots filled as plain text), ESCAPES the whole result, and only
+    # then converts the tokens to tags — the same escape-then-splice order
+    # as system.js's card builders: catalog text can never smuggle markup;
+    # only the whitelist reintroduces it.
+    from markupsafe import Markup
+    from markupsafe import escape as _escape
+
+    _RICH_TOKENS = (
+        ("{b}", "<strong>"),
+        ("{/b}", "</strong>"),
+        ("{em}", "<em>"),
+        ("{/em}", "</em>"),
+        ("{code}", "<code>"),
+        ("{/code}", "</code>"),
+    )
+
+    def _t_rich(key, /, **slots):
+        # Slot values fill LAST — after escaping AND after token
+        # conversion — so a slot value can never assemble a whitelist
+        # token or markup (the tokens are already spent, the value is
+        # escaped). Mirrors system.js's esc-then-splice exactly.
+        text = str(_escape(_strings_catalog.get(key)))
+        for token, tag in _RICH_TOKENS:
+            text = text.replace(token, tag)
+        for name, value in slots.items():
+            text = text.replace("{" + name + "}", str(_escape(value)))
+        return Markup(text)
+
+    app.jinja_env.globals["t_rich"] = _t_rich
 
     from .confirm_tokens import ConfirmTokenStore
     from .csrf import CsrfTokenStore

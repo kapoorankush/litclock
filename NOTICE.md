@@ -139,7 +139,7 @@ Portions of the display and weather code were inspired by:
 
 ---
 
-## 3D-Printed Case (design + modified STLs)
+## 3D-Printed Case (design + case print files)
 
 The case design is Arthur Gassner's
 [Time Teller](https://github.com/arthurgassner/timeteller) project
@@ -150,12 +150,28 @@ The case design is Arthur Gassner's
 [Thingiverse](https://www.thingiverse.com/thing:7130877); the GitHub repository
 itself carries no license file — this project relies on the Printables CC BY grant).
 
-The STL files in `3d-models/` are **derivatives of Time Teller v3** by
-Ankush Kapoor, redistributed under the same CC BY terms:
+The files in `3d-models/` redistribute and build on the Time Teller case
+under that work-level CC BY grant (a Creative Commons license attaches to
+the WORK and is non-exclusive and irrevocable — the author's MakerWorld
+listing carrying a CC BY-NC mark does not narrow the CC BY grant he made
+on Printables for the same design; LitClock's copies rely on the
+Printables grant regardless of which channel a mesh was downloaded
+through):
 
-- `top-back-with-notch.stl` — modified: adds a notch to the top-back part
-- `bottom-with-notch.stl` — modified: adds a notch to the bottom part
-- `top-front.stl` — unmodified v3 part, included for one-stop printing
+- `RPIEnclosure.stl` — modified by Ankush Kapoor: bottom enclosure with an
+  SD-card notch
+- `RPIEnclosureCover_microUSB_Power.stl` — modified by Ankush Kapoor: back
+  cover reworked for direct micro-USB power (replaces the original's
+  USB-C-adapter mount) plus the notch
+- `ScreenFrame.stl` — the author's UNMODIFIED front part, included for
+  one-stop printing (re-exported through Bambu Studio, which does not
+  preserve source-channel watermarks; the grant above is what licenses it)
+- `LitClock_microUSB_Power.3mf` — print project by Ankush Kapoor arranging
+  the three parts above
+
+The author's own project files (his editable sources and his packaged
+exports) are not mirrored here — LitClock links to his channels below for
+those.
 
 Original files (STL + SolveSpace source) remain available from the author on
 [GitHub](https://github.com/arthurgassner/timeteller/tree/main/3d-models),

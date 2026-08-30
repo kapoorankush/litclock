@@ -40,6 +40,8 @@ from typing import Final
 
 from flask import Blueprint, current_app, jsonify, render_template, request
 
+import strings_catalog  # noqa: E402 — src/ on sys.path; hard dep since litclock-dev#532
+
 from .. import update_state
 from ..confirm_tokens import VALID_ACTIONS, ConfirmTokenStore, envelope_for_consume_outcome
 from ..errors import envelope
@@ -320,6 +322,10 @@ PREPARE_FOR_GIFT_UNIT: Final[str] = "litclock-prepare-for-gift.service"
 # wifi-reset shape.
 RESET_UNIT: Final[str] = "litclock-reset.service"
 GIFT_MESSAGE_PATH: Final[str] = "/run/litclock/gift-message"
+# litclock-dev#532 pickers 5b: the gifter's language choice rides the same
+# staging pattern (pi-owned tmpfs file → unit's --language-file →
+# reset-setup's O_NOFOLLOW read). Absent file = no choice.
+GIFT_LANGUAGE_PATH: Final[str] = "/run/litclock/gift-language"
 # Same ceiling as M3's GIFT_MODE_MESSAGE_MAX_LEN (litclock-dev#319 dropped 280→80 once
 # the e-ink renderer started word-wrapping). Enforced at the endpoint so
 # an attacker can't get the privileged shell script to write more than
@@ -420,7 +426,7 @@ def _check_rate_limit() -> tuple[object, int] | None:
         return None
     body, status = envelope(
         "rate_limited",
-        "Too many system actions. Try again shortly.",
+        strings_catalog.get("api.system.rate_limited"),
         429,
         retry_after_s=retry_after_s,
     )
@@ -461,7 +467,7 @@ def _execute_action(action: str) -> tuple[object, int]:
     if token is None:
         return envelope(
             "confirm_token_invalid",
-            "Couldn't verify that action. Reload the page and try again.",
+            strings_catalog.get("common.alert.token_invalid"),
             401,
         )
     result = _store().consume_classified(action, token)
@@ -483,7 +489,7 @@ def _execute_action(action: str) -> tuple[object, int]:
         _store().restore(action, token, expiry)
         return envelope(
             "update_in_progress",
-            "An update is in progress. Try again in a few minutes.",
+            strings_catalog.get("common.update_in_progress"),
             409,
         )
 
@@ -543,7 +549,7 @@ def _execute_action(action: str) -> tuple[object, int]:
 
         return envelope(
             "systemctl_failed",
-            "The system action could not be invoked.",
+            strings_catalog.get("api.system.systemctl_failed"),
             500,
         )
     except subprocess.TimeoutExpired as exc:
@@ -569,7 +575,7 @@ def _execute_action(action: str) -> tuple[object, int]:
         _rollback_failed_shutdown_attempt()
         return envelope(
             "systemctl_failed",
-            "The system action could not be invoked.",
+            strings_catalog.get("api.system.systemctl_failed"),
             500,
         )
     except OSError as exc:
@@ -591,7 +597,7 @@ def _execute_action(action: str) -> tuple[object, int]:
         _rollback_failed_shutdown_attempt()
         return envelope(
             "systemctl_failed",
-            "The system action could not be invoked.",
+            strings_catalog.get("api.system.systemctl_failed"),
             500,
         )
 
@@ -729,8 +735,33 @@ def poweroff() -> tuple[object, int]:
     return _execute_action("poweroff")
 
 
+# 5b adversarial /review F4: two concurrent prepare-for-gift POSTs (two
+# tabs, each with a valid confirm token) could interleave staging and
+# dispatch — request A's language landing with request B's message, or B's
+# stale-file unlink racing between A's os.replace and the unit's read. The
+# flow is a one-shot that powers the device off; there is never a
+# legitimate concurrent second request, so serialize the WHOLE route with
+# a non-blocking lock and 409 the loser pre-side-effect (its token stays
+# unconsumed — the retry after the winner's poweroff fails on a dead
+# server anyway, and after a losing race simply succeeds).
+_GIFT_FLOW_LOCK = threading.Lock()
+
+
 @bp.route("/api/system/prepare-for-gift", methods=["POST"])
 def prepare_for_gift() -> tuple[object, int]:
+    if not _GIFT_FLOW_LOCK.acquire(blocking=False):
+        return envelope(
+            "prepare_for_gift_busy",
+            strings_catalog.get("api.gift.busy"),
+            409,
+        )
+    try:
+        return _prepare_for_gift_impl()
+    finally:
+        _GIFT_FLOW_LOCK.release()
+
+
+def _prepare_for_gift_impl() -> tuple[object, int]:
     """Trigger the Prepare-for-Gifting flow (litclock-dev#280).
 
     1. Rate-limit (shared 5/min bucket).
@@ -752,6 +783,9 @@ def prepare_for_gift() -> tuple[object, int]:
     powering off — handoff message in the response lets the PWA render
     "Pack and ship" copy before the LAN connection drops.
     """
+    # Deferred per the handoff.py convention — src/ is on sys.path.
+    import strings_catalog  # noqa: PLC0415
+
     rate_limit_response = _check_rate_limit()
     if rate_limit_response is not None:
         return rate_limit_response
@@ -760,7 +794,7 @@ def prepare_for_gift() -> tuple[object, int]:
     if token is None:
         return envelope(
             "confirm_token_invalid",
-            "Couldn't verify that action. Reload the page and try again.",
+            strings_catalog.get("common.alert.token_invalid"),
             401,
         )
     result = _store().consume_classified("prepare_for_gift", token)
@@ -784,7 +818,7 @@ def prepare_for_gift() -> tuple[object, int]:
         _store().restore("prepare_for_gift", token, expiry)
         return envelope(
             "update_in_progress",
-            "An update is in progress. Try again in a few minutes.",
+            strings_catalog.get("common.update_in_progress"),
             409,
         )
 
@@ -809,6 +843,19 @@ def prepare_for_gift() -> tuple[object, int]:
     from config import validate_setting  # noqa: PLC0415 — lazy import keeps
 
     # the control_server boot path light; this endpoint is rarely hit.
+    # litclock-dev#532 pickers 5b: optional `language` field — the recipient
+    # language the gifter picked. Validated through the SAME contract as the
+    # Settings writer (config._validate_language: exact raw match, shape
+    # regex, active-registry membership) so the two writers can never drift.
+    # Empty/missing = no choice (single-language fleet renders no control).
+    language = ""
+    if isinstance(body, dict):
+        raw_language = body.get("language")
+        if isinstance(raw_language, str):
+            language = raw_language
+    elif request.form.get("language") is not None:
+        language = request.form.get("language", "")
+
     ok, validation_error = validate_setting("GIFT_MODE_MESSAGE", message)
     if not ok:
         # Issue litclock-dev#328 — pre-side-effect failure: validator rejected the
@@ -820,9 +867,24 @@ def prepare_for_gift() -> tuple[object, int]:
         _store().restore("prepare_for_gift", token, expiry)
         return envelope(
             "invalid_message",
-            f"Message {validation_error}.",
+            # litclock-dev#532: whole template with a named slot — the
+            # validator fragment itself joins the catalog with the bulk
+            # extraction (config.py's messages are shared by many fields).
+            strings_catalog.get("system.gift_message.error", error=validation_error),
             400,
         )
+
+    if language:
+        ok, language_error = validate_setting("LITCLOCK_LANGUAGE", language)
+        if not ok:
+            # Pre-side-effect failure: nothing staged, nothing dispatched.
+            # Restore the token so the same open page can retry.
+            _store().restore("prepare_for_gift", token, expiry)
+            return envelope(
+                "invalid_language",
+                strings_catalog.get("system.gift_language.error", error=language_error),
+                400,
+            )
 
     # litclock-dev#393/litclock-dev#327 — pre-flight the teardown unit BEFORE the destructive location
     # clear below. The clear is irreversible and runs before the point of no
@@ -840,7 +902,7 @@ def prepare_for_gift() -> tuple[object, int]:
         )
         return envelope(
             "prepare_for_gift_failed",
-            "Gift preparation is unavailable on this device — the gift service isn't installed. Nothing was changed.",
+            strings_catalog.get("api.gift.unavailable"),
             500,
         )
 
@@ -878,7 +940,7 @@ def prepare_for_gift() -> tuple[object, int]:
         current_app.logger.warning("prepare_for_gift: env.sh lock timeout while clearing location")
         return envelope(
             "env_lock_timeout",
-            "Settings file is busy — another update is in progress. Try again in a few seconds.",
+            strings_catalog.get("api.gift.env_lock_timeout"),
             504,
         )
     except (OSError, ValueError) as exc:
@@ -888,7 +950,7 @@ def prepare_for_gift() -> tuple[object, int]:
         current_app.logger.error("prepare_for_gift: failed to clear location from env.sh: %s", exc)
         return envelope(
             "prepare_for_gift_failed",
-            "Could not clear your location from the device. Nothing was changed — try again.",
+            strings_catalog.get("api.gift.clear_location_failed"),
             500,
         )
 
@@ -938,9 +1000,74 @@ def prepare_for_gift() -> tuple[object, int]:
         _store().restore("prepare_for_gift", token, expiry)
         return envelope(
             "prepare_for_gift_failed",
-            "Could not stage the gift message. Try again.",
+            strings_catalog.get("api.gift.stage_message_failed"),
             500,
         )
+
+    # litclock-dev#532 pickers 5b — stage the language choice next to the
+    # message, BEFORE the tz reset / dispatch. A chosen language writes
+    # atomically (same mkstemp+replace shape as the message, same rationale);
+    # no choice REMOVES any stale staging file so a previous gift's language
+    # can't leak into this one — the unit always passes --language-file, and
+    # reset-setup treats an absent file as "no choice".
+    if language:
+        lang_tmp_fd = None
+        lang_tmp_path = None
+        try:
+            import tempfile  # noqa: PLC0415
+
+            # Own mkdir — independence from the message staging block's
+            # (adversarial /review F6: reordering the two blocks must not
+            # 500 every gift with a language).
+            lang_dir = Path(GIFT_LANGUAGE_PATH).parent
+            lang_dir.mkdir(parents=True, exist_ok=True)
+            lang_tmp_fd, lang_tmp_path = tempfile.mkstemp(
+                prefix=".gift-language.",
+                dir=str(lang_dir),
+            )
+            os.write(lang_tmp_fd, language.encode("ascii"))
+            os.close(lang_tmp_fd)
+            lang_tmp_fd = None
+            os.chmod(lang_tmp_path, 0o644)
+            os.replace(lang_tmp_path, GIFT_LANGUAGE_PATH)
+            lang_tmp_path = None
+        except OSError as exc:
+            current_app.logger.error("prepare_for_gift: failed to write %s: %s", GIFT_LANGUAGE_PATH, exc)
+            if lang_tmp_fd is not None:
+                try:
+                    os.close(lang_tmp_fd)
+                except OSError:
+                    pass
+            if lang_tmp_path is not None:
+                try:
+                    os.unlink(lang_tmp_path)
+                except OSError:
+                    pass
+            # Same pre-dispatch semantics as the message staging failure:
+            # the already-staged message file is inert without a dispatch
+            # and is overwritten wholesale on the next attempt.
+            _store().restore("prepare_for_gift", token, expiry)
+            return envelope(
+                "prepare_for_gift_failed",
+                strings_catalog.get("api.gift.stage_language_failed"),
+                500,
+            )
+    else:
+        try:
+            os.unlink(GIFT_LANGUAGE_PATH)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            # A stale un-removable file would resurrect a PREVIOUS gift's
+            # language on this shipment — that's a wrong-language clock for
+            # the recipient, so fail loudly rather than ship it.
+            current_app.logger.error("prepare_for_gift: failed to clear %s: %s", GIFT_LANGUAGE_PATH, exc)
+            _store().restore("prepare_for_gift", token, expiry)
+            return envelope(
+                "prepare_for_gift_failed",
+                strings_catalog.get("api.gift.clear_stale_language_failed"),
+                500,
+            )
 
     # litclock-dev#396 — reset the system tz to UTC, synchronously, so the gifter's tz
     # doesn't linger in /etc/localtime. Placed HERE (after staging, immediately
@@ -1007,10 +1134,15 @@ def prepare_for_gift() -> tuple[object, int]:
         # Narrow to returncodes 4 and 5 (codex adversarial /review F3).
         unit_didnt_start = getattr(exc, "returncode", None) in (4, 5)
         if unit_didnt_start:
-            try:
-                os.unlink(GIFT_MESSAGE_PATH)
-            except OSError:
-                pass
+            # Both staged files are one bundle (Codex 5b /review): leaving
+            # gift-language behind while removing the message would hand a
+            # LATER manual unit start this request's language with some
+            # other request's (or no) message.
+            for staged in (GIFT_MESSAGE_PATH, GIFT_LANGUAGE_PATH):
+                try:
+                    os.unlink(staged)
+                except OSError:
+                    pass
         # litclock-dev#393/litclock-dev#396 — when the unit definitively didn't start (4/5, a TOCTOU after
         # the LoadState pre-flight passed), the location clear AND the tz reset to
         # UTC already ran, so be honest that both were reset rather than implying
@@ -1019,10 +1151,9 @@ def prepare_for_gift() -> tuple[object, int]:
         return envelope(
             "prepare_for_gift_failed",
             (
-                "Gift prep couldn't start, and your saved location and timezone were reset — retry, or "
-                "re-add your city and timezone in Settings if you're keeping this device."
+                strings_catalog.get("api.gift.reset_warning")
                 if unit_didnt_start
-                else "The gift preparation could not be started."
+                else strings_catalog.get("api.gift.dispatch_failed")
             ),
             500,
         )
@@ -1040,7 +1171,7 @@ def prepare_for_gift() -> tuple[object, int]:
         # a gift-mode wipe.
         return envelope(
             "prepare_for_gift_failed",
-            "The gift preparation could not be started.",
+            strings_catalog.get("api.gift.dispatch_failed"),
             500,
         )
 
@@ -1085,7 +1216,7 @@ def reset() -> tuple[object, int]:
     if token is None:
         return envelope(
             "confirm_token_invalid",
-            "Couldn't verify that action. Reload the page and try again.",
+            strings_catalog.get("common.alert.token_invalid"),
             401,
         )
     result = _store().consume_classified("factory_reset", token)
@@ -1099,7 +1230,7 @@ def reset() -> tuple[object, int]:
         _store().restore("factory_reset", token, expiry)
         return envelope(
             "update_in_progress",
-            "An update is in progress. Try again in a few minutes.",
+            strings_catalog.get("common.update_in_progress"),
             409,
         )
 
@@ -1125,7 +1256,7 @@ def reset() -> tuple[object, int]:
         _store().restore("factory_reset", token, expiry)
         return envelope(
             "factory_reset_failed",
-            "The factory reset could not be started.",
+            strings_catalog.get("api.system.factory_reset_failed"),
             500,
         )
     except subprocess.TimeoutExpired as exc:
@@ -1140,7 +1271,7 @@ def reset() -> tuple[object, int]:
         # consumed to avoid double-firing the wipe.
         return envelope(
             "factory_reset_failed",
-            "The factory reset could not be started.",
+            strings_catalog.get("api.system.factory_reset_failed"),
             500,
         )
 
@@ -1149,8 +1280,10 @@ def reset() -> tuple[object, int]:
             {
                 "ok": True,
                 "message": (
-                    "Factory reset started. The clock will wipe its settings and power off. "
-                    "Power it on again and join LitClock-Setup from your phone's WiFi list."
+                    "Factory reset started. The clock will wipe its settings, your WiFi and "
+                    "the setup network's password, then power off. Power it on again and join "
+                    "LitClock-Setup from your phone's WiFi list — its password will be NEW, shown "
+                    "on the clock's screen, so tell your phone to forget the old one first."
                 ),
             }
         ),

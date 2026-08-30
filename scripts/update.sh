@@ -205,14 +205,88 @@ LAST_UPDATE_FILE="$STATE_DIR/last-update.json"
 # Releases GitHub stores the branch name (e.g. "master") there, which would
 # silently flip the auto-update target to branch HEAD. Tag-by-name is the
 # immutable source of truth.
+# origin_repo_pair — emit "<owner> <repo>" derived from the origin remote.
+#
+# litclock-dev#721: the resolver used to hardcode the public pair, so a
+# device whose origin is the DEVELOPMENT repo asked PUBLIC for its latest
+# tag, then tried to fetch that tag from its own origin — where it has
+# never existed — and exited cleanly. Every dev-image device was
+# permanently pinned, and the checksum re-exec turned any update that
+# touches update.sh into a half-application (reset done, Phases 2b-6
+# skipped, because the re-exec'd script resolved a different, unfetchable
+# target). Deriving the pair from origin is correct for BOTH repos by
+# construction, which also keeps this file dev/public byte-portable.
+#
+# Accepts the two forms git actually writes: https://github.com/O/R(.git)
+# and git@github.com:O/R(.git). Anything else falls back to the public
+# pair — the pre-litclock-dev#721 behavior, right for the fleet and never worse.
+origin_repo_pair() {
+    local url owner_repo bare
+    url=$(git remote get-url origin 2>/dev/null) || url=""
+    # Trim surrounding whitespace — byte-parity with the Python resolver's
+    # strip() in control_server/update_state.py (litclock-dev#728: the two
+    # resolvers naming different repos is the bug class itself; a parity
+    # test drives both from one URL table).
+    url="${url#"${url%%[![:space:]]*}"}"
+    url="${url%"${url##*[![:space:]]}"}"
+    if [[ -z "$url" ]]; then
+        # Distinct from the parse warning: git itself failed (missing
+        # binary, not a repo). Debugging a wrong resolve starts here.
+        printf '[resolve] warn: origin remote unreadable - using public pair\n' >&2
+        printf '%s %s\n' "kapoorankush" "litclock"
+        return
+    fi
+    owner_repo=""
+    case "$url" in
+        https://*)
+            bare="$url"
+            # Strip userinfo (https://user:token@github.com/O/R): a
+            # credentialed origin must resolve to ITS pair — the fallback
+            # would silently reproduce the litclock-dev#721 pinning for exactly the
+            # origin shape a hand-provisioned PAT produces.
+            if [[ "$bare" =~ ^https://[^/@]+@ ]]; then
+                bare="https://${bare#https://*@}"
+            fi
+            case "$bare" in
+                https://github.com/*)
+                    owner_repo="${bare#https://github.com/}"
+                    ;;
+            esac
+            ;;
+        git@github.com:*)
+            owner_repo="${url#git@github.com:}"
+            ;;
+    esac
+    owner_repo="${owner_repo%/}"
+    owner_repo="${owner_repo%.git}"
+    # Exactly one slash, GitHub slug charset only, no dot-only components.
+    # The charset gate keeps components with spaces / '?' / control chars
+    # from reaching the API URL templates ('.'/'..' would path-traverse
+    # api.github.com) — mirrored in the Python resolver (/review litclock-dev#729).
+    if [[ "$owner_repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
+        && [[ "${owner_repo%%/*}" != "." && "${owner_repo%%/*}" != ".." ]] \
+        && [[ "${owner_repo##*/}" != "." && "${owner_repo##*/}" != ".." ]]; then
+        printf '%s %s\n' "${owner_repo%%/*}" "${owner_repo##*/}"
+    else
+        # The fallback is only "never worse" for public-origin devices; on a
+        # hand-modified origin it silently reproduces the litclock-dev#721 pinning — so
+        # say which URL defeated the parser (/review litclock-dev#722), with any embedded
+        # credential redacted before it can reach the journal (/review litclock-dev#729).
+        printf '[resolve] warn: origin %s unparsed - using public pair\n' \
+            "$(printf '%s' "$url" | sed -E 's|://[^/@]+@|://<redacted>@|g')" >&2
+        printf '%s %s\n' "kapoorankush" "litclock"
+    fi
+}
+
 resolve_target_sha() {
     # Lib absent → caller falls back to legacy path.
     if ! declare -F github_api_latest_release_tag >/dev/null 2>&1; then
         printf "[resolve] warn: github_api lib not available — caller will fall back\n" >&2
         return 0
     fi
-    local tag
-    tag=$(github_api_latest_release_tag "kapoorankush" "litclock")
+    local tag _owner _repo
+    read -r _owner _repo < <(origin_repo_pair)
+    tag=$(github_api_latest_release_tag "$_owner" "$_repo")
     if [[ -z "$tag" ]]; then
         printf "[resolve] warn: no latest Release tag resolved\n" >&2
         return 0
@@ -306,12 +380,97 @@ fi
 # on /etc/litclock/.handoff-complete (the post-WiFi PWA handoff). Devices that
 # provisioned BEFORE PR2 never ran the handoff flow, so that marker is absent —
 # without this, the upgraded litclock.service would no-op on every timer tick
-# and quotes would stop appearing (unacceptable for a Pi glued in its case). We
-# confirmed .setup-complete just above, so this device is past first-boot:
-# treat the handoff as already done. Idempotent (no-op if the marker exists).
+# and quotes would stop appearing (unacceptable for a Pi glued in its case).
+#
+# litclock-dev#675: the original reasoning was "we confirmed .setup-complete
+# just above, so this device is past first-boot". That is FALSE during the
+# handoff window, which is DEFINED as .setup-complete present and
+# .handoff-complete absent. This is a completion path like any other, and
+# design-review A2's rule applies to it: a clock that paints at the WRONG time
+# is worse than no clock. handoff.py and litclock-handoff-fallback.sh both
+# refuse when the timezone is unknown; this did not.
+#
+# It is reachable: the PWA is up during the handoff window and
+# routes/updates.py has no handoff gate, and litclock-update.timer is
+# Persistent=true with a stamp clone prep does not clear. Before litclock-dev#673 clones
+# shipped with .handoff-complete already present so this was a no-op on every
+# clone; now clones sit in the same window fresh flashes always have.
+#
+# THE DISCRIMINATOR IS THE INSTALLED UNIT, NOT A CLOCK. The obvious guard —
+# "refuse when the timezone is unknown AND setup finished recently" — was tried
+# and is wrong in both directions (/review, red team + Codex, independently):
+#
+#   * It EXPIRES exactly when it is needed. .handoff-complete can still be
+#     missing an hour after setup ONLY when the timezone is unknown, because a
+#     known timezone gets the marker written by the 120s auto-complete or the
+#     10-minute fallback. So "marker missing AND old" is very nearly a
+#     DEFINITION of "timezone unknown" — and litclock-update.timer carries
+#     RandomizedDelaySec=7d, so the weekly tick lands inside a one-hour window
+#     about 0.6% of the time. The guard would almost never apply.
+#   * It depends on a clock this hardware does not have. The Pi has no RTC, so
+#     pre-NTP system time can read EARLIER than the marker's mtime; the age goes
+#     negative, compares as "recent", and the migration is refused on exactly
+#     the long-provisioned device the condition was meant to protect. This file
+#     already documents that hazard 1100 lines below (the pre-1970 stamp note).
+#
+# What actually identifies a pre-PR2 device is that its INSTALLED unit predates
+# the gate. This block runs long before Phase 5 reinstalls units, so the old
+# unit is still on disk and answers the question exactly, with no clock and no
+# expiry. We migrate only when the device is POSITIVELY identified as pre-PR2;
+# anything else honours the timezone refusal, indefinitely.
+INSTALLED_CLOCK_UNIT="${LITCLOCK_INSTALLED_CLOCK_UNIT:-/etc/systemd/system/litclock.service}"
+
 if [[ ! -f /etc/litclock/.handoff-complete ]]; then
-    if sudo touch /etc/litclock/.handoff-complete; then
-        log_info "Migrated existing setup to PR2 handoff-complete state"
+    # tz-known proxy, shared with control_server/handoff.py and
+    # litclock-handoff-fallback.sh: the IP-geo resolver sets the timezone and
+    # writes lat/lon together, so populated coordinates mean it resolved.
+    # Both keys, matching handoff.py's _has_location — the bash copies used to
+    # check latitude alone, so an env.sh with lat but no lon was "unknown" to
+    # the PWA and "known" here (/review).
+    read_env_value() {
+        local key="$1" line value
+        line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}=" "$INSTALL_DIR/env.sh" 2>/dev/null | tail -n1)"
+        value="${line#*=}"
+        # Strip a trailing comment BEFORE stripping whitespace: `KEY= # unset`
+        # is ordinary shell, and without this the comment text became the value
+        # and read as a populated coordinate (/review, Codex).
+        value="${value%%#*}"
+        value="${value//\"/}"
+        value="${value//\'/}"
+        value="${value//[[:space:]]/}"
+        printf '%s' "$value"
+    }
+
+    handoff_lat="$(read_env_value WEATHER_LATITUDE)"
+    handoff_lon="$(read_env_value WEATHER_LONGITUDE)"
+
+    # Positively pre-PR2: the unit is installed AND has no handoff gate.
+    # A missing unit is NOT treated as pre-PR2 — quotes cannot paint without it
+    # anyway, so refusing costs nothing and avoids starting a wrong-time clock
+    # the moment Phase 5 installs the gated unit.
+    handoff_pre_pr2=false
+    if [[ -f "$INSTALLED_CLOCK_UNIT" ]] && ! grep -q "ConditionPathExists=/etc/litclock/.handoff-complete" "$INSTALLED_CLOCK_UNIT"; then
+        handoff_pre_pr2=true
+    fi
+
+    if [[ -n "$handoff_lat" && -n "$handoff_lon" ]]; then
+        handoff_reason="the timezone is known"
+    elif [[ "$handoff_pre_pr2" == true ]]; then
+        handoff_reason="this device predates the handoff (its installed litclock.service has no handoff gate)"
+    else
+        handoff_reason=""
+    fi
+
+    if [[ -z "$handoff_reason" ]]; then
+        log_warn "Not completing the handoff: the timezone is not known (WEATHER_LATITUDE/LONGITUDE are empty) and this device is not a pre-handoff install."
+        log_warn "Leaving the setup splash up. A clock painting at the WRONG time is worse than no clock — finish setup in the app (it offers your browser's timezone), and quotes will start."
+    elif sudo touch /etc/litclock/.handoff-complete; then
+        # Canonical phrasing, shared with control_server/handoff.py and
+        # litclock-handoff-fallback.sh (litclock-dev#646): this is another completion
+        # path, and an operator greps ONE string to find out how a device's
+        # handoff completed. tests/test_control_server_handoff.py pins that the
+        # spellings agree.
+        log_info "handoff: completed via the in-place updater (pre-PR2 migration) — $handoff_reason"
     else
         log_warn "Could not create .handoff-complete marker — quotes may pause until the fallback timer fires (~10 min after next boot)"
     fi
@@ -357,10 +516,27 @@ _litclock_update_trap() {
 }
 trap _litclock_update_trap EXIT TERM INT HUP
 
-# Warn about local state that will be overwritten
+# Warn about local state that will be overwritten.
+# litclock-dev#724: detached HEAD (rev-parse prints "HEAD") is the fleet's
+# PERMANENT, correct state — devices are pinned to release-tag SHAs, so an
+# unconditional branch warning fired on every single OTA run and was wrong
+# every time, training operators to skim the one warning that matters.
+# Detached AT a release tag is therefore silent. The tag ref is always
+# local: Phase-2's fetch pins refs/tags/<tag> on every install, and flashed
+# images clone --branch <tag>, which carries the tag. A detached
+# NON-release commit — a hand checkout, a mid-rebase state, an
+# interrupted-update recovery — is real anomalous state and still warns
+# (/review litclock-dev#730). The copy names no destination: the modern path pins the
+# resolved release target, rollback pins the recovery SHA, and the legacy
+# no-lib fallback still resets to origin/master — the old "will be reset
+# to master" text was wrong on all but the last.
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-if [[ "$CURRENT_BRANCH" != "master" ]]; then
-    log_warn "Currently on branch '$CURRENT_BRANCH' — will be reset to master"
+if [[ "$CURRENT_BRANCH" == "HEAD" ]]; then
+    if ! git describe --tags --exact-match --match 'v[0-9]*' HEAD >/dev/null 2>&1; then
+        log_warn "Detached at non-release commit $(git rev-parse --short HEAD) — an update will replace it"
+    fi
+elif [[ "$CURRENT_BRANCH" != "master" ]]; then
+    log_warn "Currently on branch '$CURRENT_BRANCH' — an update will not preserve it"
 fi
 if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
     log_warn "Uncommitted changes detected — will be overwritten by update"
@@ -973,6 +1149,40 @@ if [[ -x "$PYTHON" ]]; then
     # nothing useful.
     timeout 60 "$PYTHON" src/literary_clock.py --dry-run 2>&1 | sed 's/^/[smoke] /'
     smoke_rc="${PIPESTATUS[0]}"
+    # litclock-dev#532 (/review litclock-dev#738): the dry-run never imports the string
+    # catalog, so a half-applied OTA missing languages/ passed smoke and
+    # shipped raw keys to /api/status and every catalog-get script. Probe a
+    # known key and require the RESOLVED value — catalog-get always exits 0
+    # by contract (degradation is survivable at runtime), so the exit code
+    # cannot discriminate; the output can.
+    if [[ "$smoke_rc" -eq 0 ]]; then
+        catalog_probe="$(timeout 30 "$PYTHON" src/eink_display.py catalog-get status.relative.just_now 2>/dev/null)"
+        if [[ "$catalog_probe" = "just now" ]]; then
+            log_info "Catalog smoke passed"
+        else
+            log_error "Catalog smoke failed: catalog-get returned '$catalog_probe' (want 'just now')"
+            smoke_rc=1
+        fi
+    fi
+    # litclock-dev#532 bulk extraction (Codex slice-1 /review): the boot and
+    # first-boot splashes now paint catalog TRIPLETS — a catalog that has
+    # status.* but lost the splash prefixes would pass the probe above while
+    # the recovery screens degrade. Probe the two prefixes whose loss hurts
+    # most: the boot splash (every boot) and the strict recovery screen
+    # (the copy a stuck user is left staring at).
+    if [[ "$smoke_rc" -eq 0 ]]; then
+        for probe in "boot.splash.starting.title=LitClock" "firstboot.splash.setup_incomplete.title=Setup Incomplete"; do
+            probe_key="${probe%%=*}"
+            probe_want="${probe#*=}"
+            probe_got="$(timeout 30 "$PYTHON" src/eink_display.py catalog-get "$probe_key" 2>/dev/null)"
+            if [[ "$probe_got" != "$probe_want" ]]; then
+                log_error "Catalog smoke failed: catalog-get $probe_key returned '$probe_got' (want '$probe_want')"
+                smoke_rc=1
+                break
+            fi
+        done
+        [[ "$smoke_rc" -eq 0 ]] && log_info "Splash-triplet smoke passed"
+    fi
     if [[ "$smoke_rc" -eq 0 ]]; then
         log_info "Smoke test passed"
         atomic_remove_file "$UPDATE_FAILED_FILE"
@@ -1098,6 +1308,25 @@ for unit in "$INSTALL_DIR"/systemd/*.service "$INSTALL_DIR"/systemd/*.timer; do
 done
 
 sudo systemctl daemon-reload
+
+# litclock-dev#676: daemon-reload does NOT re-arm a timer that has already
+# elapsed — it keeps NextElapse=infinity — and the loop above starts only
+# timers this run NEWLY enabled, which this one never is (pi-gen enables it).
+# So a device that takes an OTA while sitting in the handoff window would not
+# get the new cadence until its next boot, and that window is exactly the
+# population the cadence exists for. Measured both ways: reload alone gave 0
+# firings in 15s at a 5s cadence, restart resumed it immediately.
+#
+# Restarting this timer is safe to do unconditionally: it triggers a
+# conditional oneshot that exits in milliseconds, and `restart` on a timer only
+# re-bases its schedule. Deliberately NOT generalised to every timer —
+# restarting litclock.timer mid-update could drop a minute's render, and
+# restarting litclock-update.timer from inside litclock-update.service is a
+# job-ordering hazard.
+if systemctl is-enabled --quiet litclock-handoff-fallback.timer 2>/dev/null; then
+    sudo systemctl restart litclock-handoff-fallback.timer 2>/dev/null \
+        || log_warn "Could not re-arm litclock-handoff-fallback.timer; its cadence starts at the next boot"
+fi
 
 # litclock-dev#241 — install tmpfiles.d drop-ins for the tmpfs heartbeat dir and the
 # /var/lib/litclock state dir, and materialize them now (avoids waiting until
@@ -1340,9 +1569,9 @@ if [[ -f "$INSTALL_DIR/sysctl.d/30-litclock-unprivileged-ports.conf" ]]; then
     _port_floor=$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start 2>/dev/null || echo "")
     # litclock-dev#527 field incident: the FILE install was silently swallowed
     # (2>/dev/null || true) while `sysctl -w` set the live value to 80 — so the
-    # old warning (live-value only) stayed quiet, the update "succeeded", and the
-    # NEXT reboot reverted to 1024 and crash-looped control_server. Verify the
-    # persisted file matches the source CONTENT, not just its existence: a
+    # old warning (live-value only) stayed quiet, the update "succeeded", and
+    # the NEXT reboot reverted to 1024 and crash-looped control_server. Verify
+    # the persisted file matches the source CONTENT, not just its existence: a
     # stale drop-in left by a prior version whose fresh overwrite then failed
     # (RO fs, disk full) would pass a mere `-f` check while being wrong
     # (/review, both passes). `cmp -s` is true only when the installed file is

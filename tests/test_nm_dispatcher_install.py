@@ -147,8 +147,8 @@ class TestInstallPaths:
     def test_update_sh_syncs_dispatcher(self):
         body = UPDATE_SH.read_text()
         assert "nm-dispatcher/99-litclock-ip-change" in body, (
-            "update.sh must sync the NM dispatcher on upgrades (litclock-dev#309)"
-        )
+            "update.sh must sync the NM dispatcher on upgrades "
+            "(litclock-dev#309)")
         assert "/etc/NetworkManager/dispatcher.d" in body, "update.sh must target the NM dispatcher directory"
 
     def test_update_sh_is_idempotent(self):
@@ -165,8 +165,8 @@ class TestInstallPaths:
     def test_pi_gen_installs_dispatcher(self):
         body = PI_GEN_SERVICES.read_text()
         assert "nm-dispatcher/99-litclock-ip-change" in body, (
-            "pi-gen stage3 must install the NM dispatcher (litclock-dev#309)"
-        )
+            "pi-gen stage3 must install the NM dispatcher "
+            "(litclock-dev#309)")
         assert "/etc/NetworkManager/dispatcher.d" in body, "pi-gen stage3 must target the NM dispatcher directory"
 
     def test_pi_gen_uses_correct_mode(self):

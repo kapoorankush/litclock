@@ -51,8 +51,20 @@ from typing import Final
 #   ``"my`` under ``\S+`` and leak the rest of the password. The value
 #   group now accepts an optional surrounding quote and matches through
 #   the closing quote when present.
+# The leading delimiter is INSIDE the captured prefix (litclock-dev#661). It
+# used to be a non-capturing `(?:^|[\W_])` sitting outside group 1, so the
+# character it consumed was silently dropped from the output -- every keyed
+# redaction not at line start ate the character before the key:
+#
+#   env WIFI_PASSWORD=hunter2      ->  envWIFI_PASSWORD=***REDACTED***
+#   export PSK=abcdefgh            ->  exportPSK=***REDACTED***
+#   --hotspot-password=AbC12dEf    ->  --hotspotpassword=***REDACTED***
+#
+# No secret leaked, but the bundle is the artifact users attach to issues, and
+# `exportPSK=` is not a line anyone can act on. Same class as the `-g` mangling
+# below: the redactor destroying the diagnosability it exists to preserve.
 _PSK_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?i)(?:^|[\W_])("
+    r"(?i)((?:^|[\W_])"
     r"(?:PSK|PASSWORD|PASSWD|WIFI_PASS|WIFI_PASSWORD|"
     r"SECRET|TOKEN|API[_-]?KEY|AUTH|AUTHORIZATION|BEARER|CLIENT_SECRET|"
     # PR2 /review extension — openweathermap.py:91 emits
@@ -71,7 +83,7 @@ _PSK_RE: Final[re.Pattern[str]] = re.compile(
 # completely. That matters because `pi` has NOPASSWD sudo on the image, sudo
 # writes the FULL argv to its command-audit line, journald ships persistent,
 # and the Diagnostics support bundle exports that journal for the firstboot
-# unit. An 8-char hotspot PSK also sits far below _LONG_TOKEN_RE's 40-char
+# unit. A 9-char hotspot PSK also sits far below _LONG_TOKEN_RE's 40-char
 # floor, so nothing else caught it either: verified empirically that a real
 # sudo audit line came back from redact_text() with the password intact.
 #
@@ -85,14 +97,105 @@ _PSK_RE: Final[re.Pattern[str]] = re.compile(
 # whitespace: that would redact the next word after any prose mention of
 # "password" ("the password is wrong" -> "the password <REDACTED> wrong").
 # Scoped instead to lines that actually invoke nmcli.
+# The value is THE REST OF THE LINE, not a token (litclock-dev#661). `(\S+)`
+# stopped at the first space, so `password 'my secret pass'` emitted
+# `password ***REDACTED*** secret pass'` -- worse than no redaction, because
+# the partial replacement makes the leak look handled. WPA2 permits spaces in
+# printable-ASCII passphrases and _validate_hotspot_password accepts them.
+#
+# A quoted alternation was tried first and rejected on /review: it cannot be
+# made safe against the quoting a real log line contains. `password 'Bob's
+# secret pass'` matches `'Bob'` and leaves `s secret pass'`; an unterminated
+# `password 'my secret` falls through to the bare-token branch and leaves
+# `secret`. Both are the same partial-redaction failure in a new costume.
+# Taking the rest of the line has no such edge: whatever the quoting, nothing
+# survives.
+#
+# The diagnosability cost is real but small HERE, because nmcli takes the
+# credential as the last of its key/value pairs -- src/wifi_provision.py's
+# hotspot call ends `... ssid <ssid> password <pw>`, so the SSID and every
+# other argument precede it and are kept. The connect path never puts a PSK in
+# argv at all (`--ask` + stdin, litclock-dev#599). So on our own lines this
+# discards nothing; on a line an operator typed over SSH it discards whatever
+# they put after the password, which is the right way round for a filter whose
+# failure mode is publishing a credential to a GitHub issue.
 _NMCLI_SECRET_ARG_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?i)(\b(?:password|psk|wifi-sec\.psk|802-11-wireless-security\.psk)\s+)(\S+)"
+    r"(?i)(\b(?:password|psk|wifi-sec\.psk|802-11-wireless-security\.psk)\s+)(.+)$"
 )
 
+# nmcli objects and subcommands, used to recognise the read form. See
+# _NMCLI_READ_FLAG_RE.
+_NMCLI_SUBCOMMANDS: Final[frozenset[str]] = frozenset(
+    {
+        "add",
+        "agent",
+        "c",
+        "con",
+        "connection",
+        "d",
+        "delete",
+        "dev",
+        "device",
+        "down",
+        "general",
+        "modify",
+        "monitor",
+        "networking",
+        "radio",
+        "show",
+        "up",
+        "w",
+        "wifi",
+    }
+)
+
+# `-g`/`--get-values` and `-f`/`--fields` take a FIELD LIST, so the token after
+# the property name is nmcli's subcommand, not a value (litclock-dev#661).
+# This repo runs exactly that at src/wifi_provision.py's PSK-snapshot sites:
+#
+#   nmcli -s -g 802-11-wireless-security.psk connection show uuid <uuid>
+#
+# which was being rewritten to `... .psk ***REDACTED*** show uuid <uuid>`,
+# erasing which subcommand ran. No secret leaks either way -- in the read form
+# the value comes back on stdout, not in argv -- so the only effect was
+# destroying a hot-path journal line on the litclock-dev#613/litclock-dev#616 paths, which
+# are the hardest to debug remotely and the ones a support bundle is most often
+# pulled for.
+_NMCLI_READ_FLAG_RE: Final[re.Pattern[str]] = re.compile(r"(?i)(?:^|\s)(?:-g|--get-values|-f|--fields)\s+$")
+
 # Line-scope guard: an nmcli credential argument only ever appears on a line
-# that is invoking nmcli against wifi/connection objects. Requiring one of
-# these keeps narrative log lines that merely mention nmcli out of scope.
-_NMCLI_ARGV_CONTEXT: Final[frozenset[str]] = frozenset({"wifi", "connection", "con-name", "hotspot"})
+# invoking nmcli against a wifi/connection object. Requiring one keeps
+# narrative log lines that merely mention nmcli out of scope.
+#
+# Matched as WHOLE TOKENS, not substrings (litclock-dev#661). Substring
+# matching missed nmcli's accepted abbreviations, which contain none of the
+# full words -- `nmcli d w connect MyNet password hunter2secret` passed through
+# completely unredacted. Our own code never abbreviates (grepped: zero
+# occurrences), so this is not reachable from anything we ship; it matters
+# because sudo's command-audit line records whatever an operator typed over
+# SSH, and that journal is what the support bundle exports. Tokenising also
+# tightens the guard, since "connection" no longer matches inside prose words.
+_NMCLI_ARGV_CONTEXT: Final[frozenset[str]] = frozenset(
+    {
+        "c",
+        "co",
+        "con",
+        "conn",
+        "connection",
+        "connections",
+        "con-name",
+        "d",
+        "de",
+        "dev",
+        "device",
+        "devices",
+        "w",
+        "wi",
+        "wif",
+        "wifi",
+        "hotspot",
+    }
+)
 
 # Value-shape guard for the residual false positive: on an in-scope line, a
 # sentence like "nmcli wifi connect failed, the password was rejected" would
@@ -105,9 +208,25 @@ _NOT_A_SECRET: Final[frozenset[str]] = frozenset(
 
 
 def _nmcli_arg_replace(m: re.Match[str]) -> str:
-    if m.group(2).strip(".,;:").lower() in _NOT_A_SECRET:
+    tail = m.group(2).split()
+    first = tail[0].strip("\"'").strip(".,;:").lower() if tail else ""
+    if first in _NOT_A_SECRET:
+        return m.group(0)
+    # A field selector, not an assignment — see _NMCLI_READ_FLAG_RE. BOTH
+    # conditions are required (/review): keying only on the preceding flag
+    # meant `nmcli device wifi connect -g password hunter2secret` exempted
+    # itself and leaked. In the real read form the token after the property
+    # name is nmcli's subcommand, so demand that too. Suppressing a genuine
+    # secret now needs a line where a read flag immediately precedes the
+    # keyword AND the password is literally an nmcli subcommand.
+    if first in _NMCLI_SUBCOMMANDS and _NMCLI_READ_FLAG_RE.search(m.string[: m.start(1)]):
         return m.group(0)
     return f"{m.group(1)}{REDACTED_TOKEN}"
+
+
+def _nmcli_argv_tokens(line: str) -> set[str]:
+    """Whitespace tokens of a line, lowercased and stripped of punctuation."""
+    return {tok.strip("\"',;:()[]").lower() for tok in line.split()}
 
 
 def _redact_nmcli_argv(text: str) -> str:
@@ -121,11 +240,54 @@ def _redact_nmcli_argv(text: str) -> str:
         return text
     out = []
     for line in text.split("\n"):
-        low = line.lower()
-        if "nmcli" in low and any(ctx in low for ctx in _NMCLI_ARGV_CONTEXT):
+        tokens = _nmcli_argv_tokens(line)
+        if any(tok == "nmcli" or tok.endswith("/nmcli") for tok in tokens) and (tokens & _NMCLI_ARGV_CONTEXT):
             line = _NMCLI_SECRET_ARG_RE.sub(_nmcli_arg_replace, line)
         out.append(line)
     return "\n".join(out)
+
+
+# litclock-dev#661 sibling gap. _redact_nmcli_argv early-returns on any line
+# without "nmcli", so the long-option form was untouched entirely:
+#
+#   COMMAND=/usr/bin/python3 src/setup_server.py --hotspot-password AbC12dEf
+#
+# scripts/first-boot.sh passes the now-permanent key that way, so it sits in
+# world-readable /proc/<pid>/cmdline for the provisioning window AND in sudo's
+# audit line. Low practical severity -- the same password is on the e-ink
+# screen in plaintext by design, and the only local accounts are pi and root --
+# but it is the same space-separated-argv class litclock-dev#620 set out to
+# close, left open on the sibling path.
+#
+# Long options need no line-scope guard: `--password` is unambiguous in a way
+# the bare word never is, so there is no prose false-positive to design around.
+# `(?!--)` on the bare branch (/review): without it the value could swallow the
+# NEXT option, so `cmd --password --api-key AbC12dEf` redacted the literal
+# string `--api-key` and left AbC12dEf exposed, with the real option already
+# consumed and unavailable to the same pass. An option that was given no value
+# now simply does not match, and the following option is matched on its own.
+#
+# Unlike the nmcli form this cannot take the rest of the line -- `--port 80`
+# legitimately follows -- so an unquoted value containing spaces still loses
+# only its first token. That is acceptable here because the only such value we
+# ship is the generated hotspot key, whose alphabet has no space in it.
+_LONG_OPT_SECRET_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?i)(--[a-z0-9-]*(?:password|passphrase|psk|secret|apikey|api-key)[= ])"
+    r"(\"[^\"]*\"|'[^']*'|(?!--)\S+)"
+)
+
+
+def _long_opt_replace(m: re.Match[str]) -> str:
+    if m.group(2).strip("\"'").strip(".,;:").lower() in _NOT_A_SECRET:
+        return m.group(0)
+    return f"{m.group(1)}{REDACTED_TOKEN}"
+
+
+def _redact_long_option_secrets(text: str) -> str:
+    """Redact ``--…password <value>`` / ``--…password=<value>`` argv forms."""
+    if "--" not in text:
+        return text
+    return _LONG_OPT_SECRET_RE.sub(_long_opt_replace, text)
 
 
 def _psk_replace(m: re.Match[str]) -> str:
@@ -249,6 +411,9 @@ def redact_text(text: str) -> str:
     # while the value is still whole, i.e. before the coordinate and
     # long-token passes rewrite anything inside it.
     out = _redact_nmcli_argv(out)
+    # Same reasoning, same position: the long-option argv form must be matched
+    # while its value is still one whole token (litclock-dev#661).
+    out = _redact_long_option_secrets(out)
     out = _GH_TOKEN_RE.sub(REDACTED_TOKEN, out)
     # Round coordinate matches to 2dp inline instead of redacting outright —
     # the helper still wants to see "user is in Texas" without leaking the

@@ -18,6 +18,23 @@
 (function () {
   'use strict';
 
+  /* litclock-dev#532: catalog strings injected by the template; the English
+     literals are stale-JS-window fallbacks, CI-pinned against the catalog
+     (tests/test_cross_file_string_parity.py). */
+  var STRINGS = (function () {
+    var el = document.querySelector('[data-litclock-strings]');
+    if (!el) return {};
+    try {
+      return JSON.parse(el.textContent) || {};
+    } catch (e) {
+      return {};
+    }
+  })();
+
+  function tr(key, fallback) {
+    return Object.prototype.hasOwnProperty.call(STRINGS, key) ? STRINGS[key] : fallback;
+  }
+
   var STATUS_POLL_INTERVAL_MS = 2000;
   // litclock-dev#607 review — 2s, not 1s: in the dispatch window the server may consult
   // systemctl while the Pi is at its busiest, and a too-tight abort turns
@@ -211,12 +228,12 @@
       updateRowStates(payload.phase_index || (payload.state === 'failed_reverted' ? 5 : 0), true);
       if (payload.state === 'failed_unrecovered') {
         showTerminal(
-          payload.error || 'Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab.',
+          payload.error || tr('updates.terminal.unrecovered', 'Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab.'),
           'error'
         );
       } else {
         showTerminal(
-          payload.error || 'Update failed verification — rolled back. Your clock is running normally.',
+          payload.error || tr('updates.terminal.reverted', 'Update failed verification — rolled back. Your clock is running normally.'),
           'reverted'
         );
       }
@@ -250,7 +267,7 @@
     if (!form) return;
     var tokenInput = form.querySelector('input[name="token"]');
     if (!tokenInput || !tokenInput.value) {
-      window.alert('Couldn\'t verify that action. Reload the page and try again.');
+      window.alert(tr('common.alert.token_invalid', "Couldn't verify that action. Reload the page and try again."));
       return;
     }
     fetch(form.action, {
@@ -290,7 +307,7 @@
           ) {
             var recoverMsg = (body && body.error && body.error.message)
               ? body.error.message
-              : 'This confirmation timed out for safety. Reload the page and try again.';
+              : tr('common.confirm.timeout', 'This confirmation timed out for safety. Reload the page and try again.');
             if (window.confirm(recoverMsg)) {
               window.location.reload();
             }
@@ -298,10 +315,10 @@
           }
           var msg = (body && body.error && body.error.message)
             ? body.error.message
-            : 'Request failed (HTTP ' + response.status + ').';
+            : tr('common.alert.http_status', 'Request failed (HTTP {status}).').split('{status}').join(String(response.status));
           window.alert(msg);
         }).catch(function () {
-          window.alert('Request failed (HTTP ' + response.status + ').');
+          window.alert(tr('common.alert.http_status', 'Request failed (HTTP {status}).').split('{status}').join(String(response.status)));
         });
       })
       .catch(function () {
@@ -344,9 +361,12 @@
         if (renderedState === 'unknown' && freshState === 'unknown') {
           var pill = card && card.querySelector('.updates-pill--unknown');
           if (pill) {
+            // Compare against the CATALOG label, not an English prefix —
+            // a Spanish "comprobando…" pill must swap too (litclock-dev#532).
+            var checkingLabel = tr('updates.pill.checking', 'checking…').trim().toLowerCase();
             var currentLabel = (pill.textContent || '').trim().toLowerCase();
-            if (currentLabel.indexOf('checking') === 0) {
-              pill.textContent = "couldn't check";
+            if (currentLabel === checkingLabel || currentLabel.indexOf('checking') === 0) {
+              pill.textContent = tr('updates.pill.check_failed', "couldn't check");
             }
           }
           return;
@@ -525,8 +545,7 @@
             // says the updater is gone (review).
             updateRowStates(payload.phase_index || 0, true);
             showTerminal(
-              'The update stopped before finishing (the updater is no longer running). ' +
-              'Your clock may still be on its previous version. Reload this page and try Apply again.',
+              tr('updates.terminal.dead_updater', 'The update stopped before finishing (the updater is no longer running). Your clock may still be on its previous version. Reload this page and try Apply again.'),
               'error'
             );
           }
@@ -567,7 +586,7 @@
       // litclock-dev#348 codex finding 1+2 — terminal state cancels pending work.
       cancelPolling();
       showTerminal(
-        payload.error || 'Update failed verification — rolled back. Your clock is running normally.',
+        payload.error || tr('updates.terminal.reverted', 'Update failed verification — rolled back. Your clock is running normally.'),
         'reverted'
       );
       return;
@@ -577,7 +596,7 @@
       // litclock-dev#348 codex finding 1+2 — terminal state cancels pending work.
       cancelPolling();
       showTerminal(
-        payload.error || 'Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab.',
+        payload.error || tr('updates.terminal.unrecovered', 'Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab.'),
         'error'
       );
       return;
@@ -681,7 +700,7 @@
   function pollHealth(deadline, currentVersion) {
     if (Date.now() > deadline) {
       showTerminal(
-        'Couldn’t reconnect. Check your WiFi and refresh this page.',
+        tr('updates.terminal.reconnect_failed', 'Couldn’t reconnect. Check your WiFi and refresh this page.'),
         'error'
       );
       return;
@@ -748,7 +767,7 @@
             consecutivePollFailures = 0;
             updateRowStates(statusBody.phase_index || 5, true);
             showTerminal(
-              statusBody.error || 'Update failed verification — rolled back. Your clock is running normally.',
+              statusBody.error || tr('updates.terminal.reverted', 'Update failed verification — rolled back. Your clock is running normally.'),
               'reverted'
             );
             return;
@@ -758,7 +777,7 @@
             consecutivePollFailures = 0;
             updateRowStates(statusBody.phase_index || 0, true);
             showTerminal(
-              statusBody.error || 'Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab.',
+              statusBody.error || tr('updates.terminal.unrecovered', 'Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab.'),
               'error'
             );
             return;

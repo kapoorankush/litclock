@@ -1,0 +1,73 @@
+# litclock-dev#528 + litclock-dev#636: force SSH off before the device leaves the owner's
+# hands, shared by BOTH handoff paths — gift mode (ships to a recipient) and
+# the non-gift factory-reset poweroff (the PWA copy invites "move or pass the
+# clock on"). The image ships SSH off, but an owner who enabled it (QA,
+# recovery, tinkering) would otherwise hand over a device with SSH listening +
+# the well-known default creds the moment it joins the next network.
+# Idempotent belt-and-suspenders across every way SSH can be on:
+#   - ssh.socket — Raspberry Pi OS Bookworm SOCKET-ACTIVATES sshd: pid 1
+#     holds port 22 via ssh.socket and spawns sshd per-connection.
+#     Disabling ssh.service alone leaves the socket listening, so the
+#     socket MUST be disabled — this is the load-bearing unit on
+#     current images (hardware QA 2026-07-16 caught a service-only
+#     disable leaving port 22 open after reprovision). Disabled in a
+#     SEPARATE call from ssh.service so a missing unit on an older
+#     service-only image can't abort the other disable (/review).
+#   - ssh.service — the classic always-on unit (older images).
+#   - raspi-config do_ssh 1 — the canonical toggle; covers whatever the
+#     image's native mechanism is.
+#   - boot-partition flags — sshswitch.service turns SSH back on at boot
+#     if a bare `ssh` file exists on /boot or /boot/firmware.
+# Callers place this AFTER their fatal env-wipe gates: on a failed prep the
+# device stays on and the owner may still need SSH to fix it (--poweroff
+# implies --strict-env-wipe, so its wipe failure aborted long before here).
+# Runs fine over an SSH session — pam_systemd puts interactive sessions in
+# their own scope, so stopping the unit doesn't kill the invoking shell
+# (and the caller's poweroff ends it anyway). Re-enable via console per
+# docs/recovery.md, same as a fresh flash.
+disable_ssh_for_handoff() {
+    echo -n "Disabling SSH before handoff... "
+    systemctl disable --now ssh.socket 2>/dev/null || true
+    systemctl disable --now ssh.service 2>/dev/null || true
+    raspi-config nonint do_ssh 1 2>/dev/null || true
+    rm -f /boot/ssh /boot/ssh.txt /boot/firmware/ssh /boot/firmware/ssh.txt 2>/dev/null || true
+    echo -e "${GREEN}done${NC}"
+
+    # litclock-dev#528 /review: SSH-off is a security GATE, so verify port 22 is
+    # actually closed rather than trusting the best-effort disables above
+    # (each is `|| true`, and socket-activation means the service state
+    # alone doesn't prove the port is shut). If sshd still listens, refuse
+    # to power off: handing over a device with SSH + default creds
+    # reachable on someone else's network is exactly what this step exists
+    # to prevent. `ss` ships in iproute2 (always present on Pi OS); if it
+    # can't run we can't verify, so warn and proceed rather than
+    # hard-block a handoff on missing tooling.
+    if command -v ss >/dev/null 2>&1; then
+        # Capture ss's output AND exit status separately, rather than piping
+        # `ss 2>/dev/null | grep` (litclock-dev#636 /review): a suppressed-stderr
+        # pipe conflates two very different outcomes — "ss ran, port 22 is
+        # closed" (empty output) and "ss itself errored" (also empty output).
+        # A verification gate that reads an ss failure as "verified closed" is
+        # fail-OPEN, the exact posture this gate exists to forbid. Treat an ss
+        # error like an absent ss: warn and proceed (we can't verify), never
+        # silently pass.
+        local ss_out ss_rc
+        ss_out=$(ss -H -ltn 2>/dev/null)
+        ss_rc=$?
+        if [[ "$ss_rc" -ne 0 ]]; then
+            echo -e "${YELLOW}Note: 'ss' failed to run — could not verify port 22 is closed.${NC}"
+        # Extract the local port (last colon-field of the Local Address
+        # column) and match EXACTLY 22 — avoids false hits on :2222, :220…
+        elif printf '%s\n' "$ss_out" | awk '{n=split($4,a,":"); print a[n]}' | grep -qx 22; then
+            echo -e "${RED}========================================${NC}"
+            echo -e "${RED}  SSH still listening — do NOT hand this device over${NC}"
+            echo -e "${RED}========================================${NC}"
+            echo -e "${RED}Port 22 is still open after disabling SSH. NOT powering off${NC}"
+            echo -e "${RED}so a device with SSH + default creds isn't passed on. Check:${NC}"
+            echo -e "${YELLOW}  systemctl status ssh.socket ssh.service${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${YELLOW}Note: 'ss' unavailable — could not verify port 22 is closed.${NC}"
+    fi
+}

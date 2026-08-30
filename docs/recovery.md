@@ -14,7 +14,7 @@ you probably do not need any of the shell steps below.
 ## Getting a shell (console)
 
 The clock has no keyboard or screen of its own, so "console" means plugging the
-Pi into a monitor (mini-HDMI on the Zero 2 W) and a USB keyboard.
+Pi into a monitor (micro-HDMI) and a USB keyboard.
 
 1. Power off, connect a monitor + keyboard, power on.
 2. Log in at the prompt: user `pi`, password `raspberry`.
@@ -27,9 +27,8 @@ disabled — this works with no network):
 sudo systemctl enable --now ssh      # or: sudo raspi-config  → Interface Options → SSH
 ```
 
-SSH stays enabled until you turn it back off (`sudo systemctl disable --now ssh`)
-or reflash. It is off on every fresh image; enabling it is always a deliberate,
-physically-present act.
+SSH stays enabled until you turn it back off (`sudo systemctl disable --now ssh`), reflash — **or run a factory reset**. Any reset that hands the clock on (gift mode, `--poweroff`, and the Control app's Factory reset button) deliberately turns SSH off before powering down, so a recipient gets the same posture as a fresh flash (litclock-dev#528). If you reset your own clock and want SSH back, use the boot-partition file above, or reflash. It is off on every fresh
+image; enabling it is always a deliberate, physically-present act.
 
 ---
 
@@ -56,9 +55,19 @@ weather, and setup markers and drops the clock back into the WiFi-setup captive
 portal on next boot:
 
 ```bash
-sudo /home/pi/litclock/scripts/reset-setup.sh          # keeps WiFi
-sudo /home/pi/litclock/scripts/reset-setup.sh --wipe-wifi --reboot   # full fresh-start
+sudo /home/pi/litclock/scripts/reset-setup.sh              # full reset: erases WiFi + setup password
+sudo /home/pi/litclock/scripts/reset-setup.sh --keep-wifi  # keeps both, stays on your network
 ```
+
+A plain reset erases **both** saved passwords — your WiFi and the setup
+hotspot's — so the next boot raises `LitClock-Setup` with a new password shown
+on the clock's screen. A phone that saved the old one must forget the network
+before rejoining (litclock-dev#666).
+
+`--keep-wifi` is the escape hatch for a technical user resetting their own
+clock over SSH: it preserves both, so the device returns to its own network and
+never raises a hotspot — which also means your SSH session survives. Without it,
+a reset over SSH drops the connection when the WiFi goes.
 
 Use `--gift-mode` to prepare a device for shipping to someone else (wipes WiFi +
 config, writes a welcome splash, powers off). See

@@ -12,16 +12,48 @@
    icon mapping (Restart=arrow-clockwise, Power off=power). Final Phosphor
    swap is gated on issue litclock-dev#255 (good first issue, M2 follow-up).
 #}
-{% block title %}System — LitClock{% endblock %}
+{% block title %}{{ t('system.title') }} — LitClock{% endblock %}
 
 {% block extra_head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/system.css') }}">
   {# M7 OV-2 — confirm-sheet styles extracted to a shared partial so /system
      and /updates render the same modal. #}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/confirm-sheet.css') }}">
+  {# Segmented-pill styles for the gift card's recipient-language pill
+     (litclock-dev#532 pickers 5b) — shared with /settings. #}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/segmented.css') }}">
 {% endblock %}
 
 {% block extra_body %}
+{# litclock-dev#532: catalog strings for system.js's dynamic copy (the
+   reconnect/terminal cards + alerts). Safe as script-element CONTENT only. #}
+<script type="application/json" data-litclock-strings>{{ catalog_subset([
+  'common.alert.token_invalid',
+  'common.alert.http_status',
+  'common.confirm.timeout',
+  'common.confirm.consumed',
+  'system.card.restarting.title',
+  'system.card.restarting.body',
+  'system.card.wifi_reset.title',
+  'system.card.wifi_reset.body',
+  'system.card.wifi_reset.body2',
+  'system.card.factory_reset.title',
+  'system.card.factory_reset.body',
+  'system.card.factory_reset.body2',
+  'system.card.factory_reset.body3',
+  'system.card.gift.title',
+  'system.card.gift.body',
+  'system.card.gift.body2_lead',
+  'system.card.gift.body2',
+  'system.card.retry.title',
+  'system.card.retry.button',
+  'system.card.shutting_down.title',
+  'system.card.shutting_down.body',
+  'system.card.syncing.title',
+  'system.card.syncing.body',
+  'system.card.safe_unplug.title',
+  'system.card.safe_unplug.body',
+]) | tojson }}</script>
   <script src="{{ url_for('static', filename='js/system.js') }}" defer></script>
 {% endblock %}
 
@@ -31,7 +63,7 @@
    pattern so users see the same confirmation on either tab. #}
 {% if saved_section %}
   <div class="settings-banner settings-banner--success" role="status" aria-live="polite">
-    Saved.
+    {{ t('common.banner.saved') }}
   </div>
 {% endif %}
 {% if form_error %}
@@ -40,7 +72,7 @@
   </div>
 {% endif %}
 
-<section class="system-actions" aria-label="System actions">
+<section class="system-actions" aria-label="{{ t('aria.system.actions') }}">
 
   <article class="action-card" data-action="reboot">
     <header class="action-card__header">
@@ -51,17 +83,17 @@
         <polyline points="21 4 21 10 15 10"></polyline>
         <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
       </svg>
-      <h2 class="action-card__title">Restart</h2>
+      <h2 class="action-card__title">{{ t('system.action.restart.title') }}</h2>
     </header>
     <p class="action-card__consequence">
-      Display blanks for about 30 seconds, then your quote returns.
+      {{ t('system.action.restart.consequence') }}
     </p>
     <form class="action-card__form"
           method="POST"
           action="{{ url_for('system.reboot') }}"
           data-confirm-action="reboot">
       <input type="hidden" name="token" value="{{ tokens.reboot }}">
-      <button type="submit" class="action-card__submit">Restart…</button>
+      <button type="submit" class="action-card__submit">{{ t('system.action.restart.button') }}</button>
     </form>
   </article>
 
@@ -74,17 +106,17 @@
         <path d="M12 2v10"></path>
         <path d="M5.34 7A8 8 0 1 0 18.66 7"></path>
       </svg>
-      <h2 class="action-card__title">Power off</h2>
+      <h2 class="action-card__title">{{ t('system.action.poweroff.title') }}</h2>
     </header>
     <p class="action-card__consequence">
-      Requires unplug + re-plug to start back up.
+      {{ t('system.action.poweroff.consequence') }}
     </p>
     <form class="action-card__form"
           method="POST"
           action="{{ url_for('system.poweroff') }}"
           data-confirm-action="poweroff">
       <input type="hidden" name="token" value="{{ tokens.poweroff }}">
-      <button type="submit" class="action-card__submit">Power off…</button>
+      <button type="submit" class="action-card__submit">{{ t('system.action.poweroff.button') }}</button>
     </form>
   </article>
 
@@ -108,18 +140,17 @@
         <line x1="12" y1="20" x2="12.01" y2="20"></line>
         <line x1="2" y1="2" x2="22" y2="22"></line>
       </svg>
-      <h2 class="action-card__title">Reset WiFi</h2>
+      <h2 class="action-card__title">{{ t('system.action.wifi_reset.title') }}</h2>
     </header>
     <p class="action-card__consequence">
-      Forgets your saved WiFi networks so you can connect to a different one.
-      Your other settings (location, weather, gift mode) stay saved.
+      {{ t('system.action.wifi_reset.consequence') }}
     </p>
     <form class="action-card__form"
           method="POST"
           action="{{ url_for('wifi.reset') }}"
           data-confirm-action="wifi_reset">
       <input type="hidden" name="token" value="{{ tokens.wifi_reset }}">
-      <button type="submit" class="action-card__submit">Reset WiFi…</button>
+      <button type="submit" class="action-card__submit">{{ t('system.action.wifi_reset.button') }}</button>
     </form>
   </article>
 
@@ -138,19 +169,17 @@
         <polyline points="1 4 1 10 7 10"></polyline>
         <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
       </svg>
-      <h2 class="action-card__title">Factory reset</h2>
+      <h2 class="action-card__title">{{ t('system.action.factory_reset.title') }}</h2>
     </header>
     <p class="action-card__consequence">
-      Erases <strong>everything</strong> — all settings and WiFi — and powers
-      off. Power it on again to set it up fresh. Use this before you move or
-      pass the clock on.
+      {{ t_rich('system.action.factory_reset.consequence') }}
     </p>
     <form class="action-card__form"
           method="POST"
           action="{{ url_for('system.reset') }}"
           data-confirm-action="factory_reset">
       <input type="hidden" name="token" value="{{ tokens.factory_reset }}">
-      <button type="submit" class="action-card__submit">Factory reset…</button>
+      <button type="submit" class="action-card__submit">{{ t('system.action.factory_reset.button') }}</button>
     </form>
   </article>
 
@@ -182,12 +211,10 @@
         <path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"></path>
         <path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"></path>
       </svg>
-      <h2 class="action-card__title">Prepare for Gifting</h2>
+      <h2 class="action-card__title">{{ t('system.action.gift.title') }}</h2>
     </header>
     <p class="action-card__consequence">
-      Type a welcome message for the recipient, then prepare the clock for
-      shipping. We'll paint your message on the screen, wipe your WiFi, and
-      power off. Plug it back in to test, or pack and ship it.
+      {{ t('system.action.gift.consequence') }}
     </p>
 
     <form class="action-card__form action-card__form--draft"
@@ -197,19 +224,17 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="section" value="gift">
 
-      <label class="action-card__label" for="gift_mode_message">Welcome message (optional)</label>
+      <label class="action-card__label" for="gift_mode_message">{{ t('system.gift.label') }}</label>
       <textarea class="action-card__textarea"
                 id="gift_mode_message"
                 name="GIFT_MODE_MESSAGE"
                 rows="3"
                 maxlength="80"
-                placeholder="Happy Birthday Mom! Love, Alexis"
+                placeholder="{{ t('system.gift.placeholder') }}"
                 aria-describedby="gift-mode-help gift-mode-counter"
                 data-gift-message-source>{{ gift_mode_message }}</textarea>
       <p id="gift-mode-help" class="action-card__help">
-        Up to 80 bytes across 1–2 lines (about 80 plain letters; emoji and
-        accented characters count for more). Leave blank to use the default
-        welcome. Backticks and <code>$</code> aren't allowed.
+        {{ t_rich('system.gift.help') }}
       </p>
       {# Counter is visual-only. aria-live was chatty on every keystroke
          (SR re-announced "5 / 80, 6 / 80, ..." on each input event);
@@ -225,7 +250,7 @@
       {% endif %}
 
       <div class="action-card__form-actions">
-        <button type="submit" class="action-card__submit action-card__submit--secondary">Save draft</button>
+        <button type="submit" class="action-card__submit action-card__submit--secondary">{{ t('system.gift.save_draft') }}</button>
       </div>
     </form>
 
@@ -241,7 +266,38 @@
          keeps the textarea→hidden-textarea mirror updated for the JS path
          so unsaved edits ship too. #}
       <textarea name="message" hidden data-gift-message-sync>{{ gift_mode_message }}</textarea>
-      <button type="submit" class="action-card__submit">Prepare for Gifting…</button>
+      {#- litclock-dev#532 pickers 5b: recipient-language pill, rendered ONLY
+          on a multi-language fleet (single-language fleets ship no control
+          and the endpoint treats the absent field as "no choice"). Lives
+          INSIDE the destructive form so the checked radio rides the no-JS
+          POST natively; the JS path's field collector picks up checked
+          radios (system.js). Defaults to the device's current language —
+          the recipient most likely shares the gifter's. -#}
+      {%- set language_choices = active_language_choices() -%}
+      {% if language_choices | length > 1 %}
+      <label class="action-card__label" id="gift-language-label">{{ t('system.gift_language.label') }}</label>
+      <fieldset class="settings-row settings-row--pill action-card__language">
+        <legend class="settings-visually-hidden">{{ t('system.gift_language.label') }}</legend>
+        <div class="settings-segmented" role="radiogroup" aria-labelledby="gift-language-label" data-gift-language-pill>
+          {%- set current_code = current_language() -%}
+          {%- if current_code not in language_choices -%}
+            {%- set current_code = language_choices | sort | first -%}
+          {%- endif -%}
+          {% for code in language_choices | sort %}
+          <label class="settings-segmented__opt{% if current_code == code %} is-selected{% endif %}"
+                 data-gift-language-opt="{{ code }}">
+            <input type="radio"
+                   class="settings-segmented__input"
+                   name="language"
+                   value="{{ code }}"
+                   {% if current_code == code %}checked{% endif %}>
+            <span>{{ language_choices[code].get('native_name') or code }}</span>
+          </label>
+          {% endfor %}
+        </div>
+      </fieldset>
+      {% endif %}
+      <button type="submit" class="action-card__submit">{{ t('system.action.gift.button') }}</button>
     </form>
   </article>
 
@@ -259,13 +315,13 @@
         data-action="reboot"
         data-destructive="false">
   <div class="confirm-sheet__inner">
-    <h2 id="confirm-reboot-title" class="confirm-sheet__title">Restart LitClock?</h2>
+    <h2 id="confirm-reboot-title" class="confirm-sheet__title">{{ t('system.sheet.reboot.title') }}</h2>
     <p id="confirm-reboot-body" class="confirm-sheet__body">
-      The display will go blank for about 30 seconds, then your quote will return.
+      {{ t('system.sheet.reboot.body') }}
     </p>
     <div class="confirm-sheet__actions">
-      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>Cancel</button>
-      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>Restart</button>
+      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>{{ t('common.cancel') }}</button>
+      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>{{ t('system.sheet.reboot.confirm') }}</button>
     </div>
   </div>
 </dialog>
@@ -277,13 +333,13 @@
         data-action="poweroff"
         data-destructive="true">
   <div class="confirm-sheet__inner">
-    <h2 id="confirm-poweroff-title" class="confirm-sheet__title">Power off LitClock?</h2>
+    <h2 id="confirm-poweroff-title" class="confirm-sheet__title">{{ t('system.sheet.poweroff.title') }}</h2>
     <p id="confirm-poweroff-body" class="confirm-sheet__body">
-      Once it's off, you'll need to <strong>unplug and re-plug</strong> the power cable to start it again. There's no remote on switch.
+      {{ t_rich('system.sheet.poweroff.body') }}
     </p>
     <div class="confirm-sheet__actions">
-      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>Cancel</button>
-      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>Power off</button>
+      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>{{ t('common.cancel') }}</button>
+      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>{{ t('system.sheet.poweroff.confirm') }}</button>
     </div>
   </div>
 </dialog>
@@ -302,14 +358,13 @@
         data-action="wifi_reset"
         data-destructive="true">
   <div class="confirm-sheet__inner">
-    <h2 id="confirm-wifi-reset-title" class="confirm-sheet__title">Reset WiFi?</h2>
+    <h2 id="confirm-wifi-reset-title" class="confirm-sheet__title">{{ t('system.sheet.wifi_reset.title') }}</h2>
     <p id="confirm-wifi-reset-body" class="confirm-sheet__body">
-      <strong>Only your WiFi</strong> will be cleared. Your location, weather, and gift settings stay saved.
-      You’ll join the <strong>LitClock-Setup</strong> network from your phone’s WiFi list to enter new WiFi.
+      {{ t_rich('system.sheet.wifi_reset.body', network='LitClock-Setup') }}
     </p>
     <div class="confirm-sheet__actions">
-      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>Cancel</button>
-      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>Reset WiFi</button>
+      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>{{ t('common.cancel') }}</button>
+      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>{{ t('system.sheet.wifi_reset.confirm') }}</button>
     </div>
   </div>
 </dialog>
@@ -325,15 +380,13 @@
         data-action="factory_reset"
         data-destructive="true">
   <div class="confirm-sheet__inner">
-    <h2 id="confirm-factory-reset-title" class="confirm-sheet__title">Factory reset?</h2>
+    <h2 id="confirm-factory-reset-title" class="confirm-sheet__title">{{ t('system.sheet.factory_reset.title') }}</h2>
     <p id="confirm-factory-reset-body" class="confirm-sheet__body">
-      <strong>Everything</strong> will be erased — all settings and WiFi — and the clock
-      powers off. This can’t be undone. Power it on again to set it up fresh, joining the
-      <strong>LitClock-Setup</strong> network from your phone’s WiFi list.
+      {{ t_rich('system.sheet.factory_reset.body', network='LitClock-Setup') }}
     </p>
     <div class="confirm-sheet__actions">
-      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>Cancel</button>
-      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>Factory reset</button>
+      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>{{ t('common.cancel') }}</button>
+      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>{{ t('system.sheet.factory_reset.confirm') }}</button>
     </div>
   </div>
 </dialog>
@@ -347,15 +400,13 @@
         data-action="prepare_for_gift"
         data-destructive="true">
   <div class="confirm-sheet__inner">
-    <h2 id="confirm-prepare-for-gift-title" class="confirm-sheet__title">Prepare for Gifting?</h2>
+    <h2 id="confirm-prepare-for-gift-title" class="confirm-sheet__title">{{ t('system.sheet.gift.title') }}</h2>
     <p id="confirm-prepare-for-gift-body" class="confirm-sheet__body">
-      Your WiFi will be wiped and the clock will power off. The screen will
-      show your welcome message until the recipient completes setup.
-      Plug it back in to test, or pack and ship it.
+      {{ t('system.sheet.gift.body') }}
     </p>
     <div class="confirm-sheet__actions">
-      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>Cancel</button>
-      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>Prepare for Gifting</button>
+      <button type="button" class="confirm-sheet__cancel" data-modal-cancel>{{ t('common.cancel') }}</button>
+      <button type="button" class="confirm-sheet__confirm" data-modal-confirm>{{ t('system.sheet.gift.confirm') }}</button>
     </div>
   </div>
 </dialog>

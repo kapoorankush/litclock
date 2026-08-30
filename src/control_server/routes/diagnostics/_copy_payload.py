@@ -17,6 +17,16 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+# litclock-dev#532 PR 4c: row labels resolve from the language catalog —
+# the same source the diagnostics page's Jinja side reads via t(), which
+# is what makes the pasted payload match the page the user is looking at.
+# The table lives inside build_copy_payload, so labels resolve per call
+# (a language switch reaches the next Copy without a restart).
+# PORT NOTE: this module-level import makes the whole diagnostics package
+# hard-depend on the litclock-dev#532 chain (strings_catalog + languages/) —
+# same warning as control_server/__init__'s create_app note.
+from strings_catalog import get as _t
+
 from ..._diagnostics_privacy import redact
 
 
@@ -37,56 +47,56 @@ def build_copy_payload(
         (
             "Build & version",
             [
-                ("App version", "app_version"),
-                ("git HEAD", "git_head"),
-                ("Images version", "images_version"),
-                ("Last update", "last_update_at"),
-                ("Last update version", "last_update_version"),
+                (_t("diag.row.app_version"), "app_version"),
+                (_t("diag.row.git_head"), "git_head"),
+                (_t("diag.row.images_version"), "images_version"),
+                (_t("diag.row.last_update_at"), "last_update_at"),
+                (_t("diag.row.last_update_version"), "last_update_version"),
             ],
         ),
         (
             "System",
             [
-                ("Kernel", "kernel"),
-                ("OS", "os_release"),
-                ("Uptime", "uptime_human"),
-                ("CPU temp °C", "cpu_temp_c"),
-                ("Free memory MB", "memory_free_mb"),
-                ("Free disk %", "disk_free_pct"),
+                (_t("diag.row.kernel"), "kernel"),
+                (_t("diag.row.os_release"), "os_release"),
+                (_t("diag.row.uptime_human"), "uptime_human"),
+                (_t("diag.row.cpu_temp_c"), "cpu_temp_c"),
+                (_t("diag.row.memory_free_mb"), "memory_free_mb"),
+                (_t("diag.row.disk_free_pct"), "disk_free_pct"),
             ],
         ),
         (
             "Network",
             [
-                ("Interface", "iface"),
-                ("SSID", "ssid"),
-                ("LAN IP", "lan_ip"),
-                ("Gateway", "gateway"),
-                ("Signal dBm", "signal_dbm"),
-                ("Last DHCP", "last_dhcp_at"),
+                (_t("diag.row.iface"), "iface"),
+                (_t("diag.row.ssid"), "ssid"),
+                (_t("diag.row.lan_ip"), "lan_ip"),
+                (_t("diag.row.gateway"), "gateway"),
+                (_t("diag.row.signal_dbm"), "signal_dbm"),
+                (_t("diag.row.last_dhcp_at"), "last_dhcp_at"),
             ],
         ),
         (
             "Time & location",
             [
-                ("Timezone", "timezone"),
-                ("City", "weather_location_name"),
-                ("Lat", "weather_lat"),
-                ("Lon", "weather_lon"),
-                ("Mode", "weather_location_mode"),
-                ("IP country", "weather_ip_country"),
-                ("Units", "weather_units"),
-                ("Weather on?", "weather_enabled"),
-                ("Last IP-geo", "last_ip_geo_at"),
+                (_t("diag.row.timezone"), "timezone"),
+                (_t("diag.row.weather_location_name"), "weather_location_name"),
+                (_t("diag.row.weather_lat"), "weather_lat"),
+                (_t("diag.row.weather_lon"), "weather_lon"),
+                (_t("diag.row.weather_location_mode"), "weather_location_mode"),
+                (_t("diag.row.weather_ip_country"), "weather_ip_country"),
+                (_t("diag.row.weather_units"), "weather_units"),
+                (_t("diag.row.weather_enabled"), "weather_enabled"),
+                (_t("diag.row.last_ip_geo_at"), "last_ip_geo_at"),
             ],
         ),
         (
             "Setup markers",
             [
-                (".setup-complete", "setup_complete"),
-                (".handoff-complete", "handoff_complete"),
-                ("Gift mode", "gift_mode_active"),
-                ("Allow NSFW", "allow_nsfw_quotes"),
+                (_t("diag.row.setup_complete"), "setup_complete"),
+                (_t("diag.row.handoff_complete"), "handoff_complete"),
+                (_t("diag.row.gift_mode_active"), "gift_mode_active"),
+                (_t("diag.row.allow_nsfw_quotes"), "allow_nsfw_quotes"),
             ],
         ),
     ]

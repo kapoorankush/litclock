@@ -40,6 +40,24 @@
 (function () {
   'use strict';
 
+  /* litclock-dev#532 slice 8: SHELL strings blob — a base-template blob on
+     its own attribute, distinct from the per-page data-litclock-strings
+     (drawer.js runs on EVERY page; riding page blobs would mean duplicating
+     these keys into five templates). English fallbacks are CI-pinned. */
+  var STRINGS = (function () {
+    var el = document.querySelector('[data-litclock-shell-strings]');
+    if (!el) return {};
+    try {
+      return JSON.parse(el.textContent) || {};
+    } catch (e) {
+      return {};
+    }
+  })();
+
+  function tr(key, fallback) {
+    return Object.prototype.hasOwnProperty.call(STRINGS, key) ? STRINGS[key] : fallback;
+  }
+
   var WELCOMED_KEY = 'litclock.diag.welcomed.v1';
   var SID_KEY = 'litclock.diag.sid';
   var VISIBLE_CAP = 200;
@@ -292,7 +310,10 @@
     });
     if (dom.hiddenBatch) {
       if (hiddenCount > 0) {
-        dom.hiddenBatch.textContent = 'Earlier ' + hiddenCount + ' hidden — open the full diagnostics page to see all';
+        // litclock-dev#532: whole sentence, named slot (see scope-audit item 11).
+        dom.hiddenBatch.textContent = tr('shell.drawer.hidden_batch', 'Earlier {n} hidden — open the full diagnostics page to see all')
+          .split('{n}')
+          .join(String(hiddenCount));
         dom.hiddenBatch.hidden = false;
       } else {
         dom.hiddenBatch.hidden = true;
@@ -621,7 +642,7 @@
       dom.fresh.addEventListener('click', function () {
         state.freshFromSeq = state.lastSeq + 1;
         dom.fresh.disabled = true;
-        dom.fresh.textContent = 'Fresh from now';
+        dom.fresh.textContent = tr('shell.drawer.fresh_clicked', 'Fresh from now');
         rerenderEntries(dom, state);
       });
     }

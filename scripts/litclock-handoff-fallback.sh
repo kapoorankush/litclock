@@ -20,16 +20,33 @@ CONFIG_DIR="${LITCLOCK_CONFIG_DIR:-/etc/litclock}"
 ENV_FILE="${LITCLOCK_ENV_FILE:-/home/pi/litclock/env.sh}"
 HANDOFF_FLAG="$CONFIG_DIR/.handoff-complete"
 
-# tz-known proxy: read WEATHER_LATITUDE from env.sh and check it's non-empty.
+# tz-known proxy: read the coordinates from env.sh and check they're non-empty.
 # Strip the `export KEY=` prefix and any surrounding quotes/whitespace.
-lat_line="$(grep -E '^[[:space:]]*(export[[:space:]]+)?WEATHER_LATITUDE=' "$ENV_FILE" 2>/dev/null | tail -n1)"
-lat_val="${lat_line#*=}"
-lat_val="${lat_val//\"/}"
-lat_val="${lat_val//\'/}"
-lat_val="${lat_val//[[:space:]]/}"
+#
+# BOTH keys, matching control_server/handoff.py's _has_location. This copy
+# checked latitude alone, so an env.sh with a latitude and no longitude was
+# "timezone unknown" to the PWA and "timezone known" here — two writers of the
+# same marker disagreeing about the one predicate that gates it (/review).
+#
+# The trailing-comment strip is load-bearing: `WEATHER_LATITUDE= # unset` is
+# ordinary shell, and without it the comment text became the value and read as
+# a populated coordinate, so a device with NO location completed the handoff.
+read_env_value() {
+    local key="$1" line value
+    line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}=" "$ENV_FILE" 2>/dev/null | tail -n1)"
+    value="${line#*=}"
+    value="${value%%#*}"
+    value="${value//\"/}"
+    value="${value//\'/}"
+    value="${value//[[:space:]]/}"
+    printf '%s' "$value"
+}
 
-if [[ -z "$lat_val" ]]; then
-    echo "handoff-fallback: timezone unknown (WEATHER_LATITUDE empty) — leaving splash up"
+lat_val="$(read_env_value WEATHER_LATITUDE)"
+lon_val="$(read_env_value WEATHER_LONGITUDE)"
+
+if [[ -z "$lat_val" || -z "$lon_val" ]]; then
+    echo "handoff-fallback: timezone unknown (WEATHER_LATITUDE/LONGITUDE empty) — leaving splash up"
     exit 0
 fi
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 import pytest
 from flask import Flask
 
+from control_server import _network
 from control_server.routes.diagnostics import _collectors
 
 
@@ -380,6 +381,11 @@ class TestFastReaderTimeoutContract:
             lambda: _collectors._batched_is_active(("litclock.service", "litclock-control.service")),
         ),
         ("DIAG_IW_LINK_TIMEOUT_S", "diag-iw-signal-wlan0", lambda: _collectors._read_signal_dbm()),
+        # litclock-dev#672. One row pins BOTH the cache key and the budget, since the
+        # fixture looks the call up by cache_key — a collision with any other
+        # reader's key would cross-poison the TTL cache and, in this reader's
+        # case, invent or hide a network outage depending on call order.
+        ("DIAG_IP_ADDR_TIMEOUT_S", "diag-lan-ip-live", lambda: _collectors._read_lan_ip()),
     ]
 
     @pytest.mark.parametrize("const_name, cache_key, reader", _PER_CALL_WIRING)
@@ -394,3 +400,147 @@ class TestFastReaderTimeoutContract:
             f"{cache_key} did not read {const_name} — it's likely still wired to the shared "
             f"DIAG_SUBPROC_TIMEOUT_S base, which defeats the litclock-dev#430 per-call tuning."
         )
+
+
+# --- litclock-dev#672 ------------------------------------------------------
+
+
+class TestReadLanIpLive:
+    """The live interface read, and specifically its ``determined`` flag.
+
+    ``(None, True)`` = "asked the kernel, no usable IPv4" and must trip the
+    missing-IP anomaly. ``(None, False)`` = "could not ask" and must fall back
+    to the marker. Collapsing those is what let a stale marker report a healthy
+    network through a four-minute outage (litclock-dev#672).
+    """
+
+    def _stub(self, monkeypatch, value):
+        monkeypatch.setattr(_network, "cached_subprocess", lambda *a, **kw: value)
+
+    def test_a_global_address_is_returned_and_determined(self, monkeypatch):
+        self._stub(
+            monkeypatch,
+            "2: wlan0    inet 192.168.2.99/24 brd 192.168.2.255 scope global dynamic noprefixroute wlan0",
+        )
+        assert _network.read_lan_ip_live() == ("192.168.2.99", True)
+
+    def test_no_address_is_an_AUTHORITATIVE_none(self, monkeypatch):
+        """The outage case. `ip` ran and reported nothing, which is a fact
+        about the box, not a failure to observe it."""
+        self._stub(monkeypatch, "")
+        assert _network.read_lan_ip_live() == (None, True)
+
+    def test_a_nonzero_exit_reads_as_authoritative_and_that_is_deliberate(self, monkeypatch):
+        """cached_subprocess returns "" for ANY non-zero exit — it does not
+        surface the code — so this cannot tell "ran and printed nothing" from
+        "ran and failed" (/review, Codex; reachable via a renamed NIC:
+        `ip ... dev nosuchif0` exits 1 with empty stdout).
+
+        Of the two ways to be wrong, this one surfaces a fault that may not
+        exist; the other hides one that does. _anomalies makes the same call
+        everywhere else, and a genuinely broken `ip` is a real problem. Pinned
+        so the choice is visible rather than accidental.
+        """
+        self._stub(monkeypatch, "")
+        assert _network.read_lan_ip_live() == (None, True)
+
+    def test_a_failed_subprocess_is_UNDETERMINED(self, monkeypatch):
+        """`ip` missing or timed out. cached_subprocess returns None here, and
+        reporting that as "no address" would invent a fault."""
+        self._stub(monkeypatch, None)
+        assert _network.read_lan_ip_live() == (None, False)
+
+    @pytest.mark.parametrize(
+        "address",
+        ["127.0.0.1", "169.254.13.7", "10.42.0.1"],
+    )
+    def test_addresses_the_dispatcher_refuses_are_refused_here_too(self, monkeypatch, address):
+        """Loopback, a DHCP-failure link-local, and our own setup hotspot's
+        gateway. nm-dispatcher refuses to RECORD these because doing so would
+        mute a real fault; reporting one here would mute it just the same."""
+        self._stub(monkeypatch, f"2: wlan0    inet {address}/24 scope global wlan0")
+        assert _network.read_lan_ip_live() == (None, True)
+
+    def test_loopback_interface_is_skipped_even_at_global_scope(self, monkeypatch):
+        self._stub(monkeypatch, "1: lo    inet 10.0.0.1/8 scope global lo")
+        assert _network.read_lan_ip_live() == (None, True)
+
+    def test_the_first_usable_address_on_the_interface_wins(self, monkeypatch):
+        """Secondary addresses on the SAME interface — first wins is fine here,
+        because the read is already scoped to one interface."""
+        self._stub(
+            monkeypatch,
+            "2: wlan0    inet 192.168.2.99/24 scope global wlan0\n"
+            "2: wlan0    inet 192.168.2.150/24 scope global secondary wlan0",
+        )
+        assert _network.read_lan_ip_live(iface="wlan0") == ("192.168.2.99", True)
+
+    def test_it_scopes_the_query_to_one_interface(self, monkeypatch):
+        """The finding that made this necessary (/review, red team + Codex,
+        independently): an UN-scoped read takes the first global IPv4 by
+        interface index, so a docker0 / wg0 / tailscale0 / usb0 gadget re-opens
+        exactly the muting litclock-dev#672 closes — demonstrated with wlan0 holding no
+        IPv4 and docker0 up, /diagnostics reported 172.17.0.1 and the network
+        anomaly did not fire. It also defeats the hotspot exclusion, since
+        skipping 10.42.0.1 on wlan0 just falls through to the next interface.
+        """
+        seen = {}
+
+        def capture(key, argv, **kw):
+            seen["argv"] = argv
+            return ""
+
+        monkeypatch.setattr(_network, "cached_subprocess", capture)
+        _network.read_lan_ip_live(iface="wlan0")
+        assert seen["argv"] == ["ip", "-4", "-o", "addr", "show", "dev", "wlan0", "scope", "global"]
+        assert "dev" in seen["argv"], "an un-scoped read reports another interface's address as the clock's"
+
+    def test_the_collector_scopes_to_the_DEFAULT_ROUTE_interface(self, app, monkeypatch):
+        """The plumbing, not just the reader's parameter. On a device whose
+        default route is eth0, querying wlan0 would report the wrong interface's
+        address — or none at all — and the wiring is what decides that."""
+        seen = {}
+
+        def capture(*, iface=None, **kw):
+            seen["iface"] = iface
+            return ("10.0.0.5", True)
+
+        monkeypatch.setattr(_collectors, "_read_iface", lambda: "eth0")
+        monkeypatch.setattr(_collectors, "_network_read_lan_ip_live", capture)
+        with app.app_context():
+            assert _collectors._read_lan_ip() == "10.0.0.5"
+        assert seen["iface"] == "eth0", (
+            "the collector did not pass the default-route interface, so the read is pinned to wlan0 "
+            "on a device routing over something else"
+        )
+
+    def test_it_falls_back_to_wlan0_when_there_is_no_default_route(self, monkeypatch):
+        """A box with an address but no default route still has a wlan0 worth
+        asking about — and reporting "no IP" for a device serving the very page
+        is the false positive _compute_anomalies warns about."""
+        seen = {}
+
+        def capture(key, argv, **kw):
+            seen["argv"] = argv
+            return "2: wlan0    inet 192.168.2.99/24 scope global wlan0"
+
+        monkeypatch.setattr(_network, "cached_subprocess", capture)
+        assert _network.read_lan_ip_live(iface=None) == ("192.168.2.99", True)
+        assert "wlan0" in seen["argv"]
+
+    def test_malformed_lines_do_not_raise(self, monkeypatch):
+        self._stub(monkeypatch, "garbage\n2: wlan0 inet\n\n3: wlan0    inet 192.168.2.99/24 scope global")
+        assert _network.read_lan_ip_live() == ("192.168.2.99", True)
+
+    def test_it_asks_for_global_scope_only(self, monkeypatch):
+        """Scope filtering at the source keeps link-local and host addresses
+        out before the prefix checks ever run."""
+        seen = {}
+
+        def capture(key, argv, **kw):
+            seen["argv"] = argv
+            return ""
+
+        monkeypatch.setattr(_network, "cached_subprocess", capture)
+        _network.read_lan_ip_live(iface="wlan0")
+        assert seen["argv"][-2:] == ["scope", "global"]

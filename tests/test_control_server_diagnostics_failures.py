@@ -184,6 +184,25 @@ class TestReadLanIpEmptyPath:
             assert _collectors._read_lan_ip() is None
             assert _collectors._read_last_dhcp_iso() is None
 
+    def test_the_live_read_honours_the_disable_too(self, app, monkeypatch):
+        """litclock-dev#672 made the LIVE interface address the primary source.
+        A suppression that only silenced the FILE would have become a leak the
+        moment the address came from somewhere else — so the disable is checked
+        before the live read runs, not after."""
+        from control_server.routes.diagnostics import _collectors
+
+        calls = []
+
+        def _should_not_run(**kw):
+            calls.append(kw)
+            return ("192.168.2.99", True)
+
+        monkeypatch.setattr(_collectors, "_network_read_lan_ip_live", _should_not_run)
+        app.config["DIAG_LAST_IP_PATH"] = ""
+        with app.app_context():
+            assert _collectors._read_lan_ip() is None
+        assert calls == [], "the live read ran despite the LAN IP being suppressed"
+
     def test_none_falls_back_to_default_via_network_helper(self):
         # Direct call to _network helpers with path=None should consult
         # DEFAULT_LAST_RENDERED_IP_PATH. We don't read it (no file exists

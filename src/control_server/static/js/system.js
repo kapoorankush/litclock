@@ -23,6 +23,34 @@
 (function () {
   'use strict';
 
+  /* litclock-dev#532: catalog strings injected by the template; the English
+     literals are stale-JS-window fallbacks, CI-pinned against the catalog
+     (tests/test_cross_file_string_parity.py). */
+  var STRINGS = (function () {
+    var el = document.querySelector('[data-litclock-strings]');
+    if (!el) return {};
+    try {
+      return JSON.parse(el.textContent) || {};
+    } catch (e) {
+      return {};
+    }
+  })();
+
+  function tr(key, fallback) {
+    return Object.prototype.hasOwnProperty.call(STRINGS, key) ? STRINGS[key] : fallback;
+  }
+
+  /* Catalog values are plain text; the reconnect cards build innerHTML, so
+     every catalog string is escaped before insertion and the trusted
+     markup (the <strong> network name) is composed around it. */
+  function esc(text) {
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   // litclock-dev#317 item 7 — Prepare-for-Gifting wiring (moved from settings.js).
   //
   // Two pieces of progressive enhancement for the gift card:
@@ -212,7 +240,7 @@
     var tokenInput = form.querySelector('input[name="token"]');
     if (!tokenInput || !tokenInput.value) {
       // No token — nothing useful to do; surface the issue.
-      window.alert('Couldn\'t verify that action. Reload the page and try again.');
+      window.alert(tr('common.alert.token_invalid', "Couldn't verify that action. Reload the page and try again."));
       return;
     }
     postAction(form, action, tokenInput, false);
@@ -264,7 +292,12 @@
     // hidden inputs AND hidden textareas; the field-collection logic is
     // element-type-agnostic via the shared `name`/`value` interface.
     var payload = { token: tokenInput.value };
-    var hiddenFields = form.querySelectorAll('input[type="hidden"], textarea[hidden]');
+    // litclock-dev#532 pickers 5b: checked radios join the collection — the
+    // gift card's recipient-language pill lives inside the destructive form
+    // (visible control, so radios rather than hidden fields; the shared
+    // name/value interface below is already element-type-agnostic). Other
+    // action forms carry no radios, so this is a no-op for them.
+    var hiddenFields = form.querySelectorAll('input[type="hidden"], textarea[hidden], input[type="radio"]:checked');
     for (var i = 0; i < hiddenFields.length; i++) {
       var field = hiddenFields[i];
       if (field.name && field.name !== 'token' && !(field.name in payload)) {
@@ -314,7 +347,7 @@
             if (response.status === 409 && code === 'confirm_token_consumed') {
               var consumedMsg = (body && body.error && body.error.message)
                 ? body.error.message
-                : 'This action was already submitted. Reload the page if you need to retry.';
+                : tr('common.confirm.consumed', 'This action was already submitted. Reload the page if you need to retry.');
               window.alert(consumedMsg);
               return;
             }
@@ -338,7 +371,7 @@
             ) {
               var recoverMsg = (body && body.error && body.error.message)
                 ? body.error.message
-                : 'This confirmation timed out for safety. Reload the page and try again.';
+                : tr('common.confirm.timeout', 'This confirmation timed out for safety. Reload the page and try again.');
               if (window.confirm(recoverMsg)) {
                 window.location.reload();
               }
@@ -346,11 +379,11 @@
             }
             var msg = (body && body.error && body.error.message)
               ? body.error.message
-              : 'Request failed (HTTP ' + response.status + ').';
+              : tr('common.alert.http_status', 'Request failed (HTTP {status}).').split('{status}').join(String(response.status));
             window.alert(msg);
           })
           .catch(function () {
-            window.alert('Request failed (HTTP ' + response.status + ').');
+            window.alert(tr('common.alert.http_status', 'Request failed (HTTP {status}).').split('{status}').join(String(response.status)));
           });
       })
       .catch(function () {
@@ -372,7 +405,7 @@
   function refreshTokenAndRetry(form, action, tokenInput, originalErrorBody) {
     var fallbackMsg = (originalErrorBody && originalErrorBody.error && originalErrorBody.error.message)
       ? originalErrorBody.error.message
-      : 'This confirmation timed out for safety. Reload the page and try again.';
+      : tr('common.confirm.timeout', 'This confirmation timed out for safety. Reload the page and try again.');
     fetch('/api/system/confirm-token', {
       method: 'POST',
       headers: {
@@ -475,9 +508,9 @@
   function renderRestartingCard(main) {
     main.innerHTML =
       '<section class="reconnect-state" role="status" aria-live="polite" data-state="restarting">' +
-      '  <h2 class="reconnect-state__title"><em>Restarting…</em></h2>' +
+      '  <h2 class="reconnect-state__title"><em>' + esc(tr('system.card.restarting.title', 'Restarting…')) + '</em></h2>' +
       '  <p class="reconnect-state__body">' +
-      '    Your quote will be back in about 30 seconds.' +
+      esc(tr('system.card.restarting.body', 'Your quote will be back in about 30 seconds.')) +
       '  </p>' +
       '</section>';
   }
@@ -489,12 +522,13 @@
     // to switch their phone over to the LitClock-Setup network.
     main.innerHTML =
       '<section class="reconnect-state" role="status" aria-live="polite" data-state="wifi-reset">' +
-      '  <h2 class="reconnect-state__title"><em>Switching to setup mode…</em></h2>' +
+      '  <h2 class="reconnect-state__title"><em>' + esc(tr('system.card.wifi_reset.title', 'Switching to setup mode…')) + '</em></h2>' +
       '  <p class="reconnect-state__body">' +
-      '    Join <strong>LitClock-Setup</strong> from your phone&rsquo;s WiFi list, then enter your new WiFi.' +
+      esc(tr('system.card.wifi_reset.body', 'Join {network} from your phone’s WiFi list, then enter your new WiFi.'))
+        .split('{network}').join('<strong>LitClock-Setup</strong>') +
       '  </p>' +
       '  <p class="reconnect-state__body">' +
-      '    Your location, weather, and gift settings stay saved.' +
+      esc(tr('system.card.wifi_reset.body2', 'Your location, weather, and gift settings stay saved.')) +
       '  </p>' +
       '</section>';
   }
@@ -506,12 +540,17 @@
     // "settings stay saved" reassurance line.
     main.innerHTML =
       '<section class="reconnect-state" role="status" aria-live="polite" data-state="factory-reset">' +
-      '  <h2 class="reconnect-state__title"><em>Factory reset in progress…</em></h2>' +
+      '  <h2 class="reconnect-state__title"><em>' + esc(tr('system.card.factory_reset.title', 'Factory reset in progress…')) + '</em></h2>' +
       '  <p class="reconnect-state__body">' +
-      '    The clock is erasing its settings and powering off.' +
+      esc(tr('system.card.factory_reset.body', 'The clock is erasing its settings and powering off.')) +
       '  </p>' +
       '  <p class="reconnect-state__body">' +
-      '    Wait for the screen to go blank before unplugging. Then power it on again and join <strong>LitClock-Setup</strong> from your phone&rsquo;s WiFi list to set it up fresh.' +
+      esc(tr('system.card.factory_reset.body2', 'Wait for the screen to go blank before unplugging. Then power it on again and join {network} from your phone’s WiFi list to set it up fresh.'))
+        .split('{network}').join('<strong>LitClock-Setup</strong>') +
+      '  </p>' +
+      '  <p class="reconnect-state__body">' +
+      esc(tr('system.card.factory_reset.body3', 'The setup network’s password was erased too, so it will be a NEW one, shown on the clock’s screen. If your phone saved the old password, forget {network} before rejoining.'))
+        .split('{network}').join('<strong>LitClock-Setup</strong>') +
       '  </p>' +
       '</section>';
   }
@@ -523,12 +562,13 @@
     // recipient unboxes + plugs back in).
     main.innerHTML =
       '<section class="reconnect-state" role="status" aria-live="polite" data-state="prepare-for-gift">' +
-      '  <h2 class="reconnect-state__title"><em>Preparing for gifting…</em></h2>' +
+      '  <h2 class="reconnect-state__title"><em>' + esc(tr('system.card.gift.title', 'Preparing for gifting…')) + '</em></h2>' +
       '  <p class="reconnect-state__body">' +
-      '    Your welcome message is being painted on the screen. The clock will power off shortly.' +
+      esc(tr('system.card.gift.body', 'Your welcome message is being painted on the screen. The clock will power off shortly.')) +
       '  </p>' +
       '  <p class="reconnect-state__body">' +
-      '    <strong>Pack and ship the device.</strong> Plug it back in to test if you want a preview first.' +
+      '<strong>' + esc(tr('system.card.gift.body2_lead', 'Pack and ship the device.')) + '</strong> ' +
+      esc(tr('system.card.gift.body2', 'Plug it back in to test if you want a preview first.')) +
       '  </p>' +
       '</section>';
   }
@@ -536,8 +576,8 @@
   function renderRetryCard(main) {
     main.innerHTML =
       '<section class="reconnect-state reconnect-state--error" role="status" aria-live="polite">' +
-      '  <h2 class="reconnect-state__title">Couldn&rsquo;t reconnect to LitClock.</h2>' +
-      '  <button type="button" class="reconnect-state__retry">Tap to retry</button>' +
+      '  <h2 class="reconnect-state__title">' + esc(tr('system.card.retry.title', 'Couldn’t reconnect to LitClock.')) + '</h2>' +
+      '  <button type="button" class="reconnect-state__retry">' + esc(tr('system.card.retry.button', 'Tap to retry')) + '</button>' +
       '</section>';
     var retry = main.querySelector('.reconnect-state__retry');
     if (retry) {
@@ -590,19 +630,23 @@
   function renderShuttingDownCard(main) {
     main.innerHTML =
       '<section class="reconnect-state" role="status" aria-live="polite" data-state="shutting-down">' +
-      '  <h2 class="reconnect-state__title"><em>Shutting down…</em></h2>' +
+      '  <h2 class="reconnect-state__title"><em>' + esc(tr('system.card.shutting_down.title', 'Shutting down…')) + '</em></h2>' +
       '  <p class="reconnect-state__body">' +
-      '    Don’t unplug yet — services are still stopping.' +
+      esc(tr('system.card.shutting_down.body', 'Don’t unplug yet — services are still stopping.')) +
       '  </p>' +
       '</section>';
   }
 
+  // litclock-dev#532 (scope-audit item 11): whole sentence, named slot —
+  // a spliced countdown pins English word order for the catalog to come.
+  function syncingTitle() { return tr('system.card.syncing.title', 'Almost done… {seconds}s'); }
+
   function renderSyncingCard(main, secondsLeft) {
     main.innerHTML =
       '<section class="reconnect-state" role="status" aria-live="polite" data-state="syncing">' +
-      '  <h2 class="reconnect-state__title"><em>Almost done… ' + secondsLeft + 's</em></h2>' +
+      '  <h2 class="reconnect-state__title"><em>' + esc(syncingTitle().split('{seconds}').join(String(secondsLeft))) + '</em></h2>' +
       '  <p class="reconnect-state__body">' +
-      '    Filesystems syncing. Don’t unplug yet.' +
+      esc(tr('system.card.syncing.body', 'Filesystems syncing. Don’t unplug yet.')) +
       '  </p>' +
       '</section>';
   }
@@ -610,9 +654,9 @@
   function renderSafeToUnplugCard(main) {
     main.innerHTML =
       '<section class="reconnect-state" role="status" aria-live="polite" data-state="safe-to-unplug">' +
-      '  <h2 class="reconnect-state__title">Safe to unplug.</h2>' +
+      '  <h2 class="reconnect-state__title">' + esc(tr('system.card.safe_unplug.title', 'Safe to unplug.')) + '</h2>' +
       '  <p class="reconnect-state__body">' +
-      '    Pull the power cable to turn off. Re-plug to start again.' +
+      esc(tr('system.card.safe_unplug.body', 'Pull the power cable to turn off. Re-plug to start again.')) +
       '  </p>' +
       '</section>';
   }

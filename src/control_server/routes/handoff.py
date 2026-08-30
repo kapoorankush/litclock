@@ -28,6 +28,8 @@ import logging
 
 from flask import Blueprint, current_app, jsonify, request
 
+import strings_catalog  # noqa: E402 — src/ on sys.path; hard dep since litclock-dev#532
+
 from .. import handoff
 from ..errors import envelope
 
@@ -51,14 +53,14 @@ def done() -> tuple[object, int]:
     if not handoff.timezone_known(current_app):
         return envelope(
             "timezone_required",
-            "Set your timezone first so quotes show at the right time.",
+            strings_catalog.get("api.handoff.set_tz_first"),
             409,
         )
 
     if not handoff.mark_handoff_complete(current_app, handoff.TRIGGER_DONE_BUTTON):
         return envelope(
             "handoff_write_failed",
-            "Could not finish setup. The clock will start on its own shortly.",
+            strings_catalog.get("api.handoff.write_failed"),
             500,
         )
     return jsonify({"ok": True, "complete": True}), 200
@@ -82,7 +84,7 @@ def set_timezone() -> tuple[object, int]:
     if not isinstance(timezone, str) or not timezone.strip():
         return envelope(
             "timezone_required",
-            "A timezone is required.",
+            strings_catalog.get("api.tz.required"),
             422,
         )
 
@@ -93,7 +95,7 @@ def set_timezone() -> tuple[object, int]:
         log.warning("handoff set-timezone failed for %r: %s", timezone, err)
         return envelope(
             "invalid_timezone",
-            "That timezone isn't recognized. Pick one from Settings instead.",
+            strings_catalog.get("api.tz.invalid_pick_settings"),
             422,
         )
     return jsonify({"ok": True, "complete": True, "timezone": timezone.strip()}), 200

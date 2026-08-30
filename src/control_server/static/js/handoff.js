@@ -20,6 +20,24 @@
 (function () {
   'use strict';
 
+  /* litclock-dev#532 slice 8: SHELL strings blob — a base-template blob on
+     its own attribute, distinct from the per-page data-litclock-strings
+     (drawer.js runs on EVERY page; riding page blobs would mean duplicating
+     these keys into five templates). English fallbacks are CI-pinned. */
+  var STRINGS = (function () {
+    var el = document.querySelector('[data-litclock-shell-strings]');
+    if (!el) return {};
+    try {
+      return JSON.parse(el.textContent) || {};
+    } catch (e) {
+      return {};
+    }
+  })();
+
+  function tr(key, fallback) {
+    return Object.prototype.hasOwnProperty.call(STRINGS, key) ? STRINGS[key] : fallback;
+  }
+
   var banner = document.getElementById('handoff-banner');
   if (!banner) return;
 
@@ -110,13 +128,14 @@
     var tz = detectTimezone();
     if (tz) {
       var template = btn.getAttribute('data-tz-label-template') || 'Use {tz}';
-      btn.textContent = template.replace('{tz}', tz);
+      btn.textContent = template.split('{tz}').join(tz); // split/join: fills EVERY occurrence, no $-magic
       btn.setAttribute('data-timezone', tz);
       var failBody = document.getElementById('handoff-fail-body');
       if (failBody) {
-        failBody.textContent =
-          'We couldn’t detect your timezone. Your phone says you’re in ' + tz +
-          '. Confirm so quotes show at the right time.';
+        failBody.textContent = tr(
+          'handoff.fail_body_tz',
+          'We couldn’t detect your timezone. Your phone says you’re in {tz}. Confirm so quotes show at the right time.'
+        ).split('{tz}').join(tz);
       }
     }
 

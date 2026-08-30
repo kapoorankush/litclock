@@ -7,6 +7,9 @@ issue litclock-dev#111 (first-boot flow for image-based deployment).
 
 import configparser
 import os
+import re
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -516,7 +519,7 @@ class TestControlServiceUnitShape:
       drift and keeps file ownership consistent on env.sh writes).
     - After=litclock-firstboot.service (setup_server owns the device during
       provisioning until .setup-complete is written). Post-litclock-dev#343 the two are on
-      DIFFERENT ports (control_server 80, setup_server 8443), so this is a
+      DIFFERENT ports (control_server 80, setup_server 8080 provisioning), so this is a
       phase/state ordering, not a bind-clash avoidance.
     - ConditionPathExists=/etc/litclock/.setup-complete (the only signal
       that firstboot is truly done; without it the control surface could come
@@ -549,11 +552,32 @@ class TestControlServiceUnitShape:
         `-` (ignore failure). Dropping `-` is the subtle regression — it turns
         a sysctl failure into a hard start-failure, a NEW crash-loop vector the
         `-` exists to prevent — and a prefix-agnostic assertion would wave it
-        through. Read raw text: configparser collapses duplicate keys."""
+        through. Read raw text: configparser collapses duplicate keys.
+
+        Back-ported from #15/#16 (litclock-dev#657), WHERE PUBLIC KEEPS
+        IT. An earlier draft of the back-port hand-rolled a replacement in
+        test_control_url.py on the false belief that #15 shipped no
+        tests; that replacement never pinned the command (an
+        `ExecStartPre=+-/usr/bin/true …` mutant survived it) and asserted the
+        file ORDER the note below records public having deliberately removed.
+        Leaving dev without this test would also have made the next dev→public
+        port delete public's copy.
+
+        One deviation from public, and it is a fix rather than drift: the value
+        is matched with a negative-lookahead on a digit, so `…=8080` cannot
+        satisfy it. `=8080` raises
+        the floor ABOVE 80, so the EACCES loop the self-heal exists to prevent
+        happens anyway — the prefix-freeness class this project has been bitten
+        by before."""
         path = os.path.join(SYSTEMD_DIR, "litclock-control.service")
         with open(path) as f:
             body = f.read()
-        assert "ExecStartPre=+-/usr/sbin/sysctl" in body and "ip_unprivileged_port_start=80" in body, (
+        # Directives only. Line 22 of this unit is a COMMENT containing
+        # `ip_unprivileged_port_start=80`, so matching raw text let an
+        # `…=8080` mutant through — the floor raised ABOVE 80, i.e. the EACCES
+        # loop happens anyway. Public's plain substring has the same hole.
+        body = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
+        assert "ExecStartPre=+-/usr/sbin/sysctl" in body and re.search(r"ip_unprivileged_port_start=80(?!\d)", body), (
             "litclock-control.service must self-heal the port-80 floor via "
             "`ExecStartPre=+-/usr/sbin/sysctl ...=80` — both the `+` (root) and "
             "`-` (ignore-failure) prefixes are load-bearing (litclock-dev#527)"
@@ -715,6 +739,141 @@ class TestHandoffUnits:
         assert timer.get("Timer", "OnActiveSec", fallback="")
         assert timer.get("Install", "WantedBy", fallback="") == "timers.target"
 
+    def test_fallback_timer_re_checks_instead_of_giving_up(self):
+        """litclock-dev#676: it used to fire ONCE, ten minutes after boot.
+
+        The service also requires .setup-complete to be PRESENT, and on a fresh
+        or cloned card that appears only when the recipient finishes entering
+        their WiFi password — first-boot.sh allows up to 1800s for that. A
+        recipient slower than ten minutes got the single shot fired into an
+        unmet condition, and nothing re-arms it: nothing outside the
+        `systemctl enable` line touches this unit, and first-boot.sh never
+        restarts it, so OnActiveSec never re-bases either. The safety net was
+        absent for exactly the population it exists for.
+        """
+        timer = parse_unit("litclock-handoff-fallback.timer")
+        cadence = timer.get("Timer", "OnUnitActiveSec", fallback="")
+        assert cadence, (
+            "the handoff rescue timer is single-fire again — a recipient who takes longer than "
+            "OnBootSec to finish WiFi setup gets no safety net at all"
+        )
+        # "0min" is truthy and ends with "min", and systemd treats it as a
+        # disabled cadence — i.e. exactly the single-fire behaviour this test is
+        # named to prevent would sail through a suffix check.
+        assert cadence.endswith("min"), cadence
+        minutes = int(cadence.removesuffix("min"))
+        assert 1 <= minutes <= 30, (
+            f"OnUnitActiveSec={cadence} is not a usable rescue cadence; 0 disables it and anything "
+            "longer than the setup window puts the net back out of reach"
+        )
+
+    def test_the_fallback_cadence_matches_a_unit_proven_on_the_fleet(self):
+        """Corroboration, not the proof.
+
+        The load-bearing question is whether a CONDITION-SKIPPED oneshot still
+        re-arms OnUnitActiveSec — if it does not, the cadence ends at the first
+        skip and litclock-dev#676 is unfixed. That was settled by running it
+        (systemd 255, a throwaway user timer mirroring this unit's two
+        conditions, OnActiveSec=2s + OnUnitActiveSec=3s):
+
+            condition unmet          0 runs, timer kept re-arming
+                                     (LAST 764ms ago, NEXT in 2s)
+            condition becomes met    3 runs in 10s at a 3s cadence — the rescue
+                                     fires AFTER the condition becomes true,
+                                     which single-fire could never do
+            negative condition set   runs stayed at 3, cadence continued
+
+        litclock-bootcheck.timer is the second witness: it drives a
+        ConditionPathExists-gated oneshot on the SAME marker with the same
+        triple and has run on the fleet since litclock-dev#209. This test pins that witness
+        so it cannot quietly disappear underneath the decision.
+        """
+        fallback = parse_unit("litclock-handoff-fallback.timer")
+        bootcheck = parse_unit("litclock-bootcheck.timer")
+        for key in ("OnBootSec", "OnActiveSec", "OnUnitActiveSec"):
+            assert fallback.get("Timer", key, fallback=""), f"fallback timer lost {key}"
+            assert bootcheck.get("Timer", key, fallback=""), (
+                f"litclock-bootcheck.timer lost {key} — the precedent this cadence rests on is gone"
+            )
+        assert "ConditionPathExists=/etc/litclock/.handoff-complete" in self._raw("litclock-bootcheck.service"), (
+            "litclock-bootcheck.service is no longer gated on the same marker, so it no longer "
+            "demonstrates that a condition-skipped oneshot re-arms OnUnitActiveSec"
+        )
+
+    def test_the_markers_are_cleared_in_an_order_the_recurring_timer_cannot_race(self):
+        """litclock-dev#676 made this timer recurring, so it is now a live writer of
+        .handoff-complete during a reset or a clone prep. Its two conditions
+        are ".setup-complete present" AND ".handoff-complete absent", so a
+        script that removed .handoff-complete FIRST would open a window where
+        both hold and the timer could write the marker straight back — skipping
+        the recipient's handoff and starting a wrong-time clock.
+
+        Both scripts already remove .setup-complete first. That ordering is now
+        load-bearing for a second reason, so it is pinned here rather than left
+        as a comment.
+        """
+        for name in ("reset-setup.sh", "prepare-for-cloning.sh"):
+            body = (Path(__file__).resolve().parents[1] / "scripts" / name).read_text()
+            lines = [ln for ln in body.splitlines() if not ln.lstrip().startswith("#")]
+            setup_at = next((i for i, ln in enumerate(lines) if ".setup-complete" in ln and "rm -f" in ln), None)
+            handoff_at = next((i for i, ln in enumerate(lines) if ".handoff-complete" in ln and "rm -f" in ln), None)
+            if setup_at is None and handoff_at is None:
+                continue  # a loop form, checked below
+            assert setup_at is not None and handoff_at is not None, f"{name}: only one marker is removed"
+            assert setup_at < handoff_at, (
+                f"{name} removes .handoff-complete before .setup-complete, opening a window where the "
+                "recurring handoff-fallback timer can write the marker back"
+            )
+
+    def test_the_recurring_writer_is_stopped_before_the_markers_are_cleared(self):
+        """litclock-dev#673's lesson: stop the writers first. The ordering above closes
+        the window, but a recurring marker writer belongs in the stop list on
+        its own merits rather than depending on an ordering staying correct."""
+        for name in ("reset-setup.sh", "prepare-for-cloning.sh"):
+            body = (Path(__file__).resolve().parents[1] / "scripts" / name).read_text()
+            assert "systemctl stop litclock-handoff-fallback.timer" in body, (
+                f"{name} does not stop the recurring handoff-fallback timer before clearing markers"
+            )
+
+    def test_the_cadence_is_not_a_retry_that_gives_up(self, tmp_path):
+        """A cadence must not turn the timezone refusal into a countdown that
+        eventually writes the marker anyway — a wrong-time clock arrived at
+        slowly is still what design-review A2 forbids.
+
+        RUN, not grepped. A vocabulary filter (banning "attempt", "retries",
+        "give up" …) was written first and is mutation-proven useless: a
+        countdown spelled with `n` and a `.handoff-tick` file, writing the
+        marker on the 6th tick with the timezone still unknown, passed it.
+        """
+        script = Path(__file__).resolve().parents[1] / "scripts" / "litclock-handoff-fallback.sh"
+        config_dir = tmp_path / "etc"
+        config_dir.mkdir()
+        env_file = tmp_path / "env.sh"
+        env_file.write_text("export WEATHER_LATITUDE=\nexport WEATHER_LONGITUDE=\n", encoding="utf-8")
+
+        env = {
+            **os.environ,
+            "LITCLOCK_CONFIG_DIR": str(config_dir),
+            "LITCLOCK_ENV_FILE": str(env_file),
+            "LC_ALL": "C",
+        }
+        # A day and a half of a 10-minute cadence.
+        for tick in range(200):
+            proc = subprocess.run(
+                ["bash", str(script)], capture_output=True, text=True, timeout=60, env=env
+            )
+            assert proc.returncode == 0, f"tick {tick}: {proc.stdout}{proc.stderr}"
+            assert not (config_dir / ".handoff-complete").exists(), (
+                f"the fallback completed the handoff on tick {tick} with the timezone still unknown — "
+                "the cadence became a countdown"
+            )
+
+        assert list(config_dir.iterdir()) == [], (
+            f"the fallback accumulated state across runs, which is how a countdown starts: "
+            f"{[p.name for p in config_dir.iterdir()]}"
+        )
+        assert "timezone unknown" in proc.stdout + proc.stderr, "it must keep SAYING why it refuses"
+
 
 class TestReresolveLocationUnit:
     """litclock-dev#337 A2/A8: the new on-boot reresolve oneshot. Pins the static shape
@@ -831,3 +990,267 @@ class TestReresolveLocationUnit:
     def test_wanted_by_multi_user_target(self):
         unit = parse_unit(self.UNIT)
         assert unit.get("Install", "WantedBy", fallback="") == "multi-user.target"
+
+
+class TestAFailedFactoryResetIsVisible:
+    """litclock-dev#665.
+
+    A factory reset that fails closed is correct (litclock-dev#660), but on the PWA path
+    there is nobody to tell: `routes/system.py` dispatches the unit with
+    `systemctl start --no-block` and returns 200 immediately, and
+    `static/js/system.js` deliberately never polls, rendering a terminal
+    "Factory reset in progress…" card. So a rotation that failed on a read-only
+    remount left the red "do NOT pass this device on" banner in a journal nobody
+    reads, the card spinning forever, and an owner who eventually pulls the
+    plug — after which the next boot raises the setup hotspot with the OLD key,
+    the exact outcome the fail-closed guard exists to prevent.
+    """
+
+    def _raw_unit(self, name):
+        return (Path(__file__).resolve().parents[1] / "systemd" / name).read_text(encoding="utf-8")
+
+    def test_the_reset_unit_announces_its_own_failure(self):
+        reset = parse_unit("litclock-reset.service")
+        assert reset.get("Unit", "OnFailure", fallback="") == "litclock-reset-failed.service", (
+            "litclock-reset.service has no OnFailure, so a failed factory reset is invisible to "
+            "everyone except a journal reader"
+        )
+
+    def test_the_failure_unit_exists_and_is_not_enabled(self):
+        """It is started by OnFailure=, so it must NOT be [Install]ed — an
+        enabled copy would run at boot and announce a failure that never
+        happened."""
+        raw = self._raw_unit("litclock-reset-failed.service")
+        assert "[Install]" not in raw, "the failure announcer is enabled, so it will fire on an ordinary boot"
+        assert "WantedBy" not in raw
+
+    def test_it_writes_the_persistent_marker_before_painting(self):
+        """The marker is the load-bearing half. The splash shares the venv and
+        display stack that may be WHY the reset failed, so painting is
+        best-effort; a file in /var/lib survives a dead panel, a reboot and a
+        frozen PWA. Same division of labour as bootcheck's give-up marker."""
+        raw = self._raw_unit("litclock-reset-failed.service")
+        execs = [ln for ln in raw.splitlines() if ln.startswith("ExecStart=")]
+        assert len(execs) == 2, f"expected marker-then-splash, got {execs}"
+        assert "reset-failed" in execs[0], "the marker write is not first"
+        assert "splash" in execs[1], "the splash is not second"
+
+    def test_neither_half_can_abort_the_other(self):
+        """BOTH commands are `-` prefixed. A non-dashed ExecStart that fails
+        aborts the remaining ones, so an undashed marker write means a read-only
+        /var/lib stops the splash from ever running — and a read-only remount is
+        the most likely reason the reset failed in the first place. The guard
+        would go silent in exactly the scenario it exists for (/review, Codex).
+        """
+        raw = self._raw_unit("litclock-reset-failed.service")
+        execs = [ln for ln in raw.splitlines() if ln.startswith("ExecStart=")]
+        assert execs, "the announcer runs nothing"
+        for line in execs:
+            assert line.startswith("ExecStart=-"), (
+                f"{line!r} is not dash-prefixed, so its failure aborts the other half of the announcement"
+            )
+
+    def test_the_announcer_does_not_run_as_root(self):
+        """pi->root escalation on both halves if it did: /var/lib/litclock is
+        0755 pi pi so pi could pre-place the marker as a symlink for root's
+        redirection to follow, and the splash execs a pi-writable script and
+        venv. This repo closed exactly that vector in
+        litclock-prepare-for-gift.service (litclock-dev#387 C1), which is why THAT unit runs
+        the root-owned copy. Nothing here needs root — litclock-bootcheck.service
+        paints the same panel as pi (/review, Codex).
+        """
+        # Raw text, not parse_unit: systemd allows repeated ExecStart= and
+        # configparser's strict mode does not, so this unit cannot be parsed
+        # that way.
+        raw = self._raw_unit("litclock-reset-failed.service")
+        users = [ln.split("=", 1)[1].strip() for ln in raw.splitlines() if ln.startswith("User=")]
+        assert users == ["pi"], f"the failure announcer runs as {users}; root here is a pi->root escalation"
+        user = users[0]
+
+        for line in [ln for ln in raw.splitlines() if ln.startswith("ExecStart=")]:
+            if "/home/pi/" in line:
+                assert user != "root", (
+                    "a root unit must not exec a pi-writable path — see litclock-prepare-for-gift.service"
+                )
+
+    def test_the_splash_script_exists_and_is_a_single_token(self):
+        """Same reason as litclock-bootcheck-giveup-splash.sh: the unit's
+        ExecStart must be one word, so the multi-word message cannot be
+        word-split by systemd."""
+        script = Path(__file__).resolve().parents[1] / "scripts" / "litclock-reset-failed-splash.sh"
+        assert script.is_file()
+        raw = self._raw_unit("litclock-reset-failed.service")
+        splash = next(ln for ln in raw.splitlines() if ln.startswith("ExecStart=") and "splash" in ln)
+        command = splash.split("=", 1)[1].lstrip("-")
+        assert " " not in command.strip(), f"ExecStart is not a single token: {command!r}"
+        assert command.strip().endswith("litclock-reset-failed-splash.sh")
+
+    def test_the_splash_tells_the_owner_not_to_pass_the_device_on(self):
+        """The whole point. A message that only says "something went wrong"
+        leaves the owner free to gift a clock still holding their credentials."""
+        body = (
+            Path(__file__).resolve().parents[1] / "scripts" / "litclock-reset-failed-splash.sh"
+        ).read_text(encoding="utf-8")
+        painted = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
+        # The copy lives in the catalog since litclock-dev#532 slice 2 —
+        # follow the site→key→value chain so the warning stays observed.
+        assert "--catalog-prefix reset.splash.failed" in painted, "the splash lost its catalog prefix"
+        import json as _json
+
+        catalog = _json.loads(
+            (Path(__file__).resolve().parents[1] / "languages" / "en" / "strings.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        copy = " ".join(
+            catalog.get("reset.splash.failed." + p, "") for p in ("title", "message", "submessage")
+        )
+        assert "Do NOT pass it on" in copy, "the splash does not warn against passing the device on"
+        assert "previous owner" in copy, "the splash does not say WHY it matters"
+        assert "venv/bin/python3" in painted, "the splash must use the venv interpreter, like its sibling"
+
+    def test_the_failure_marker_is_cleared_when_a_reset_starts(self):
+        """Otherwise it is a stale marker of exactly the litclock-dev#672 class:
+        nothing would ever clear it, so a device that failed once and succeeded
+        on the retry keeps warning its owner not to pass it on, forever. The
+        marker must mean "the most recent attempt failed", not "one failed once".
+        """
+        reset_sh = (Path(__file__).resolve().parents[1] / "scripts" / "reset-setup.sh").read_text(encoding="utf-8")
+        body = "\n".join(ln for ln in reset_sh.splitlines() if not ln.lstrip().startswith("#"))
+        assert 'rm -f "$STATE_DIR/reset-failed"' in body, (
+            "reset-setup.sh does not clear a previous failure marker, so the warning outlives the failure"
+        )
+        # ...and before the destructive work, or a retry that fails again would
+        # simply be re-writing a marker it had not yet cleared.
+        assert body.index('rm -f "$STATE_DIR/reset-failed"') < body.index("systemctl stop litclock.timer")
+
+    def test_a_clone_does_not_ship_the_masters_failure_marker(self):
+        prepare = (
+            Path(__file__).resolve().parents[1] / "scripts" / "prepare-for-cloning.sh"
+        ).read_text(encoding="utf-8")
+        body = "\n".join(ln for ln in prepare.splitlines() if not ln.lstrip().startswith("#"))
+        assert 'rm -f "$STATE_DIR/reset-failed"' in body, (
+            "a cloned card would tell its recipient not to pass on a device that is fine"
+        )
+
+    def test_the_splash_cds_into_the_install_dir_before_painting(self):
+        """litclock-dev#725, found on hardware. lgpio creates its notify pipe
+        (.lgd-nfy*) in the CWD; as User=pi with CWD=`/` that creation fails,
+        every gpiozero pin factory falls back, and display init dies with
+        EINVAL — so the guard went silent in exactly the scenario it exists
+        for, leaving the shutdown splash's "Powered Off" on a device that was
+        still on and still holding the old hotspot key. Line-anchored on
+        executed lines only: a trailing comment, a string, or a full-line
+        comment mentioning cd satisfies nothing."""
+        body = (
+            Path(__file__).resolve().parents[1] / "scripts" / "litclock-reset-failed-splash.sh"
+        ).read_text(encoding="utf-8")
+        executed = [ln for ln in body.splitlines() if not ln.lstrip().startswith("#")]
+        cd_lines = [i for i, ln in enumerate(executed) if re.match(r'\s*cd "\$INSTALL_DIR" \|\| \{', ln)]
+        assert cd_lines, (
+            "the splash does not cd into the install dir (with a logged bail-out), so as pi with "
+            "CWD=/ the lgpio notify pipe cannot be created and the panel never paints "
+            "(litclock-dev#725)"
+        )
+        # The bail-out must exit CLEAN (the marker is the signal; a nonzero exit
+        # adds a failure to a unit whose Execs are dashed for a reason) and must
+        # leave a journal trace, or the double-failure is undebuggable.
+        bail = executed[cd_lines[0]]
+        assert "exit 0" in bail, f"the cd bail-out does not exit 0: {bail!r}"
+        assert ">&2" in bail, f"the cd bail-out says nothing to stderr: {bail!r}"
+        exec_lines = [i for i, ln in enumerate(executed) if re.match(r"\s*exec ", ln)]
+        assert exec_lines, "the splash no longer execs the painter — update this test with the new invocation"
+        assert cd_lines[0] < exec_lines[0], "the cd must run before the paint"
+
+    def test_the_unit_must_not_set_a_service_wide_working_directory(self):
+        """The first fix for litclock-dev#725 added WorkingDirectory= here, and
+        review killed it: systemd performs that chdir in every forked child
+        BEFORE exec — both ExecStart lines, marker write included — so a
+        missing install dir kills the marker (exit 200/EXIT_CHDIR) while the
+        dashed Execs report success. The unit's own contract is that neither
+        half may block the other, and the marker must depend on nothing but
+        /bin/sh and /var/lib. The cd lives in the splash script instead.
+        Comment-stripped: a comment carrying the directive satisfies nothing."""
+        raw = self._raw_unit("litclock-reset-failed.service")
+        directives = [ln for ln in raw.splitlines() if not ln.lstrip().startswith("#")]
+        assert not any(ln.startswith("WorkingDirectory=") for ln in directives), (
+            "litclock-reset-failed.service sets WorkingDirectory=, which makes a missing install "
+            "dir kill the marker write — the reliable half — before it runs (litclock-dev#725)"
+        )
+
+    def test_every_pi_unit_that_paints_from_the_repo_provides_a_cwd(self):
+        """The shape guard for the litclock-dev#725 class, not just the one file
+        it bit. lgpio's CWD-relative notify pipe makes an unwritable CWD a
+        latent paint failure for every painter running as pi. For every
+        `User=pi` unit in systemd/ (any name — no litclock* prefix assumption):
+
+        * a WorkingDirectory=, when present, must point at the install dir
+          (any pi-unwritable value, `/etc` say, reproduces the exact bug), and
+        * every Exec* line that references the repo must either name a
+          scripts/*.sh whose executed lines cd to the install dir, or be
+          covered by that WorkingDirectory — a repo-referencing Exec with
+          neither (e.g. a direct venv-python painter) is an offender, because
+          there is no script to carry the cd.
+
+        Matching the repo path anywhere in the Exec value deliberately covers
+        every systemd prefix character (`@-:+!!`, any order), quoting, and
+        interpreter-wrapped invocations — the first version of this sweep
+        anchored on one prefix order and silently skipped the rest.
+        Known limit: it cannot prove the script's cd executes before the paint
+        or that its failure branch works; the per-file test above pins that
+        for the splash this issue is about."""
+        root = Path(__file__).resolve().parents[1]
+        repo = "/home/pi/litclock"
+        good_cd = re.compile(r'\s*cd\s+"?\$\{?(INSTALL_DIR|PROJECT_ROOT|LITCLOCK_DIR)\}?"?')
+        offenders = []
+        for unit_path in sorted((root / "systemd").glob("*.service")):
+            raw = unit_path.read_text(encoding="utf-8")
+            lines = [ln for ln in raw.splitlines() if not ln.lstrip().startswith("#")]
+            if not any(ln.strip() == "User=pi" for ln in lines):
+                continue
+            wd = [ln for ln in lines if ln.startswith("WorkingDirectory=")]
+            if wd:
+                value = wd[0].split("=", 1)[1].strip().lstrip("-")
+                assert value == repo, (
+                    f"{unit_path.name} sets WorkingDirectory={value}; anything but the install dir "
+                    "risks a CWD pi cannot write, where lgpio's notify pipe dies (litclock-dev#725)"
+                )
+                continue
+            for ln in lines:
+                if not re.match(r"Exec\w+=", ln.strip()):
+                    continue
+                if repo not in ln:
+                    continue
+                m = re.search(r"/home/pi/litclock/scripts/([\w.-]+\.sh)\b", ln)
+                if not m:
+                    offenders.append(
+                        f"{unit_path.name}: {ln.strip()[:70]}... (repo Exec with no script to cd and "
+                        "no WorkingDirectory)"
+                    )
+                    continue
+                script = root / "scripts" / m.group(1)
+                assert script.is_file(), f"{unit_path.name} execs {m.group(1)}, which does not exist in scripts/"
+                body = script.read_text(encoding="utf-8")
+                executed = [sl for sl in body.splitlines() if not sl.lstrip().startswith("#")]
+                if not any(good_cd.match(sl) for sl in executed):
+                    offenders.append(f"{unit_path.name} -> {m.group(1)} (no install-dir cd)")
+        assert not offenders, (
+            "User=pi units paint from the repo with no usable CWD — as pi with CWD=/ the lgpio "
+            "notify pipe cannot be created and any e-ink paint dies (litclock-dev#725): "
+            f"{offenders}"
+        )
+
+
+class TestPrepareForGiftLanguageFile:
+    """litclock-dev#532 pickers 5b: the gift unit hands reset-setup the
+    staged language file alongside the message file."""
+
+    def test_execstart_passes_language_file(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        content = (repo_root / "systemd" / "litclock-prepare-for-gift.service").read_text()
+        exec_lines = [ln for ln in content.splitlines() if ln.startswith("ExecStart=")]
+        assert len(exec_lines) == 1
+        assert "--message-file /run/litclock/gift-message" in exec_lines[0]
+        assert "--language-file /run/litclock/gift-language" in exec_lines[0]
+        # Root unit must still exec the root-owned copy (litclock-dev#387).
+        assert exec_lines[0].startswith("ExecStart=/usr/local/lib/litclock/reset-setup.sh")

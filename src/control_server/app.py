@@ -18,10 +18,11 @@ and serves plain HTTP. Justification:
   LAN-trust threat model — only the UX cost.
 - Cloud relay (PRD v2) will introduce real TLS via Let's Encrypt at
   that point. Until then, no cleartext-on-WAN exposure.
-- setup_server (first-boot WiFi credential POST) keeps its self-signed
-  TLS — credentials must not transit cleartext even on a LAN-trust
-  fabric, since first-boot can run on an open hotspot. control_server
-  ships post-setup, post-WPA2, on the user's home WiFi.
+- setup_server (first-boot WiFi credential POST) is plain HTTP on the
+  provisioning hotspot — captive-portal detection requires it, and the
+  hotspot's own WPA2 encrypts the link (litclock-dev#715 retired its old
+  self-signed-TLS normal mode; no open-hotspot path remains).
+  control_server ships post-setup, post-WPA2, on the user's home WiFi.
 
 waitress is the locked WSGI choice (PLAN P1) — production-grade, threaded,
 ~30MB RSS budget. It handles signal teardown, request timeouts, thread-

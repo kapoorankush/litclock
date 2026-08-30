@@ -1224,8 +1224,8 @@ class TestMainWeatherHardening:
                 return payload
 
         monkeypatch.setenv("WEATHER_ENABLED", "true")
-        monkeypatch.setenv("WEATHER_LATITUDE", "40.7")
-        monkeypatch.setenv("WEATHER_LONGITUDE", "-74.0")
+        monkeypatch.setenv("WEATHER_LATITUDE", "30")
+        monkeypatch.setenv("WEATHER_LONGITUDE", "-97")
         monkeypatch.delenv("OPENWEATHERMAP_APIKEY", raising=False)
         monkeypatch.delenv("LITCLOCK_RUNTIME_RENDER", raising=False)
         monkeypatch.setattr(open_meteo, "OpenMeteo", Stub)
