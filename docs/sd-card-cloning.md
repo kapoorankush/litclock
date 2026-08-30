@@ -6,7 +6,7 @@ If you want to make pre-configured SD cards from a working clock:
 
 ## 1. Set Up a Working Clock First
 
-Complete the full installation on one Pi by flashing the released image (see [Option 1](../README.md#option-1-download-image-recommended)). Verify everything works.
+Complete the full installation on one Pi by flashing the released image (see [Flash the SD card](../README.md#2-flash-the-sd-card)). Verify everything works.
 
 ## 2. Prepare for Cloning
 

@@ -698,6 +698,15 @@ class TestHotspotPasswordResetSemantics:
             "set -u  # NOT -e: reset-setup.sh deliberately omits it\n"
             'poweroff() { echo "STUB_POWEROFF"; }\n'
             'systemctl() { echo "STUB_SYSTEMCTL $*"; }\n'
+            # This repo's terminal branch calls disable_ssh_for_handoff, which
+            # the development repo does not have (it was authored here, in #52/#53).
+            # Without a stub every harness run emitted "command not found" on
+            # stderr — swallowed, because the harness deliberately omits `set -e`
+            # — which both polluted assertion messages and elided this repo's
+            # security gate from every behavioural test. Re-lost when this file
+            # was taken wholesale in the v0.226.0 port; restored with its
+            # executing assertions.
+            'disable_ssh_for_handoff() { echo "STUB_SSH_GATE"; }\n'
             f"GIFT_MODE={gift_mode}\n"
             f"DO_POWEROFF={do_poweroff}\n"
             f"DO_REBOOT={do_reboot}\n"
@@ -724,6 +733,9 @@ class TestHotspotPasswordResetSemantics:
         pw, result, _ = self._run(reset_sh_content, tmp_path, "true", wipe_wifi="false")
         assert result.returncode == 0, result.stderr
         assert "STUB_POWEROFF" in result.stdout, "gift mode must reach poweroff"
+        assert result.stdout.index("STUB_SSH_GATE") < result.stdout.index("STUB_POWEROFF"), (
+            "the SSH gate must run before poweroff"
+        )
         assert not pw.exists(), "gift mode must rotate the hotspot password for the new owner"
 
     def test_pwa_factory_reset_rotates_the_password(self, reset_sh_content, tmp_path):
@@ -741,6 +753,9 @@ class TestHotspotPasswordResetSemantics:
         pw, result, state = self._run(reset_sh_content, tmp_path, "false", do_poweroff="true", wipe_wifi="true")
         assert result.returncode == 0, result.stderr
         assert "STUB_POWEROFF" in result.stdout, "the --poweroff arm must reach poweroff"
+        assert result.stdout.index("STUB_SSH_GATE") < result.stdout.index("STUB_POWEROFF"), (
+            "the SSH gate must run before poweroff on this arm too (litclock-dev#636)"
+        )
         assert not pw.exists(), (
             "litclock-dev#660: --wipe-wifi --poweroff comes back up in the setup hotspot, "
             "so it MUST clear the persisted setup-WiFi key"
@@ -797,6 +812,15 @@ class TestHotspotPasswordResetSemantics:
             "set -u\n"
             'poweroff() { echo "STUB_POWEROFF"; }\n'
             'systemctl() { echo "STUB_SYSTEMCTL $*"; }\n'
+            # This repo's terminal branch calls disable_ssh_for_handoff, which
+            # the development repo does not have (it was authored here, in #52/#53).
+            # Without a stub every harness run emitted "command not found" on
+            # stderr — swallowed, because the harness deliberately omits `set -e`
+            # — which both polluted assertion messages and elided this repo's
+            # security gate from every behavioural test. Re-lost when this file
+            # was taken wholesale in the v0.226.0 port; restored with its
+            # executing assertions.
+            'disable_ssh_for_handoff() { echo "STUB_SSH_GATE"; }\n'
             "AUTO_YES=false\nDO_REBOOT=false\nDO_POWEROFF=false\n"
             "STRICT_ENV_WIPE=false\nGIFT_MODE=false\nGIFT_MESSAGE_FILE=''\nENV_WIPE_FAILED=false\n"
             f"{default_line}\n"
@@ -1143,6 +1167,15 @@ class TestHotspotPasswordResetSemantics:
             "set -u\n"
             'poweroff() { echo "STUB_POWEROFF"; }\n'
             'systemctl() { echo "STUB_SYSTEMCTL $*"; }\n'
+            # This repo's terminal branch calls disable_ssh_for_handoff, which
+            # the development repo does not have (it was authored here, in #52/#53).
+            # Without a stub every harness run emitted "command not found" on
+            # stderr — swallowed, because the harness deliberately omits `set -e`
+            # — which both polluted assertion messages and elided this repo's
+            # security gate from every behavioural test. Re-lost when this file
+            # was taken wholesale in the v0.226.0 port; restored with its
+            # executing assertions.
+            'disable_ssh_for_handoff() { echo "STUB_SSH_GATE"; }\n'
             f"GIFT_MODE={gift}\nDO_POWEROFF={poweroff}\nDO_REBOOT=false\nWIPE_WIFI={wipe}\n"
             "ENV_WIPE_FAILED=false\n"
             f"CONFIG_DIR={config}\nLITCLOCK_STATE_DIR={state}\n"
@@ -1162,6 +1195,11 @@ class TestHotspotPasswordResetSemantics:
         assert "STUB_POWEROFF" not in r.stdout, (
             "the device must NOT power off after a failed rotation — powering off "
             "here ships the previous owner's key, which is the whole point of failing closed"
+        )
+        assert "STUB_SSH_GATE" not in r.stdout, (
+            "and it must NOT disable SSH either: the abort leaves the device with its "
+            "CURRENT owner, who needs remote access to diagnose the card. This is the "
+            "behavioural half of the ordering the parametrised structural test pins."
         )
         assert "could not be removed from" in r.stdout + r.stderr
 
@@ -1526,18 +1564,44 @@ def test_the_reset_failed_marker_clear_verifies_itself(tmp_path):
 
 
 # litclock-dev#708: one definition, env-overridable for a non-standard clone
-# location. The default is the documented maintainer layout (public checkout at
-# ~/litclock; ~/litclock-archive is the DEV clone — naming is inverted, see
-# CLAUDE.md).
+# location. "Counterpart" is whichever repo this one is NOT: in the development
+# repo that is the public checkout, and here it is the development checkout
+# (~/litclock-archive — the naming is inverted, see CLAUDE.md). The default
+# below is the documented maintainer layout FOR THIS REPO; porting this file
+# across without flipping it is what the self-comparison guard catches.
 # `or`, not a get() default: a SET-BUT-EMPTY var (the standard CI-yaml way to
 # "unset") would otherwise yield the relative path scripts/reset-setup.sh —
-# which from the repo root is DEV'S OWN copy, turning the cross-repo check
-# into a vacuous self-comparison that passes instead of skipping (/review
-# litclock-dev#711). Non-absolute overrides are rejected for the same reason.
-_PUBLIC_CHECKOUT = os.environ.get("LITCLOCK_PUBLIC_CHECKOUT") or "/home/ankush/litclock"
-if not os.path.isabs(_PUBLIC_CHECKOUT):
-    raise ValueError(f"LITCLOCK_PUBLIC_CHECKOUT must be absolute, got {_PUBLIC_CHECKOUT!r}")
-_PUBLIC_RESET_SH = Path(_PUBLIC_CHECKOUT) / "scripts" / "reset-setup.sh"
+# which from the repo root is THIS repo's own copy, turning the cross-repo
+# check into a vacuous self-comparison that passes instead of skipping
+# (/review litclock-dev#711). Non-absolute overrides are rejected for the same
+# reason. LITCLOCK_PUBLIC_CHECKOUT is still read so a shared CI/dev config
+# setting either name keeps working.
+_COUNTERPART_CHECKOUT = (
+    os.environ.get("LITCLOCK_COUNTERPART_CHECKOUT")
+    or os.environ.get("LITCLOCK_PUBLIC_CHECKOUT")
+    or "/home/ankush/litclock-archive"
+)
+if not os.path.isabs(_COUNTERPART_CHECKOUT):
+    raise ValueError(
+        f"LITCLOCK_COUNTERPART_CHECKOUT must be absolute, got {_COUNTERPART_CHECKOUT!r}")
+_COUNTERPART_RESET_SH = Path(_COUNTERPART_CHECKOUT) / "scripts" / "reset-setup.sh"
+
+# The guard that makes the vacuous case impossible rather than merely unlikely.
+# A cross-repo check pointed at this repo's OWN file asserts `X == X` and can
+# never go red, so it reports the property as verified while protecting
+# nothing. That is exactly what a port of this file introduces when the
+# default above still names the repo it came from, and it is invisible: the
+# suite stays green. Resolve both sides and compare the real paths — symlinks
+# and `..` segments included — so the check either compares two repos or
+# declares itself unavailable.
+def _is_self_comparison():
+    try:
+        return _COUNTERPART_RESET_SH.resolve() == RESET_SH.resolve()
+    except OSError:
+        return False
+
+
+_COUNTERPART_AVAILABLE = _COUNTERPART_RESET_SH.exists() and not _is_self_comparison()
 
 
 class TestSshHandoffGate:
@@ -1557,11 +1621,11 @@ class TestSshHandoffGate:
     and a build-workflow variable.
     """
 
-    # Module-note: the path lives ONCE, in _PUBLIC_RESET_SH at module scope —
+    # Module-note: the path lives ONCE, in _COUNTERPART_RESET_SH at module scope —
     # litclock-dev#708 property 1 was this literal appearing twice (a class
     # attribute cannot be referenced from its own decorator), so changing one
     # copy silently turned the test into a skip or pointed it at the wrong file.
-    PUBLIC_RESET_SH = _PUBLIC_RESET_SH
+    COUNTERPART_RESET_SH = _COUNTERPART_RESET_SH
 
     GOLDEN = Path(__file__).parent / "fixtures" / "disable_ssh_for_handoff.golden"
 
@@ -1659,11 +1723,12 @@ class TestSshHandoffGate:
         )
 
     @pytest.mark.skipif(
-        not _PUBLIC_RESET_SH.exists(),
-        reason="public checkout not present (CI); cross-repo parity is a maintainer-local check "
-        "(set LITCLOCK_PUBLIC_CHECKOUT for a non-standard clone location)",
+        not _COUNTERPART_AVAILABLE,
+        reason="counterpart checkout not present (CI), or it resolves to this repo's own copy "
+        "— a self-comparison would pass vacuously; cross-repo parity is a maintainer-local "
+        "check (set LITCLOCK_COUNTERPART_CHECKOUT for a non-standard clone location)",
     )
-    def test_it_is_byte_identical_to_the_public_copy(self, reset_sh_content):
+    def test_it_is_byte_identical_to_the_counterpart_copy(self, reset_sh_content):
         """The whole reason litclock-dev#657 exists is that this function lived
         on one side only. Keeping the two textually identical is what makes the
         next port an insertion rather than a merge — and it is the property the
@@ -1675,15 +1740,15 @@ class TestSshHandoffGate:
         absent. The golden test above is the CI-side floor; this one is the
         maintainer-local cross-check that the OTHER repo still agrees.
         """
-        public = self.PUBLIC_RESET_SH.read_text()
+        counterpart = self.COUNTERPART_RESET_SH.read_text()
         # header+body as ONE span, same unit as the golden (/review litclock-dev#711: the
         # body-only + header-only pair left a gap where a whitespace change
         # BETWEEN them, or a header drift under a stale extraction, could
         # differ while both piecewise asserts held — and the class docstring
         # claims byte-identity of the whole thing).
-        assert self._header_plus_body(reset_sh_content) == self._header_plus_body(public), (
-            "dev and public copies of disable_ssh_for_handoff (function or its header "
-            "comment) have drifted"
+        assert self._header_plus_body(reset_sh_content) == self._header_plus_body(counterpart), (
+            "this repo and its counterpart copies of disable_ssh_for_handoff (function "
+            "or its header comment) have drifted"
         )
 
     def test_no_dev_image_exception_survives(self, reset_sh_content):

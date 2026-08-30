@@ -9,10 +9,10 @@ Scripts are organized into `scripts/` (shell) and `src/` (Python):
 | `src/clear.py` | `python3 src/clear.py` | Clear the e-ink display to white |
 | `src/wifi_provision.py` | `python3 src/wifi_provision.py [flags]` | WiFi provisioning via captive portal hotspot |
 | `scripts/update.sh` | `./scripts/update.sh` | Pull latest code and apply updates in-place |
-| `scripts/reset-setup.sh` | `sudo ./scripts/reset-setup.sh [--yes] [--reboot] [--poweroff] [--keep-wifi] [--gift-mode]` | Reset configuration (see [Resetting the Clock](../README.md#resetting-the-clock)); `--gift-mode` preps the device for shipping with a welcome splash. **`--gift-mode` and `--poweroff` both disable SSH before powering down** (litclock-dev#528) — a handed-on device gets a fresh-flash posture; re-enable per [recovery](recovery.md) |
+| `scripts/reset-setup.sh` | `sudo ./scripts/reset-setup.sh [--yes] [--reboot] [--poweroff] [--keep-wifi] [--gift-mode]` | Reset configuration (see [Resetting](../README.md#resetting)); `--gift-mode` preps the device for shipping with a welcome splash. **`--gift-mode` and `--poweroff` both disable SSH before powering down** (litclock-dev#528) — a handed-on device gets a fresh-flash posture; re-enable per [recovery](recovery.md) |
 | `scripts/prepare-for-cloning.sh` | `sudo ./scripts/prepare-for-cloning.sh` | Wipe config and credentials for SD card cloning (see [Creating SD Cards](sd-card-cloning.md)) |
 | `scripts/cut-release.sh` | `./scripts/cut-release.sh vX.Y.Z [--expect-sha SHA] [-m MSG] [--yes]` | Promote the CHANGELOG heading, commit and tag a release — does not push (see [Building the Image](building-image.md)) |
-| `scripts/install.sh` | _(retired)_ | Superseded by the flashed image; see [Build from source](../README.md#option-2-build-from-source-terminal-required) |
+| `scripts/install.sh` | _(retired)_ | Superseded by the flashed image; see the "Running your own code on the clock" section in [README.md](../README.md) |
 
 ## eink_display.py subcommands
 

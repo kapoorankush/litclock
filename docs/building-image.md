@@ -86,9 +86,9 @@ already consumed.
 The duplicate-tag and version-order checks resolve the fleet's namespace from the
 same `DEFAULT_OWNER`/`DEFAULT_REPO` constants the device uses
 (`src/control_server/update_state.py`) and probe **every** remote that matches it,
-not just `origin` — in this clone `origin` is the dev repo while the fleet resolves
-from the public one, so probing origin alone would have let a version already live
-on the fleet be re-cut. If no configured remote matches, it says so loudly rather
+not just `origin` — a maintainer's working clone may carry several remotes, and
+the fleet resolves from whichever one matches those constants, so probing origin
+alone would have let a version already live on the fleet be re-cut. If no configured remote matches, it says so loudly rather
 than reporting a clean pass it did not earn.
 
 To check a CHANGELOG by hand without cutting anything:
@@ -200,7 +200,7 @@ Insert the SD card into a Pi Zero 2W and power on, then check:
 
 1. **Splash screen** — "LitClock / Starting..." appears on the e-ink display
 2. **Setup network** — "LitClock-Setup" becomes available in nearby WiFi lists
-3. **Phone setup** — join that network, scan the QR code on the display, complete the setup form (location, timezone, API key)
+3. **Phone setup** — join that network, scan the QR code on the display, and submit the setup form (WiFi network and password only — location, timezone and units are detected automatically after the Pi joins your network)
 4. **Clock starts** — after setup, the display updates every minute with a literary quote
 5. **Version metadata** — SSH in and verify:
    ```bash

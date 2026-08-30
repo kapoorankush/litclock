@@ -1,8 +1,12 @@
 """Structural guards on CHANGELOG.md (litclock-dev#697).
 
-`## [Unreleased]` carried two `### Changed` headings for five weeks (introduced
-2026-07-13 in e0439f78). The file asserted two different "Changed" groups for
-one release, and a reader had no way to tell which of them shipped. That is a
+This repo's `## [Unreleased]` carried two `### Changed` headings (introduced
+2026-08-11 in df01118e, #48) — the same defect litclock-dev#697 found and
+litclock-dev#698 fixed in the development repo, never ported here. Running
+this guard on arrival also flagged `[v0.212.0]`: the RELEASED section had
+carried duplicate `### Fixed` and `### For contributors` headings unnoticed
+the whole time. In both cases the file asserted two different groups for one
+release, and a reader had no way to tell which of them shipped. That is a
 defect in the record itself, which is the changelog's only job.
 
 **It is not a rendering fix, and the first version of this file claimed it was.**

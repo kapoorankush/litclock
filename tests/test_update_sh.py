@@ -1494,9 +1494,11 @@ class TestChmodTargetsAreTrackedExecutable:
     update and is wrong every time (litclock-dev#682).
 
     Observed on the fleet sentinel against v0.224.0, where the tracked mode of
-    ``scripts/qa-reresolve-hw-test.sh`` was 100644. It is 100755 HERE and always
-    was — the mode was lost in the port — so this guard is derived from the
-    chmod lines in update.sh rather than pinned to that one file.
+    ``scripts/qa-reresolve-hw-test.sh`` was 100644. In the development repo it
+    was always 100755; the mode was lost in the port to THIS repo (it arrived
+    100644 in #51) and was repaired as the symptom in #59 — with nothing to
+    stop a recurrence until this guard, which is derived from the chmod lines
+    in update.sh rather than pinned to that one file.
 
     ``scripts/lib/*.sh`` are deliberately not covered: they are sourced, never
     run, none has a shebang, and `scripts/*.sh` does not recurse into them. If

@@ -28,7 +28,7 @@ you keep it, and the license you grant is non-exclusive.
 ### Quote and translation contributions
 
 Translations are welcome — the corpus is built to be localized, and
-litclock-dev#532 tracks that work. Two things are worth getting right before
+[#19](https://github.com/kapoorankush/litclock/issues/19) tracks that work. Two things are worth getting right before
 you start, because both are cheap to check once and effectively unauditable
 across thousands of rows later.
 

@@ -135,7 +135,7 @@ def _run_nmcli(args, check=True, sudo=False, timeout=None, secret_output=False, 
     error-handling path keeps working.
 
     ``secret_output`` marks a command whose STDOUT is itself a secret
-    (``-s -g …psk`` reads — litclock-litclock-dev#613). argv redaction does not cover
+    (``-s -g …psk`` reads — litclock-dev#613). argv redaction does not cover
     OUTPUT, and the TimeoutExpired branch below otherwise logs the partial
     pre-kill output at ERROR: a wedged secret read could then land the PSK in
     persistent journald (litclock-dev#616 review). When set, the partial output is
@@ -189,12 +189,12 @@ def _run_nmcli(args, check=True, sudo=False, timeout=None, secret_output=False, 
 # alphabet contained at least one of the characters excluded below, and 4 of
 # the 4 generated during the v0.224.0 bench pass were ambiguous.
 #
-# litclock-litclock-dev#620 is what makes a bad draw matter. Before it, an unlucky
+# litclock-dev#620 is what makes a bad draw matter. Before it, an unlucky
 # password was replaced at the next provisioning cycle and the ambiguity was
 # transient. Now a device that mints an ambiguous key re-presents that exact
 # string at every future setup for the life of the device, and a recipient who
 # mistypes it lands on the litclock-dev#648 "Wrong password" screen -- or, on
-# the Android behaviour litclock-litclock-dev#620 measured, a dead end that blames the
+# the Android behaviour litclock-dev#620 measured, a dead end that blames the
 # router instead.
 #
 # One member of a class is kept where it is unambiguous on its own (lowercase b
@@ -207,7 +207,7 @@ HOTSPOT_PASSWORD_ALPHABET = "".join(c for c in string.ascii_letters + string.dig
 # security pass). This fix works BY excluding characters, so over-broadening
 # _PASSWORD_CONFUSABLES is the natural way to break it -- and that failure is
 # silent, because a smaller alphabet still produces a valid-looking password.
-# litclock-litclock-dev#620 then persists the weakened key for the life of the device.
+# litclock-dev#620 then persists the weakened key for the life of the device.
 # An empty alphabet already fails loud (secrets.choice raises IndexError), so
 # the gap this closes is the small-but-non-empty case.
 if len(HOTSPOT_PASSWORD_ALPHABET) < 48:  # pragma: no cover - import-time invariant
@@ -229,7 +229,7 @@ if len(HOTSPOT_PASSWORD_ALPHABET) < 48:  # pragma: no cover - import-time invari
 # and DEFAULT_SSID is a build-time constant identical on every LitClock. So the
 # salt is fleet-constant: a precomputed table is reusable against every device
 # ever shipped, and the marginal cost of the second device is about zero.
-# litclock-litclock-dev#620 then removed the rotation that used to bound a bad outcome in
+# litclock-dev#620 then removed the rotation that used to bound a bad outcome in
 # time, so a key cracked offline months later is still live.
 #
 # Nine characters gives 49**9 = 50.5 bits -- MORE than the 47.6 the fleet had
@@ -248,7 +248,7 @@ def _generate_password(length=HOTSPOT_PASSWORD_LENGTH):
 
     Drawn from :data:`HOTSPOT_PASSWORD_ALPHABET`, which excludes lookalike
     characters -- see the note above it. Existing devices keep the password
-    they already persisted (litclock-litclock-dev#620 made it permanent), so this
+    they already persisted (litclock-dev#620 made it permanent), so this
     changes what NEW devices mint, not what provisioned ones present.
     """
     return "".join(secrets.choice(HOTSPOT_PASSWORD_ALPHABET) for _ in range(length))
@@ -320,7 +320,7 @@ def validate_hotspot_credentials(ssid, password):
 
 def _validate_hotspot_password(password):
     """The password half of validate_hotspot_credentials, split out so the
-    persisted-password reader (litclock-litclock-dev#620) can re-check a value from disk
+    persisted-password reader (litclock-dev#620) can re-check a value from disk
     without inventing a second, drifting copy of these bounds — and without
     needing an SSID it does not have an opinion about.
 
@@ -341,7 +341,7 @@ def _validate_hotspot_password(password):
     return None
 
 
-# Persisted per-device hotspot password (litclock-litclock-dev#620). Before this, every
+# Persisted per-device hotspot password (litclock-dev#620). Before this, every
 # provisioning cycle minted a fresh password under the SAME SSID, so a phone
 # that had joined once held a saved entry whose credential no longer worked.
 # MEASURED TWICE, AND THE SECOND RUN DISAGREED (litclock-dev#648, corrected
@@ -465,7 +465,7 @@ def _read_persisted_password(path):
                 #
                 # If fchmod is instead unavailable FILESYSTEM-WIDE, the
                 # replacement write fails too and the device rotates every
-                # cycle -- degraded to the pre-litclock-litclock-dev#620 behaviour
+                # cycle -- degraded to the pre-litclock-dev#620 behaviour
                 # rather than broken, and _load_or_create_hotspot_password
                 # already logs that outcome explicitly. Still the right side to
                 # fail on: a rotating key is recoverable by re-reading the
@@ -528,8 +528,8 @@ def _persist_password(path, password):
             # plus the loose-mode case, implying the handling is complete --
             # but os.replace refuses a directory, so every provisioning cycle
             # mints a fresh key forever. That is a permanent, silent
-            # degradation to the pre-litclock-litclock-dev#620 behaviour that
-            # litclock-litclock-dev#620 exists to remove, and the only signal was a
+            # degradation to the pre-litclock-dev#620 behaviour that
+            # litclock-dev#620 exists to remove, and the only signal was a
             # warning reading "this cycle only", which is precisely wrong: it
             # is EVERY cycle. Reproduced directly, two cycles, two different
             # passwords.
@@ -980,7 +980,7 @@ def create_hotspot(ssid=DEFAULT_SSID, password=None):
         dict with 'ssid', 'password', 'ip' on success, None on failure
     """
     if password is None:
-        # litclock-litclock-dev#620: read-or-create, so the SSID and its credential stay
+        # litclock-dev#620: read-or-create, so the SSID and its credential stay
         # in lockstep across provisioning cycles. An explicit password= still
         # wins, which is what the --password CLI flag and the QA lab rely on.
         password = _load_or_create_hotspot_password()
@@ -1225,7 +1225,7 @@ def _unescape_terse(field):
 
 def _snapshot_ssid_psks(ssid):
     """Map of pre-existing wifi profile UUID -> stored PSK for profiles whose
-    802-11-wireless.ssid equals the connect target (litclock-litclock-dev#613).
+    802-11-wireless.ssid equals the connect target (litclock-dev#613).
 
     Hardware-verified 2026-08-09 (NM 1.42.4): ``nmcli device wifi connect``
     REUSES a pre-existing profile for the SSID and writes the attempted
@@ -1267,7 +1267,7 @@ def _snapshot_ssid_psks(ssid):
             f"Could not list connections to snapshot the saved password for "
             f"'{ssid}' (rc={listing.returncode}) — a failed attempt that "
             "overwrites a reused profile will NOT be auto-restored "
-            "(litclock-litclock-dev#613)."
+            "(litclock-dev#613)."
         )
         return {}
     snapshot = {}
@@ -1287,7 +1287,7 @@ def _snapshot_ssid_psks(ssid):
             logging.warning(
                 f"Could not read the ssid of wifi profile {uuid} while "
                 f"snapshotting for '{ssid}' (rc={ssid_q.returncode}) — that "
-                "profile will NOT be auto-restored (litclock-litclock-dev#613)."
+                "profile will NOT be auto-restored (litclock-dev#613)."
             )
             continue
         if _unescape_terse(ssid_q.stdout.rstrip("\n")) != ssid:
@@ -1303,7 +1303,7 @@ def _snapshot_ssid_psks(ssid):
             logging.warning(
                 f"Could not read the saved password on profile {uuid} ('{ssid}') "
                 f"to snapshot it (rc={psk_q.returncode}) — a failed attempt that "
-                "overwrites it will NOT be auto-restored (litclock-litclock-dev#613)."
+                "overwrites it will NOT be auto-restored (litclock-dev#613)."
             )
             continue
         # ``-g`` output is terse-ESCAPED even for a single field — verified on
@@ -1317,7 +1317,7 @@ def _snapshot_ssid_psks(ssid):
 
 def _restore_ssid_psks(snapshot, ssid, attempted):
     """Restore each snapshotted profile's PSK when the failed attempt is what
-    overwrote it (litclock-litclock-dev#613). Called only on the paths where nmcli
+    overwrote it (litclock-dev#613). Called only on the paths where nmcli
     reported the connect itself failed — NOT on the rc=0 "connected but no
     IP" path, where association proves the submitted password was correct and
     NM's stored value is the right final state.
@@ -1399,14 +1399,14 @@ def _restore_ssid_psks(snapshot, ssid, attempted):
         if restored:
             logging.info(
                 f"Restored the saved password on profile {uuid} ('{ssid}') — the "
-                "failed attempt had overwritten it (litclock-litclock-dev#613)."
+                "failed attempt had overwritten it (litclock-dev#613)."
             )
         else:
             logging.error(
                 f"Could not restore the saved password on profile {uuid} "
                 f"('{ssid}', edit rc={fix.returncode}, verified=False): the "
                 "profile is left with the failed attempt's password and cannot "
-                "rejoin until re-provisioned (litclock-litclock-dev#613). "
+                "rejoin until re-provisioned (litclock-dev#613). "
                 "See journalctl -u NetworkManager."
             )
 
@@ -1451,7 +1451,7 @@ def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
     # created. UUIDs, not names — see _profile_uuids.
     pre_uuids = _profile_uuids()
 
-    # litclock-litclock-dev#613: also snapshot the stored PSK of any PRE-EXISTING
+    # litclock-dev#613: also snapshot the stored PSK of any PRE-EXISTING
     # profile for this SSID — nmcli reuses such a profile and persists the
     # attempted password into it even on failure (hardware-verified). Gated
     # like the cleanup below: the manual --timeout 0 SSH-recovery path must
@@ -1600,7 +1600,7 @@ def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
             # it corrupts the pre-existing profile's stored PSK instead
             # (hardware: 6s rc=4 "Secrets were required", stored PSK ==
             # the failed attempt's). Restore what this attempt overwrote
-            # (litclock-litclock-dev#613).
+            # (litclock-dev#613).
             _restore_ssid_psks(pre_psks, ssid, password)
 
         # Parse common error messages for user-friendly messages

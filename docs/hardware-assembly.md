@@ -53,7 +53,7 @@ A mismatched panel does not degrade gracefully into a smaller or oddly-coloured 
 
 ## Assembly
 
-1. **Flash the SD card** with the latest LitClock image using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) — see [Option 1: Download Image](../README.md#option-1-download-image-recommended)
+1. **Flash the SD card** with the latest LitClock image using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) — see [Flash the SD card](../README.md#2-flash-the-sd-card)
 2. **Connect the HAT** to the Pi's 40-pin GPIO header — align pin 1 and press firmly
 3. **Connect the e-Paper display** to the HAT via the flat ribbon cable — lift the connector latch, slide the cable in (contacts facing down), and close the latch
 4. **Insert the SD card** into the Pi
