@@ -27,7 +27,13 @@ User=root
 # /api/system/prepare-for-gift endpoint immediately before invoking this
 # unit. It's a regular file under the pi-owned tmpfs at /run/litclock; the
 # script's `! -L` + `head -c 280` defenses (litclock-dev#280) cover the read.
-ExecStart=/usr/local/lib/litclock/reset-setup.sh --gift-mode --message-file /run/litclock/gift-message
+# /run/litclock/gift-language (litclock-dev#532 pickers 5b) carries the
+# gifter's language choice the same way: staged by the endpoint, read by the
+# script's O_NOFOLLOW+shape-validated python step, persisted to the
+# root-owned /etc/litclock/.gift-language marker and seeded into the Step 3
+# env.sh defaults. Absent file = no language choice (single-language fleet
+# or gifter left the default).
+ExecStart=/usr/local/lib/litclock/reset-setup.sh --gift-mode --message-file /run/litclock/gift-message --language-file /run/litclock/gift-language
 # reset-setup.sh's full sequence on a Pi Zero 2W (stop services + nmcli
 # delete + env.sh wipe + poweroff invocation) finishes in ~10s. 60s gives
 # generous headroom. NB: the unit completes when poweroff is *requested* —

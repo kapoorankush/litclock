@@ -645,10 +645,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
         for line in fs_warns:
             print(line, file=sys.stderr)
     if fs_errors:
-        print(
-            f"ERROR: {len(fs_errors)} changed row(s) fail the fitted-fs hard floor (litclock-dev#539):",
-            file=sys.stderr,
-        )
+        print(f"ERROR: {len(fs_errors)} changed row(s) fail the fitted-fs hard floor "
+            "(litclock-dev#539):", file=sys.stderr)
         for line in fs_errors:
             print(line, file=sys.stderr)
         _print_allow_small_hint(fs_errors)
@@ -1005,10 +1003,8 @@ def _cmd_ship_csv(args: argparse.Namespace) -> int:
         for line in fs_warns:
             print(line, file=sys.stderr)
     if fs_errors:
-        print(
-            f"ERROR: {len(fs_errors)} changed row(s) fail the fitted-fs hard floor (litclock-dev#539):",
-            file=sys.stderr,
-        )
+        print(f"ERROR: {len(fs_errors)} changed row(s) fail the fitted-fs hard floor "
+            "(litclock-dev#539):", file=sys.stderr)
         for line in fs_errors:
             print(line, file=sys.stderr)
         _print_allow_small_hint(fs_errors)

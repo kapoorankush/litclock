@@ -24,6 +24,7 @@ contract lives in ``routes/updates.py``.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -52,6 +53,10 @@ SYSTEMCTL_BIN: Final[str] = os.environ.get("LITCLOCK_SYSTEMCTL", "/usr/bin/syste
 UPDATE_UNIT: Final[str] = "litclock-update.service"
 TAGS_URL_TEMPLATE: Final[str] = "https://api.github.com/repos/{owner}/{repo}/tags?per_page=100"
 CHANGELOG_URL_TEMPLATE: Final[str] = "https://raw.githubusercontent.com/{owner}/{repo}/{tag}/CHANGELOG.md"
+# litclock-dev#728 — this pair is the FALLBACK, not the answer. The live
+# pair derives from the checkout's origin remote (origin_repo_pair below),
+# mirroring scripts/update.sh post-litclock-dev#721; hardcoding public here
+# made a dev Pi render PUBLIC's latest tag against its own dev version.
 DEFAULT_OWNER: Final[str] = "kapoorankush"
 DEFAULT_REPO: Final[str] = "litclock"
 GH_API_TIMEOUT_S: Final[int] = 10
@@ -60,7 +65,8 @@ GH_API_TIMEOUT_S: Final[int] = 10
 # Python's default `Python-urllib/3.x` works for /tags today but GH has
 # historically returned 403 to unidentified clients. Pin our own value.
 HTTP_USER_AGENT: Final[str] = "litclock-control-server (+https://github.com/kapoorankush/litclock)"
-RELEASE_TAG_RE: Final[re.Pattern[str]] = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+# \Z, not $: a JSON tag name of "v1.2.3\n" must not match (/review litclock-dev#729).
+RELEASE_TAG_RE: Final[re.Pattern[str]] = re.compile(r"^v(\d+)\.(\d+)\.(\d+)\Z")
 # `git config credential.helper=store` writes one URL-per-line to this path
 # in the form `https://user:token@github.com`. The bash side already reads
 # this for the auto-update flow; the Python /api/update/check route mirrors
@@ -90,6 +96,8 @@ MAX_GH_API_CACHE_BYTES: Final[int] = 8192
 # in the PWA. 4KB is ~10x the largest CHANGELOG entry shipped to date
 # (v0.211.1's ~600 chars), well under the 8KB ceiling.
 MAX_RELEASE_NOTES_BYTES: Final[int] = 4096
+# Cap on the raw CHANGELOG.md fetch (see fetch_release_notes).
+MAX_CHANGELOG_FETCH_BYTES: Final[int] = 1_048_576
 
 
 # ─── litclock-dev#336 shared bounded readers ───────────────────────────────────────────
@@ -343,6 +351,97 @@ def write_cache(payload: dict[str, Any], cache_file: Path | None = None) -> bool
         return False
 
 
+def origin_repo_pair(repo_dir: Path | None = None) -> tuple[str, str]:
+    """Derive ``(owner, repo)`` from the install checkout's origin remote.
+
+    litclock-dev#728 — the litclock-dev#721 class's second door: update.sh's
+    resolver derives its repo pair from ``git remote get-url origin`` so a
+    dev-image device queries its own repo, but this module kept the
+    hardcoded public pair, so the bench PWA showed "Available v0.224.0"
+    (public's highest tag) on a v0.225.3 dev device. Mirrors
+    scripts/update.sh ``origin_repo_pair()`` exactly: the two URL forms git
+    actually writes (``https://github.com/O/R(.git)``,
+    ``git@github.com:O/R(.git)``), one trailing slash tolerated, exactly one
+    slash between two non-empty parts. Anything else falls back to the
+    public pair — the pre-derivation behavior, right for the fleet — with a
+    warning naming the URL, because on a hand-modified origin the fallback
+    silently reproduces the litclock-dev#721 pinning.
+    """
+    if repo_dir is None:
+        repo_dir = Path(os.environ.get("LITCLOCK_DIR") or Path(__file__).resolve().parents[2])
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_dir), "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        url = proc.stdout.strip() if proc.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        url = ""
+    if not url:
+        # Distinct from the parse-failure warning below: this branch is git
+        # failing (missing binary, not a repo, timeout), and on-Pi debugging
+        # of a wrong update card starts from telling those two apart.
+        logger.warning("origin remote unreadable - using public pair")
+        return DEFAULT_OWNER, DEFAULT_REPO
+    pair = _parse_origin_url(url)
+    if pair is not None:
+        return pair
+    logger.warning("origin %r unparsed - using public pair", _redact_url_userinfo(url))
+    return DEFAULT_OWNER, DEFAULT_REPO
+
+
+# GitHub's actual owner/repo grammar. The one-slash rule alone accepts
+# components with spaces, '?', '#', '\r' — which interpolate raw into
+# TAGS_URL_TEMPLATE and make urlopen raise http.client.InvalidURL (an
+# HTTPException, outside the fetchers' original except tuple): /api/update/check
+# 500s repeatedly and /api/update/apply burns its confirm token (/review litclock-dev#729,
+# proved live). '.'/'..' are charset-legal but path-traverse api.github.com
+# ('/repos/../notifications'), so they are rejected explicitly.
+_REPO_COMPONENT_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9._-]+\Z")
+_USERINFO_RE: Final[re.Pattern[str]] = re.compile(r"^https://[^/@]+@")
+
+
+def _redact_url_userinfo(url: str) -> str:
+    """Never echo embedded credentials (https://user:token@host/...) to a log.
+
+    The log-buffer RedactingFilter catches GitHub-token shapes, but the
+    basicConfig stderr handler runs before it, so a raw URL would reach the
+    persistent journal unredacted — and journal tails ship in the support
+    bundle (/review litclock-dev#729 security pass).
+    """
+    return re.sub(r"://[^/@]+@", "://<redacted>@", url)
+
+
+def _parse_origin_url(url: str) -> tuple[str, str] | None:
+    """Pure parser half of origin_repo_pair: one URL in, pair or None out.
+
+    Split out so the cross-implementation parity test can drive this and the
+    bash twin from one URL table — parity by manually mirrored test cases
+    drifts silently on the next one-sided tweak.
+    """
+    owner_repo = ""
+    if url.startswith("https://"):
+        # A credentialed origin (https://user:token@github.com/O/R) must
+        # resolve to ITS pair — falling back would silently reproduce the
+        # litclock-dev#721 pinning for exactly the origin shape a hand-
+        # provisioned PAT produces. Strip the userinfo before matching.
+        bare = _USERINFO_RE.sub("https://", url, count=1)
+        if bare.startswith("https://github.com/"):
+            owner_repo = bare[len("https://github.com/") :]
+    elif url.startswith("git@github.com:"):
+        owner_repo = url[len("git@github.com:") :]
+    owner_repo = owner_repo.removesuffix("/").removesuffix(".git")
+    parts = owner_repo.split("/")
+    if len(parts) == 2 and all(
+        _REPO_COMPONENT_RE.match(part) and part not in (".", "..") for part in parts
+    ):
+        return parts[0], parts[1]
+    return None
+
+
 def fetch_latest_release_tag(
     owner: str = DEFAULT_OWNER,
     repo: str = DEFAULT_REPO,
@@ -372,7 +471,11 @@ def fetch_latest_release_tag(
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:  # noqa: S310
             data = json.load(resp)
-    except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError, http.client.HTTPException) as exc:
+        # ValueError/HTTPException: urlopen raises http.client.InvalidURL (an
+        # HTTPException) or ValueError on malformed URLs. The slug validation
+        # in origin_repo_pair makes that unreachable from origin data, but a
+        # 500 on this route is never acceptable (/review litclock-dev#729).
         logger.warning("GH tags fetch failed: %s", exc)
         return None
     if not isinstance(data, list):
@@ -423,8 +526,12 @@ def fetch_release_notes(
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:  # noqa: S310
-            body = resp.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, OSError) as exc:
+            # Bounded read: the fetched repo derives from the origin remote,
+            # and an unbounded read of a pathological CHANGELOG would burn
+            # Pi RAM on an unauthenticated endpoint. 1MB is ~25x the current
+            # file; the extractor only needs the section near the top.
+            body = resp.read(MAX_CHANGELOG_FETCH_BYTES).decode("utf-8", errors="replace")
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
         logger.info("CHANGELOG fetch for %s failed: %s", tag, exc)
         return None
     return _extract_changelog_section(body, tag)
@@ -441,15 +548,28 @@ def _extract_changelog_section(body: str, tag: str) -> str | None:
     Returns up to the first 10 non-empty lines following the heading,
     stopping at the next ``## `` heading. Stripped of leading whitespace.
     """
-    # Match the heading line for `tag`, optionally bracketed.
-    pattern = re.compile(rf"^##\s+\[?{re.escape(tag)}\]?(\s+.*)?$", re.MULTILINE)
+    # GitHub raw serves file bytes as stored, and this repo has already
+    # shipped CRLF files (public CONTRIBUTING/PR-template). Under CRLF the
+    # line-confined trailer below cannot consume the \r before MULTILINE $,
+    # so an undated heading would go from "loses a line" to "no section at
+    # all". Normalize once, here, so every caller is covered (/review litclock-dev#709).
+    body = body.replace("\r\n", "\n")
+    # Match the heading line for `tag`, optionally bracketed. The optional
+    # trailer is confined to the heading's own line ([ \t], not \s): with \s
+    # the group crossed the newline and swallowed the section's first content
+    # line for undated headings (litclock-dev#699). A trailer still requires a leading
+    # space/tab, so a tag that is a prefix of another tag cannot match it.
+    pattern = re.compile(rf"^##[ \t]+\[?{re.escape(tag)}\]?(?:[ \t].*)?$", re.MULTILINE)
     match = pattern.search(body)
     if not match:
         return None
     after = body[match.end() :]
     lines: list[str] = []
     for raw in after.splitlines():
-        if raw.startswith("## "):
+        # Same heading grammar as the pattern above: it accepts a tab after
+        # ##, so the terminator must too, or a tab-separated NEXT heading
+        # bleeds the following release's lines into this card (/review litclock-dev#709).
+        if raw.startswith(("## ", "##\t")):
             break
         stripped = raw.rstrip()
         if stripped:
@@ -473,8 +593,9 @@ def build_check_payload(current_version: str) -> dict[str, Any]:
     even when the fetch failed, so available=False would mask a 6-hour
     "we're offline" window as "we're up to date".
     """
-    tag = fetch_latest_release_tag()
-    notes = fetch_release_notes(tag) if tag else None
+    owner, repo = origin_repo_pair()
+    tag = fetch_latest_release_tag(owner, repo)
+    notes = fetch_release_notes(tag, owner, repo) if tag else None
     # litclock-dev#342 I1 — cap release_notes byte length so write_cache always
     # produces a payload readable by the bounded read side. Truncate at
     # the last newline before the cap so we don't slice mid-bullet, then
@@ -498,7 +619,7 @@ def build_check_payload(current_version: str) -> dict[str, Any]:
         # as the only block; `None` falls through to letting the user try.
         available: bool | None = None
     else:
-        available = not _version_matches(current_version, tag)
+        available = _tag_is_newer(current_version, tag)
     return {
         "fetched_at_unix": int(time.time()),
         "current_version": current_version,
@@ -506,6 +627,53 @@ def build_check_payload(current_version: str) -> dict[str, Any]:
         "available": available,
         "release_notes": notes,
     }
+
+
+# Tolerates the `git describe` suffix ('-N-g<sha>') and any local '+dirty'
+# marker: only the leading vX.Y.Z participates in the comparison.
+_DESCRIBE_VERSION_RE: Final[re.Pattern[str]] = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:[-+].*)?\Z", re.DOTALL)
+
+
+def _tag_is_newer(current: str, tag: str) -> bool:
+    """litclock-dev#728 — "available" means semver-GREATER, not different.
+
+    The old check (``not _version_matches``) lit the badge on ANY
+    difference, so a device ahead of the release repo's highest tag — a
+    dev Pi against public tags pre-litclock-dev#728, or any device after a
+    bad tag is cut then deleted — showed "update available" for a
+    downgrade the apply path can't perform. A current version that doesn't
+    parse (no tag reachable from a hand-built checkout) preserves the old
+    different-means-available behavior: moving such a device to the latest
+    blessed tag IS a meaningful update.
+    """
+    tag_m = RELEASE_TAG_RE.match(tag)
+    if not tag_m:
+        return False
+    cur_m = _DESCRIBE_VERSION_RE.match(current or "")
+    if not cur_m:
+        return not _version_matches(current, tag)
+    return tuple(int(p) for p in tag_m.groups()) > tuple(int(p) for p in cur_m.groups())
+
+
+def recompute_available(payload: dict[str, Any], current_version: str) -> dict[str, Any]:
+    """Re-derive `available` (and current_version) at serve time.
+
+    litclock-dev#728 (/review litclock-dev#729 adversarial pass): `available` is a pure
+    function of two fields already in the payload, but it was cached as a
+    boolean — so a cache written under the old different-means-available
+    semantics keeps serving the lie for up to 6h after this fix deploys (the
+    restart-only deploy path never runs update.sh's cache invalidation), and
+    check()'s current_version re-stamp could leave the payload internally
+    inconsistent in the post-update pre-invalidation window. Callers that
+    serve a cached payload run it through here instead of trusting the
+    stored boolean. A payload with no latest_tag keeps available=None
+    (network-failure semantics).
+    """
+    payload["current_version"] = current_version
+    tag = payload.get("latest_tag")
+    if isinstance(tag, str) and tag:
+        payload["available"] = _tag_is_newer(current_version, tag)
+    return payload
 
 
 def _version_matches(current: str, tag: str) -> bool:

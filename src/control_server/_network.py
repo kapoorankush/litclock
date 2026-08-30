@@ -167,8 +167,117 @@ def read_signal_dbm(
     return None
 
 
+# Addresses that must never count as "this clock has a working LAN address",
+# mirroring what nm-dispatcher 99-litclock-ip-change refuses to record. Kept
+# here so the live read and the marker agree on what is believable — recording
+# or reporting one of these would MUTE a real "never acquired an IP" fault
+# instead of surfacing it.
+UNUSABLE_IP_PREFIXES = ("127.", "169.254.")
+HOTSPOT_GATEWAY_IP = "10.42.0.1"
+
+
+def read_lan_ip_live(
+    *,
+    iface: str | None = None,
+    cache_key: str = "lan-ip-live",
+    ttl: float = STATUS_SUBPROC_TTL_S,
+    timeout: float = STATUS_SUBPROC_TIMEOUT_S,
+) -> tuple[str | None, bool]:
+    """The interface's CURRENT IPv4, as ``(address, determined)``.
+
+    ``determined`` is the whole point. ``(None, True)`` means "asked the kernel,
+    this box has no usable IPv4" — an authoritative negative that must trip the
+    missing-IP anomaly. ``(None, False)`` means the question could not be asked
+    (``ip`` missing, timed out), and the caller should fall back to the marker
+    rather than invent a fault. :func:`~control_server._subprocess.cached_subprocess`
+    already distinguishes those: ``None`` on subprocess failure, ``""`` on a
+    command that ran and said nothing.
+
+    Why this exists (litclock-dev#672): ``/run/litclock/last-rendered-ip`` is
+    written by nm-dispatcher and NOTHING clears it, so a clock that loses DHCP
+    without rebooting keeps serving its pre-outage address and /diagnostics
+    reports a healthy network for the whole outage. Confirmed on hardware: four
+    minutes with ``wlan0=[]`` while the marker — and therefore the page — still
+    read ``192.168.2.99``. That is the exact user-visible failure litclock-dev#645 was
+    opened to fix, reached from the other direction: the fault is muted by the
+    previous GOOD value rather than by a bogus new one.
+
+    A fix routed through the dispatcher cannot work here. On a single-stack IPv4
+    network a DHCP failure produces ZERO dispatcher invocations — NM goes
+    ``ip-config -> failed -> disconnected -> prepare`` and never reaches
+    ``activated``, so no ``up`` fires and ``dhcp4-change`` needs a lease that
+    never exists. The marker goes stale precisely because nothing is running to
+    update it.
+
+    ``ip addr`` rather than the connect-trick in ``literary_clock._resolve_lan_ip``:
+    that opens a UDP socket to a routable address and reads back the egress IP,
+    so it returns None on a box that HAS an address but no default route. For
+    the QR that is right (an unreachable clock should fall back to mDNS); here
+    it would report "no IP" for a device that is serving the very page making
+    the claim — the false-positive class ``_compute_anomalies`` already warns
+    about. The interface address is the question this row is asking.
+
+    SCOPED TO ONE INTERFACE, and that is load-bearing (/review, red team +
+    Codex, independently). An un-scoped read takes the first global IPv4 by
+    interface index, so a second global-scope interface — docker0, wg0,
+    tailscale0, a usb0 gadget, a USB-ethernet dongle — re-opens the exact muting
+    this function exists to close: demonstrated with wlan0 holding no IPv4 and
+    docker0 up, /diagnostics reported ``172.17.0.1`` and the network anomaly did
+    not fire. It also defeats the hotspot exclusion, because skipping
+    ``10.42.0.1`` on wlan0 just falls through to the next interface. The
+    dispatcher that writes the marker is interface-scoped for the same reason
+    and says so (``[ "$INTERFACE" = "wlan0" ] || exit 0``, with a comment about
+    a later USB dongle grabbing a different name), so scoping here is also what
+    keeps the two agreeing.
+
+    A NON-ZERO EXIT reads as authoritative "no address", deliberately.
+    ``cached_subprocess`` returns ``""`` for any non-zero exit — it does not
+    surface the code — so this cannot distinguish "ran and printed nothing" from
+    "ran and failed". Of the two ways to be wrong, this one surfaces a fault
+    that may not exist, and the other hides a fault that does; the anomaly logic
+    in ``_anomalies`` makes the same call everywhere else ("every non-sane
+    uptime fails SAFE"). A genuinely broken ``ip`` is also a real problem worth
+    reporting. Only a subprocess that could not run AT ALL (missing binary,
+    timeout — ``None``, not ``""``) falls back to the marker.
+    """
+    iface = iface or "wlan0"
+    raw = cached_subprocess(
+        cache_key,
+        ["ip", "-4", "-o", "addr", "show", "dev", iface, "scope", "global"],
+        timeout=timeout,
+        ttl=ttl,
+    )
+    if raw is None:
+        return None, False
+
+    for line in raw.splitlines():
+        parts = line.split()
+        # `2: wlan0    inet 192.168.2.99/24 brd 192.168.2.255 scope global ...`
+        if "inet" not in parts:
+            continue
+        inet_at = parts.index("inet")
+        if inet_at + 1 >= len(parts):
+            continue
+        line_iface = parts[1] if len(parts) > 1 else ""
+        address = parts[inet_at + 1].split("/", 1)[0]
+        if line_iface == "lo" or not address:
+            continue
+        if address.startswith(UNUSABLE_IP_PREFIXES) or address == HOTSPOT_GATEWAY_IP:
+            continue
+        return address, True
+
+    # The command ran and reported no usable global IPv4 on this interface.
+    return None, True
+
+
 def read_lan_ip(path: str | None = None) -> str | None:
     """LAN IP last RECORDED by nm-dispatcher.
+
+    Since litclock-dev#672 this is the FALLBACK, not the primary source:
+    :func:`read_lan_ip_live` is consulted first and is authoritative when it can
+    answer, because nothing ever clears this marker and a stale address mutes
+    the missing-IP anomaly for a whole outage. This still serves
+    :func:`read_last_dhcp_iso`, and answers when the live read cannot run.
 
     Reads ``/run/litclock/last-rendered-ip`` (override via ``path``). The
     dispatcher writes this on actual IP change only — so freshness reflects

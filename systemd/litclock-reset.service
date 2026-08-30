@@ -7,6 +7,12 @@ Documentation=https://github.com/kapoorankush/litclock/issues/510
 # Conflicts= is the deterministic backstop (mirrors litclock-wifi-reset.service).
 Conflicts=litclock-update.service
 After=litclock-update.service
+# litclock-dev#665: a reset that fails closed is correct, but on the PWA path
+# there is nobody to tell — the route returns 200 immediately and the card
+# never polls, so the red "do NOT pass this device on" banner reached only
+# the journal. This paints the e-ink (the one surface that survives a frozen
+# PWA) and writes a persistent marker.
+OnFailure=litclock-reset-failed.service
 
 [Service]
 Type=oneshot

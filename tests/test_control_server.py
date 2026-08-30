@@ -456,8 +456,8 @@ class TestIosLargerTextScaling:
         css = self._tokens_css()
         # Global ceiling lifted to 18px.
         assert "--fs-caption: clamp(11px, 0.75rem, 18px)" in css, (
-            "M6 D6 / litclock-dev#258: --fs-caption ceiling must be 18px so iOS Dynamic Type can grow "
-            "tab labels past iOS Larger 1."
+            "M6 D6 / litclock-dev#258: --fs-caption ceiling must be 18px so iOS Dynamic Type can grow tab labels past "
+            "iOS Larger 1."
         )
         # Tabbar uses the global token now (M5 tactical override removed).
         tabbar_a_start = css.find(".tabbar a {")
@@ -2282,6 +2282,25 @@ class TestStatusHeroRendering:
         assert 'aria-labelledby="status-heading"' in body
         assert '<h2 id="status-heading" class="visually-hidden">Now</h2>' in body
 
+    def test_stale_banner_ssr_sentence_fills_the_minutes_slot(self, status_client, status_file) -> None:
+        """/review litclock-dev#740 (both passes): 'min ago' containment is satisfied by a
+        literal '{n} min ago' (broken t() slot fill) or '3.0 min ago'
+        (dropped |int — a real SSR/JS byte divergence). Pin the exact
+        rendered sentence. picked_at = now-200 → floor(200/60) = 3, with
+        ~40s of slack before it ticks to 4."""
+        import time as _time
+
+        _write_status_payload(status_file, picked_at=_time.time() - 200)
+        body = status_client.get("/").data.decode()
+        assert "Clock service may be paused — last quote 3 min ago" in body
+        # Scope the unfilled-slot check to the BANNER: the strings blob
+        # legitimately carries the raw '{n}' template for the JS side.
+        import re as _re
+
+        m = _re.search(r"data-status-stale-text>(.*?)</span>", body, _re.DOTALL)
+        assert m, "stale-banner text span missing"
+        assert "{n}" not in m.group(1), "an unfilled catalog slot reached the rendered banner"
+
     def test_stale_banner_renders_when_picked_at_is_old(self, status_client, status_file) -> None:
         """D2: ochre warning banner appears when picked_at ≥ 90s old."""
         import time as _time
@@ -2318,8 +2337,8 @@ class TestStatusHeroRendering:
         body = status_client.get("/").data.decode()
         banner_start = body.find("data-status-stale-banner")
         assert banner_start >= 0, (
-            "stale-banner DOM element should always be present for litclock-dev#290 client-side toggle"
-        )
+            "stale-banner DOM element should always be present for litclock-dev#290 client-side "
+            "toggle")
         banner_open_tag_end = body.find(">", banner_start)
         banner_open_tag = body[banner_start:banner_open_tag_end]
         assert "hidden" in banner_open_tag, (

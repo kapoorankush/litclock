@@ -235,8 +235,8 @@ class TestSettingsGet:
         # temperature units (drop the mph/km/h wind labels that misleadingly
         # suggested a wind preference).
         assert "settings-units-h" not in body, (
-            "litclock-dev#337 A11: 'Units' section renamed to 'Temperature' — the old "
-            "settings-units-h id should no longer render"
+            "litclock-dev#337 A11: 'Units' section renamed to 'Temperature' — the old settings-units-h id should no "
+            "longer render"
         )
 
     def test_pre_fills_from_env_file(self, client, env_file) -> None:
@@ -1389,3 +1389,293 @@ class TestShortLocationName:
 
     def test_empty_input_returns_empty(self) -> None:
         assert self._short("") == ""
+
+
+# ─── Language section (litclock-dev#532 pickers 5b) ─────────────────────────
+
+
+class TestSettingsLanguageSection(_PostHelpers):
+    """The Settings Language pill: dormant on a single-language fleet,
+    a segmented auto-save pill on a multi-language one. Mirrors the 5a
+    hotspot-picker contract (>1-active gating, native-name labels) through
+    the PWA surface."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_language_env(self, monkeypatch, env_file):
+        """Point every strings_catalog channel at this test's env file so
+        current_language() and the POST writer agree on one source, and no
+        ambient dev-box LITCLOCK_LANGUAGE leaks in."""
+        import strings_catalog
+
+        monkeypatch.delenv("LITCLOCK_LANGUAGE", raising=False)
+        monkeypatch.setenv("LITCLOCK_ENV_FILE", env_file)
+        monkeypatch.delenv("LITCLOCK_DIR", raising=False)
+        strings_catalog.reset_cache()
+        yield
+        strings_catalog.reset_cache()
+
+    @pytest.fixture
+    def two_language_registry(self, tmp_path, monkeypatch):
+        """A registry with en + es both active. The es strings path is
+        absolute (pathlib absolute-join wins over _REPO_ROOT), so nothing
+        outside tmp_path is touched."""
+        import json as _json
+
+        import strings_catalog
+
+        es_dir = tmp_path / "languages-es"
+        es_dir.mkdir()
+        es_strings = es_dir / "strings.json"
+        es_strings.write_text(
+            _json.dumps({"settings.language.title": "Idioma"}), encoding="utf-8"
+        )
+        registry = {
+            "schema_version": 1,
+            "fleet_default": "en",
+            "languages": {
+                "en": {
+                    "code": "en",
+                    "native_name": "English",
+                    "status": "active",
+                    "strings": "languages/en/strings.json",
+                },
+                "es": {
+                    "code": "es",
+                    "native_name": "Español",
+                    "status": "active",
+                    "strings": str(es_strings),
+                },
+            },
+        }
+        reg = tmp_path / "languages.json"
+        reg.write_text(_json.dumps(registry), encoding="utf-8")
+        monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", reg)
+        strings_catalog.reset_cache()
+        yield
+        strings_catalog.reset_cache()
+
+    # ── dormancy (today's English-only fleet) ──
+
+    def test_language_section_absent_on_single_language_fleet(self, client) -> None:
+        """The 5a zero-friction rule, PWA edition: one active language →
+        no Language section at all, not a one-option pill."""
+        html = client.get("/settings").get_data(as_text=True)
+        assert "data-language-pill" not in html
+        assert "settings-language-h" not in html
+        assert 'name="LITCLOCK_LANGUAGE"' not in html
+
+    def test_language_post_still_accepted_when_dormant(self, client, csrf_token, env_file) -> None:
+        """The writer stays registered even while the section is hidden —
+        an en-only fleet can at worst persist "en" (validator-gated)."""
+        resp = self.post_form(
+            client, csrf_token=csrf_token, section="language", LITCLOCK_LANGUAGE="en"
+        )
+        assert resp.status_code == 303
+        assert config.load_config(env_file)["LITCLOCK_LANGUAGE"] == "en"
+
+    # ── multi-language rendering ──
+
+    def test_language_section_renders_on_multi_language_fleet(
+        self, client, two_language_registry
+    ) -> None:
+        html = client.get("/settings").get_data(as_text=True)
+        assert "data-language-pill" in html
+        assert 'data-language-opt="en"' in html
+        assert 'data-language-opt="es"' in html
+        # Native-name labels, not English exonyms.
+        assert "Español" in html
+        # No persisted language → English (the fleet default) is selected.
+        assert (
+            '<label class="settings-segmented__opt is-selected"\n               data-language-opt="en"'
+            in html
+        )
+        # No-JS fallback Save button INSIDE the language form specifically —
+        # a whole-page count would stay green with the language form's
+        # button deleted (guard-observation-window class).
+        language_form = html.split("data-language-pill", 1)[1].split("</form>", 1)[0]
+        assert "data-no-js-only" in language_form
+        assert "settings-button--primary" in language_form
+
+    def test_selected_option_follows_persisted_language(
+        self, client, two_language_registry, env_file
+    ) -> None:
+        import strings_catalog
+
+        Path(env_file).write_text(
+            Path(env_file).read_text() + "export LITCLOCK_LANGUAGE=es\n"
+        )
+        strings_catalog.reset_cache()
+        html = client.get("/settings").get_data(as_text=True)
+        assert (
+            '<label class="settings-segmented__opt is-selected"\n               data-language-opt="es"'
+            in html
+        )
+
+    def test_section_title_resolves_from_active_catalog(
+        self, client, two_language_registry, env_file
+    ) -> None:
+        """SSR t() renders in the ACTIVE language — the es fixture catalog
+        carries settings.language.title=Idioma."""
+        import strings_catalog
+
+        Path(env_file).write_text(
+            Path(env_file).read_text() + "export LITCLOCK_LANGUAGE=es\n"
+        )
+        strings_catalog.reset_cache()
+        html = client.get("/settings").get_data(as_text=True)
+        assert "Idioma" in html
+
+    # ── POST paths ──
+
+    def test_language_post_persists_active_code(
+        self, client, csrf_token, env_file, two_language_registry
+    ) -> None:
+        resp = self.post_form(
+            client, csrf_token=csrf_token, section="language", LITCLOCK_LANGUAGE="es"
+        )
+        assert resp.status_code == 303
+        assert "/settings?saved=language" in resp.headers["Location"]
+        assert config.load_config(env_file)["LITCLOCK_LANGUAGE"] == "es"
+
+    def test_language_post_rejects_inactive_code(
+        self, client, csrf_token, env_file, two_language_registry
+    ) -> None:
+        resp = self.post_form(
+            client, csrf_token=csrf_token, section="language", LITCLOCK_LANGUAGE="fr"
+        )
+        assert resp.status_code == 422  # A15 contract: re-render + field error
+        html = resp.get_data(as_text=True)
+        assert "active languages" in html
+        assert config.load_config(env_file).get("LITCLOCK_LANGUAGE", "") == ""
+
+    def test_language_json_patch(self, client, csrf_token, env_file, two_language_registry) -> None:
+        resp = self._post_json(
+            client,
+            {"section": "language", "LITCLOCK_LANGUAGE": "es"},
+            csrf_token=csrf_token,
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+        assert config.load_config(env_file)["LITCLOCK_LANGUAGE"] == "es"
+
+    def test_language_section_cannot_write_other_keys(
+        self, client, csrf_token, env_file, two_language_registry
+    ) -> None:
+        """SECTION_KEYS belt: a language POST smuggling WEATHER_UNITS must
+        not write it."""
+        before = config.load_config(env_file)["WEATHER_UNITS"]
+        resp = self.post_form(
+            client,
+            csrf_token=csrf_token,
+            section="language",
+            LITCLOCK_LANGUAGE="es",
+            WEATHER_UNITS="metric" if before != "metric" else "imperial",
+        )
+        assert resp.status_code == 303
+        assert config.load_config(env_file)["WEATHER_UNITS"] == before
+
+    # ── 5b /review security regression: raw-vs-stripped mismatch ──
+
+    def test_language_post_rejects_whitespace_wrapped_code(
+        self, client, csrf_token, env_file, two_language_registry
+    ) -> None:
+        """The validator must match the RAW value: LITCLOCK_LANGUAGE is
+        serialized verbatim into env.sh (not shlex-quoted), so a
+        strip-then-match validator would let "\\nes" through validation
+        while the writer persists the raw newline — splitting env.sh into
+        a bare `es` command line executed by every sourcing shell."""
+        for evil in ("\nes", "es\n", " es", "es ", "\res", "\x0ces"):
+            resp = self._post_json(
+                client,
+                {"section": "language", "LITCLOCK_LANGUAGE": evil},
+                csrf_token=csrf_token,
+            )
+            assert resp.status_code == 422, f"payload {evil!r} was accepted"
+        cfg = config.load_config(env_file)
+        assert cfg.get("LITCLOCK_LANGUAGE", "") == ""
+        # env.sh must still round-trip line-per-line: no bare command lines.
+        for line in Path(env_file).read_text().splitlines():
+            assert line == "" or "=" in line, f"bare command line leaked: {line!r}"
+
+    def test_save_then_render_shows_new_language_without_cache_reset(
+        self, client, csrf_token, env_file, two_language_registry
+    ) -> None:
+        """The production round-trip the JS reload depends on: POST persists
+        es, the NEXT GET must already render in Spanish with es selected —
+        with NO strings_catalog.reset_cache() seam in between. Pins the
+        env.sh mtime-cache invalidation (tests-covered-only-the-path-
+        production-never-takes class)."""
+        resp = self.post_form(
+            client, csrf_token=csrf_token, section="language", LITCLOCK_LANGUAGE="es"
+        )
+        assert resp.status_code == 303
+        html = client.get("/settings").get_data(as_text=True)  # no reset_cache()
+        assert "Idioma" in html
+        assert (
+            '<label class="settings-segmented__opt is-selected"\n               data-language-opt="es"'
+            in html
+        )
+
+    def test_dormant_fleet_rejects_inactive_code(self, client, csrf_token, env_file) -> None:
+        """The SECTION_KEYS comment's 'at worst write en' bound, negative
+        half: on the REAL en-only registry a POST of es must 422 and leave
+        env.sh untouched."""
+        resp = self.post_form(
+            client, csrf_token=csrf_token, section="language", LITCLOCK_LANGUAGE="es"
+        )
+        assert resp.status_code == 422
+        assert config.load_config(env_file).get("LITCLOCK_LANGUAGE", "") == ""
+
+    def test_validate_language_requires_exact_match(self, two_language_registry) -> None:
+        ok, _ = config.validate_setting("LITCLOCK_LANGUAGE", "es")
+        assert ok is True
+        for evil in (" es", "es ", "\nes", "es\n", ""):
+            ok, err = config.validate_setting("LITCLOCK_LANGUAGE", evil)
+            assert ok is False, f"{evil!r} passed validation"
+            assert err
+
+    # ── adversarial /review F2: no-radio-checked edge ──
+
+    def test_language_post_without_key_is_422_not_lying_saved(
+        self, client, csrf_token, env_file, two_language_registry
+    ) -> None:
+        """A section=language save carrying no LITCLOCK_LANGUAGE (the
+        no-radio-checked no-JS form) must 422 with an inline error, never
+        PRG-redirect to a "Saved." banner for a write that never happened."""
+        resp = self.post_form(client, csrf_token=csrf_token, section="language")
+        assert resp.status_code == 422
+        assert "Pick a language." in resp.get_data(as_text=True)
+        assert config.load_config(env_file).get("LITCLOCK_LANGUAGE", "") == ""
+
+    def test_pill_falls_back_to_first_choice_when_current_not_active(
+        self, client, tmp_path, monkeypatch
+    ) -> None:
+        """Registry with de+es active but NO active en: the device language
+        degrades to en, which isn't among the choices — the pill must fall
+        back to the first sorted choice (de) rather than render with no
+        radio checked."""
+        import json as _json
+
+        import strings_catalog
+
+        registry = {
+            "schema_version": 1,
+            "fleet_default": "en",
+            "languages": {
+                "de": {"code": "de", "native_name": "Deutsch", "status": "active"},
+                "es": {"code": "es", "native_name": "Español", "status": "active"},
+            },
+        }
+        reg = tmp_path / "languages-no-en.json"
+        reg.write_text(_json.dumps(registry), encoding="utf-8")
+        monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", reg)
+        strings_catalog.reset_cache()
+        try:
+            html = client.get("/settings").get_data(as_text=True)
+            assert (
+                '<label class="settings-segmented__opt is-selected"\n               data-language-opt="de"'
+                in html
+            )
+            assert 'value="de"\n                 checked' in html
+        finally:
+            strings_catalog.reset_cache()

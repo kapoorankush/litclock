@@ -19,9 +19,12 @@ The algorithm (gdft.c):
 Environment sensitivity: pip wheels of freetype-py BUNDLE their own
 libfreetype rather than binding the system library GD links against. Hinted
 metrics are interpreter-version-sensitive, so parity must be re-validated
-per environment (the development repo's render-invariants CI proves it on
-every PR; on-device, ``tools/validate_measurement.py check --stamp`` is the
-gate). Stage-0 held on FreeType 2.13.2 == 2.13.2.
+per environment. That byte-exactness check runs ``validate_gd_measure`` out
+of ``spikes/531-runtime-render/``, which is not mirrored in this repository,
+so it is the development repo's render-invariants CI that proves it on every
+PR; this repo's copy of that workflow omits the step. On-device,
+``tools/validate_measurement.py check --stamp`` is the gate. Stage-0 held on
+FreeType 2.13.2 == 2.13.2.
 
 freetype-py is imported lazily so pure helpers (``php_round``) stay
 importable without it (e.g. on a Pi that hasn't flipped to runtime

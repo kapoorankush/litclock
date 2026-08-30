@@ -13,12 +13,25 @@ This checklist complements the automated tests in `tests/test_*_sh.py` (which co
 
 ---
 
-## install.sh — REMOVED
+## install.sh — RETIRED, do not QA
 
-The DIY installer is no longer a supported path; the flashed image is the only
-one, and the script has been deleted from the tree (litclock-dev#547). There is
-nothing here to QA. Flashed-image provisioning is covered by `first-boot.sh`
-below and by the in-chroot smoke test in `pi-gen/stage3/05-smoke-test/`.
+The `curl … | bash` DIY installer is retired (litclock-dev#546, litclock-dev#547). It ran against
+whatever state an existing Raspberry Pi OS install happened to be in, which made
+it untestable by construction, and it was confirmed broken three ways. This
+checklist never covered it in practice: every QA pass here starts by flashing a
+built image, so the four scenarios that used to sit in this section were never
+run — which is how the breakage survived.
+
+**The script is still on disk.** Deletion is the follow-up PR to litclock-dev#547; until
+then it remains reachable at the old `raw.githubusercontent.com` URL, and
+`tests/test_pi_gen.py` still derives pi-gen's apt package set and
+`BCM2835_VERSION` from it (`TestPackageParity`, `TestBCM2835`), so it is not yet
+inert. Its unit and tmpfiles installs were globbed in the meantime, because the
+enumerated list was enabling a unit it never copied under `set -e` — which
+aborted the whole install.
+
+Nothing replaces this section. The flashed image IS the install path, and it is
+covered by the `first-boot.sh` section below.
 
 ---
 
@@ -34,7 +47,7 @@ below and by the in-chroot smoke test in `pi-gen/stage3/05-smoke-test/`.
 | 4 | Submit setup form with WRONG WiFi password | Setup page auto-refreshes with "WiFi connection failed" banner | [x] PASS — phone disconnected from hotspot on failure; rescanned QR, captive portal relaunched with red error. Corrected password succeeded on retry. |
 | 5 | Submit all optional fields blank (no city, no zip, no GPS) | Clock starts; weather degrades gracefully via IP geolocation | [x] PASS — verified in combined run with scenario 6. |
 | 6 | Submit US zip code (e.g. 78701) | Geocodes to correct US city (Austin, TX), not foreign postal code | [x] PASS |
-| 7 | Boot with WiFi pre-configured (e.g. via Imager) | Skips hotspot, goes straight to HTTPS setup server | [ ] NOT TESTED — deferred, uncommon path on fresh image. |
+| 7 | Boot with WiFi pre-configured (e.g. via Imager) | Skips hotspot; resolves location inline, no page (litclock-dev#647/litclock-dev#715) | [ ] NOT TESTED — deferred, uncommon path on fresh image. |
 | 8 | After successful setup: reboot | Boots straight to clock; setup is NOT shown again | [x] PASS (implicit via scenario 9). |
 
 To re-test on the same Pi:
@@ -103,7 +116,8 @@ sudo rm -f /etc/litclock/.setup-complete && sudo systemctl enable litclock-first
 
 | # | Test | Expected | Result |
 |---|------|----------|--------|
-| 1 | `sudo ./scripts/reset-setup.sh --yes` (no `--wipe-wifi`) | Clears setup-complete + env.sh + certs + weather cache. WiFi profiles preserved. Reboot manually → goes through setup. | [ ] NOT TESTED on test Pi (no SSH). |
+| 1 | `sudo ./scripts/reset-setup.sh --yes --keep-wifi` | Clears setup-complete + env.sh + certs + weather cache. WiFi profiles AND the setup network's password both preserved. Reboot manually → goes through setup, and the setup network's password is UNCHANGED. | [ ] NOT TESTED on test Pi (no SSH). |
+| 1b | `sudo ./scripts/reset-setup.sh --yes` (the default, litclock-dev#666) | Erases WiFi **and** the setup network's password. Next boot raises `LitClock-Setup` with a NEW password on the panel; the previous one no longer joins. Run this over SSH and the session drops when the WiFi goes — expected. | [ ] NOT TESTED on hardware. |
 | 2 | `sudo ./scripts/reset-setup.sh --yes --wipe-wifi --reboot` | Wipes WiFi, reboots, hotspot appears on next boot | [x] PASS — used to transition between scenarios 5 and 6 of first-boot.sh. Hotspot reappeared correctly. |
 | 3 | After `--wipe-wifi`: check `/etc/NetworkManager/system-connections/` | Only WiFi-type `.nmconnection` files removed; ethernet/VPN profiles survive | [ ] NOT TESTED on hardware. Structural test `test_reset_setup_sh.py::test_only_wifi_connections_deleted` covers the grep filter. |
 | 4 | Run without sudo | Fails with "must be run as root" | [ ] NOT TESTED — structural test `test_reset_setup_sh.py::test_requires_root` covers. |
@@ -121,10 +135,15 @@ sudo rm -f /etc/litclock/.setup-complete && sudo systemctl enable litclock-first
 | # | Test | Expected | Result |
 |---|------|----------|--------|
 | 1 | `sudo ./scripts/prepare-for-cloning.sh` on a fully working Pi, answer "n" to WiFi prompt | env.sh defaults restored, certs + cache + history cleared, WiFi preserved | [ ] |
-| 2 | `sudo ./scripts/prepare-for-cloning.sh`, answer "y" to WiFi prompt | Same as above, plus all NM connections removed | [ ] |
+| 2 | `sudo ./scripts/prepare-for-cloning.sh` **from the local console** (monitor/keyboard or serial), answer "y" to WiFi prompt | Same as above, plus all NM connections removed | [ ] |
+| 2a | Same as (2) but over SSH: answer "y" | The script REFUSES in red before deleting anything (litclock-dev#701) — the wipe would drop the session and SIGHUP would kill the script before Step 8 removes the setup-WiFi key. A pre-confirm advisory also warned about this up front. Answer "n" over SSH still completes normally. | [ ] |
+| 2b | After a run that aborted or was killed part-way, run the script again | The new run warns in yellow before the confirm: "A previous run of this script did NOT finish" (`/var/lib/litclock/clone-prep-unfinished` survives any incomplete run and is removed only after the last verified step) | [ ] |
 | 3 | After running: clone SD with `dd`, write to a new card, boot the new card | New card goes through first-boot setup (welcome screen, hotspot, captive portal) | [ ] |
 | 4 | After running WITHOUT `--no-poweroff`: the Pi powers itself off | litclock-dev#660 — no boot can occur between the key removal and imaging | [ ] |
-| 5 | Do NOT boot the prepared master to "check" it. A single boot re-mints the setup-WiFi key the script just removed, and every clone taken afterwards carries it (litclock-dev#660). Use `--no-poweroff` when you need to inspect. | Key stays absent | [ ] |
+| 4a | Default (poweroff) run, **from the console**: "Disabling SSH before handoff... done" prints before the power-off. **Over SSH** the visible sequence is different by design: the yellow "THIS SESSION WILL DROP" warning (with its "if it has NOT powered off within a minute, do NOT image" caveat) is the LAST output — everything after is redirected, because an EIO'd echo on the dead pty would otherwise kill the script under `set -e` before poweroff — then the session drops and the Pi powers off. Boot a CLONE of the card | Port 22 refused on the clone; recovery is a blank `ssh` file in the SD boot partition (#57). A Pi still running a minute after the drop = a refused handoff — do NOT image; rerun from console (the litclock-dev#701 marker also reports it). A `--no-poweroff` run instead warns in yellow that SSH was NOT disabled | [ ] |
+| 5 | Do NOT boot the prepared master to "check" it — booting contaminates it, and on one of the two branches (row 7) it also re-mints the setup-WiFi key the script just removed, which every clone taken afterwards would carry (litclock-dev#660). Use `--no-poweroff` when you need to inspect. | Key stays absent | [ ] |
+| 6 | After a `--no-poweroff` run, the clock **looks bricked and is not**: the panel freezes on the last quote and port 80 refuses connections. Do not debug it, and do not try to `systemctl start` it back — the script cleared `.setup-complete` and `.handoff-complete`, which `litclock-control.service` and `litclock.service` are `ConditionPathExists`-gated on, so a start exits 0 and changes nothing. Shut the Pi down. | Frozen panel + refused `:80` + a start that no-ops is the intended end state (litclock-dev#659) | [ ] |
+| 7 | If the master is booted anyway, note which branch first-boot takes: `is_wifi_connected()` tests only for an `inet` on `wlan0`, so with an address it completes setup inline with no page (litclock-dev#647) and mints no key, and without one it raises the hotspot and mints a fresh permanent key. | Boot contaminates the master either way; only the no-address branch re-mints the key (litclock-dev#660) | [ ] |
 
 ---
 

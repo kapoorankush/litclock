@@ -1,0 +1,56 @@
+[Unit]
+Description=LitClock — announce a factory reset that did not complete (litclock-dev#665)
+Documentation=https://github.com/kapoorankush/litclock/issues/665
+# Started by litclock-reset.service's OnFailure=. Not enabled and not wanted by
+# anything: systemd starts it exactly when the reset unit enters `failed`.
+#
+# Why this exists: a factory reset that fails closed is correct, but on the PWA
+# path there is nobody to tell. The route returns 200 immediately and the card
+# never polls, so the failure reached only the journal — and the owner, seeing a
+# card that never finishes, pulls the plug. The next boot then raises the setup
+# hotspot with the OLD key, which is the outcome the fail-closed guard exists to
+# prevent.
+#
+# WHAT OnFailure DOES NOT COVER, stated so nobody assumes otherwise:
+#   * an unmet Condition*= / Assert*= on the reset unit — systemd records those
+#     as "skipped", not "failed", so this never runs. The reset unit has no
+#     conditions today.
+#   * a stop ordered by `Conflicts=litclock-update.service`. A unit systemd
+#     stops deliberately goes inactive, not failed. That interlock's own comment
+#     already describes the half-wiped-no-power-off outcome; it is a separate
+#     problem from this one and is NOT fixed here.
+# It DOES cover the case this issue is about: a non-zero exit from the
+# Type=oneshot reset, and a TimeoutStartSec expiry.
+
+[Service]
+Type=oneshot
+# User=pi, NOT root. The marker lives in /var/lib/litclock, which tmpfiles.d
+# creates 0755 pi pi, and the splash execs /home/pi/litclock/... plus the
+# pi-writable venv. Running that as root would be a pi->root escalation on both
+# halves: pi could pre-place `reset-failed` as a symlink for root's redirection
+# to follow, and pi could edit the script root then executes. This repo already
+# closed exactly that vector in litclock-prepare-for-gift.service (litclock-dev#387 C1),
+# which is why THAT unit runs the root-owned copy. Nothing here needs root:
+# litclock-bootcheck.service paints the same panel as pi (/review, Codex).
+User=pi
+# litclock-dev#725: the splash used to inherit CWD=`/`, where pi cannot create
+# lgpio's CWD-relative notify pipe (.lgd-nfy*), so it never painted. The cd
+# lives in the SPLASH SCRIPT, deliberately NOT as a WorkingDirectory= here:
+# that directive makes systemd chdir in every forked child BEFORE exec — both
+# ExecStart lines, marker write included — so a missing install dir would kill
+# the marker (exit 200/EXIT_CHDIR) while the dashed Execs report success. The
+# marker is the reliable half and must depend on nothing but /bin/sh and
+# /var/lib. Same LITCLOCK_DIR override the sibling splash units pass.
+Environment=LITCLOCK_DIR=/home/pi/litclock
+# BOTH commands are `-` prefixed, and that matters more than it looks. A
+# non-dashed ExecStart that fails aborts the remaining ones — so with the
+# marker write undashed, a read-only /var/lib would stop the splash from ever
+# running. That is not a hypothetical: a read-only remount is the most likely
+# reason the reset failed in the first place, i.e. the guard would go silent in
+# precisely the scenario it exists for (/review, Codex). Neither half may block
+# the other; systemd journals each failure independently.
+ExecStart=-/bin/sh -c 'mkdir -p /var/lib/litclock && date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ > /var/lib/litclock/reset-failed'
+ExecStart=-/home/pi/litclock/scripts/litclock-reset-failed-splash.sh
+TimeoutStartSec=90
+StandardOutput=journal
+StandardError=journal

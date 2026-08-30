@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "fleet_default": "en",
+  "languages": {
+    "en": {
+      "code": "en",
+      "native_name": "English",
+      "status": "active",
+      "curator": "kapoorankush",
+      "corpus": {
+        "path": "image-gen/litclock_annotated.csv",
+        "rows": 4808,
+        "sfw_coverage_pct": 100.0
+      },
+      "min_coverage_pct": 80,
+      "fonts": "builtin-literata",
+      "strings": "languages/en/strings.json",
+      "nsfw_tagged": true,
+      "plural_forms": ["one", "other"]
+    }
+  }
+}

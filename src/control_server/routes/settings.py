@@ -48,6 +48,8 @@ from typing import Any, Final
 
 from flask import Blueprint, abort, current_app, jsonify, redirect, render_template, request
 
+import strings_catalog  # noqa: E402 — src/ on sys.path; hard dep since litclock-dev#532
+
 from .. import handoff
 from ..csrf import CSRF_ACTION, CsrfTokenStore, origin_matches_host
 from ..errors import envelope
@@ -61,7 +63,7 @@ SYSTEMCTL_TIMEOUT_S: Final[int] = 5
 
 # The section identifiers a save can target. Used by the PRG redirect
 # (`?saved=<section>`) and as keys for per-section error rendering.
-SECTIONS: Final[tuple[str, ...]] = ("weather", "units", "gift", "location", "advanced")
+SECTIONS: Final[tuple[str, ...]] = ("weather", "units", "gift", "location", "advanced", "language")
 
 # Map section -> set of env keys that section is allowed to write. Belt
 # alongside SETTINGS_ALLOWLIST: the allowlist enforces shell-safety; this
@@ -79,6 +81,12 @@ SECTION_KEYS: Final[dict[str, frozenset[str]]] = {
     # WEATHER_UNITS) but the rendered title is "Temperature". A13 makes
     # the control auto-save on click — no Save button in this section.
     "units": frozenset({"WEATHER_UNITS"}),
+    # litclock-dev#532 pickers 5b: the Settings Language pill. Auto-saves on
+    # click (JS) or POSTs via the no-JS Save button; the section only renders
+    # on a multi-language fleet, but the writer stays registered regardless —
+    # config._validate_language gates values to active registry codes, so an
+    # out-of-band POST on a single-language fleet can at worst write "en".
+    "language": frozenset({"LITCLOCK_LANGUAGE"}),
     # litclock-dev#280: gift section is now compose-only. GIFT_MODE_MESSAGE persists as
     # a transient draft of the welcome message; the actual "trigger gift
     # mode" action is /api/system/prepare-for-gift on the system blueprint.
@@ -291,11 +299,16 @@ def _resolve_location(query: str, worldwide: bool = False) -> tuple[Mapping[str,
         result = geocode_location(query, country_code=country_code)
     except Exception as exc:
         log.warning("geocode_location raised: %r", exc)
-        return None, "Location lookup failed."
+        return None, strings_catalog.get("api.geocode.failed")
 
     if not isinstance(result, dict) or "lat" not in result or "lon" not in result:
-        msg = (result or {}).get("error") if isinstance(result, dict) else None
-        return None, msg or "Location not found."
+        # litclock-dev#532 final slice: the geocoder's error value is an
+        # internal English SIGNAL — displaying it raw would bypass the
+        # catalog on a translated page. Any miss shape maps to the
+        # catalog copy; the signal goes to the log instead.
+        if isinstance(result, dict) and result.get("error"):
+            log.info("geocode miss for %r: %s", query, result["error"])
+        return None, strings_catalog.get("api.geocode.not_found")
 
     return result, None
 
@@ -472,6 +485,8 @@ def _coerce_payload(
         if key in bool_keys:
             normalised = _normalize_bool(value)
             if normalised is None:
+                # Dev-contract path (checkboxes normalize) — stays
+                # English per the slice-10 scope line.
                 field_errors[key] = "must be 'true' or 'false'"
             else:
                 env_updates[key] = normalised
@@ -519,7 +534,7 @@ def _apply_clear_or_geocode(
         # failed geocode doesn't half-write coords (A15 atomicity contract).
         resolved, err_msg = _resolve_location(location_query, worldwide=worldwide)
         if err_msg or not resolved:
-            field_errors["location_query"] = err_msg or "Location not found."
+            field_errors["location_query"] = err_msg or strings_catalog.get("api.geocode.not_found")
         else:
             env_updates["WEATHER_LATITUDE"] = str(resolved["lat"])
             env_updates["WEATHER_LONGITUDE"] = str(resolved["lon"])
@@ -736,7 +751,22 @@ def _save_and_apply(
         # the user typed coords in the Advanced details; let the
         # validators below catch any range/format errors.
         if not (env_updates.get("WEATHER_LATITUDE") or env_updates.get("WEATHER_LONGITUDE")):
-            field_errors["location_query"] = "Type a place or pick Automatic."
+            # litclock-dev#532 slice 7: catalog-routed so the no-JS 422
+            # matches the translated page (the bulk route-messages slice
+            # converts the rest of this file's copy).
+            import strings_catalog  # noqa: PLC0415
+
+            field_errors["location_query"] = strings_catalog.get("settings.location.error_empty_specific")
+
+    # litclock-dev#532 pickers 5b (adversarial /review F2): a language-
+    # section save that carries no LITCLOCK_LANGUAGE at all is the no-radio-
+    # checked no-JS form (registry whose active set omits the device's
+    # current language). Without this guard the no-op write PRG-redirects to
+    # a lying "Saved." banner. Mirrors the A14 empty-Specific backstop.
+    if section == "language" and "LITCLOCK_LANGUAGE" not in env_updates:
+        import strings_catalog  # noqa: PLC0415
+
+        field_errors["LITCLOCK_LANGUAGE"] = strings_catalog.get("settings.language.error_empty")
 
     resolved_name, resolved_country = _apply_clear_or_geocode(
         env_updates,
@@ -1054,9 +1084,9 @@ def api_geocode() -> Any:
     if err_msg or not resolved:
         return envelope(
             "geocode_failed",
-            err_msg or "Location not found.",
+            err_msg or strings_catalog.get("api.geocode.not_found"),
             422,
-            fields={"location_query": err_msg or "Location not found."},
+            fields={"location_query": err_msg or strings_catalog.get("api.geocode.not_found")},
         )
 
     display = str(resolved.get("display_name") or "")
@@ -1109,7 +1139,7 @@ def api_system_set_timezone() -> Any:
     if not isinstance(timezone, str) or not timezone.strip():
         return envelope(
             "timezone_required",
-            "A timezone is required.",
+            strings_catalog.get("api.tz.required"),
             422,
         )
 
@@ -1120,7 +1150,7 @@ def api_system_set_timezone() -> Any:
         log.warning("steady-state set-timezone failed for %r: %s", timezone, err)
         return envelope(
             "invalid_timezone",
-            "That timezone isn't recognized. Pick one from a standard IANA list.",
+            strings_catalog.get("api.tz.invalid"),
             422,
         )
     return jsonify({"ok": True, "timezone": timezone.strip()}), 200

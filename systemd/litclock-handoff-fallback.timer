@@ -8,10 +8,43 @@ Documentation=https://github.com/kapoorankush/litclock/issues/388
 # that a crashed control_server doesn't leave the clock stuck for long.
 # OnActiveSec covers the mid-uptime enable path (update.sh enables units on a
 # running Pi where boot was hours ago, so OnBootSec is already in the past).
-# Single fire — once .handoff-complete exists the service's ConditionPathExists
-# makes it a no-op, and a tz-unknown device intentionally stays on the splash.
+#
+# OnUnitActiveSec=10min — re-check every 10 minutes (litclock-dev#676). This
+# used to be a deliberate SINGLE fire, on the grounds that once
+# .handoff-complete exists the service's ConditionPathExists makes it a no-op.
+# That is true of a device which is already set up — and this timer exists for
+# exactly the devices which are not. The service also requires .setup-complete
+# to be PRESENT, and on a fresh or cloned card that appears only when the
+# recipient finishes entering their WiFi password, which first-boot.sh allows
+# up to 1800s for. A recipient who takes longer than ten minutes over unboxing,
+# finding the hotspot, the captive sheet, picking a network and typing a
+# password gets the one shot fired at boot+10min into an unmet condition, and
+# nothing re-arms it: nothing outside the `systemctl enable` line touches this
+# unit, and first-boot.sh never restarts it, so OnActiveSec never re-bases
+# either. The safety net was absent for precisely the population it is for.
+#
+# Ten minutes is not a generous allowance for the target user; our own QA
+# budgets ~30s just for the WiFi join plus IP-geo.
+#
+# The load-bearing question is whether a CONDITION-SKIPPED oneshot still
+# re-arms OnUnitActiveSec — if it does not, the cadence ends at the first skip
+# and nothing here is fixed. MEASURED on systemd 255 with a throwaway unit
+# mirroring this one's two conditions: 8 consecutive skipped firings each
+# re-armed the timer, the service then ran on the very NEXT tick after the
+# condition became true (4 runs, exactly 5.027s apart at a 5s cadence), and
+# setting the negative condition returned it to skipping with the cadence
+# unbroken. That is the proof; litclock-bootcheck.timer is only corroboration
+# and a weaker one than it first looks — it uses the same three KEYS but
+# different values (12/12/5), and its gate on this marker is the OPPOSITE
+# polarity, so its fleet history evidences a SUCCEEDING oneshot re-arming,
+# which was never in doubt.
+#
+# A cadence must NOT become a retry that eventually gives up: the script keeps
+# refusing while the timezone is unknown, forever, and has no attempt counter.
+# tests/test_systemd_units.py pins that.
 OnBootSec=10min
 OnActiveSec=10min
+OnUnitActiveSec=10min
 Unit=litclock-handoff-fallback.service
 
 [Install]

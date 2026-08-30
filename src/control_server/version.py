@@ -30,7 +30,13 @@ def get_version(override: str | None = None) -> str:
         return override
     try:
         result = subprocess.run(
-            ["git", "describe", "--tags", "--always"],
+            # --match v[0-9]*: this repo also carries non-release tags
+            # (dev-YYYYMMDD-*, image tags). If one of those is nearest to
+            # HEAD, the described version is unparseable and update_state's
+            # availability compare degrades to different-means-available —
+            # the exact litclock-dev#728 lying card (/review litclock-dev#729). Anchor
+            # on release tags only; --always still falls back to a SHA.
+            ["git", "describe", "--tags", "--always", "--match", "v[0-9]*"],
             capture_output=True,
             text=True,
             cwd=_REPO_ROOT,

@@ -479,8 +479,7 @@ def _runtime_frame_ok(frame) -> str | None:
     Ink = pixel < 128, matching both GD's AA rounding and the dither=NONE
     conversion this frame is about to get. Subtle wrongness (bad break,
     off-by-one font size) is NOT detectable here — that correctness is
-    proven per-PR by the development repo's render-invariants CI, not
-    per-minute on the Pi."""
+    proven per-PR by the render-invariants CI, not per-minute on the Pi."""
     if frame.size != (DISPLAY_SIZE[0], QUOTE_AREA_H):
         return f"unexpected frame size {frame.size}"
     ink = frame.point(lambda v: 255 if v < 128 else 0)

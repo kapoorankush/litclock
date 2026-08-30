@@ -4,6 +4,11 @@ __pycache__
 venv/
 screen-output*
 env.sh
+# The cross-writer flock sidecar (litclock-dev#274). Created by every boot; untracked it
+# makes `git status --porcelain` permanently non-empty, so update.sh's
+# 'Uncommitted changes detected' warning fired on every OTA forever
+# (litclock-dev#721 bench pass).
+env.sh.lock
 env.sh.bak
 *.log
 .vscode
@@ -15,6 +20,16 @@ credentials*
 # swallow them so the relationship stays obvious to future readers.
 !package.json
 !package-lock.json
+# litclock-dev#532: the language registry + catalogs are DATA the runtime
+# depends on — the *.json catch-all silently ate them once (/review litclock-dev#738,
+# the exact litclock-dev#338 precedent five lines up).
+!languages.json
+!languages/*/strings.json
+# litclock-dev#532 translator kit: the skeleton translators copy and the
+# metadata the HTML tool + worksheet derive from are checked in (CI's
+# build_translator_kit.py --check keeps them in sync) — the *.json catch-all
+# would eat them like it ate the catalogs above.
+!translations/*.json
 *.bin
 
 # litclock-dev#338: vitest + jsdom dev dependencies. Dev/CI only — never on the Pi.
@@ -69,17 +84,17 @@ pi-gen/work/
 /images/
 !images/.installed-version
 
+# Scratch dirs and locks used by scripts/download_images.sh (transient).
+.litclock-images-staging.*
+.litclock-images.lock
+.claude/scheduled_tasks.lock
+
 # Renderer-validation marker: records the local font stack a measurement run
 # was verified against. Machine-specific by nature - committing it would let
 # every checkout claim a validation it never ran. The tooling that writes and
 # reads it is not in this repo yet; this rule is here so a stray marker from a
 # development checkout can never be committed by accident.
 .runtime-render-validated
-
-# Scratch dirs and locks used by scripts/download_images.sh (transient).
-.litclock-images-staging.*
-.litclock-images.lock
-.claude/scheduled_tasks.lock
 
 # Internal planning docs — maintainer-local, excluded from the public repo (litclock-dev#82 PII decision 2026-07-12)
 DESIGN.md

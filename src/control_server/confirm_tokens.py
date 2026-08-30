@@ -141,28 +141,32 @@ def envelope_for_consume_outcome(outcome: ConsumeOutcome):
       - "invalid"  → 401 confirm_token_invalid  (existing slug; legacy
                                                   unknown / wrong-action path)
     """
-    from .errors import envelope  # noqa: PLC0415 — lazy to keep test surface light
-
     # User-facing copy carries NO "confirm token" jargon (litclock-dev#597):
     # a non-technical owner should read what to do, not what broke internally.
     # The machine-readable `code` slugs are the stable contract the client
     # branches on and are unchanged.
+    # litclock-dev#532 slice 10: the copy resolves from the SAME catalog
+    # keys the client-side fallbacks pin — server and JS can never drift.
+    import strings_catalog  # noqa: PLC0415 — lazy, matches the errors import in this function
+
+    from .errors import envelope  # noqa: PLC0415 — lazy to keep test surface light
+
     if outcome == "expired":
         return envelope(
             "confirm_token_expired",
-            "This confirmation timed out for safety. Reload the page and try again.",
+            strings_catalog.get("common.confirm.timeout"),
             401,
         )
     if outcome == "consumed":
         return envelope(
             "confirm_token_consumed",
-            "This action was already submitted. Reload the page if you need to retry.",
+            strings_catalog.get("common.confirm.consumed"),
             409,
         )
     # outcome == "invalid"
     return envelope(
         "confirm_token_invalid",
-        "Couldn't verify that action. Reload the page and try again.",
+        strings_catalog.get("common.alert.token_invalid"),
         401,
     )
 

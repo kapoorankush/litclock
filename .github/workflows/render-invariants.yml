@@ -1,0 +1,135 @@
+name: Render invariants
+
+# litclock-dev#531 Stage-1 gate for the runtime quote renderer.
+#
+# THIS COPY IS A SUBSET of the development repository's workflow. Two of its
+# steps — Measurement exactness (`validate_gd_measure`) and Layout parity
+# (`gd_layout_probe.php` + `compare_layout.py`) — execute files under
+# spikes/531-runtime-render/, which is deliberately not mirrored here, so they
+# are omitted rather than dragged in. Do not "restore" them without also
+# porting that directory: the whole workflow was briefly deleted during the
+# v0.226.0 port for exactly that reason, which threw away the three gates
+# below with it.
+#
+# What still runs here, all on in-repo files:
+#
+#   1. Generator drift: image-gen/quote_to_image.php is pinned by sha1. The
+#      pin is REPO-LOCAL (this repo's copy carries qualified issue references,
+#      so it can never share a hash with the development repo's copy).
+#
+#   2. Expected-dump check: tools/validate_measurement.py verifies the
+#      committed tools/gd-expected-measurements.json.gz still matches live
+#      PHP-GD reality, so a font swap fails here and not on the Pi.
+#
+#   3. Render invariants: tools/render_invariants.py renders every corpus
+#      row through src/quote_renderer.py and enforces I1-I5 (coverage,
+#      fit sanity, litclock-dev#530 QR-notch clearance, credits collision, filename
+#      identity). The per-quote report is published as an artifact; the
+#      rendered images are NOT a shipping artifact (releases still come
+#      from corpus_edit ship until the Stage-2 flip).
+#
+# Byte-exactness of src/gd_measure.py against PHP imagettfbbox is therefore
+# proven only in the development repository; src/gd_measure.py says so.
+#
+# paths-filtered to renderer-relevant changes.
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'src/quote_renderer.py'
+      - 'src/gd_measure.py'
+      # render_invariants derives notch geometry from literary_clock's QR
+      # constants — a geometry-only change must re-run this gate
+      - 'src/literary_clock.py'
+      - 'tools/render_invariants.py'
+      - 'tools/validate_measurement.py'
+      - 'tools/gd_measure_dump.php'
+      - 'tools/gd-expected-measurements.json.gz'
+      - 'image-gen/litclock_annotated.csv'
+      - 'image-gen/quote_to_image.php'
+      - 'fonts/**'
+      - 'requirements.txt'
+      - 'requirements-dev.txt'
+      - '.github/workflows/render-invariants.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LITCLOCK_HOME: ${{ github.workspace }}
+  # spikes/531-runtime-render is NOT mirrored in this repository, so the two
+  # steps that depend on it (Measurement exactness, Layout parity) are not
+  # part of this copy of the workflow; PYTHONPATH carries src/ only.
+  PYTHONPATH: ${{ github.workspace }}/src
+
+concurrency:
+  group: render-invariants-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  render-invariants:
+    name: Measurement + parity + invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Generator drift check
+        # The parity oracle below is the spike probe (gd_layout_probe.php),
+        # a validated mirror of quote_to_image.php's fitText — validated
+        # against THIS exact generator. If the generator changes, green
+        # parity would prove nothing: fail loud and force a re-verification
+        # of probe + port semantics before updating this pin (litclock-dev#536
+        # review, C3).
+        #
+        # Pin moved c595a9dc -> 7a7a5803 for litclock-dev#584 (midnight image
+        # numbering). Re-verification: the change is `$previoustime = 0` -> `null`
+        # plus `==` -> `===`, and those two variables reach ONLY $imagenumber,
+        # which reaches ONLY the output filenames (:93, :94, :249, :327), two
+        # sprintf error strings (:205, :241) and one print (:246). Neither is
+        # passed to any GD drawing call, so no rendered pixel can move and the
+        # layout oracle below still describes this generator. Naming-only.
+        run: |
+          want=8901da430fa751e74e55c93b93eb3ea310a4066c
+          got=$(sha1sum image-gen/quote_to_image.php | cut -d' ' -f1)
+          if [ "$got" != "$want" ]; then
+            echo "::error::image-gen/quote_to_image.php changed (sha1 $got != pinned $want)."
+            echo "The layout-parity oracle was validated against the pinned generator."
+            echo "Re-verify gd_layout_probe.php + src/quote_renderer.py against the new"
+            echo "generator, then update the pin in this workflow."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install PHP + GD (measurement oracle)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q php-cli php-gd
+          php -r 'echo "PHP ", PHP_VERSION, " GD ", gd_info()["GD Version"], PHP_EOL;'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Expected-dump check (the Pi's no-PHP gate, kept honest here)
+        # Verifies the committed tools/gd-expected-measurements.json.gz
+        # still matches live PHP-GD-derived reality: a font swap or a
+        # gd_measure change that invalidates the dump must fail HERE, not
+        # on the Pi at Stage-2 flip time.
+        run: python3 tools/validate_measurement.py check
+
+      - name: Render invariants (full corpus)
+        run: python3 tools/render_invariants.py check --report render-invariants-report.json
+
+      - name: Publish per-quote report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: render-invariants-report
+          path: render-invariants-report.json
+          if-no-files-found: ignore

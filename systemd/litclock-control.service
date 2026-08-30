@@ -12,12 +12,13 @@ Wants=NetworkManager.service
 # then succeeds (self-heal across reboot). RestartSec=5 bounds the retry rate.
 StartLimitIntervalSec=0
 # Setup must complete before the control surface comes up. firstboot's
-# setup_server owns the device during provisioning (HTTPS on 8443 for the iOS
-# captive trust dance); control_server takes over once
+# setup_server owns the device during provisioning (plain HTTP on 8080 for
+# captive-portal detection; litclock-dev#715 retired its old normal-mode
+# HTTPS/8443 page); control_server takes over once
 # /etc/litclock/.setup-complete exists (locked PLAN A2). They're mutually
 # exclusive in time by design — not by port: litclock-dev#343 moved control_server to
 # plain HTTP on port 80 (so a recipient never types a port), while setup_server
-# stays on 8443. The port-80 bind works because After=sysinit.target orders this
+# stays on 8080. The port-80 bind works because After=sysinit.target orders this
 # unit after systemd-sysctl.service applies
 # /etc/sysctl.d/30-litclock-unprivileged-ports.conf (ip_unprivileged_port_start=80).
 ConditionPathExists=/etc/litclock/.setup-complete
@@ -26,19 +27,20 @@ ConditionPathExists=/etc/litclock/.setup-complete
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/litclock
-# Self-heal the port-80 bind precondition on every start (litclock-dev#343 follow-up,
-# litclock-dev#527). control_server binds port 80 as the non-root `pi` user,
-# which only works when net.ipv4.ip_unprivileged_port_start<=80. If the
-# persistent /etc/sysctl.d drop-in ever fails to apply — a silently-swallowed
-# install failure in an OTA (the field incident), a boot-order race, a manual
-# sysctl reset — the floor reverts to 1024 and this service crash-loops on
-# EACCES with no recovery path for a keyboard-less owner. The `+` runs this one
-# line as root, independent of the unit's User=pi/NoNewPrivileges wiring (it
-# bypasses that, doesn't depend on it); `-` ignores a failed/absent sysctl so
-# the pre-start can't itself become a start-failure. Defense-in-depth on top of
-# the boot-time drop-in — not a standalone guarantee: if BOTH the drop-in is
-# missing AND this sysctl write fails (a root write of a standard kernel knob —
-# near-impossible), the EACCES loop can still occur. Idempotent, ~1ms.
+# Self-heal the port-80 bind precondition on every start (litclock-dev#343
+# follow-up, litclock-dev#527). control_server binds port 80 as the non-root
+# `pi` user, which only works when net.ipv4.ip_unprivileged_port_start<=80. If
+# the persistent /etc/sysctl.d drop-in ever fails to apply — a
+# silently-swallowed install failure in an OTA (the field incident), a
+# boot-order race, a manual sysctl reset — the floor reverts to 1024 and this
+# service crash-loops on EACCES with no recovery path for a keyboard-less
+# owner. The `+` runs this one line as root, independent of the unit's
+# User=pi/NoNewPrivileges wiring (it bypasses that, doesn't depend on it); `-`
+# ignores a failed/absent sysctl so the pre-start can't itself become a
+# start-failure. Defense-in-depth on top of the boot-time drop-in — not a
+# standalone guarantee: if BOTH the drop-in is missing AND this sysctl write
+# fails (a root write of a standard kernel knob — near-impossible), the EACCES
+# loop can still occur. Idempotent, ~1ms.
 ExecStartPre=+-/usr/sbin/sysctl -q net.ipv4.ip_unprivileged_port_start=80
 ExecStart=/home/pi/litclock/venv/bin/python3 /home/pi/litclock/src/control_server/app.py
 Restart=on-failure

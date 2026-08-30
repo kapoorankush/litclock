@@ -20,6 +20,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import secrets
 import string
 import subprocess
@@ -57,6 +58,16 @@ NMCLI_TIMEOUT_RC = 124
 # band can make a rescan genuinely slow, so these only trip on a true wedge.
 SCAN_RESCAN_TIMEOUT = 10
 SCAN_LIST_TIMEOUT = 15
+# litclock-dev#654. Bounds the profile-BUILDING nmcli calls only (add /
+# modify / edit / read-back): those are local D-Bus round trips that return
+# in milliseconds, so a wedged one is a wedged daemon, and hanging there
+# would strand first-boot before its escalation (NM restart -> driver
+# reload) could run. `connection up` is deliberately left UNBOUNDED, which
+# is what the `device wifi hotspot` call it replaces did: that step talks to
+# the radio, and a Pi Zero 2W bringing up an AP is the one place a long wait
+# is legitimate. Bounding it would be a behaviour change smuggled in under a
+# security fix.
+HOTSPOT_META_TIMEOUT = 15
 
 # Failure classes carried on connect_to_wifi's error returns
 # (litclock-dev#603). The retry surfaces — the e-ink retry variant and the
@@ -167,10 +178,80 @@ def _run_nmcli(args, check=True, sudo=False, timeout=None, secret_output=False, 
     return result
 
 
-def _generate_password(length=8):
-    """Generate a random password for the hotspot."""
-    chars = string.ascii_letters + string.digits
-    return "".join(secrets.choice(chars) for _ in range(length))
+# litclock-dev#670. This value exists to be read off a 1-bit e-ink panel and
+# retyped into a phone. That is its whole job, so it is drawn from an alphabet
+# chosen for legibility rather than for entropy density.
+#
+# The evidence that the old 62-character alphabet was wrong for the job is as
+# direct as it gets: the project's own author, reading his own screenshot of
+# `cz7yOjWA`, could not tell whether it held a capital O or a zero. By the
+# arithmetic, 1 - (49/62)**8 = 84.8% of 8-character draws from the full
+# alphabet contained at least one of the characters excluded below, and 4 of
+# the 4 generated during the v0.224.0 bench pass were ambiguous.
+#
+# litclock-dev#620 is what makes a bad draw matter. Before it, an unlucky
+# password was replaced at the next provisioning cycle and the ambiguity was
+# transient. Now a device that mints an ambiguous key re-presents that exact
+# string at every future setup for the life of the device, and a recipient who
+# mistypes it lands on the litclock-dev#648 "Wrong password" screen -- or, on
+# the Android behaviour litclock-dev#620 measured, a dead end that blames the
+# router instead.
+#
+# One member of a class is kept where it is unambiguous on its own (lowercase b
+# and z survive because B/8 and Z/2 are gone).
+_PASSWORD_CONFUSABLES = frozenset("0Oo1lI5Ss8B2Z")
+
+HOTSPOT_PASSWORD_ALPHABET = "".join(c for c in string.ascii_letters + string.digits if c not in _PASSWORD_CONFUSABLES)
+
+# The floor lives with the constant, not only in the test suite (/review,
+# security pass). This fix works BY excluding characters, so over-broadening
+# _PASSWORD_CONFUSABLES is the natural way to break it -- and that failure is
+# silent, because a smaller alphabet still produces a valid-looking password.
+# litclock-dev#620 then persists the weakened key for the life of the device.
+# An empty alphabet already fails loud (secrets.choice raises IndexError), so
+# the gap this closes is the small-but-non-empty case.
+if len(HOTSPOT_PASSWORD_ALPHABET) < 48:  # pragma: no cover - import-time invariant
+    raise RuntimeError(
+        f"hotspot password alphabet collapsed to {len(HOTSPOT_PASSWORD_ALPHABET)} characters "
+        f"({HOTSPOT_PASSWORD_ALPHABET!r}); refusing to mint a low-entropy permanent WPA2 key"
+    )
+
+# NINE, NOT EIGHT, AND THE REASON IS THE SALT (owner decision, litclock-dev#670).
+#
+# Dropping the lookalike characters costs entropy: 49**8 is 44.9 bits against
+# the 62**8 = 47.6 bits the fleet had before. Eight characters would have been
+# defensible on the old reasoning -- the AP is LAN-local, up for minutes during
+# setup, and the binding exposure has always been that the key is printed on the
+# panel in plaintext by design.
+#
+# What changed that reasoning is a fleet-wide fact rather than a per-device one.
+# WPA2-PSK derives the PMK with PBKDF2-SHA1/4096 using the **SSID as the salt**,
+# and DEFAULT_SSID is a build-time constant identical on every LitClock. So the
+# salt is fleet-constant: a precomputed table is reusable against every device
+# ever shipped, and the marginal cost of the second device is about zero.
+# litclock-dev#620 then removed the rotation that used to bound a bad outcome in
+# time, so a key cracked offline months later is still live.
+#
+# Nine characters gives 49**9 = 50.5 bits -- MORE than the 47.6 the fleet had
+# before any of this -- for one extra character to type. It buys back the
+# legibility fix at no cost to the margin, which is why it beats both 8 and the
+# old 62-character alphabet.
+#
+# The floor this must never fall below is the PRE-litclock-dev#670 baseline of
+# 47.6 bits; the test asserts exactly that rather than a number derived from
+# these two constants.
+HOTSPOT_PASSWORD_LENGTH = 9
+
+
+def _generate_password(length=HOTSPOT_PASSWORD_LENGTH):
+    """Generate a random password for the hotspot.
+
+    Drawn from :data:`HOTSPOT_PASSWORD_ALPHABET`, which excludes lookalike
+    characters -- see the note above it. Existing devices keep the password
+    they already persisted (litclock-dev#620 made it permanent), so this
+    changes what NEW devices mint, not what provisioned ones present.
+    """
+    return "".join(secrets.choice(HOTSPOT_PASSWORD_ALPHABET) for _ in range(length))
 
 
 # Hotspot credential bounds (litclock-dev#626). 802.11-2020 §9.4.2.2: an SSID
@@ -192,6 +273,18 @@ def _generate_password(length=8):
 HOTSPOT_SSID_MAX_CHARS = 32
 HOTSPOT_PASSWORD_MIN_CHARS = 8
 HOTSPOT_PASSWORD_MAX_CHARS = 63
+
+# HOTSPOT_PASSWORD_LENGTH is declared ~30 lines above these bounds and sits
+# exactly on the lower one, so state the coupling where both ends are visible
+# (/review, security pass). Drift does not currently ship a bad AP --
+# create_hotspot validates the generated value before any side effect, so a
+# too-short length fails closed with "password must be 8-63 characters" and no
+# AP -- but it fails on hardware at provisioning time rather than here.
+if not (HOTSPOT_PASSWORD_MIN_CHARS <= HOTSPOT_PASSWORD_LENGTH <= HOTSPOT_PASSWORD_MAX_CHARS):  # pragma: no cover
+    raise RuntimeError(
+        f"generated hotspot password length {HOTSPOT_PASSWORD_LENGTH} is outside the "
+        f"WPA2 bounds {HOTSPOT_PASSWORD_MIN_CHARS}-{HOTSPOT_PASSWORD_MAX_CHARS}"
+    )
 
 
 def _outside_printable_ascii(value):
@@ -251,11 +344,24 @@ def _validate_hotspot_password(password):
 # Persisted per-device hotspot password (litclock-dev#620). Before this, every
 # provisioning cycle minted a fresh password under the SAME SSID, so a phone
 # that had joined once held a saved entry whose credential no longer worked.
-# Hardware-measured 2026-08-12: iOS surfaces "Incorrect password" and offers a
-# password field (recoverable), but Android reports "No Internet Access",
-# never mentions the password, never offers a field, and a QR scan does NOT
-# override the saved entry — leaving no user-discoverable recovery short of
-# "Forget This Network", which the non-technical recipient will not find.
+# MEASURED TWICE, AND THE SECOND RUN DISAGREED (litclock-dev#648, corrected
+# here per litclock-dev#663 — CLAUDE.md and the CHANGELOG were fixed and these
+# comments were not, so they read as a direct contradiction of the entry
+# shipping beside them). 2026-08-12, OnePlus 6T: iOS surfaced "Incorrect
+# password" and offered a field, while Android reported "No Internet Access",
+# never mentioned the password, offered no field, and a QR scan did not
+# override the saved entry. 2026-08-15, a different handset in the same
+# stale-credential condition: "Connection failed — Wrong password for
+# LitClock-Setup", an offered "Change password", and a QR scan that connected
+# first try. Android's WiFi error surfaces have changed materially across
+# releases, so both readings stand and the strong claim — that Android left no
+# user-discoverable recovery short of "Forget This Network" — is UNPROVEN
+# rather than established.
+#
+# None of that changes this decision: a stable per-device password means a
+# normal owner never reaches any of these screens, which is the right outcome
+# however gracefully a given Android build degrades. Only the severity
+# narrative was stale.
 #
 # WHO RUNS THIS: litclock-firstboot.service is `User=pi`, so the shipped
 # writer, the file owner and the directory owner are all uid pi. (An earlier
@@ -265,7 +371,13 @@ def _validate_hotspot_password(password):
 # NOTE the env vars are read at IMPORT time, unlike the shell scripts which
 # re-read them per process. Tests and callers override the module attribute
 # (which _load_or_create_hotspot_password resolves at call time), not the env.
-STATE_DIR = os.environ.get("LITCLOCK_STATE_DIR", "/var/lib/litclock")
+# The default is named so tests can assert on IT rather than on the resolved
+# value: STATE_DIR is env-derived at import time, so a runner with
+# LITCLOCK_STATE_DIR exported would fail a resolved-value assertion for a
+# reason that has nothing to do with the code (litclock-dev#662). The shell
+# scripts carry the same default and a test pins the two together.
+STATE_DIR_DEFAULT = "/var/lib/litclock"
+STATE_DIR = os.environ.get("LITCLOCK_STATE_DIR", STATE_DIR_DEFAULT)
 HOTSPOT_PASSWORD_FILE = os.environ.get("LITCLOCK_HOTSPOT_PASSWORD_FILE", os.path.join(STATE_DIR, "hotspot-password"))
 # Staging prefix for the atomic write. Shared with the reset/clone scripts,
 # which must sweep orphans matching it — a SIGKILL between mkstemp and
@@ -322,13 +434,51 @@ def _read_persisted_password(path):
             # TOCTOU). Without this the 0600 promise only ever held for files
             # THIS code created — a 0644 file from an older install, a restore,
             # or a hand edit would be accepted and left world-readable forever.
+            # Bound before the try: os.fstat is inside it, so a failure there
+            # would leave `mode` undefined and turn the handler's log call into
+            # a NameError -- swapping a fail-closed path for a crash.
+            mode = -1
             try:
                 mode = os.fstat(fh.fileno()).st_mode & 0o777
                 if mode != 0o600:
                     os.fchmod(fh.fileno(), 0o600)
                     logging.warning("Tightened hotspot password %s from %o to 0600", path, mode)
             except OSError as e:
-                logging.warning("Could not tighten permissions on %s (%s)", path, e)
+                # FAIL CLOSED (litclock-dev#663). Falling through here returned
+                # the value anyway, so the exact case the fchmod exists for --
+                # "a 0644 file from an older install, a restore, or a hand
+                # edit" -- was read, accepted, and kept in service as the
+                # device's PERMANENT WPA2 key while staying world-readable
+                # forever. That is the outcome the tightening was added to
+                # prevent, so the guard was doing nothing on the only path
+                # where it mattered.
+                #
+                # Returning None mints a replacement instead. For the case
+                # this guard is actually about -- ownership or mode drift on
+                # the stored file -- that self-heals in ONE cycle:
+                # _persist_password fchmods a fresh mkstemp fd we own (so it
+                # succeeds where the fchmod on someone else's file did not) and
+                # os.replace lands it whatever the old file's owner, because
+                # /var/lib/litclock is pi-writable and not sticky. One
+                # stale-credential cycle is the same trade the PermissionError
+                # branch above already makes and says so out loud.
+                #
+                # If fchmod is instead unavailable FILESYSTEM-WIDE, the
+                # replacement write fails too and the device rotates every
+                # cycle -- degraded to the pre-litclock-dev#620 behaviour
+                # rather than broken, and _load_or_create_hotspot_password
+                # already logs that outcome explicitly. Still the right side to
+                # fail on: a rotating key is recoverable by re-reading the
+                # panel, a world-readable permanent one is not (/review).
+                logging.error(
+                    "Hotspot password %s is mode %o and could not be tightened to 0600 (%s) — "
+                    "minting a REPLACEMENT rather than keeping a world-readable permanent key. "
+                    "Any phone that saved this network will fail to rejoin.",
+                    path,
+                    mode,
+                    e,
+                )
+                return None
     except (OSError, UnicodeDecodeError) as e:
         logging.warning("Could not read persisted hotspot password %s (%s) — regenerating", path, e)
         return None
@@ -369,7 +519,36 @@ def _persist_password(path, password):
             fh.write(password + "\n")
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        try:
+            os.replace(tmp, path)
+        except IsADirectoryError:
+            # litclock-dev#663. A directory here is the one corrupt shape that
+            # does NOT self-heal. A symlink or a FIFO is simply overwritten by
+            # os.replace, and the docstring above enumerates exactly those two
+            # plus the loose-mode case, implying the handling is complete --
+            # but os.replace refuses a directory, so every provisioning cycle
+            # mints a fresh key forever. That is a permanent, silent
+            # degradation to the pre-litclock-dev#620 behaviour that
+            # litclock-dev#620 exists to remove, and the only signal was a
+            # warning reading "this cycle only", which is precisely wrong: it
+            # is EVERY cycle. Reproduced directly, two cycles, two different
+            # passwords.
+            #
+            # rmdir succeeds only on an EMPTY directory, so this cannot destroy
+            # data; a non-empty one still fails, and now says so accurately.
+            try:
+                os.rmdir(path)
+            except OSError as e:
+                logging.error(
+                    "A non-empty directory is squatting at the hotspot password path %s (%s). "
+                    "This will NOT self-heal: every provisioning mints a different key, so "
+                    "phones that saved the setup network will fail to rejoin. Remove it by hand.",
+                    path,
+                    e,
+                )
+                return False
+            logging.warning("Removed an empty directory squatting at the hotspot password path %s", path)
+            os.replace(tmp, path)
         tmp = None
         # Durability of the rename itself lives in the DIRECTORY entry.
         try:
@@ -401,7 +580,13 @@ def _load_or_create_hotspot_password(path=None):
     The returned value is always the one that is actually ON DISK when a write
     succeeded. That post-condition is the whole invariant: if the AP were
     brought up with a password the file does not hold, the next cycle would
-    strand the phone — litclock-dev#620 all over again, caused by the fix for litclock-dev#620.
+    strand the phone — litclock-dev#620 all over again, caused by the fix for
+    litclock-dev#620.
+
+    The invariant is about THIS function, not about every hotspot (litclock-dev#664).
+    `create_hotspot(password=X)` never calls it, so an explicit override does
+    leave the live AP and the file disagreeing — deliberately, and only until
+    the next cycle. Nothing shipped passes one.
     """
     path = path or HOTSPOT_PASSWORD_FILE
     stored = _read_persisted_password(path)
@@ -419,8 +604,20 @@ def _load_or_create_hotspot_password(path=None):
             path,
         )
         return password
-    # Re-read: if a concurrent writer won the replace, adopt THEIR value so the
-    # live AP and the persisted file can never disagree.
+    # Re-read: if a concurrent writer won the replace, adopt THEIR value, so
+    # that ON THIS PATH the live AP and the persisted file cannot disagree.
+    #
+    # litclock-dev#664: that scoping is the correction. The claim used to be
+    # unqualified, and it is only true when `create_hotspot` was called with
+    # `password=None` -- i.e. every shipped path. An explicit `password=`
+    # (the `--password` CLI flag, and the QA lab) SKIPS this function entirely,
+    # so the AP comes up on that value while the file still holds the device's
+    # own, and the next provisioning cycle silently reverts to the stored one.
+    # That is deliberate and pinned by `test_explicit_password_still_wins`: an
+    # override is for looking at behaviour on a bench, and having it rewrite
+    # the device's persistent key would make a debugging flag a destructive
+    # one. But the docstring asserted an invariant the code does not hold, and
+    # that is the kind of sentence the next person reasons from.
     winner = _read_persisted_password(path)
     if winner is not None and _validate_hotspot_password(winner) is None and winner != password:
         logging.warning("Another writer won the hotspot-password race at %s — adopting the stored value", path)
@@ -649,6 +846,132 @@ def _teardown_captive_portal():
     )
 
 
+def _password_is_editor_safe(password):
+    """Can this value ride `nmcli connection edit`'s stdin?
+
+    Each newline there executes as another editor command, under sudo, and the
+    editor strips leading/trailing whitespace so a padded value would round-trip
+    as a DIFFERENT password than the panel prints. `validate_hotspot_credentials`
+    accepts `" secret1 "` because 0x20 is printable ASCII, so this is a separate
+    question from validity (litclock-dev#654 /review).
+    """
+    if password != password.strip():
+        return False
+    return not any(ord(ch) < 0x20 or ch == "\x7f" for ch in password)
+
+
+# litclock-dev#654. Split out of create_hotspot so the secret-bearing steps sit
+# in one place with one exit path: any failure leaves NO half-built profile
+# behind, because first-boot.sh retries hotspot creation with escalating
+# recovery and a leftover profile would poison the retry.
+def _build_hotspot_profile(ssid, password):
+    """Create + activate the AP profile without the PSK ever reaching argv.
+
+    Returns True on success. On any failure the caller tears down, so this
+    only logs and returns False.
+    """
+    add = _run_nmcli(
+        ["connection", "add", "type", "wifi", "ifname", "wlan0",
+         "con-name", HOTSPOT_CON_NAME, "autoconnect", "no", "ssid", ssid],
+        check=False, sudo=True, timeout=HOTSPOT_META_TIMEOUT,
+    )
+    if add.returncode != 0:
+        logging.error(f"Failed to create hotspot profile: {add.stderr.strip()}")
+        return False
+
+    # Address the profile we just made by UUID, not by name (litclock-dev#654
+    # /review). NM appends a numeric suffix to the FILE but not to the id, so a
+    # failed teardown delete -- the documented premise of litclock-dev#653,
+    # which prepare-for-cloning.sh calls out by name -- leaves two profiles
+    # sharing the id `litclock-hotspot`. Every following call re-resolves, so
+    # by-name addressing could modify one profile, read back another, and
+    # activate a third. `_restore_ssid_psks` addresses by uuid for exactly this
+    # reason. If the UUID cannot be parsed we fall back to the name rather than
+    # refusing: by-name is what shipped for months, so a parse miss must not be
+    # worse than the status quo.
+    match = re.search(r"\(([0-9a-fA-F-]{36})\)", add.stdout or "")
+    if match:
+        target = ["uuid", match.group(1)]
+    else:
+        logging.warning(
+            "Could not read the new hotspot profile's UUID from nmcli; addressing it by name "
+            "(litclock-dev#654). A duplicate profile id would make the next steps ambiguous."
+        )
+        target = [HOTSPOT_CON_NAME]
+
+    # Everything except the secret. Matches what `device wifi hotspot` sets,
+    # measured by diffing the two profiles on hardware (litclock-dev#654):
+    # ipv4 shared is what starts NM's dnsmasq (and with it the
+    # /etc/NetworkManager/dnsmasq-shared.d config the captive portal writes),
+    # ipv6 ignore matches the old profile, and proto/pairwise/group pin
+    # WPA2-CCMP where key-mgmt alone would also allow WPA/TKIP. `band` is
+    # deliberately NOT set: the old call left it unset too, and pinning it
+    # would be a behaviour change smuggled in under a security fix.
+    modify = _run_nmcli(
+        ["connection", "modify", *target,
+         "802-11-wireless.mode", "ap",
+         "ipv4.method", "shared",
+         "ipv6.method", "ignore",
+         "802-11-wireless-security.key-mgmt", "wpa-psk",
+         "802-11-wireless-security.proto", "rsn",
+         "802-11-wireless-security.pairwise", "ccmp",
+         "802-11-wireless-security.group", "ccmp"],
+        check=False, sudo=True, timeout=HOTSPOT_META_TIMEOUT,
+    )
+    if modify.returncode != 0:
+        logging.error(f"Failed to configure hotspot profile: {modify.stderr.strip()}")
+        return False
+
+    # The secret, on stdin. `set` takes the rest of the line LITERALLY on NM
+    # 1.42.4 (colons and backslashes round-trip) but strips leading/trailing
+    # whitespace and cannot carry control characters — each newline would
+    # execute as another editor command, under sudo. Generated passwords are
+    # drawn from HOTSPOT_PASSWORD_ALPHABET and a hand-passed one has already
+    # been through validate_hotspot_credentials, which rejects non-printable
+    # ASCII; this re-checks rather than assuming, because the consequence of
+    # being wrong is an editor executing attacker-shaped lines as root.
+    # Defence in depth: create_hotspot rejects this before ANY side effect, so
+    # reaching here means a new caller skipped that gate. Refuse anyway -- the
+    # consequence of being wrong is root running attacker-shaped editor lines.
+    if not _password_is_editor_safe(password):
+        logging.error(
+            "Refusing to create hotspot: the password contains characters the "
+            "profile editor cannot carry safely (litclock-dev#654)"
+        )
+        return False
+    edit = _run_nmcli(
+        ["connection", "edit", *target],
+        check=False, sudo=True, timeout=HOTSPOT_META_TIMEOUT,
+        input_text=f"set 802-11-wireless-security.psk {password}\nsave persistent\nquit\n",
+        secret_output=True,
+    )
+
+    # The editor's exit code is a WEAK signal — it exits 0 after `quit` even
+    # when `save` printed an error (litclock-dev#599) — so the authority is a
+    # read-back. Without this an AP could come up with no PSK, or a truncated
+    # one, while the panel printed the value we meant. `-g` output is
+    # terse-ESCAPED even for a single field (litclock-dev#616), so unescape before
+    # comparing raw against raw.
+    check = _run_nmcli(
+        ["-s", "-g", "802-11-wireless-security.psk", "connection", "show", *target],
+        check=False, sudo=True, timeout=HOTSPOT_META_TIMEOUT, secret_output=True,
+    )
+    if check.returncode != 0 or _unescape_terse(check.stdout.rstrip("\n")) != password:
+        logging.error(
+            f"Hotspot password did not store correctly (edit rc={edit.returncode}, "
+            f"read-back rc={check.returncode}) — refusing to raise an AP whose key "
+            "does not match what the panel will print (litclock-dev#654)"
+        )
+        return False
+
+    # Unbounded, matching the call this replaces — see HOTSPOT_META_TIMEOUT.
+    up = _run_nmcli(["connection", "up", *target], check=False, sudo=True)
+    if up.returncode != 0:
+        logging.error(f"Failed to activate hotspot: {up.stderr.strip()}")
+        return False
+    return True
+
+
 def create_hotspot(ssid=DEFAULT_SSID, password=None):
     """
     Create a WiFi hotspot using nmcli.
@@ -670,6 +993,17 @@ def create_hotspot(ssid=DEFAULT_SSID, password=None):
         logging.error(f"Refusing to create hotspot: {error}")
         return None
 
+    # Same contract, second rule (litclock-dev#654): the PSK now rides the
+    # connection editor's stdin, and a value the editor cannot carry has to be
+    # refused HERE -- before the teardown, the captive-portal write and the
+    # profile add -- or "no side effects on a rejected pair" stops being true.
+    if not _password_is_editor_safe(password):
+        logging.error(
+            "Refusing to create hotspot: the password has leading/trailing whitespace or "
+            "control characters, which the profile editor cannot carry (litclock-dev#654)"
+        )
+        return None
+
     logging.info(f"Creating hotspot: {ssid}")
 
     if not ensure_wifi_ready():
@@ -683,28 +1017,34 @@ def create_hotspot(ssid=DEFAULT_SSID, password=None):
     # (NM reads dnsmasq-shared.d when activating the shared connection)
     _setup_captive_portal()
 
-    # Create hotspot — sudo needed: no active polkit session when run from systemd
-    result = _run_nmcli(
-        [
-            "device",
-            "wifi",
-            "hotspot",
-            "ifname",
-            "wlan0",
-            "con-name",
-            HOTSPOT_CON_NAME,
-            "ssid",
-            ssid,
-            "password",
-            password,
-        ],
-        check=False,
-        sudo=True,
-    )
-
-    if result.returncode != 0:
-        logging.error(f"Failed to create hotspot: {result.stderr.strip()}")
-        _teardown_captive_portal()
+    # Create hotspot — sudo needed: no active polkit session when run from systemd.
+    #
+    # litclock-dev#654: the PSK is NEVER an argv token. sudo writes the full
+    # argv of every command it runs to syslog, and the flashed image sets
+    # journald Storage=persistent, so `nmcli … password <psk>` put the setup
+    # key on the SD card — where clone prep's 1-day vacuum could not be relied
+    # on to remove it and every clone of that card carried it. litclock-dev#620 closed
+    # the READ side (support-bundle redaction); this closes the write.
+    #
+    # `nmcli device wifi hotspot … --ask` DOES NOT WORK for this, and fails
+    # SILENTLY. Measured on the bench Pi (NM 1.42.4, 2026-08-19): with the
+    # password piped on stdin, nmcli returned 0, reported success, and the
+    # profile stored `9nDARlr9` — a key IT generated, not the one we piped.
+    # `--ask` prompts for MISSING REQUIRED arguments, and hotspot's `password`
+    # is optional (nmcli mints one when absent), so the prompt never fires and
+    # stdin is ignored. That would have shipped a panel printing a password
+    # that does not work, on the path every new device takes. The join path's
+    # verified `--ask` + stdin channel (litclock-dev#599 / litclock-dev#630) does not generalise here.
+    #
+    # So the profile is built explicitly and the secret rides the connection
+    # editor's stdin — the same channel the litclock-dev#613 PSK restore already uses.
+    # The property set below was derived by DIFFING a profile built by
+    # `device wifi hotspot` against this one on hardware; it is that command's
+    # own output, minus the runtime-only `seen-bssids`. The security triple in
+    # particular is load-bearing: `key-mgmt wpa-psk` alone would also permit
+    # WPA/TKIP, where the old call pinned WPA2/CCMP only.
+    if not _build_hotspot_profile(ssid, password):
+        teardown_hotspot()
         return None
 
     logging.info(f"Hotspot '{ssid}' created successfully")
@@ -717,11 +1057,21 @@ def create_hotspot(ssid=DEFAULT_SSID, password=None):
 
 
 def teardown_hotspot():
-    """Deactivate and remove the hotspot connection profile."""
+    """Deactivate and remove the hotspot connection profile.
+
+    Bounded (litclock-dev#654 /review): create_hotspot now calls this on its
+    FAILURE path, and the failure that gets there most often is a metadata call
+    that timed out because NM is wedged. An unbounded cleanup right after that
+    would hang in exactly the state first-boot.sh's escalation (NM restart ->
+    driver reload) exists to recover from, and first-boot wraps this Python in
+    no timeout of its own. nmcli self-bounds these with its own --wait default,
+    so this is belt-and-braces rather than a live hang -- but the alternative is
+    a comment claiming a guarantee the code does not give.
+    """
     # Deactivate
-    _run_nmcli(["connection", "down", HOTSPOT_CON_NAME], check=False, sudo=True)
+    _run_nmcli(["connection", "down", HOTSPOT_CON_NAME], check=False, sudo=True, timeout=HOTSPOT_META_TIMEOUT)
     # Delete the profile
-    _run_nmcli(["connection", "delete", HOTSPOT_CON_NAME], check=False, sudo=True)
+    _run_nmcli(["connection", "delete", HOTSPOT_CON_NAME], check=False, sudo=True, timeout=HOTSPOT_META_TIMEOUT)
     # Clean up captive portal config
     _teardown_captive_portal()
     logging.info("Hotspot torn down")
@@ -1296,9 +1646,15 @@ def _clear_wifi_watchdog_counter():
     Best-effort: missing file or permission error is silently ignored — the
     next watchdog tick after this clears it via the success path anyway.
     """
+    # Derived from STATE_DIR, not hardcoded (litclock-dev#662 /review). The
+    # shell side already derives it — scripts/wifi-watchdog.sh builds it from
+    # "${LITCLOCK_STATE_DIR:-/var/lib/litclock}" — so a literal here meant a
+    # LITCLOCK_STATE_DIR override moved the hotspot password but NOT the
+    # watchdog counter, leaving the two halves of the same state dir pointing
+    # at different places.
     counter_file = os.environ.get(
         "LITCLOCK_WIFI_WATCHDOG_COUNTER",
-        "/var/lib/litclock/wifi-watchdog-reboots",
+        os.path.join(STATE_DIR, "wifi-watchdog-reboots"),
     )
     try:
         if os.path.exists(counter_file):

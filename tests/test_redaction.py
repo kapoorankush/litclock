@@ -474,3 +474,127 @@ class TestNmcliArgvSecrets:
 
     def test_keyed_form_still_redacted(self):
         assert "my secret pass" not in redact_text('WIFI_PASSWORD="my secret pass"')
+
+
+class TestRedactionDoesNotMangleTheLine:
+    """litclock-dev#661 — three ways the filter damaged lines it had no need to
+    touch. A support bundle exists to be read; a redactor that destroys the
+    surrounding context defeats the point of shipping one, and a PARTIAL
+    redaction is worse than none because it makes the leak look handled.
+    """
+
+    def test_the_read_form_keeps_its_subcommand(self):
+        """`-g <property>` is a FIELD SELECTOR: the next token is nmcli's
+        subcommand, not a value. This exact command runs at three sites in
+        src/wifi_provision.py (the litclock-dev#613/litclock-dev#616 PSK-snapshot paths),
+        and it was being rewritten to `... .psk ***REDACTED*** show uuid ...`,
+        erasing which subcommand ran on the paths hardest to debug remotely.
+        No secret is at risk either way — in the read form the value comes back
+        on stdout, not in argv.
+        """
+        line = "COMMAND=/usr/bin/nmcli -s -g 802-11-wireless-security.psk connection show uuid abc-123"
+        out = redact_text(line)
+        assert "connection show uuid abc-123" in out, f"subcommand erased: {out}"
+
+    def test_the_fields_read_form_keeps_its_subcommand(self):
+        out = redact_text("nmcli -f 802-11-wireless-security.psk connection show uuid abc")
+        assert "connection show uuid abc" in out, f"subcommand erased: {out}"
+
+    def test_a_keyed_secret_does_not_eat_the_character_before_it(self):
+        """The delimiter was matched outside the captured prefix, so it was
+        dropped: `export PSK=x` came out as `exportPSK=***REDACTED***`. Every
+        keyed redaction not at line start lost a character.
+        """
+        assert redact_text("export PSK=abcdefgh").startswith("export PSK="), "the space was eaten"
+        assert "env WIFI_PASSWORD=" in redact_text("env WIFI_PASSWORD=hunter2secret here")
+        assert "a,PASSWORD=" in redact_text("a,PASSWORD=x")
+        assert "--hotspot-password=" in redact_text("run --hotspot-password=AbC12dEf"), "the hyphen was eaten"
+
+    def test_a_read_flag_cannot_be_used_to_suppress_a_real_secret(self):
+        """/review: keying the exemption only on the preceding flag meant a
+        line could exempt itself. Both conditions are required now — a read
+        flag AND a following token that is actually an nmcli subcommand.
+        """
+        out = redact_text("COMMAND=/usr/bin/nmcli device wifi connect -g password hunter2secret")
+        assert "hunter2secret" not in out, f"the -g exemption suppressed a real secret: {out}"
+
+    def test_a_long_option_does_not_swallow_the_next_option(self):
+        r"""/review: `\S+` let the value consume the NEXT option, so
+        `--password --api-key X` redacted the literal string `--api-key` and
+        left X exposed with the real option already consumed."""
+        out = redact_text("cmd --password --api-key AbC12dEf --port 80")
+        assert "AbC12dEf" not in out, f"the following option's value leaked: {out}"
+
+    def test_no_quoting_shape_leaves_a_fragment(self):
+        """/review found a quoted alternation could not be made safe: an
+        embedded apostrophe matched `'Bob'` and left `s secret pass'`, and an
+        unterminated quote fell through to the bare-token branch and left
+        `secret`. Both are the same partial redaction in a new costume, and a
+        partial redaction is worse than none because it looks handled.
+        """
+        for tail in (
+            "'Bob's secret pass'",
+            "'unterminated secret pass",
+            "my secret pass",
+            '"double quoted pass"',
+        ):
+            out = redact_text(f"nmcli device wifi connect Home password {tail}")
+            # "pass" would match inside "password" itself, so assert on the
+            # distinctive words of the value instead.
+            for fragment in ("secret", "Bob", "unterminated", "double", "quoted"):
+                assert fragment not in out, f"fragment {fragment!r} survived for {tail!r}: {out}"
+
+    def test_taking_the_rest_of_the_line_still_keeps_what_precedes_it(self):
+        """The cost of redacting to end-of-line, bounded. nmcli takes the
+        credential as the LAST key/value pair, so everything diagnostic comes
+        before it and survives."""
+        out = redact_text(
+            "COMMAND=/usr/bin/nmcli device wifi hotspot ifname wlan0 "
+            "con-name litclock-hotspot ssid LitClock-Setup password AbC12dEf"
+        )
+        assert "AbC12dEf" not in out
+        assert "LitClock-Setup" in out, f"the SSID is not the secret; keep the line diagnosable: {out}"
+        assert "ifname wlan0" in out, f"lost the interface: {out}"
+
+    def test_a_passphrase_containing_spaces_is_fully_redacted(self):
+        """`(\\S+)` stopped at the first space, so only the first word went --
+        `password ***REDACTED*** secret pass'`. Worse than no redaction: the
+        partial replacement makes the leak look handled. WPA2 permits spaces in
+        printable-ASCII passphrases and _validate_hotspot_password accepts them.
+        """
+        for quoted in ("'my secret pass'", '"my secret pass"'):
+            out = redact_text(f"sudo nmcli device wifi connect Home password {quoted}")
+            assert "secret" not in out, f"passphrase leaked in fragments: {out}"
+            assert "pass'" not in out and 'pass"' not in out, f"trailing fragment left: {out}"
+
+    def test_abbreviated_nmcli_objects_are_still_in_scope(self):
+        """nmcli accepts unambiguous prefixes, none of which contain the full
+        words the line-scope guard used to look for, so `nmcli d w connect ...`
+        passed through untouched. Not reachable from our own code (we never
+        abbreviate) — it matters because sudo's audit line records whatever an
+        operator typed over SSH, and that journal is what the bundle exports.
+        """
+        assert "hunter2secret" not in redact_text("COMMAND=/usr/bin/nmcli d w connect MyNet password hunter2secret")
+        assert "hunter2secret" not in redact_text("nmcli c modify litclock-hotspot wifi-sec.psk hunter2secret")
+
+    def test_the_long_option_form_is_redacted(self):
+        """scripts/first-boot.sh passes the now-permanent key as argv, so it
+        sits in world-readable /proc/<pid>/cmdline and in sudo's audit line.
+        _redact_nmcli_argv early-returns on any line without "nmcli", so this
+        sibling path was untouched entirely.
+        """
+        for line in (
+            "COMMAND=/usr/bin/python3 src/setup_server.py --hotspot-password AbC12dEf --port 80",
+            "COMMAND=/usr/bin/python3 src/setup_server.py --hotspot-password=AbC12dEf --port 80",
+        ):
+            out = redact_text(line)
+            assert "AbC12dEf" not in out, f"argv key leaked: {out}"
+            assert "--port 80" in out, f"the rest of the command line was damaged: {out}"
+
+    def test_the_line_scope_guard_still_scopes(self):
+        """Guard the guard. Deleting the line-scope check left all six original
+        nmcli tests green, so nothing proved it was doing anything. A line that
+        mentions nmcli but invokes no wifi/connection object must be left alone.
+        """
+        text = "nmcli is not installed; password rotation skipped for now"
+        assert redact_text(text) == text, "an nmcli-free invocation was redacted anyway"

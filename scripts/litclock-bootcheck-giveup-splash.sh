@@ -11,7 +11,10 @@
 # the multi-word status message).
 INSTALL_DIR="${LITCLOCK_DIR:-/home/pi/litclock}"
 
+# litclock-dev#532 slice 2: the triplet resolves from the catalog
+# (bootcheck.splash.gave_up.*). Degradation on this doom path: a missing
+# catalog serves visible key names, a missing strings_catalog MODULE is
+# caught inside eink_display (painting key names) — the paint dies only if
+# the display stack itself is broken, exactly as before.
 exec "$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/src/eink_display.py" status \
-    "Recovery failed" \
-    --message "The clock couldn't repair itself after an update." \
-    --submessage "Please re-flash the SD card — see the LitClock docs."
+    --catalog-prefix bootcheck.splash.gave_up

@@ -13,6 +13,10 @@ INSTALL_DIR="${LITCLOCK_DIR:-/home/pi/litclock}"
 PYTHON="$INSTALL_DIR/venv/bin/python3"
 
 if [[ -f "$INSTALL_DIR/src/eink_display.py" ]]; then
-    cd "$INSTALL_DIR" || return
-    timeout 20 "$PYTHON" src/eink_display.py status "LitClock" --message "Starting..." || true
+    # `return` at top level is a bash error that CONTINUES execution — it
+    # guarded nothing (litclock-dev#725 review). exit 0 actually skips the paint.
+    cd "$INSTALL_DIR" || exit 0
+    # litclock-dev#532 bulk extraction: triplet resolves from the language
+    # catalog inside the same spawn (boot.splash.starting.*).
+    timeout 20 "$PYTHON" src/eink_display.py status --catalog-prefix boot.splash.starting || true
 fi

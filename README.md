@@ -39,7 +39,7 @@ Four steps, roughly an afternoon (most of it waiting for the 3D printer).
 | microSDHC card | 32 GB recommended | $10 |
 | Micro-USB power supply | 5V/2A minimum | $10 |
 | 3D-printed case *(optional)* | PLA — see step 3 | $5–30 |
-| M2.5 threaded inserts + screws, USB-C→Micro-USB adapter *(case only)* | Inserts secure the case; the adapter puts a clean USB-C port on the back | $8 |
+| M2.5 threaded inserts + screws *(case only)* | Inserts secure the case; the back cover exposes the Pi's own micro-USB power port directly | $8 |
 
 Full details in **[Hardware Assembly](docs/hardware-assembly.md)**.
 
@@ -138,11 +138,11 @@ rm -f "$REQ"
 
 ### 3. Print and assemble the case
 
-Print-ready STLs are in [`3d-models/`](3d-models/) — three PLA parts, lightly modified from [Arthur Gassner's Time Teller](https://timeteller.arthurgassner.com) case design (CC BY). Then:
+Print-ready case files are in [`3d-models/`](3d-models/) — three PLA parts modified from [Arthur Gassner's Time Teller](https://timeteller.arthurgassner.com) case design (CC BY) for direct micro-USB power (no adapter needed), plus a ready-to-slice Bambu Studio print project. Then:
 
 1. Connect the e-Paper HAT to the Pi's 40-pin header, and the display to the HAT via the ribbon cable
 2. Insert the flashed SD card into the Pi — do this **before** closing the case
-3. Assemble the case — threaded inserts, the USB-C adapter on the back, screws
+3. Assemble the case — threaded inserts and screws; the Pi's micro-USB power port is exposed directly through the back cover
 
 Arthur's guide covers the case assembly beautifully, and our **[Hardware Assembly](docs/hardware-assembly.md)** page has the LitClock-specific details (ribbon-cable orientation, e-ink handling notes). No case? The bare HAT sandwich works fine on a shelf while you decide.
 
@@ -300,7 +300,7 @@ The clock keeps working on whatever SHA it's pinned to; manual updates via the a
 Most resets don't need a shell — use the control app's **System** tab:
 
 - **Reset WiFi** — forget saved networks and return to the LitClock-Setup network (your settings — location, weather, gift mode — are kept)
-- **Factory reset** — wipe all settings and start over from the first-boot experience
+- **Factory reset** — wipe all settings, your WiFi, and the setup network's password, then power off. The next power-on raises `LitClock-Setup` with a **new** password shown on the clock's screen, so a phone that saved the old one must forget the network first
 - **Prepare for Gifting** — wipe WiFi, write a welcome message for the recipient, and power off ready to box up
 
 From a shell, the equivalent is:
@@ -313,7 +313,8 @@ sudo reboot
 Flags:
 - `--yes` — skip the confirmation prompt
 - `--reboot` — reboot automatically after reset
-- `--wipe-wifi` — also delete saved WiFi networks (full fresh-flash simulation)
+- `--keep-wifi` — keep your WiFi **and** the setup network's password. For a technical user resetting their own clock: the device stays on its network, never starts a setup network, and an SSH session survives the reset
+- `--wipe-wifi` — no-op; erasing both passwords is the default (litclock-dev#666)
 - `--gift-mode` — prepare for shipping: wipes WiFi, paints a welcome splash on the e-ink, and powers off. Implies `--wipe-wifi --yes`.
 
 ### Troubleshooting
@@ -329,7 +330,8 @@ Flags:
 - **WiFi disconnects (Pi Zero)**: see [WiFi stability](#wifi-stability-pi-zero-w--zero-2-w), or check `dmesg | grep brcmfmac` for errors
 - **Setup page doesn't open on iPhone**: a known iOS 26 behavior with offline setup networks (not fixable clock-side). Open Safari while joined to `LitClock-Setup` — the page loads right away, or go to the address shown on the display.
 - **WiFi fails during setup**: The setup page shows an error banner and lets you fix the password and resubmit. If it keeps failing, restart the Pi closer to your router.
-- **Start setup over**: app → System → Factory reset, or `sudo ./scripts/reset-setup.sh && sudo reboot` from a shell
+- **Start setup over**: app → System → Factory reset, or `sudo ./scripts/reset-setup.sh && sudo reboot` from a shell.
+  Both erase your WiFi and the setup network's password. If you are keeping the clock and just want a clean config without losing your network, use `sudo ./scripts/reset-setup.sh --keep-wifi` — it preserves both passwords, so the clock returns to your WiFi and never raises a setup hotspot
 - **Clock stuck, or you need a shell**: SSH ships **off**. See **[Recovering a LitClock](docs/recovery.md)** for getting a shell via the console, enabling SSH from the SD card, resetting to first-boot, and the read-only Diagnostics tab.
 
 For hardware issues, refer to the [Waveshare wiki](https://www.waveshare.com/wiki/7.5inch_e-Paper_HAT) and [demo repository](https://github.com/waveshare/e-Paper).
@@ -421,7 +423,7 @@ This project was originally forked from [jadonn/literary-clock](https://github.c
 - [The Guardian "Books blog" reader thread](https://www.theguardian.com/books/booksblog/2011/apr/21/literary-clock) — community-sourced time-referential quotes from the 2011–2018 reader comments
 
 **Case design:**
-- [Arthur Gassner's Time Teller](https://github.com/arthurgassner/timeteller) (CC BY) — the 3D-printed case; lightly modified STLs ship in [`3d-models/`](3d-models/)
+- [Arthur Gassner's Time Teller](https://github.com/arthurgassner/timeteller) (CC BY) — the 3D-printed case; LitClock's micro-USB power edition (modified STLs + a ready-to-slice print project) ships in [`3d-models/`](3d-models/)
 
 **Code & display inspiration:**
 - [Jake Krajewski's Raspberry Pi + e-Paper Tutorial](https://medium.com/swlh/create-an-e-paper-display-for-your-raspberry-pi-with-python-2b0de7c8820c)

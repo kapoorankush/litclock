@@ -192,3 +192,67 @@ describe("status.js litclock-dev#335 last-update shim", () => {
     expect(relEl.textContent).toBe("never");
   });
 });
+
+describe("status.js stale-banner sentence (litclock-dev#532 slot pin)", () => {
+  let mock;
+
+  beforeEach(() => {
+    mock = installFetchMock();
+  });
+
+  afterEach(() => {
+    mock.restore();
+  });
+
+  it("renders the paused sentence byte-identically with the minutes slot filled", async () => {
+    // /review litclock-dev#736 F2: rendered-output pin for the whole-sentence template
+    // restructure — no other JS test observes this string in the DOM.
+    buildDom({ withChildren: true });
+    mock.register(/\/api\/status$/, {
+      status: 200,
+      body: baseStatusPayload({ stale: true, picked_at_age_s: 300 }),
+    });
+    loadScript("status.js");
+    await flushRefresh();
+    const banner = document.querySelector("[data-status-stale-banner]");
+    expect(banner.hidden).toBe(false);
+    expect(document.querySelector("[data-status-stale-text]").textContent).toBe(
+      "Clock service may be paused — last quote 5 min ago"
+    );
+  });
+});
+
+describe("status.js injected-strings blob (litclock-dev#532 /review litclock-dev#740 F1)", () => {
+  let mock;
+
+  beforeEach(() => {
+    mock = installFetchMock();
+  });
+
+  afterEach(() => {
+    mock.restore();
+  });
+
+  it("tr() prefers the blob value over the baked-in fallback", async () => {
+    // Every other status fixture omits the blob, so only the fallback
+    // branch had coverage — the exact gap /review litclock-dev#739 F4e closed for
+    // diagnostics.js, reopened by the accessor copy.
+    buildDom({ withChildren: true });
+    const blob = document.createElement("script");
+    blob.type = "application/json";
+    blob.setAttribute("data-litclock-strings", "");
+    blob.textContent = JSON.stringify({
+      "status.stale.with_age": "BLOB WINS: {n} minutes.",
+    });
+    document.body.appendChild(blob);
+    mock.register(/\/api\/status$/, {
+      status: 200,
+      body: baseStatusPayload({ stale: true, picked_at_age_s: 300 }),
+    });
+    loadScript("status.js");
+    await flushRefresh();
+    expect(document.querySelector("[data-status-stale-text]").textContent).toBe(
+      "BLOB WINS: 5 minutes."
+    );
+  });
+});

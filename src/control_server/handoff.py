@@ -127,6 +127,10 @@ TRIGGER_DONE_BUTTON = "the Done button"
 TRIGGER_SETTINGS_SAVE = "a settings save"
 TRIGGER_BROWSER_TZ = "the browser-timezone fallback"
 TRIGGER_AUTO_TIMER = "the auto-complete timer"
+# Not fired from Python — scripts/update.sh writes this one. It lives here so
+# the spelling has a single home and the parity test can assert the script
+# agrees with it (litclock-dev#675, litclock-dev#646).
+TRIGGER_UPDATE_MIGRATION = "the in-place updater (pre-PR2 migration)"
 
 # The canonical prefix every completion line carries, in Python AND in
 # scripts/litclock-handoff-fallback.sh. It is what an operator greps for, so the

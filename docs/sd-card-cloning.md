@@ -6,7 +6,7 @@ If you want to make pre-configured SD cards from a working clock:
 
 ## 1. Set Up a Working Clock First
 
-Flash the released LitClock image onto one Pi and finish setup — see [Flash the SD card](../README.md#2-flash-the-sd-card). Verify everything works.
+Complete the full installation on one Pi by flashing the released image (see [Flash the SD card](../README.md#2-flash-the-sd-card)). Verify everything works.
 
 ## 2. Prepare for Cloning
 
@@ -15,11 +15,29 @@ sudo ./scripts/prepare-for-cloning.sh
 ```
 
 This script will (and then power the Pi off):
-- Remove the setup-complete flag
+- Stop the services that write setup state, so nothing re-creates it mid-run
+- Remove both setup-state markers, `.setup-complete` and `.handoff-complete`
 - Clear your API key and location
 - Optionally clear WiFi credentials
 - Re-enable the first-boot setup service
 - Clear logs and caches
+- Clear the SSL certificates
+- Delete the persisted setup-hotspot password, so no clone carries your key
+- Disable SSH, so clones ship in the same posture as a fresh flash (to get back into a clone: put a blank file named `ssh` in the SD card's boot partition)
+
+If any of those steps cannot finish, the script says so in red and stops rather
+than reporting success. Do not clone a card it refused. The one refusal you may
+not SEE is the final SSH-disable check when running over the network (output is
+cut before it, deliberately) — its tell is a Pi that has not powered itself off
+within a minute of your session dropping; do not image that card either, and
+the next run of the script will say the previous one did not finish.
+
+Answering "y" to the WiFi question requires a **local console** (monitor/keyboard
+or serial). Over SSH the script refuses that answer: deleting the connections
+would drop your own session and kill the script before it removes the
+setup-hotspot key — the half-prepared card would look exactly like a finished
+one. If a run ever dies part-way for any reason, the next run tells you so
+before you confirm; do not clone until a run completes.
 
 ## 3. Clone the SD Card
 

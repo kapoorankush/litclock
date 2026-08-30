@@ -24,9 +24,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Highest issue-or-PR number in THIS repo as of the litclock-dev#658 audit
-# (2026-08-20: highest issue 57, highest PR 59).
-PUBLIC_NUMBER_CEILING = 59
+# Highest issue-or-PR number in THIS repo as of the v0.226.0 port audit
+# (2026-08-30: highest issue 57, highest PR 61; this port lands as #62).
+PUBLIC_NUMBER_CEILING = 62
 
 # EVERY tracked text file, not an extension allowlist. The first version of
 # this listed ten extensions, inherited from the audit's own scan command, and

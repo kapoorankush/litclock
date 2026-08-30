@@ -16,11 +16,13 @@ weather" (see ``_update_env_location`` docstring for the A2-revised
 ordering rationale).
 
 Usage:
-    # Normal mode (HTTPS, no WiFi selection — pre-connected ethernet/wpa):
-    python setup_server.py <env_file> <signal_file>
-
-    # Provisioning mode (HTTP on hotspot, with WiFi selection):
+    # Provisioning mode (HTTP on hotspot, with WiFi selection) — the only
+    # serving mode since litclock-dev#715:
     python setup_server.py <env_file> <signal_file> --provisioning
+
+    # No-flag invocations exit 1 loudly. first-boot.sh's missing-env
+    # fallback relies on exactly that (restart-loop into the 1800s
+    # Setup-Incomplete ceiling).
 """
 
 import html
@@ -30,7 +32,6 @@ import logging
 import os
 import signal
 import socketserver
-import ssl
 import sys
 import threading
 import urllib.parse
@@ -47,7 +48,6 @@ from captive_portal import (
 )
 
 PORT = 8080
-HTTPS_PORT = 8443
 # Hotspot gateway IP shown as the absolute-fallback URL on the bridge page
 # and e-ink display. The canonical copy of this constant lives in
 # wifi_provision.py (which also writes the NetworkManager shared-connection
@@ -62,13 +62,146 @@ WIFI_CONNECT_ERROR = None  # Set by background thread on WiFi failure
 WIFI_CONNECT_IN_FLIGHT = False  # Guard against concurrent connect attempts
 HOTSPOT_SSID = None  # Original hotspot SSID, used to restore after failed WiFi
 HOTSPOT_PASSWORD = None  # Original hotspot password, used to restore after failed WiFi
-_WIFI_SCAN_CACHE = None  # Cached HTML <option> tags from last WiFi scan
+# Raw (hotspot-filtered) network list from the last non-empty scan. The DATA
+# is cached, never the rendered HTML: the <option> list carries localized
+# copy (placeholder, manual entry), and a cached render served the OLD
+# language for up to a TTL after a mid-session language switch (Stage-4
+# gates /review on litclock-dev#532). Rendering per request is trivial;
+# the TTL exists to serialize radio SCANS, not renders.
+_WIFI_SCAN_NETWORKS = None
 _WIFI_SCAN_TIME = 0  # time.monotonic() when cache was populated
 _WIFI_SCAN_TTL = 30  # seconds before cache expires
-# SSIDs from the same scan that produced _WIFI_SCAN_CACHE. Kept alongside the
-# rendered HTML so a hand-typed name can be checked against what the radio
-# actually saw — see the `hidden` decision in do_POST (litclock-dev#554).
+# SSIDs from the same scan that produced _WIFI_SCAN_NETWORKS. Kept alongside
+# so a hand-typed name can be checked against what the radio actually saw —
+# see the `hidden` decision in do_POST (litclock-dev#554).
 _WIFI_SCAN_SSIDS = frozenset()
+
+# litclock-dev#532: user-visible setup copy resolves from the language
+# catalog PER REQUEST (the final-slice /review overturned the original
+# import-time posture: the picker on this very page can change the language
+# mid-session, and a retry re-render must follow it). The loader's
+# never-raise contract means a broken catalog degrades this page to visible
+# dotted keys, not a dead hotspot. MANUAL_SSID_VALUE stays a literal: it is
+# a POST sentinel, not copy.
+from strings_catalog import get as _catalog_get  # noqa: E402
+
+# litclock-dev#532 pickers: a gifted clock carries the gifter's language
+# choice across the reset via this root-owned marker (the .welcome-message
+# pattern). Read-precedence lives here; the WRITE side (PWA gift flow +
+# reset-setup preservation) lands with the PWA picker arc. Env override is
+# the test seam.
+GIFT_LANGUAGE_MARKER = os.environ.get("LITCLOCK_GIFT_LANGUAGE_MARKER", "/etc/litclock/.gift-language")
+
+
+# The language the CURRENT session's POST persisted — highest precedence on
+# a retry re-render so a failed WiFi join never silently resets the picker
+# to Accept-Language (/review litclock-dev#742). Cleared by reset_state().
+SUBMITTED_LANGUAGE = ""
+
+
+def _read_marker_code():
+    """Safe-read the gift marker: O_NOFOLLOW+O_NONBLOCK+regular-file+size cap
+    (the repo's update_state safe-read posture — /review litclock-dev#742; /etc/litclock
+    is root-owned, but uniformity beats reasoning about writers per path)."""
+    try:
+        fd = os.open(GIFT_LANGUAGE_MARKER, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    except OSError:
+        return ""
+    try:
+        import stat as _stat  # noqa: PLC0415
+
+        if not _stat.S_ISREG(os.fstat(fd).st_mode):
+            return ""
+        return os.read(fd, 64).decode("utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    finally:
+        os.close(fd)
+
+
+def _persisted_language():
+    """The env.sh LITCLOCK_LANGUAGE line, if any (the POST writes it).
+
+    Reuses strings_catalog's line regex with LAST-match semantics — bash
+    sourcing is last-wins, and three parsers disagreeing on a degenerate
+    file (duplicates, trailing comments) is exactly the drift class this
+    workstream removes (/review litclock-dev#742 follow-up F4).
+    """
+    if not ENV_FILE:
+        return ""
+    import strings_catalog  # noqa: PLC0415
+
+    value = ""
+    try:
+        with open(ENV_FILE, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = strings_catalog._ENV_LINE_RE.match(line)
+                if m:
+                    value = m.group(1)
+    except OSError:
+        return ""
+    return value
+
+
+def _default_language(accept_language):
+    """This session's submission > persisted env value > gift marker >
+    Accept-Language negotiation > English (litclock-dev#532, /review litclock-dev#742:
+    without the session/env steps, a failed-WiFi retry silently reset a
+    picked language back to the phone's locale).
+
+    Persisted env OUTRANKS the marker (5b adversarial /review): a
+    non-empty persisted value is always someone's explicit choice — the
+    recipient's setup POST, a PWA save, or the gift arm's own env seed
+    (which equals the marker code, making the order moot on the normal
+    gift path). The marker ranking above it created a losing state: a
+    kept inactive marker (trap b) + a recipient's later re-provision
+    after an OTA activated that code silently reverted THEIR explicit
+    pick to the gifter's. The marker now only decides when env carries
+    no language — exactly the fresh-gift window it exists for."""
+    import strings_catalog  # noqa: PLC0415
+
+    active = strings_catalog.active_codes()
+    if SUBMITTED_LANGUAGE and SUBMITTED_LANGUAGE in active:
+        return SUBMITTED_LANGUAGE
+    persisted = _persisted_language()
+    if persisted and persisted in active:
+        return persisted
+    code = _read_marker_code()
+    if code and code in active:
+        return code
+    return strings_catalog.negotiate(accept_language)
+
+
+def _language_section(accept_language):
+    """The no-JS language picker — rendered ONLY on a multi-language fleet.
+
+    A <select> with one option is pure friction (the owner's zero-friction
+    rule), so a single-active-language registry renders nothing and the POST
+    default applies. Native names label the options: a reader who wants
+    Español may not know the word "Spanish".
+    """
+    import strings_catalog  # noqa: PLC0415
+
+    active = strings_catalog.active_languages()
+    if len(active) < 2:
+        return ""
+    default = _default_language(accept_language)
+    options = []
+    for code in sorted(active):
+        native = html.escape(str(active[code].get("native_name") or code))
+        selected = " selected" if code == default else ""
+        options.append(f'<option value="{html.escape(code)}"{selected}>{native}</option>')
+    return f"""
+            <!-- Language Section (litclock-dev#532) -->
+            <div class="section">
+                <div class="section-title"><span class="icon">{_catalog_get("setup.language.title")}</span></div>
+                <label for="litclock-language">{_catalog_get("setup.language.label")}</label>
+                <select id="litclock-language" name="litclock_language"
+                    style="width:100%; padding:12px; font-size:16px; border:2px solid #ddd; border-radius:8px;">
+                    {''.join(options)}
+                </select>
+            </div>
+"""
 
 # Sentinel <option> value meaning "I'll type the network name myself"
 # (litclock-dev#554). Deliberately not a plausible SSID: an access point could
@@ -78,12 +211,58 @@ _WIFI_SCAN_SSIDS = frozenset()
 # wrong network.
 MANUAL_SSID_VALUE = "__litclock_type_it_myself__"
 MANUAL_SSID_FIELD = "wifi_ssid_manual"
-MANUAL_SSID_TEXT = "My network isn't listed"
+# litclock-dev#532 final slice — the rest of the page copy. Values are
+# repo-trusted plain text interpolated into the HTML f-strings (the 4c
+# pattern); the error banners go through _rich below instead, because they
+# compose USER-derived text.
+# (litclock-dev#532 final-slice /review: page copy resolves PER REQUEST via
+# _page_text below, not at module import — a language persisted mid-session
+# or carried by the gift marker must reach the retry re-render; frozen
+# constants made those renders mixed-language.)
+
+
+def _page_text(key, /, **slots):
+    """Request-time copy lookup, HTML-escaped for safe interpolation into
+    both element and attribute contexts (quote=True). English values are
+    unchanged by the escape; a future translation carrying quotes or angle
+    brackets cannot break the markup."""
+    return html.escape(_catalog_get(key, **slots), quote=True)
+
+
+def _rich(key, /, **slots):
+    """Escape-then-compose for the banner copy (mirrors the PWA's t_rich):
+    the catalog value is plain text with {b}/{/b} tokens; the value is
+    HTML-escaped FIRST, tokens become <strong> tags, then slots fill with
+    ESCAPED values — so the user-derived {error} text can never inject
+    markup, and a translation can move the emphasis."""
+    text = html.escape(_catalog_get(key))
+    for token, tag in (("{b}", "<strong>"), ("{/b}", "</strong>")):
+        text = text.replace(token, tag)
+    for name, value in slots.items():
+        text = text.replace("{" + name + "}", html.escape(str(value)))
+    return text
+
+
+# Request-time WiFi-picker copy (litclock-dev#532 follow-up, from the
+# Stage-4 gates /review): these three survived the final-slice per-request
+# conversion as import-time constants, freezing the picker's manual option
+# and placeholders — a language persisted or gift-marker-carried
+# mid-session must reach the retry re-render like every other page string.
+def _manual_ssid_text():
+    return _catalog_get("setup.wifi.manual_option")
+
+
+def _wifi_placeholder_text():
+    return _catalog_get("setup.wifi.placeholder")
+
+
+def _wifi_placeholder_empty_text():
+    return _catalog_get("setup.wifi.placeholder_empty")
+
+
 # Last SSID typed into the manual field, echoed back on a retry render. Only
 # ever a name the user chose; never a password.
 WIFI_LAST_MANUAL_SSID = ""
-WIFI_PLACEHOLDER_TEXT = "Choose your WiFi network"
-WIFI_PLACEHOLDER_EMPTY_TEXT = "No networks found - tap Refresh"
 # 802.11 caps the SSID at 32 BYTES, not characters. Checked before nmcli sees
 # it so an over-long paste gets a sentence a recipient can act on rather than
 # nmcli's. The user-facing message says "bytes" deliberately: DE and RU are
@@ -187,8 +366,10 @@ def reset_state(wait_for_inflight: float = 2.0) -> None:
 
     Not used by production code paths; safe to call from any test fixture.
     """
-    global WIFI_CONNECT_ERROR, WIFI_CONNECT_IN_FLIGHT, WIFI_LAST_MANUAL_SSID
-    global _WIFI_SCAN_CACHE, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS
+    global WIFI_CONNECT_ERROR, WIFI_CONNECT_IN_FLIGHT, WIFI_LAST_MANUAL_SSID, SUBMITTED_LANGUAGE
+
+    SUBMITTED_LANGUAGE = ""
+    global _WIFI_SCAN_NETWORKS, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS
 
     import time
 
@@ -227,57 +408,37 @@ def reset_state(wait_for_inflight: float = 2.0) -> None:
         WIFI_CONNECT_IN_FLIGHT = False
         WIFI_LAST_MANUAL_SSID = ""
     with _SCAN_CACHE_LOCK:
-        _WIFI_SCAN_CACHE = None
+        _WIFI_SCAN_NETWORKS = None
         _WIFI_SCAN_TIME = 0
         _WIFI_SCAN_SSIDS = frozenset()
 
 
-def _schedule_self_terminate(delay: float = 0.0) -> None:
-    """Send SIGTERM to the current process, optionally after ``delay`` seconds.
+def _schedule_self_terminate() -> None:
+    """Send SIGTERM to the current process, synchronously.
 
-    When ``delay == 0``, signals synchronously from the calling thread:
     ``os.kill`` queues SIGTERM in the kernel; the default SIGTERM handler
     terminates the Python interpreter (there is NO graceful handler in
-    setup_server — only ``except KeyboardInterrupt`` around the
-    serve_forever calls in ``main()``). The 1s/2s sleep before this call gives the HTTP
-    response time to flush; after termination, the firstboot.sh wrapper
-    script polls ``/tmp/litclock-setup-done`` (written by
-    ``signal_completion()``) to detect successful handoff.
+    setup_server — only ``except KeyboardInterrupt`` around serve_forever
+    in ``main()``). The caller's 1s sleep before this gives the HTTP
+    response time to flush; after termination, first-boot.sh polls
+    ``/tmp/litclock-setup-done`` (written by ``signal_completion()``) to
+    detect successful handoff.
 
-    When ``delay > 0``, spawns a daemon thread that sleeps then signals —
-    used when the HTTP response must flush before the process dies (e.g.,
-    the no-WiFi-form-data branch where ``do_POST`` returns immediately
-    after spawning the timer).
+    litclock-dev#715 removed the ``delay > 0`` daemon-thread arm — its only
+    production caller was the retired normal-mode ``_resolve_and_signal``.
 
-    Sequencing invariant (litclock-dev#364):
+    Sequencing invariant (litclock-dev#364): callers that interact with
+    ``reset_state()``'s drain barrier (today only
+    ``_connect_and_teardown``'s success path) MUST invoke this helper
+    BEFORE clearing ``WIFI_CONNECT_IN_FLIGHT``. The drain barrier polls
+    IN_FLIGHT and exits when it sees False; if IN_FLIGHT is cleared
+    first, drain returns claiming the thread is quiescent while a
+    SIGTERM is still pending in the kernel queue.
 
-    Callers that interact with ``reset_state()``'s drain barrier (today
-    only ``_connect_and_teardown``'s success path) MUST invoke this
-    helper BEFORE clearing ``WIFI_CONNECT_IN_FLIGHT``. The drain barrier
-    polls IN_FLIGHT and exits when it sees False; if IN_FLIGHT is
-    cleared first, drain returns claiming the thread is quiescent while
-    a SIGTERM is still pending in the kernel queue. That gives
-    misleading state to test fixtures.
-
-    Note that A2 only fixes the drain-barrier accuracy — it does NOT
-    prevent SIGTERM from killing an unmocked-os.kill test runner.
-    Test authors exercising any code path that invokes this helper
-    MUST monkeypatch os.kill. See ``tests/test_wifi_retry_flow.py``
-    for 8 canonical examples.
+    Test authors exercising any code path that invokes this helper MUST
+    monkeypatch os.kill. See ``tests/test_wifi_retry_flow.py``.
     """
-    if delay > 0:
-
-        def _delayed():
-            # Cancellable wait: in production the event is never set, so this is
-            # exactly ``time.sleep(delay)`` then SIGTERM. In tests, reset_state
-            # sets _BG_CANCEL so we return WITHOUT killing the runner (litclock-dev#478).
-            if _BG_CANCEL.wait(delay):
-                return
-            os.kill(os.getpid(), signal.SIGTERM)
-
-        _spawn_bg(_delayed, name="setup-delayed-sigterm")
-    else:
-        os.kill(os.getpid(), signal.SIGTERM)
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
 def _scanned_ssids(networks):
@@ -334,7 +495,7 @@ def _build_wifi_options(networks, placeholder=None):
        at all. Its non-empty value is what satisfies `required` when the user
        is going to type the name into the paired text input instead.
     """
-    placeholder = html.escape(placeholder or WIFI_PLACEHOLDER_TEXT)
+    placeholder = html.escape(placeholder or _wifi_placeholder_text())
     options = [f'<option value="" selected disabled>{placeholder}</option>']
     for net in sorted(networks, key=_net_signal, reverse=True):
         ssid = html.escape(net["ssid"])
@@ -348,7 +509,7 @@ def _build_wifi_options(networks, placeholder=None):
         security = net.get("security", "")
         lock = " [Open]" if not security or security == "--" else ""
         options.append(f'<option value="{ssid}">{ssid} ({bars}{lock})</option>')
-    options.append(f'<option value="{MANUAL_SSID_VALUE}">{html.escape(MANUAL_SSID_TEXT)}</option>')
+    options.append(f'<option value="{MANUAL_SSID_VALUE}">{html.escape(_manual_ssid_text())}</option>')
     return "\n                    ".join(options)
 
 
@@ -362,7 +523,7 @@ def _filter_own_hotspot(networks):
 
     Applied at BOTH scan entry points — the server-rendered dropdown
     (_wifi_network_options) and the /scan-wifi JSON the client uses to rebuild
-    the dropdown on Refresh — because they share _WIFI_SCAN_CACHE; filtering
+    the dropdown on Refresh — because they share _WIFI_SCAN_NETWORKS; filtering
     only one path lets the hotspot leak back via the cache or the JSON.
     """
     if not HOTSPOT_SSID:
@@ -371,37 +532,42 @@ def _filter_own_hotspot(networks):
 
 
 def _wifi_network_options():
-    """Generate <option> tags for scanned WiFi networks, with 30s caching.
+    """Generate <option> tags for scanned WiFi networks, with 30s SCAN caching.
+
+    The scan RESULT is cached; the <option> HTML renders per call so the
+    localized picker copy tracks the active language (litclock-dev#532).
 
     Returns ``(options_html, scan_was_empty)``. The flag is explicit
     because the page build used to infer emptiness by sniffing the
     rendered HTML for the placeholder copy (litclock-dev#605 item 11) —
     a check that breaks silently the day the copy gains an escapable
     character."""
-    global _WIFI_SCAN_CACHE, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS
+    global _WIFI_SCAN_NETWORKS, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS
     import time
 
     # Take _SCAN_CACHE_LOCK across the whole cache-miss path, exactly like
     # /scan-wifi does. This is the second scan entry point that shares
-    # _WIFI_SCAN_CACHE/_SSIDS/_TIME, and it was previously unlocked
+    # _WIFI_SCAN_NETWORKS/_SSIDS/_TIME, and it was previously unlocked
     # (litclock-dev#615). Consequences of the gap on a threaded server:
     #   - two concurrent GET / builds at a cold/expired cache each fired their
     #     own nmcli rescan on the single hotspot radio — the exact contention
     #     the lock exists to prevent (an iOS CNA sheet + the real browser is a
     #     realistic pair within the 30s TTL);
-    #   - interleaving with /scan-wifi could leave _WIFI_SCAN_CACHE from one
+    #   - interleaving with /scan-wifi could leave _WIFI_SCAN_NETWORKS from one
     #     scan and _WIFI_SCAN_SSIDS from another, so wifi_hidden in do_POST is
     #     computed against evidence that doesn't match the dropdown the user
     #     saw — which can flip a VISIBLE typed SSID to `hidden yes`, the
     #     permanent probe-request leak litclock-dev#580's policy is meant to prevent;
-    #   - the cache-hit branch double-read _WIFI_SCAN_CACHE unlocked, so a
+    #   - the cache-hit branch double-read _WIFI_SCAN_NETWORKS unlocked, so a
     #     concurrent reset to None could interpolate "None" into the <select>.
     # A waiter that blocks here through another thread's scan finds the fresh
     # cache on the recheck and skips its own scan entirely.
     with _SCAN_CACHE_LOCK:
         now = time.monotonic()
-        if _WIFI_SCAN_CACHE is not None and (now - _WIFI_SCAN_TIME) < _WIFI_SCAN_TTL:
-            return _WIFI_SCAN_CACHE, False
+        if _WIFI_SCAN_NETWORKS is not None and (now - _WIFI_SCAN_TIME) < _WIFI_SCAN_TTL:
+            # Render fresh from the cached scan — no radio contention, and
+            # the picker copy follows a language switched since the scan.
+            return _build_wifi_options(_WIFI_SCAN_NETWORKS), False
 
         try:
             from wifi_provision import scan_wifi_networks
@@ -422,10 +588,9 @@ def _wifi_network_options():
             # writing `hidden yes` into the saved profile — is permanent while
             # the staleness is transient (see the wifi_hidden decision in
             # do_POST; litclock-dev#605 item 7, refined to UNION by litclock-dev#615).
-            return _build_wifi_options([], placeholder=WIFI_PLACEHOLDER_EMPTY_TEXT), True
+            return _build_wifi_options([], placeholder=_wifi_placeholder_empty_text()), True
 
-        result = _build_wifi_options(networks)
-        _WIFI_SCAN_CACHE = result
+        _WIFI_SCAN_NETWORKS = networks
         # UNION, not replace (litclock-dev#615): accumulate every SSID seen this
         # provisioning session. Scans flicker — a network that is genuinely
         # visible can be absent from one scan — and a replace would drop it,
@@ -441,7 +606,7 @@ def _wifi_network_options():
         # scan near the TTL could yield an already-expired cache that the next
         # caller immediately rescans, defeating the serialization (litclock-dev#615).
         _WIFI_SCAN_TIME = time.monotonic()
-        return result, False
+        return _build_wifi_options(networks), False
 
 
 # Path serving the CNA bridge on our own host — the target of the Apple
@@ -456,10 +621,9 @@ def _wifi_network_options():
 CNA_PATH = "/cna"
 CNA_URL = f"http://{HOTSPOT_GATEWAY_IP}{CNA_PATH}"
 
-# Precomputed at import time — everything in the bridge page is static
-# except SETUP_HOSTNAME and HOTSPOT_GATEWAY_IP, both module-level constants
-# known at import. iOS CNA can fire probes in quick bursts during first-boot
-# and we'd otherwise rebuild this ~1 KB string per request for zero benefit.
+# Built PER REQUEST since the litclock-dev#532 final-slice review — the copy
+# must follow a mid-session language switch, and the ~1 KB rebuild is cheap
+# even in iOS CNA probe bursts.
 #
 # iOS CNA opens probe responses in a sandboxed WebView sheet with a short
 # timeout and poor JS support. Returning the full setup page (large, inline
@@ -470,12 +634,21 @@ CNA_URL = f"http://{HOTSPOT_GATEWAY_IP}{CNA_PATH}"
 # bridge renders INSIDE the risen sheet, where the small/JS-free constraints
 # still apply.) The small-text fallback also prints the raw gateway IP so
 # the user has a recovery path if the hostname ever fails to resolve.
-_CNA_BRIDGE_HTML = (
+def _cna_bridge_html():
+    """Build the CNA bridge PER REQUEST (litclock-dev#532 final-slice
+    /review): copy resolves at render time, so a language persisted or
+    marker-carried mid-session reaches the sheet — import-time constants
+    froze the language and made retry renders mixed-language."""
+    title_text = _catalog_get("setup.page.title")
+    body_text = _catalog_get("setup.cna.body")
+    cta_text = _catalog_get("setup.cna.cta")
+    return (
+
     "<!DOCTYPE html>"
     '<html lang="en"><head>'
     '<meta charset="utf-8">'
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
-    "<title>LitClock Setup</title>"
+    f"<title>{title_text}</title>"
     "<style>"
     "body{font-family:-apple-system,system-ui,sans-serif;"
     "margin:0;padding:32px 24px;background:#f8fafc;color:#1e293b;"
@@ -488,28 +661,28 @@ _CNA_BRIDGE_HTML = (
     "small{display:block;margin-top:24px;color:#94a3b8;font-size:13px;}"
     "</style>"
     "</head><body>"
-    "<h1>LitClock Setup</h1>"
-    "<p>Tap below to continue setting up your clock.</p>"
+    f"<h1>{title_text}</h1>"
+    f"<p>{body_text}</p>"
     # The CTA targets the raw gateway IP, not SETUP_HOSTNAME — same
     # DNS-distrust rationale as the /cna redirect (litclock-dev#526): a tap
     # inside the CNA sheet must work even if the sheet's fetches bypass the
     # hotspot's wildcard DNS. The hostname stays in the small print for
     # humans typing a URL into a browser.
-    f'<a class="btn" href="http://{HOTSPOT_GATEWAY_IP}/setup">Open Setup</a>'
-    "<small>If the page does not load, open it in your browser using the "
-    f"option at the top of the screen, or go to {SETUP_HOSTNAME} (or {HOTSPOT_GATEWAY_IP}).</small>"
+    f'<a class="btn" href="http://{HOTSPOT_GATEWAY_IP}/setup">{cta_text}</a>'
+    "<small>"
+    + _catalog_get("setup.cna.small", host=SETUP_HOSTNAME, ip=HOTSPOT_GATEWAY_IP)
+    + "</small>"
     "</body></html>"
-)
+    )
 
 
 def _build_cna_bridge_html():
-    """Return the precomputed iOS CNA bridge HTML. Kept as a thin wrapper so
-    existing tests and call sites can continue to use the function name;
-    actual construction happens once at module import."""
-    return _CNA_BRIDGE_HTML
+    """Return the iOS CNA bridge HTML (built per request since the
+    litclock-dev#532 final-slice review — see _cna_bridge_html)."""
+    return _cna_bridge_html()
 
 
-def _build_setup_html():
+def _build_setup_html(accept_language=None):
     """Build the setup page HTML.
 
     Branches on three pieces of module state:
@@ -533,12 +706,26 @@ def _build_setup_html():
     branded / customized builds don't display copy that lies to the
     user about which network is the temporary one.
     """
+    # Request-time copy (litclock-dev#532 final-slice /review). Keys the
+    # page f-strings consume as {c[...]}; all attribute-safe via _page_text.
+    c = {
+        "title": _page_text("setup.page.title"),
+        "wifi_icon": _page_text("setup.wifi.icon_label"),
+        "pick_label": _page_text("setup.wifi.pick_label"),
+        "refresh": _page_text("setup.wifi.refresh"),
+        "manual_placeholder": _page_text("setup.wifi.manual_placeholder"),
+        "password_label": _page_text("setup.wifi.password_label"),
+        "password_placeholder": _page_text("setup.wifi.password_placeholder"),
+        "password_help": _page_text("setup.wifi.password_help"),
+        "submit": _page_text("setup.submit"),
+        "submit_help": _page_text("setup.submit_help"),
+    }
     wifi_error_banner = ""
     if WIFI_CONNECT_IN_FLIGHT:
         wifi_error_banner = (
             '<div style="background:#eff6ff; border:2px solid #3b82f6; border-radius:8px;'
             ' padding:12px 16px; margin-bottom:16px; color:#1e40af;">'
-            "<strong>Connecting to WiFi...</strong> This page will refresh automatically."
+            + _rich("setup.banner.connecting") +
             "</div>"
             '<meta http-equiv="refresh" content="10;url=/setup">'
         )
@@ -554,7 +741,6 @@ def _build_setup_html():
         # once for the class — could pair an old message with new-class
         # advice across a mid-render write.
         connect_error = WIFI_CONNECT_ERROR
-        safe_error = html.escape(connect_error)
         # litclock-dev#603 — the advice line must not contradict the honest
         # cause {safe_error} just gave. Password advice only when the failure
         # actually WAS the password (the class rides on the WifiFailure
@@ -562,38 +748,31 @@ def _build_setup_html():
         # because "double-check your password" after "the network didn't
         # answer in time" reads as the page arguing with itself.
         if getattr(connect_error, "failure_class", None) == "bad_password":
-            advice = (
-                "Double-check your <strong>WiFi password</strong> and try "
-                "again &mdash; not the password shown on the clock&rsquo;s screen. "
-            )
+            advice = _rich("setup.banner.advice_password")
         else:
-            advice = "Check the message above, then try again. "
+            advice = _rich("setup.banner.advice_neutral")
         wifi_error_banner = (
             '<div style="background:#fef2f2; border:2px solid #ef4444; border-radius:8px;'
             ' padding:12px 16px; margin-bottom:16px; color:#991b1b;">'
-            f"<strong>Couldn&rsquo;t join your WiFi:</strong> {safe_error}<br>"
-            f"{advice}"
-            "If this page doesn&rsquo;t reload, rescan the QR code on the "
-            "display &mdash; the clock&rsquo;s own network has restarted.</div>"
+            + _rich("setup.banner.error_lead", error=connect_error) + "<br>"
+            + advice
+            + _rich("setup.banner.error_tail") + "</div>"
         )
 
-    # Subtitle copy depends on three states:
-    #   - PROVISIONING_MODE + in-flight: user already submitted, page is
-    #     auto-refreshing — subtitle should reflect "joining", not "go
-    #     pick a network" (avoids reading as a stale instruction).
-    #   - PROVISIONING_MODE (default / error retry): orient on joining
-    #     their own WiFi.
-    #   - else (pre-connected): generic literary subtitle.
-    # All three branches use hardcoded literals — no user input flows in,
-    # so the f-string interpolation at the bottom of this function does
-    # not need html.escape.
-    if PROVISIONING_MODE and WIFI_CONNECT_IN_FLIGHT:
-        subtitle_text = "Joining your WiFi &mdash; hang tight."
-    elif PROVISIONING_MODE:
-        subtitle_text = "Connect your clock to the WiFi your phone normally uses."
+    # Subtitle copy depends on two states (litclock-dev#715 removed the
+    # pre-connected normal-mode page — the server only serves provisioning):
+    #   - in-flight: user already submitted, page is auto-refreshing —
+    #     subtitle should reflect "joining", not "go pick a network".
+    #   - default / error retry: orient on joining their own WiFi.
+    # Both branches use hardcoded literals — no user input flows in, so the
+    # f-string interpolation at the bottom of this function does not need
+    # html.escape.
+    if WIFI_CONNECT_IN_FLIGHT:
+        subtitle_text = _page_text("setup.subtitle.joining")
     else:
-        subtitle_text = "Finish setting up your literary clock."
+        subtitle_text = _page_text("setup.subtitle.default")
 
+    language_section = _language_section(accept_language) if PROVISIONING_MODE else ""
     wifi_section = ""
     if PROVISIONING_MODE:
         network_options, scan_was_empty = _wifi_network_options()
@@ -604,7 +783,6 @@ def _build_setup_html():
         # html.escape because a custom SSID could in theory contain HTML
         # special chars; wifi_provision.DEFAULT_SSID is plain ASCII but
         # we don't enforce that on the CLI override.
-        hotspot_name = html.escape(HOTSPOT_SSID or "LitClock-Setup")
 
         # Echo the last hand-typed SSID back, and open the disclosure, when a
         # retry is showing or the scan came back empty. Without this the retry
@@ -618,20 +796,21 @@ def _build_setup_html():
         # store site in do_POST).
         manual_value = html.escape(WIFI_LAST_MANUAL_SSID)
         manual_open = " open" if (manual_value or scan_was_empty or WIFI_CONNECT_ERROR) else ""
-        manual_summary = html.escape(MANUAL_SSID_TEXT)
+        manual_summary = html.escape(_manual_ssid_text())
+        # Composed rich help lines: {network}/{summary} slots escape-filled.
+        wifi_help_html = _rich("setup.wifi.help", network=HOTSPOT_SSID or "LitClock-Setup")
+        manual_help_html = _rich("setup.wifi.manual_help", summary=_manual_ssid_text())
         wifi_section = f"""
             <!-- WiFi Section -->
             <div class="section">
                 <div class="section-title">
-                    <span class="icon">WiFi</span>
+                    <span class="icon">{c['wifi_icon']}</span>
                 </div>
                 <p class="help-text" style="margin:0 0 14px 0; font-size:13px; color:#555;">
-                    Pick the WiFi your phone normally uses &mdash; at home, the
-                    office, wherever the clock will live. Not the {hotspot_name}
-                    network you joined to see this page.
+                    {wifi_help_html}
                 </p>
 
-                <label>Pick your WiFi network</label>
+                <label>{c['pick_label']}</label>
                 <div style="display:flex; gap:8px; margin-bottom:10px;">
                     <select id="wifi-ssid" name="wifi_ssid" required
                         onchange="onSsidChange()"
@@ -640,7 +819,7 @@ def _build_setup_html():
                     </select>
                     <button type="button" class="btn btn-secondary"
                         style="width:auto; margin-bottom:0; padding:12px 16px;"
-                        onclick="refreshNetworks()">Refresh</button>
+                        onclick="refreshNetworks()">{c['refresh']}</button>
                 </div>
 
                 <!-- Hidden-SSID path. A <details> rather than a JS-revealed
@@ -658,22 +837,19 @@ def _build_setup_html():
                         {manual_summary}
                     </summary>
                     <p class="help-text" style="margin:8px 0;">
-                        Hidden networks never show up in a scan. Pick
-                        &ldquo;{manual_summary}&rdquo; above, then type its
-                        name exactly &mdash; capitals and inner spaces count.
+                        {manual_help_html}
                     </p>
                     <input type="text" id="wifi-ssid-manual" name="{MANUAL_SSID_FIELD}"
-                        placeholder="Network name" autocomplete="off"
+                        placeholder="{c['manual_placeholder']}" autocomplete="off"
                         autocapitalize="none" autocorrect="off" spellcheck="false"
                         value="{manual_value}" maxlength="{SSID_MAX_BYTES}">
                 </details>
 
-                <label>Your WiFi Password</label>
+                <label>{c['password_label']}</label>
                 <input type="password" id="wifi-password" name="wifi_password"
-                    placeholder="Enter your WiFi password" autocomplete="off" autofocus>
+                    placeholder="{c['password_placeholder']}" autocomplete="off">
                 <p class="help-text">
-                    Use the password for the WiFi you just picked above &mdash; not the
-                    password shown on the clock&rsquo;s screen. Leave blank for open networks.
+                    {c['password_help']}
                 </p>
             </div>
 """
@@ -682,16 +858,16 @@ def _build_setup_html():
     # <script> block, and it emits correctly escaped JS string literals for
     # the apostrophes and any future non-ASCII in the placeholder copy.
     manual_value_js = json.dumps(MANUAL_SSID_VALUE)
-    placeholder_js = json.dumps(WIFI_PLACEHOLDER_TEXT)
-    placeholder_empty_js = json.dumps(WIFI_PLACEHOLDER_EMPTY_TEXT)
-    manual_text_js = json.dumps(MANUAL_SSID_TEXT)
+    placeholder_js = json.dumps(_wifi_placeholder_text())
+    placeholder_empty_js = json.dumps(_wifi_placeholder_empty_text())
+    manual_text_js = json.dumps(_manual_ssid_text())
 
     return f"""<!DOCTYPE html>
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta charset="UTF-8">
-    <title>LitClock Setup</title>
+    <title>{c['title']}</title>
     <style>
         * {{
             box-sizing: border-box;
@@ -801,19 +977,19 @@ def _build_setup_html():
 </head>
 <body>
     <div class="container">
-        <h1>LitClock Setup</h1>
+        <h1>{c['title']}</h1>
         <p class="subtitle">{subtitle_text}</p>
 
 {wifi_error_banner}
         <form id="setup-form" method="POST" action="/setup">
+{language_section}
 {wifi_section}
             <!-- Submit -->
             <button type="submit" class="btn btn-primary" id="submit-btn">
-                Complete Setup
+                {c['submit']}
             </button>
             <p class="help-text" style="text-align:center; margin-top:12px;">
-                Location, timezone, and units are auto-detected after WiFi connects.
-                Adjust anything in Settings once the clock is online.
+                {c['submit_help']}
             </p>
         </form>
     </div>
@@ -1014,7 +1190,7 @@ HTML_ERROR = """<!DOCTYPE html>
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Setup Error</title>
+    <title>{ERROR_TITLE_TEXT}</title>
     <style>
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -1048,19 +1224,19 @@ HTML_ERROR = """<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <h1>Setup Error</h1>
+        <h1>{ERROR_TITLE_TEXT}</h1>
         <p>{error}</p>
-        <p><a href="/" id="retry-link">Try again</a></p>
+        <p><a href="/" id="retry-link">{ERROR_RETRY_TEXT}</a></p>
     </div>
     <script>
     (function() {{
         var link = document.getElementById('retry-link');
         if (link) {{
             link.addEventListener('click', function() {{
-                link.textContent = 'Loading...';
+                link.textContent = {loading_js};
                 link.className = 'loading';
                 setTimeout(function() {{
-                    link.textContent = 'Try again';
+                    link.textContent = {retry_js};
                     link.className = '';
                 }}, 10000);
             }});
@@ -1070,6 +1246,27 @@ HTML_ERROR = """<!DOCTYPE html>
 </body>
 </html>
 """
+# litclock-dev#532 final-slice /review: the error page builds PER REQUEST
+# and fills every field via .replace — never .format, so a translation
+# carrying stray braces can neither KeyError the render nor splice the
+# runtime error into the wrong field. The CSS braces in the template are
+# untouched by construction. The two inline-JS literals go through
+# json.dumps so apostrophes/non-ASCII stay valid JS.
+_HTML_ERROR_TEMPLATE = HTML_ERROR
+del HTML_ERROR
+
+
+def _error_page(error):
+    retry_text = _catalog_get("setup.error.retry")
+    return (
+        _HTML_ERROR_TEMPLATE.replace("{ERROR_TITLE_TEXT}", _page_text("setup.error.title"))
+        .replace("{ERROR_RETRY_TEXT}", html.escape(retry_text, quote=True))
+        .replace("{loading_js}", json.dumps(_catalog_get("setup.error.loading")))
+        .replace("{retry_js}", json.dumps(retry_text))
+        # quote=False keeps ASCII apostrophes literal inside the <p> —
+        # byte-parity with the old raw insertion for our own copy.
+        .replace("{error}", html.escape(str(error), quote=False))
+    )
 
 
 # ── Re-exports ─────────────────────────────────────────────────────────────
@@ -1161,16 +1358,10 @@ def signal_completion() -> bool:
     to proceed to SIGTERM — without the signal file, firstboot.sh's wait loop
     would never observe completion.
 
-    Why bool-return instead of raising (litclock-dev#364 codex post-review fix): the two
-    call sites in do_POST have load-bearing ordering invariants that a raise
-    breaks:
-
-      * No-WiFi branch — signal_completion runs AFTER the HTTP success
-        response has been written. BaseHTTPRequestHandler cannot turn a raise
-        from this point into a 500 (headers/body already flushed). A raise
-        there would skip _schedule_self_terminate, leaving the setup server
-        running while firstboot.sh waits for a signal file that will never
-        appear.
+    Why bool-return instead of raising (litclock-dev#364 codex post-review fix; the
+    retired normal-mode call site is gone since litclock-dev#715 — one
+    call site remains, with a load-bearing ordering invariant a raise
+    breaks):
 
       * WiFi-success branch — signal_completion runs AFTER teardown_hotspot.
         A raise from here landing in the existing except branch would call
@@ -1274,7 +1465,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                302 to /cna on the gateway IP (litclock-dev#526 — iOS 26.5.x
                stopped promoting 200-HTML served under an Apple hostname to
                the CNA sheet); the sheet's WebView / manual browsers get the
-               ~1 KB JS-free bridge (see _CNA_BRIDGE_HTML) because large or
+               ~1 KB JS-free bridge (see _cna_bridge_html) because large or
                JS-heavy responses bury the portal in Control Center (litclock-dev#175).
         - Android: Fetches /generate_204, expects HTTP 204.
                    A 302 redirect triggers the "Sign in to network" notification.
@@ -1372,19 +1563,19 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                     return
 
         if parsed.path == "/" or parsed.path == "/setup":
-            self.send_html(_build_setup_html())
+            self.send_html(_build_setup_html(self.headers.get("Accept-Language")))
 
         elif parsed.path == CNA_PATH and PROVISIONING_MODE:
             # Target of the detection-probe 302 (and the WISPr LoginURL):
             # the tiny JS-free bridge on our own host, so the CNA sheet
             # never has to render portal content under an Apple hostname.
-            # Provisioning-only — post-setup (normal HTTPS mode) there is
-            # no hotspot, litclock.setup doesn't resolve, and the page
+            # Provisioning-only — outside provisioning there is no
+            # hotspot and litclock.setup doesn't resolve, so the page
             # would be a dead end; it 404s like any other unknown path.
             self.send_html(_build_cna_bridge_html())
 
         elif parsed.path == "/scan-wifi":
-            global _WIFI_SCAN_CACHE, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS
+            global _WIFI_SCAN_NETWORKS, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS
             import time
 
             # Serialize scans — multiple phones hitting /scan-wifi concurrently
@@ -1409,7 +1600,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                 # wifi_hidden decision in do_POST for why stale visibility
                 # evidence beats none).
                 if networks:
-                    _WIFI_SCAN_CACHE = _build_wifi_options(networks)
+                    _WIFI_SCAN_NETWORKS = networks
                     # UNION, not replace — accumulate seen SSIDs so a flickered
                     # scan can't drop a genuinely-visible name and flip it to a
                     # permanent `hidden yes` leak (litclock-dev#615; see the
@@ -1490,19 +1681,40 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
 
         if PROVISIONING_MODE and not wifi_ssid:
             error = (
-                "Type the name of your WiFi network, or pick one from the list."
+                _catalog_get("setup.error.type_or_pick")
                 if wifi_typed
-                else "Please select a WiFi network"
+                else _catalog_get("setup.error.pick_network")
             )
-            self.send_html(HTML_ERROR.format(error=error))
+            self.send_html(_error_page(error))
             return
+
+        # litclock-dev#532: persist the device language BEFORE the connect
+        # thread (a failed-WiFi retry keeps the choice; the hotspot may tear
+        # down moments later). The select only offers active codes, so an
+        # invalid value here is a tampered POST — fall back to the same
+        # default the GET rendered, never fail the join over a language.
+        # Best-effort by contract: a language that doesn't persist costs a
+        # Settings visit later; a join that fails costs the whole setup.
+        if PROVISIONING_MODE:
+            submitted_language = params.get("litclock_language", [""])[0].strip()
+            import config as _config  # noqa: PLC0415
+            import strings_catalog  # noqa: PLC0415
+
+            if submitted_language not in strings_catalog.active_codes():
+                submitted_language = _default_language(self.headers.get("Accept-Language"))
+            try:
+                _config.atomic_update({"LITCLOCK_LANGUAGE": submitted_language}, ENV_FILE)
+                global SUBMITTED_LANGUAGE
+                SUBMITTED_LANGUAGE = submitted_language
+            except (ValueError, OSError) as exc:
+                print(f"Warning: could not persist LITCLOCK_LANGUAGE: {exc}")
 
         # Control characters are rejected before the value reaches the journal,
         # the e-ink splash or nmcli. An interior newline in a hand-typed SSID
         # forges lines in a journal that ships Storage=persistent and gets
         # collected into support bundles.
         if PROVISIONING_MODE and SSID_FORBIDDEN.intersection(wifi_ssid):
-            self.send_html(HTML_ERROR.format(error="That network name contains characters a WiFi name can't have."))
+            self.send_html(_error_page(_catalog_get("setup.error.bad_ssid_chars")))
             return
 
         # 802.11 caps the SSID at 32 bytes. Rejected here so an over-long
@@ -1510,12 +1722,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         # "bytes", not "characters" — see SSID_MAX_BYTES.
         if PROVISIONING_MODE and len(wifi_ssid.encode("utf-8")) > SSID_MAX_BYTES:
             self.send_html(
-                HTML_ERROR.format(
-                    error=(
-                        f"That network name is too long - WiFi names are at most {SSID_MAX_BYTES} bytes "
-                        "(accented and non-Latin letters count as more than one)."
-                    )
-                )
+                _error_page(_catalog_get("setup.error.ssid_too_long", n=SSID_MAX_BYTES))
             )
             return
 
@@ -1533,7 +1740,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         # text box; "litclock-setup" must not slip through (/review, litclock-dev#580).
         if PROVISIONING_MODE and HOTSPOT_SSID and wifi_ssid.casefold() == HOTSPOT_SSID.casefold():
             self.send_html(
-                HTML_ERROR.format(error="That's the clock's own setup network. Pick your home or office WiFi instead.")
+                _error_page(_catalog_get("setup.error.own_network"))
             )
             return
 
@@ -1569,18 +1776,15 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         # All the user-visible values are "Auto-detecting..." because IP-geo
         # runs after WiFi connects — PR2's handoff splash + PWA banner shows
         # the resolved values once they're known.
-        if PROVISIONING_MODE and wifi_ssid:
-            wifi_display = wifi_ssid
-            heading = "Settings Saved!"
-            subtitle = f"Connecting to <strong>{html.escape(wifi_ssid)}</strong>..."
-            meta_refresh = '<meta http-equiv="refresh" content="15;url=/setup">\n    '
-            footer = "This page will automatically check the connection status."
-        else:
-            wifi_display = "Already connected"
-            heading = "Setup Complete!"
-            subtitle = "Your LitClock is configured and ready to display literary quotes."
-            meta_refresh = ""
-            footer = "You can close this page now. The clock will start displaying shortly."
+        # litclock-dev#715: this response has exactly one shape now — the
+        # validations above return early on every empty/invalid SSID, so a
+        # POST reaching here is a provisioning join. (The retired
+        # normal-mode arm rendered "Setup Complete!" here.)
+        wifi_display = wifi_ssid
+        heading = "Settings Saved!"
+        subtitle = f"Connecting to <strong>{html.escape(wifi_ssid)}</strong>..."
+        meta_refresh = '<meta http-equiv="refresh" content="15;url=/setup">\n    '
+        footer = "This page will automatically check the connection status."
 
         self.send_html(
             HTML_SUCCESS.format(
@@ -1618,7 +1822,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                 # that races a live attempt never joins, so its name must not
                 # become the retry echo) — the global only ever holds the
                 # <=32-byte validated SSID of a join actually launched.
-                # Same lock as reset_wifi_globals, the other writer.
+                # Same lock as reset_state, the other writer.
                 if wifi_typed:
                     WIFI_LAST_MANUAL_SSID = wifi_ssid
 
@@ -1703,36 +1907,12 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                         WIFI_CONNECT_IN_FLIGHT = False
 
             _spawn_bg(_connect_and_teardown, name="setup-wifi-connect")
-        else:
-            # Normal mode (already on WiFi) — resolve location from IP-geo,
-            # then signal + SIGTERM. Run in a daemon thread so the HTTP
-            # response flushes immediately rather than waiting up to ~13s
-            # for the resolver's retry budget. Only schedule SIGTERM if
-            # signal_completion lands — otherwise firstboot.sh's wait loop
-            # would never observe handoff and the user would be stuck.
-
-            def _resolve_and_signal():
-                import time
-
-                time.sleep(1)  # Let response flush to client
-                try:
-                    _resolve_location_from_ip()
-                except Exception as e:
-                    print(f"Normal-mode resolver raised: {e}")
-                if signal_completion():
-                    _schedule_self_terminate(delay=2.0)
-                else:
-                    print("Warning: signal_completion failed in normal-mode branch; not scheduling SIGTERM")
-
-            _spawn_bg(_resolve_and_signal, name="setup-resolve-signal")
-
-
-def generate_self_signed_cert(cert_dir):
-    """Self-signed cert generator — delegates to the shared `https_cert` module
-    (extracted in M1 so control_server reuses the same code path)."""
-    from https_cert import generate_self_signed_cert as _shared
-
-    return _shared(cert_dir)
+        # litclock-dev#715: the normal-mode (pre-connected) completion arm
+        # lived here — resolve-from-IP + signal + SIGTERM on an else branch.
+        # The pre-connected path resolves inline in first-boot.sh since
+        # litclock-dev#647, so the arm was reachable only from a page this
+        # server no longer serves. In provisioning mode the early
+        # empty-SSID validation guarantees wifi_ssid is set by this point.
 
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -1751,21 +1931,6 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     # can send 3–5 within the first second after joining the AP) doesn't
     # fill the default backlog of 5 and cause kernel SYN drops.
     request_queue_size = 64
-
-
-class HTTPSServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    """Multi-threaded HTTPS server with SSL support."""
-
-    allow_reuse_address = True
-    daemon_threads = True
-    request_queue_size = 64
-
-    def __init__(self, server_address, handler_class, cert_file, key_file):
-        super().__init__(server_address, handler_class)
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain(cert_file, key_file)
-        self.socket = context.wrap_socket(self.socket, server_side=True)
-
 
 def _restore_hotspot(create_hotspot_fn, failure_class=None):
     """Restore the hotspot after a failed WiFi connection attempt.
@@ -1875,6 +2040,15 @@ def main():
         print(f"Error: {ENV_FILE} not found")
         sys.exit(1)
 
+    # Point the catalog loader at the SAME env.sh this server persists to.
+    # Without this the render language comes from strings_catalog's own path
+    # chain (LITCLOCK_ENV_FILE → LITCLOCK_DIR/env.sh → repo root), which
+    # coincides with our argv only by convergent construction on the Pi — a
+    # bench run with a different env-file argument would persist the picker's
+    # choice to one file and render from another, mixed-language forever
+    # (Stage-4 gates /review). setdefault: an explicit override still wins.
+    os.environ.setdefault("LITCLOCK_ENV_FILE", ENV_FILE)
+
     if PROVISIONING_MODE:
         # Provisioning mode: HTTP only on all interfaces.
         # DHCP Option 114 (RFC 8908) was considered but requires a CA-signed TLS
@@ -1891,36 +2065,19 @@ def main():
             finally:
                 httpd.shutdown()
     else:
-        # Normal mode: try HTTPS, fall back to HTTP
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        cert_dir = os.path.join(project_root, ".certs")
-        os.makedirs(cert_dir, exist_ok=True)
-
-        cert_file, key_file = generate_self_signed_cert(cert_dir)
-
-        if cert_file and key_file:
-            try:
-                httpd = HTTPSServer(("", HTTPS_PORT), SetupHandler, cert_file, key_file)
-                print(f"Setup server running on HTTPS port {HTTPS_PORT}")
-                try:
-                    httpd.serve_forever()
-                except KeyboardInterrupt:
-                    pass
-                finally:
-                    httpd.shutdown()
-            except Exception as e:
-                print(f"HTTPS failed: {e}, falling back to HTTP")
-                cert_file = None
-
-        if not cert_file:
-            with ThreadedHTTPServer(("", PORT), SetupHandler) as httpd:
-                print(f"Setup server running on HTTP port {PORT}")
-                try:
-                    httpd.serve_forever()
-                except KeyboardInterrupt:
-                    pass
-                finally:
-                    httpd.shutdown()
+        # litclock-dev#715: normal mode (self-signed HTTPS on 8443, the
+        # input-free pre-connected page) is retired — the pre-connected
+        # first-boot path resolves location inline since litclock-dev#647
+        # and never serves a page. The ONE remaining no-flag caller is
+        # first-boot.sh's missing-env.sh fallback arm, whose contract is
+        # exactly this: exit 1 loudly, wait_for_setup restart-loops the
+        # exit, and the 1800s Setup-Incomplete ceiling paints recovery
+        # instructions and powers off — a retry on the next boot.
+        print(
+            "Error: normal mode was retired (litclock-dev#715); "
+            "this server only runs with --provisioning"
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

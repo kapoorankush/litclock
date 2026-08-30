@@ -15,7 +15,7 @@ under whichever one covers the material it touches:
   4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/), because the corpus
   derives from CC BY-NC-SA material and ShareAlike carries forward.
 - **Bundled third-party assets keep the license they arrived with** — the case
-  STLs in `3d-models/` (CC BY), the weather icons in `icons/` (CC BY-SA 4.0),
+  case print files in `3d-models/` (CC BY), the weather icons in `icons/` (CC BY-SA 4.0),
   the fonts (OFL-1.1), and documentation that reproduces material from those
   sources. Changing one of those means contributing under that asset's
   license, not MIT. [NOTICE.md](NOTICE.md) is the full inventory.
@@ -28,9 +28,9 @@ you keep it, and the license you grant is non-exclusive.
 ### Quote and translation contributions
 
 Translations are welcome — the corpus is built to be localized, and
-[#19](https://github.com/kapoorankush/litclock/issues/19) tracks that work.
-Two things are worth getting right before you start, because both are cheap
-to check once and effectively unauditable across thousands of rows later.
+[#19](https://github.com/kapoorankush/litclock/issues/19) tracks that work. Two things are worth getting right before
+you start, because both are cheap to check once and effectively unauditable
+across thousands of rows later.
 
 **Name the edition you took a quote from, in the pull request.** Which edition
 a row came from is the one fact nobody can recover from a CSV diff.
@@ -178,15 +178,10 @@ cd litclock
 python3 -m venv --system-site-packages venv
 source venv/bin/activate
 
-# Install dependencies. On a dev box this plain install is what you want —
-# pip's copies of the GPIO libs let the tests import them.
-#
-# On the Pi it is NOT. requirements-apt.txt lists packages that come from
-# apt there, and pip-installing them into the venv either fails to compile
-# on a gcc-less image, or shadows the apt version with a binary that
-# gpiozero may then pick as its pin_factory backend (see litclock-dev#214). Every
-# install path filters those names out first; the README shows the filter
-# if you are working on the device.
+# Install dependencies. requirements-apt.txt lists packages that come from
+# apt on the Pi (don't pip-install them into the venv — it either fails
+# to compile on a gcc-less image, or shadows the apt version with a binary
+# that gpiozero may then pick as its pin_factory backend — see litclock-dev#214).
 pip install -r requirements.txt
 ```
 
@@ -259,7 +254,7 @@ a direct guard:
   shared `DIAG_SUBPROC_TIMEOUT_S`, so a bump for one slow-under-load call
   doesn't loosen the cheap kernel calls. The seeds are behaviour-preserving
   (all == the shared base) until tuned from real Pi Zero 2W data — run
-  a subprocess-timing probe on real hardware under each
+  `scripts/diag-subprocess-timing.py` on authorclock + the test Pi under each
   load condition (idle / paint contention / memory pressure / degraded SD /
   wedged WiFi) and size each budget at the worst-case p99 + headroom. The
   call-site wiring is pinned by `TestFastReaderTimeoutContract`'s
@@ -340,8 +335,8 @@ The 5 apt-provisioned names (`gpiozero`, `lgpio`, `pigpio`, `spidev`,
 `colorzero`) are listed in `requirements.in` so the resolver has the
 full constraint graph AND the lockfile is self-documenting. The install
 paths (`scripts/update.sh`, `pi-gen/stage3/01-setup-app/00-run.sh`)
-filter these names out of the generated lock before pip-install via
-`requirements-apt.txt` —
+filter these names out of
+the generated lock before pip-install via `requirements-apt.txt` —
 they come from apt at runtime via `--system-site-packages` (issue litclock-dev#214).
 
 **Why not eager `--upgrade-strategy`?** PR litclock-dev#322 narrowed `update.sh` to
@@ -359,6 +354,30 @@ python3 src/eink_display.py status "Test" --message "Hello" --save test.png
 ```
 
 For full testing, deploy to a Raspberry Pi with the display connected.
+
+### Adding a script to `scripts/`
+
+Commit it **executable**:
+
+```bash
+git add scripts/my-new-thing.sh
+git update-index --chmod=+x scripts/my-new-thing.sh
+```
+
+`update.sh` Phase 6 runs `chmod +x "$INSTALL_DIR"/scripts/*.sh` on every device
+on every update. If git records the file non-executable, that chmod is a real
+mode change every single run: the update's own `git reset --hard` undoes it and
+Phase 6 re-creates it moments later, so the tree ends every update dirty and the
+*next* update warns about uncommitted changes the previous one made. The warning
+then fires on every device forever and is wrong every time, which is how a real
+warning stops meaning anything (litclock-dev#682).
+
+`tests/test_update_sh.py::TestChmodTargetsAreTrackedExecutable` enforces this,
+and fails on any `chmod` line in `update.sh` it cannot classify — so if you add
+one, expect to teach that test about it.
+
+`scripts/lib/*.sh` are the deliberate exception: they are sourced, never run,
+have no shebang, and `scripts/*.sh` does not recurse into them.
 
 ### Shell helpers (`scripts/lib/`)
 
@@ -435,9 +454,65 @@ Subcommands for debugging (all safe to run on the working tree):
 | `validate` | Assert every changed row's `timestring` parses to its HH:MM tag. Would catch a mistag like a `10.10pm.` row tagged `21:10`. |
 | `diff` | List the HH:MM buckets whose contents differ from git HEAD, AND surface any drift between `images/manifest.json` and the current CSV (post-litclock-dev#299). |
 | `regenerate` | Wipe dirty buckets, then run `quote_to_image.php`. Supports `--dry-run`. |
-| `ship MSG` | Full end-to-end pipeline. Supports `--dry-run`, `--no-release`, `--no-push`, `--branch NAME`. |
+| `ship MSG` | Full end-to-end pipeline. Supports `--dry-run`, `--no-release`, `--no-push`, `--branch NAME`, `--allow-small` (see below). |
 
 See issue litclock-dev#211 for the original design and issue litclock-dev#299 for the manifest + CI integrity layer.
+
+#### When a row is too small to read: the fitted-fs floor
+
+Every row renders at the largest font size at which its quote fits the panel — its
+**fitted size**. Below `FS_HARD_FLOOR` (22, in `src/quote_renderer.py`) the body text
+is small enough to be uncomfortable on a wall at normal reading distance, so both
+`validate` and `ship` refuse the edit. The floor lives with the renderer so it can
+never drift from what actually renders, and the check runs on **both** paths — a gate
+only in `validate` is bypassable by never running it.
+
+**Metadata-only edits are never blocked.** Fitted size depends only on the quote text
+and the `timestring`, so a retag, a title fix, an author fix, or an nsfw-flag change
+cannot move it. Those pass automatically with no flag, even on a row that is already
+below the floor. This is why correcting a byline on a long quote is not a fight.
+
+**Anything else below the floor is reported, and you accept it explicitly.** The tool
+cannot tell an edit from a replacement — deleting a long row and adding a different
+one produces exactly the diff that editing it does — so it does not guess. It names
+the rows and asks:
+
+```bash
+$ python3 image-gen/corpus_edit.py validate
+ERROR: 2 changed row(s) fail the fitted-fs hard floor (litclock-dev#539):
+  time 00:01: fits at fs 19 < hard floor 22 (606 chars) — truncate at a sentence
+              boundary (litclock-dev#539), or accept it explicitly as 00:01#df9e776c
+       These are below the floor. Trim them at a sentence boundary, or if
+       they are meant to stay long, accept exactly these rows with:
+         --allow-small 00:01#df9e776c 12:01#0cfa7bdb
+
+$ python3 image-gen/corpus_edit.py validate --allow-small 00:01#df9e776c 12:01#0cfa7bdb
+OK
+```
+
+The first pass tells you the tokens; you paste them back. **Trimming is the preferred
+answer** — reach for the flag only when the prose is worth the size.
+
+A token is `HH:MM#<hash of the row>`, and being bound to the row's content is what
+makes it more than a narrower blanket:
+
+- A minute holds several rows, and 421 `(time, title, author)` identities in the
+  corpus are shared by more than one row, so neither is specific enough to excuse
+  one row.
+- **Edit the row again after accepting it and the token changes**, so the gate speaks
+  up again instead of honouring a stale approval.
+- **A token that names nothing currently failing is an error**, so a list copied from
+  an old PR body cannot look like it still authorises something.
+
+A bare `--allow-small` with no tokens does *not* excuse everything; it is treated as
+accepting nothing.
+
+**When trimming, the corpus rules apply:** cut only text that adds nothing, keep
+anything carrying character or humour, and **never cut from the middle of a quote** —
+what the screen shows must be a true representation of what is on the page. Head and
+tail trims only.
+
+See litclock-dev#539 for the floor and litclock-dev#559 for the acknowledgement flow.
 
 ### How bolding works — the timestring column IS the bold spec
 
@@ -461,8 +536,7 @@ your language's corpus rows — never a renderer fix.** The rules:
   a row bug.
 - **The validator has your back:** `corpus_edit.py validate` (and the `ship`
   pipeline) warns on any changed row whose timestring match has a mid-word
-  edge, and the development repo's render-invariants CI reports a
-  corpus-wide census. Fix the
+  edge, and the render-invariants CI reports a corpus-wide census. Fix the
   row it names — adjust the timestring, or fix a typo in the quote (a
   missing space is the classic cause).
 - **If the timestring appears more than once in the quote, the FIRST

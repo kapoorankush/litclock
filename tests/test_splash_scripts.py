@@ -1,11 +1,24 @@
 """Tests for scripts/boot-splash.sh and scripts/shutdown-splash.sh (issue litclock-dev#160)."""
 
+import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
+# The suppress guard, spelled once. Every assertion about it compares the
+# WHOLE conjunction: asserting the pieces separately let `&&` -> `||` through,
+# and that mutant makes the script exit 0 on every shutdown (/review).
+SUPPRESS_GUARD = "if [[ -f /run/litclock-splash-suppress ]] && [[ ! -L /run/litclock-splash-suppress ]]; then"
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BOOT_SH = REPO_ROOT / "scripts" / "boot-splash.sh"
+
+
+def _en_catalog():
+    import json
+
+    return json.loads((REPO_ROOT / "languages" / "en" / "strings.json").read_text(encoding="utf-8"))
 SHUTDOWN_SH = REPO_ROOT / "scripts" / "shutdown-splash.sh"
 
 
@@ -74,9 +87,14 @@ class TestShutdownSplash:
         shutdown persists on the e-ink screen indefinitely."""
         assert "reboot.target" in shutdown_content
         assert "list-jobs" in shutdown_content
-        # Distinct titles
-        assert "Restarting" in shutdown_content
-        assert "Powered Off" in shutdown_content
+        # Distinct catalog prefixes per arm; the copy itself lives in the
+        # en catalog (litclock-dev#532 slice 2) — assert the VALUES there
+        # so the site→key→value chain is observed end to end.
+        assert 'PREFIX="shutdown.splash.reboot"' in shutdown_content
+        assert 'PREFIX="shutdown.splash.poweroff"' in shutdown_content
+        catalog = _en_catalog()
+        assert catalog["shutdown.splash.reboot.message"] == "Restarting..."
+        assert catalog["shutdown.splash.poweroff.title"] == "Powered Off"
 
     def test_random_quote_selection(self, shutdown_content):
         """Quote arrays should be indexed by $RANDOM so each shutdown shows
@@ -96,9 +114,12 @@ class TestShutdownSplash:
         assert marker_idx < reboot_idx, "marker check must precede reboot detection"
 
     def test_gift_mode_welcome_content(self, shutdown_content):
-        """Welcome splash should greet the recipient and hint at setup."""
-        assert "Welcome to LitClock" in shutdown_content
-        assert "LitClock-Setup" in shutdown_content
+        """Welcome splash should greet the recipient and hint at setup —
+        copy now lives in the catalog (litclock-dev#532 slice 2)."""
+        assert 'PREFIX="shutdown.splash.welcome"' in shutdown_content
+        catalog = _en_catalog()
+        assert catalog["shutdown.splash.welcome.title"] == "Welcome to LitClock"
+        assert "LitClock-Setup" in catalog["shutdown.splash.welcome.message"]
 
     def test_welcome_message_file_is_consumed_if_present(self, shutdown_content):
         """litclock-dev#280: when /etc/litclock/.welcome-message exists, use its content
@@ -112,35 +133,77 @@ class TestShutdownSplash:
         # Must be bounded so a giant file can't block shutdown.
         assert "head -c" in block, "welcome-message read must be size-bounded"
         assert "timeout " in block, "welcome-message read must be time-bounded"
-        # The default fallback must still be present — empty/missing file
-        # falls through to the default greeting.
-        assert ":-Welcome to LitClock}" in shutdown_content
+        # The default fallback is the catalog title now: an empty/missing
+        # welcome file leaves TITLE_OVERRIDE empty, so the catalog's
+        # shutdown.splash.welcome.title ("Welcome to LitClock") paints.
+        assert 'TITLE_OVERRIDE="$WELCOME_TITLE"' in shutdown_content
+        assert _en_catalog()["shutdown.splash.welcome.title"] == "Welcome to LitClock"
 
     def test_suppress_marker_exits_without_painting(self, shutdown_content):
-        """litclock-dev#529: the Setup-Incomplete poweroff paints its recovery copy and
-        needs it to persist through shutdown. The root-only suppress marker
-        must short-circuit the script BEFORE any action resolution (welcome
-        marker included) so nothing repaints over it."""
-        assert "/run/litclock-splash-suppress" in shutdown_content
+        """litclock-dev#529: the Setup-Incomplete poweroff paints its recovery
+        copy and needs it to persist through shutdown. The root-only suppress
+        marker must short-circuit the script BEFORE any action resolution
+        (welcome marker included) so nothing repaints over it.
+
+        Back-ported from #22 (litclock-dev#657)."""
+        assert SUPPRESS_GUARD in shutdown_content, (
+            "the whole conjunction is asserted, not its pieces: with `&&` mutated to `||` the script "
+            "exits 0 on EVERY shutdown (the marker does not exist, so `! -L` is true) and no splash — "
+            "gift welcome included — ever paints again (/review)"
+        )
         # Compare against the welcome-mode CHECK, not its first mention (the
         # header comment lists it earlier).
-        suppress_idx = shutdown_content.find("if [[ -f /run/litclock-splash-suppress ]]")
+        suppress_idx = shutdown_content.find(SUPPRESS_GUARD)
         welcome_idx = shutdown_content.find("if [[ -f /etc/litclock/.welcome-mode ]]")
-        assert suppress_idx != -1 and welcome_idx != -1
+        assert welcome_idx != -1
         assert suppress_idx < welcome_idx, "suppress check must precede welcome-mode check"
         # The branch must exit, not fall through to a paint.
         block = shutdown_content[suppress_idx : suppress_idx + 200]
         assert "exit 0" in block
 
     def test_suppress_marker_is_root_owned_path_not_hint_dir(self, shutdown_content):
-        """litclock-dev#529 security: suppression must NOT be plantable by a pi-level
-        process (it could hide the gift welcome, which pi can't otherwise
-        touch). The marker therefore lives directly in root-owned /run,
-        not in pi-owned /run/litclock/ where the action hint lives, and
+        """litclock-dev#529 security: suppression must NOT be plantable by a
+        pi-level process (it could hide the gift welcome, which pi can't
+        otherwise touch). The marker therefore lives directly in root-owned
+        /run, not in pi-owned /run/litclock/ where the action hint lives, and
         symlinks are rejected."""
         assert "/run/litclock/splash-suppress" not in shutdown_content
-        line = shutdown_content[shutdown_content.find("if [[ -f /run/litclock-splash-suppress ]]") :][:200]
-        assert "! -L" in line, "suppress marker check must reject symlinks"
+        # `! -L` must name the SUPPRESS marker. A loose `"! -L" in window` check
+        # let the test pass with the symlink guard pointed at
+        # /run/litclock/shutdown-action instead — restoring the exact
+        # pi-plantable-symlink hole this test is named for (/review). The
+        # sibling at the bottom of this class already used the anchored form.
+        assert "[[ ! -L /run/litclock-splash-suppress ]]" in shutdown_content
+
+    def test_suppress_marker_actually_short_circuits_when_executed(self, shutdown_content):
+        """Executed, not grepped — the string checks above cannot see
+        fall-through.
+
+        The guard fragment is lifted and run against a temp path, so the
+        assertion is on behaviour: present marker short-circuits, absent marker
+        falls through to action resolution, and a symlink is refused."""
+        start = shutdown_content.index(SUPPRESS_GUARD)
+        end = shutdown_content.index("\nfi\n", start) + len("\nfi\n")
+        frag = shutdown_content[start:end]
+
+        def run(setup):
+            root = Path(tempfile.mkdtemp())
+            marker = root / "suppress"
+            setup(marker)
+            script = frag.replace("/run/litclock-splash-suppress", str(marker)) + "\necho REACHED_ACTION_RESOLUTION\n"
+            return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+        absent = run(lambda m: None)
+        assert "REACHED_ACTION_RESOLUTION" in absent.stdout, (
+            "with no marker the script must fall through and paint — an always-suppress "
+            "regression silently disables the gift welcome and the Powered Off splash"
+        )
+        present = run(lambda m: m.write_text(""))
+        assert present.returncode == 0 and "REACHED_ACTION_RESOLUTION" not in present.stdout, (
+            "with the marker present the script must exit 0 without resolving an action"
+        )
+        linked = run(lambda m: m.symlink_to("/etc/hostname"))
+        assert "REACHED_ACTION_RESOLUTION" in linked.stdout, "a symlinked marker must NOT suppress"
 
     def test_uses_venv_python(self, shutdown_content):
         assert "venv/bin/python3" in shutdown_content
@@ -279,3 +342,78 @@ class TestShutdownActionHintHardening:
         assert 'if [[ -z "$SHUTDOWN_ACTION" ]]' in shutdown_content, (
             "fallback check `[[ -z $SHUTDOWN_ACTION ]]` must gate the list-jobs branch"
         )
+
+
+class TestShutdownSplashArgAssemblyExecuted:
+    """EXECUTED coverage of the SPLASH_ARGS assembly (litclock-dev#532
+    slice 2): each arm must hand eink_display the right mix of catalog
+    prefix and literal overrides — a content grep can't see the
+    positional-prepend or the conditional flag appends."""
+
+    @staticmethod
+    def _span():
+        body = SHUTDOWN_SH.read_text(encoding="utf-8")
+        start = body.index('case "$SHUTDOWN_ACTION" in')
+        end = body.index("\nfi\n", body.index("SPLASH_ARGS")) + len("\nfi\n")
+        return body[start:end]
+
+    def _run(self, tmp_path, action, welcome_message=None):
+        import subprocess
+
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "eink_display.py").write_text("", encoding="utf-8")
+        rec = tmp_path / "argv.rec"
+        recorder = tmp_path / "python.sh"
+        recorder.write_text(
+            "#!/bin/bash\n" + f'for a in "$@"; do printf "%s\\n" "$a"; done > "{rec}"\n',
+            encoding="utf-8",
+        )
+        recorder.chmod(0o755)
+        etc = tmp_path / "etc"
+        etc.mkdir()
+        welcome_path = etc / ".welcome-message"
+        if welcome_message is not None:
+            welcome_path.write_text(welcome_message, encoding="utf-8")
+        span = self._span().replace("/etc/litclock/.welcome-message", str(welcome_path))
+        script = (
+            f'INSTALL_DIR="{tmp_path}"\n'
+            f'PYTHON="{recorder}"\n'
+            f'SHUTDOWN_ACTION="{action}"\n'
+            "RANDOM=0\n"
+            f"{span}\n"
+        )
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=20)
+        argv = rec.read_text(encoding="utf-8").splitlines() if rec.exists() else []
+        return proc, argv
+
+    def test_reboot_arm_prefix_plus_quote_submessage(self, tmp_path):
+        _, argv = self._run(tmp_path, "reboot")
+        assert argv[:4] == ["src/eink_display.py", "status", "--catalog-prefix", "shutdown.splash.reboot"]
+        assert "--submessage" in argv
+        quote = argv[argv.index("--submessage") + 1]
+        assert quote.startswith('"'), quote  # a curated literary quote
+        assert "--message" not in argv  # Restarting... comes from the catalog
+
+    def test_poweroff_arm_quote_rides_the_message(self, tmp_path):
+        _, argv = self._run(tmp_path, "poweroff")
+        assert argv[2:4] == ["--catalog-prefix", "shutdown.splash.poweroff"]
+        assert "--message" in argv
+        assert "--submessage" not in argv  # "LitClock" comes from the catalog
+
+    def test_welcome_arm_default_title_comes_from_catalog(self, tmp_path):
+        _, argv = self._run(tmp_path, "welcome")
+        # No custom message → no positional title → the catalog's
+        # "Welcome to LitClock" resolves inside eink_display.
+        assert argv[:4] == ["src/eink_display.py", "status", "--catalog-prefix", "shutdown.splash.welcome"]
+
+    def test_welcome_arm_custom_message_overrides_the_title(self, tmp_path):
+        _, argv = self._run(tmp_path, "welcome", welcome_message="Happy Birthday Mom!")
+        assert argv[2:4] == ["--catalog-prefix", "shutdown.splash.welcome"]
+        # Title rides LAST behind the -- separator (leading-dash defense).
+        assert argv[-2:] == ["--", "Happy Birthday Mom!"]
+
+    def test_welcome_arm_leading_dash_title_survives(self, tmp_path):
+        """A gifter typing "-Mom-" must not kill the paint: without the --
+        separator argparse treats it as an unknown option (probed live)."""
+        _, argv = self._run(tmp_path, "welcome", welcome_message="-Mom-")
+        assert argv[-2:] == ["--", "-Mom-"]

@@ -831,26 +831,33 @@ class TestConcurrentTriggers:
         assert len(noops) == 1, f"the loser must say it did nothing — got {records}"
 
 
-def test_the_fallback_script_uses_the_same_canonical_phrasing():
-    """The sixth completion path, and the one that runs precisely when
-    control_server is broken (litclock-dev#646 /review F10).
+# Every bash completion path. They cannot import COMPLETED_VIA_PREFIX, so the
+# spelling is asserted instead. Before litclock-dev#646 an operator grepping the canonical
+# string on a Pi rescued by the fallback timer got NOTHING and would conclude the
+# handoff never completed — the same wrong-conclusion class this exists to kill.
+# scripts/update.sh joined the list in litclock-dev#675.
+BASH_COMPLETION_PATHS = [
+    ("scripts/litclock-handoff-fallback.sh", None),
+    ("scripts/update.sh", handoff_mod.TRIGGER_UPDATE_MIGRATION),
+]
 
-    scripts/litclock-handoff-fallback.sh is bash, so it cannot import
-    COMPLETED_VIA_PREFIX. Before this, an operator grepping the canonical string
-    on a Pi rescued by litclock-handoff-fallback.timer got NOTHING and would
-    conclude the handoff never completed — the same wrong-conclusion class this
-    whole change exists to kill.
-    """
-    raw = (Path(__file__).resolve().parents[1] / "scripts" / "litclock-handoff-fallback.sh").read_text()
-    # Comment lines stripped: the script's own comment EXPLAINS this contract
+
+@pytest.mark.parametrize("script_path,own_trigger", BASH_COMPLETION_PATHS)
+def test_the_bash_completers_use_the_same_canonical_phrasing(script_path, own_trigger):
+    raw = (Path(__file__).resolve().parents[1] / script_path).read_text()
+    # Comment lines stripped: each script's own comment EXPLAINS this contract
     # and quotes the string, so asserting against the raw file is satisfied by
     # prose alone — verified by deleting the echo and watching this pass.
     script = "\n".join(ln for ln in raw.splitlines() if not ln.lstrip().startswith("#"))
 
     assert handoff_mod.COMPLETED_VIA_PREFIX in script, (
-        "the fallback completer must announce itself with the same string the Python paths use, "
-        "or grepping for it on a rescued device reports a handoff that never happened"
+        f"{script_path} must announce itself with the same string the Python paths use, "
+        "or grepping for it on that device reports a handoff that never happened"
     )
+    if own_trigger is not None:
+        assert f"{handoff_mod.COMPLETED_VIA_PREFIX} {own_trigger}" in script, (
+            f"{script_path} must use its own registered trigger spelling, {own_trigger!r}"
+        )
     # ...and it must not impersonate one of the in-process triggers.
     for trigger in (
         handoff_mod.TRIGGER_DONE_BUTTON,
@@ -859,7 +866,7 @@ def test_the_fallback_script_uses_the_same_canonical_phrasing():
         handoff_mod.TRIGGER_AUTO_TIMER,
     ):
         assert f"{handoff_mod.COMPLETED_VIA_PREFIX} {trigger}" not in script, (
-            f"the fallback names itself {trigger!r}, which control_server also claims"
+            f"{script_path} names itself {trigger!r}, which control_server also claims"
         )
 
 

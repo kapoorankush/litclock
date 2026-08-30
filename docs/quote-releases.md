@@ -45,7 +45,7 @@ The litclock-dev#192 audit tooling can find more changes; folding multiple small
    CI on the merge commit reads the new `.images-version` via `.github/workflows/build-image.yml`'s pre-flight check. If the release artifact from step 2 is missing, the pre-flight fails fast with a clear error.
 
 5. **Cut a new OS image tag so fresh SD flashes ship the new quotes.**
-   Either push a `v*` tag (if you're also cutting a code release), or manually trigger `build-image.yml` via the GitHub Actions UI. The resulting `.img.xz` release bakes in the new image set.
+   Either cut a code release with `./scripts/cut-release.sh vX.Y.Z` (see [Building the Image](building-image.md#trigger-a-build) — never push a bare `v*` tag by hand, or the update card ships with no release notes), or manually trigger `build-image.yml` via the GitHub Actions UI. The resulting `.img.xz` release bakes in the new image set.
 
 ### Why steps 2 and 3 are separate
 
@@ -81,7 +81,7 @@ If a v2 release introduces a problem:
 
 1. Edit `.images-version` back to `v1` on a branch.
 2. Open a PR, merge.
-3. **Cut a `v*` tag containing the revert.** Deployed Pis resolve the highest semver tag, so a revert that only lands on `master` reaches none of them — they keep running v2 until a tag carries the revert. This step is the rollback; the merge alone is not.
+3. **Cut a release containing the revert** (`./scripts/cut-release.sh vX.Y.Z`). Deployed Pis resolve the highest semver tag, so a revert that only lands on `master` reaches none of them — they keep running v2 until a tag carries the revert. This step is the rollback; the merge alone is not.
 4. Trigger `build-image.yml` to cut a fresh OS image pinned to v1, so newly flashed cards are correct too.
 
 The v2 release itself can stay on GitHub — nothing consumes it unless a `.images-version` commit points at it.

@@ -2,3 +2,9 @@
 # print-to-pdf embeds a creation timestamp, so bytes change every rebuild —
 # mark binary so git doesn't attempt (noisy, useless) textual diffs.
 docs/manual/*.pdf -diff -text
+
+# Golden fixtures are byte-exact snapshots compared with == against LF source
+# (litclock-dev#708). autocrlf conversion on a Windows checkout would CRLF the
+# golden while the \n-anchored extraction of the script stops matching — a
+# confusing false red. Never convert.
+tests/fixtures/*.golden -text

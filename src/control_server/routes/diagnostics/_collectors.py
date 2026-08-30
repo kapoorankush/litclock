@@ -52,6 +52,9 @@ from ..._network import (
     read_lan_ip as _network_read_lan_ip,
 )
 from ..._network import (
+    read_lan_ip_live as _network_read_lan_ip_live,
+)
+from ..._network import (
     read_last_dhcp_iso as _network_read_last_dhcp_iso,
 )
 from ..._network import (
@@ -84,6 +87,7 @@ __all__ = [
     "DIAG_ONESHOT_UNITS",
     "DIAG_JOURNAL_TIMEOUT_S",
     "DIAG_JOURNAL_TTL_S",
+    "DIAG_IP_ADDR_TIMEOUT_S",
     "DIAG_SUBPROC_TIMEOUT_S",
     "DIAG_SUBPROC_TTL_S",
     "DIAG_UNITS",
@@ -186,6 +190,7 @@ DIAG_GIT_HEAD_TIMEOUT_S = DIAG_SUBPROC_TIMEOUT_S  # git rev-parse --short HEAD
 # base (keeps the "every call site reads its own budget" invariant total, and
 # lets measurement TIGHTEN these if the data supports it).
 DIAG_IP_ROUTE_TIMEOUT_S = DIAG_SUBPROC_TIMEOUT_S  # ip -4 route show default
+DIAG_IP_ADDR_TIMEOUT_S = DIAG_SUBPROC_TIMEOUT_S  # ip -4 -o addr show dev <iface> (litclock-dev#672)
 DIAG_UNAME_TIMEOUT_S = DIAG_SUBPROC_TIMEOUT_S  # uname -r
 
 # Journalctl is the outlier. v0.214.2 hardware QA on authorclock clocked a
@@ -500,7 +505,39 @@ def _read_ssid() -> str | None:
 
 
 def _read_lan_ip() -> str | None:
+    """Live interface address first; the dispatcher marker only as a fallback.
+
+    litclock-dev#672: nothing ever clears /run/litclock/last-rendered-ip, so a
+    clock that loses DHCP without rebooting kept reporting its pre-outage
+    address and this section read "healthy" for the whole outage. Hardware-
+    confirmed over a four-minute window with wlan0 holding no IPv4 at all.
+
+    An authoritative live "no address" (determined=True, value=None) is
+    returned AS None so _compute_anomalies trips. The marker is consulted only
+    when the live read could not run at all — falling back on an authoritative
+    negative would restore exactly the muting this fixes.
+    """
     path = current_app.config.get("DIAG_LAST_IP_PATH", DEFAULT_LAST_RENDERED_IP_PATH)
+    if path == "":
+        # An explicit empty override means "do not report this device's LAN IP"
+        # (Codex /review F1 — the empty string is disable, not fall-back). The
+        # live read has to honour that too, or litclock-dev#672 would have quietly turned
+        # a privacy suppression into a leak by sourcing the address elsewhere.
+        return None
+
+    # Scoped to the default-route interface, matching nm-dispatcher (which is
+    # wlan0-only) and _read_signal_dbm's `_read_iface() or "wlan0"` idiom. An
+    # un-scoped read would take the first global IPv4 by ifindex and report a
+    # docker/VPN/gadget address as the clock's LAN IP — which re-opens exactly
+    # the muting this fixes (/review).
+    live, determined = _network_read_lan_ip_live(
+        iface=_read_iface(),
+        cache_key="diag-lan-ip-live",
+        ttl=DIAG_SUBPROC_TTL_S,
+        timeout=DIAG_IP_ADDR_TIMEOUT_S,
+    )
+    if determined:
+        return live
     return _network_read_lan_ip(path=path)
 
 

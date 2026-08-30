@@ -94,9 +94,9 @@ def _validate_latitude(value: str) -> tuple[bool, str | None]:
     try:
         f = float(value)
     except (TypeError, ValueError):
-        return False, "must be numeric"
+        return False, _v("validator.numeric")
     if not -90.0 <= f <= 90.0:
-        return False, "must be between -90 and 90"
+        return False, _v("validator.lat_range")
     return True, None
 
 
@@ -107,9 +107,9 @@ def _validate_longitude(value: str) -> tuple[bool, str | None]:
     try:
         f = float(value)
     except (TypeError, ValueError):
-        return False, "must be numeric"
+        return False, _v("validator.numeric")
     if not -180.0 <= f <= 180.0:
-        return False, "must be between -180 and 180"
+        return False, _v("validator.lon_range")
     return True, None
 
 
@@ -118,7 +118,7 @@ def _validate_units(value: str) -> tuple[bool, str | None]:
     # (see weather_providers/base_provider.py) so any deviation is a
     # path-traversal vector. config.atomic_update is the single writer.
     if value not in ("imperial", "metric"):
-        return False, "must be 'imperial' or 'metric'"
+        return False, _v("validator.units_enum")
     return True, None
 
 
@@ -132,7 +132,7 @@ def _validate_weather_location_mode(value: str) -> tuple[bool, str | None]:
     # as a read-side default for legacy / pre-S2 env.sh files where the
     # key is genuinely absent.
     if value not in ("auto", "specific"):
-        return False, "must be 'auto' or 'specific'"
+        return False, _v("validator.mode_enum")
     return True, None
 
 
@@ -151,14 +151,61 @@ def _validate_weather_ip_country(value: str) -> tuple[bool, str | None]:
     if value == "":
         return True, None
     if len(value) != 2 or not value.isascii() or not value.isalpha() or not value.isupper():
-        return False, "must be a 2-letter UPPERCASE ISO country code (e.g. 'US', 'GB', 'IN')"
+        return False, _v("validator.country_code")
     return True, None
 
 
 def _validate_bool(value: str) -> tuple[bool, str | None]:
     if value.lower() not in ("true", "false"):
-        return False, "must be 'true' or 'false'"
+        return False, _v("validator.bool_enum")
     return True, None
+
+_LANGUAGE_CODE_RE = re.compile(r"[a-z][a-z0-9]{0,7}(-[a-z0-9]{1,8}){0,2}")
+
+
+def _v(key, /, **slots):
+    """Validator-message lookup (litclock-dev#532 final slice). The
+    messages are FRAGMENTS by design — they compose after field labels and
+    the "Message {error}." template (the 4c decision); translators
+    translate them as fragments. Lazy import: config.py loads in
+    non-server contexts (update.sh env merge, tests) where the catalog
+    still resolves (stdlib-only loader) but must not be a module-import
+    hard dependency."""
+    import strings_catalog  # noqa: PLC0415 — deferred; acyclic
+
+    return strings_catalog.get(key, **slots)
+
+
+def _validate_language(value: str) -> tuple[bool, str | None]:
+    """Accept only codes the registry lists as active (litclock-dev#532).
+
+    Matches the RAW value exactly, like every other enum validator here
+    (_validate_units, _validate_weather_location_mode): the validated
+    string must be byte-identical to the persisted string, because
+    LITCLOCK_LANGUAGE is serialized verbatim (not in _SHELL_QUOTED_KEYS).
+    The original strip-then-match let a payload like "\nes" pass
+    validation and reach env.sh as a raw newline, splitting the line into
+    a bare command executed by every env.sh-sourcing shell (pickers 5b
+    /review, security pass — the free-form line-terminator guard covers
+    only _make_free_form_validator keys).
+    """
+    import strings_catalog  # noqa: PLC0415 — deferred; acyclic (strings_catalog does not import config)
+
+    if not value:
+        return False, _v("validator.language_missing")
+    # Shape belt AHEAD of the registry lookup (Codex 5b /review P0):
+    # LITCLOCK_LANGUAGE is serialized verbatim into shell-sourced env.sh,
+    # so registry membership alone would let a malformed registry entry
+    # (curator typo, hostile upstream edit) smuggle shell metacharacters
+    # fleet-wide. Lowercase BCP-47-primary-subtag shape, dash-separated —
+    # same alphabet strings_catalog._ENV_LINE_RE can read back.
+    if not _LANGUAGE_CODE_RE.fullmatch(value):
+        return False, _v("validator.language_shape")
+    active = strings_catalog.active_codes()
+    if value not in active:
+        return False, _v("validator.language_active", codes=', '.join(sorted(active)))
+    return True, None
+
 
 
 # litclock-dev#319: lowered from 280 → 80 once the e-ink renderer started word-wrapping
@@ -224,7 +271,7 @@ def _make_free_form_validator(
         # User-facing codepoint cap. "80 characters" in the UI label maps to
         # 80 codepoints here (Python's ``len(str)`` is codepoint count).
         if len(value) > max_codepoints:
-            return False, f"must be at most {max_codepoints} characters"
+            return False, _v("validator.max_codepoints", n=max_codepoints)
         # litclock-dev#317 item 3 (parameterized in adversarial /review follow-up): some
         # free-form fields ALSO have a byte-bound consumer downstream and
         # need a parity-critical UTF-8 byte cap on top of the codepoint
@@ -255,21 +302,19 @@ def _make_free_form_validator(
             try:
                 byte_len = len(value.encode("utf-8"))
             except UnicodeEncodeError:
-                return False, "must be valid UTF-8 (no unpaired surrogates)"
+                return False, _v("validator.utf8")
             if byte_len > max_bytes:
-                return False, (
-                    f"must be at most {max_bytes} bytes (emoji and accented characters take more than one byte each)"
-                )
+                return False, _v("validator.max_bytes", n=max_bytes)
         for ch in _FREE_FORM_FORBIDDEN_CHARS:
             if ch in value:
-                return False, f"may not contain {ch!r}"
+                return False, _v("validator.forbidden_char", ch=repr(ch))
         if not allow_newlines and ("\n" in value or "\r" in value):
-            return False, "may not contain line breaks"
+            return False, _v("validator.line_breaks")
         if "\x00" in value:
-            return False, "may not contain NUL"
+            return False, _v("validator.nul")
         for ch in _LINE_TERMINATOR_LIKE_CHARS:
             if ch in value:
-                return False, "may not contain unprintable line-terminator characters"
+                return False, _v("validator.line_terminators")
         return True, None
 
     return _validate
@@ -307,6 +352,11 @@ SETTINGS_ALLOWLIST: dict[str, Validator] = {
     "WEATHER_IP_COUNTRY": _validate_weather_ip_country,
     "WEATHER_ENABLED": _validate_bool,
     "ALLOW_NSFW_QUOTES": _validate_bool,
+    # litclock-dev#532 Stage 3: the device language. Gate on the ACTIVE
+    # registry set — an incubating/unknown code must not be persistable
+    # (the loader would silently degrade it to English forever, which
+    # reads as "my language setting doesn't work").
+    "LITCLOCK_LANGUAGE": _validate_language,
     # litclock-dev#416 PR3c (F31) — opt-in toggle for the diagnostics shortcut ribbon's
     # full-label state. Default unset / "false" → dots-three icon only
     # (owner-persona protection per OV-D-C). True → 'Live diagnostics' label
@@ -382,6 +432,7 @@ def _export_prefix(captured: str) -> str:
     if "export" in captured:
         return captured.lstrip()
     return "export "
+
 
 
 def validate_setting(key: str, value: str) -> tuple[bool, str | None]:

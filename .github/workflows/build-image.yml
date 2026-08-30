@@ -84,6 +84,26 @@ jobs:
           python3 -m pip install --quiet --upgrade pytest pyyaml
           python3 -m pytest tests/test_pi_gen.py tests/test_build_image_workflow.py -q
 
+      # litclock-dev#681 — a tagged release must carry release notes.
+      #
+      # The PWA's update card does NOT read the GitHub release body. It reads
+      # CHANGELOG.md at the tag and matches a heading for that exact tag; with
+      # no match it renders no notes at all, so the owner gets an update prompt
+      # with nothing explaining it. v0.223.0 and v0.224.0 both shipped that way,
+      # silently, because the content was still under `## [Unreleased]` when the
+      # tag was cut and nothing anywhere checked.
+      #
+      # Tag pushes only: a workflow_dispatch build is a dev pre-release and has
+      # no version section to promote yet.
+      #
+      # Runs BEFORE the 40-minute build for the same reason as the step above:
+      # this is recoverable by deleting the tag, retagging and pushing again,
+      # and that is far cheaper to discover at minute 1 than after a release
+      # asset already exists.
+      - name: Release notes present for tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python3 scripts/check-changelog-section.py "${GITHUB_REF_NAME}"
+
       # Free disk space — pi-gen needs ~10 GB
       - name: Free disk space
         run: |

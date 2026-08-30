@@ -378,27 +378,30 @@ def _format_relative(ts_iso: str | None, now_epoch: float) -> str:
     """Render an ISO-8601 timestamp as "2 days ago" / "3 hours ago".
     Fallback labels for empty / future / unparseable inputs follow
     DESIGN.md "Empty / loading / error" conventions."""
+    # litclock-dev#532 Stage 3: every sentence here resolves through the
+    # language catalog (whole templates with named slots; plural selection
+    # picks between complete sentences). Deferred import per the handoff.py
+    # convention — src/ is on sys.path via the app bootstrap.
+    import strings_catalog  # noqa: PLC0415
+
     if not ts_iso:
-        return "—"
+        return strings_catalog.get("status.relative.never")
     try:
         dt = datetime.fromisoformat(ts_iso)
     except ValueError:
-        return "—"
+        return strings_catalog.get("status.relative.never")
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     delta_s = now_epoch - dt.timestamp()
     if delta_s < 0:
-        return "just now"
+        return strings_catalog.get("status.relative.just_now")
     if delta_s < 60:
-        return "just now"
+        return strings_catalog.get("status.relative.just_now")
     if delta_s < 3600:
-        m = int(delta_s // 60)
-        return f"{m} minute{'s' if m != 1 else ''} ago"
+        return strings_catalog.plural("status.relative.minutes", int(delta_s // 60))
     if delta_s < 86400:
-        h = int(delta_s // 3600)
-        return f"{h} hour{'s' if h != 1 else ''} ago"
-    days = int(delta_s // 86400)
-    return f"{days} day{'s' if days != 1 else ''} ago"
+        return strings_catalog.plural("status.relative.hours", int(delta_s // 3600))
+    return strings_catalog.plural("status.relative.days", int(delta_s // 86400))
 
 
 def collect_status(

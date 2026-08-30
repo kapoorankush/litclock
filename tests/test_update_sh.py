@@ -13,8 +13,12 @@ Two layers of coverage:
 """
 
 import fnmatch
+import json
+import os
 import re
+import shlex
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -458,8 +462,8 @@ class TestUpdateScriptStructure:
             "update.sh must read apt-provisioned names from requirements-apt.txt (litclock-dev#214)"
         )
         assert "grep -vE" in update_sh_content, (
-            "update.sh must filter requirements.txt with a grep -vE regex (litclock-dev#214)"
-        )
+            "update.sh must filter requirements.txt with a grep -vE regex "
+            "(litclock-dev#214)")
         # The filtered requirements file, not the raw one, must reach pip.
         assert 'install --upgrade -r "$REQUIREMENTS_FILTERED"' in update_sh_content, (
             "pip install must target the filtered requirements, not the raw file (litclock-dev#214)"
@@ -790,8 +794,8 @@ class TestAutoUpdateStructure:
             "(== OLD_SHA normally; the LKG target in bootcheck rollback mode) (litclock-dev#324)"
         )
         assert 'rm -f "$HASH_FILE"' in fail_block, (
-            "pip-install failure branch must delete the pip hash so the next run re-attempts pip "
-            "install (litclock-dev#324)"
+            "pip-install failure branch must delete the pip hash so the next run re-attempts pip install "
+            "(litclock-dev#324)"
         )
         assert "$UPDATE_FAILED_FILE" in fail_block, (
             "pip-install failure branch must write the update-failed marker for the e-ink glyph (litclock-dev#324)"
@@ -1299,8 +1303,14 @@ class TestPhase3SkipMarker:
 def test_migrates_handoff_complete_for_existing_devices():
     """EPIC litclock-dev#383 PR2 (litclock-dev#388) Option-A migration: the upgraded litclock.service
     is gated on .handoff-complete, which pre-PR2 devices never wrote. update.sh
-    must touch it (after confirming .setup-complete) so quotes don't stop on
-    upgrade. Without this, a Pi glued in its case would go dark."""
+    must touch it so quotes don't stop on upgrade — a Pi glued in its case would
+    go dark.
+
+    CONDITIONALLY since litclock-dev#675: "we confirmed .setup-complete, so this
+    device is past first-boot" is false during the handoff window. The migration
+    now fires when the timezone is known OR the installed unit predates the
+    gate; see TestHandoffMigrationRespectsTheTimezone for the behaviour. This
+    stays as a structural check that the write still exists at all."""
     src = UPDATE_SH.read_text()
     assert "/etc/litclock/.handoff-complete" in src
     assert "sudo touch /etc/litclock/.handoff-complete" in src
@@ -1578,3 +1588,541 @@ class TestBashGlobMatch:
     )
     def test_it_matches_what_bash_would(self, pattern, path, expected):
         assert _bash_glob_match(pattern, path) is expected
+
+
+# --- litclock-dev#675 ------------------------------------------------------
+
+
+class TestHandoffMigrationRespectsTheTimezone:
+    """update.sh writes .handoff-complete, which is what lets quotes start.
+
+    Design-review A2's rule — a clock that paints at the WRONG time is worse
+    than no clock — binds every automatic writer. handoff.py and
+    litclock-handoff-fallback.sh both refuse when the timezone is unknown; this
+    one reasoned "we confirmed .setup-complete, so this device is past
+    first-boot", which is false during the handoff window, the window DEFINED as
+    .setup-complete present and .handoff-complete absent (litclock-dev#675).
+
+    The discriminator is the INSTALLED UNIT, not a clock. A "refuse if setup
+    finished recently" version was written first and is wrong both ways: it
+    expires exactly when it is needed (a marker still missing an hour after
+    setup is very nearly a definition of "timezone unknown", and the weekly
+    timer's RandomizedDelaySec=7d lands inside a one-hour window ~0.6% of the
+    time), and it depends on a clock this RTC-less hardware does not have.
+
+    These run the real script. The `sudo` stub logs its arguments without
+    executing, so the assertion is on whether update.sh ATTEMPTED the touch —
+    which is the decision under test.
+    """
+
+    # "gated" means the installed unit already carries the handoff condition,
+    # i.e. a PR2+ device. The marker path is substituted per-test along with the
+    # one in the script, or the grep would compare a real path to a fake one and
+    # every device would look pre-PR2.
+    GATED = "gated"
+    UNGATED = "ungated"
+    ABSENT = "absent"
+
+    def _run_with(
+        self,
+        sandbox,
+        tmp_path,
+        *,
+        env_body,
+        unit=GATED,
+        handoff_done=False,
+    ):
+        fake_etc = tmp_path / "etc" / "litclock"
+        fake_etc.mkdir(parents=True)
+        (fake_etc / ".setup-complete").write_text("ok\n")
+        if handoff_done:
+            (fake_etc / ".handoff-complete").write_text("ok\n")
+
+        fake_unit = tmp_path / "systemd" / "litclock.service"
+        fake_unit.parent.mkdir(parents=True)
+        if unit == self.GATED:
+            fake_unit.write_text(f"[Unit]\nConditionPathExists={fake_etc}/.handoff-complete\n")
+        elif unit == self.UNGATED:
+            fake_unit.write_text("[Unit]\nDescription=AuthorClock Display Update\n")
+
+        _setup_fake_install(sandbox)
+        sandbox.stub("sudo")
+        sandbox.stub("systemctl")
+        sandbox.stub("git", stdout="abc1234\n")
+        sandbox.stub("md5sum", stdout="d41d8cd98f00b204e9800998ecf8427e  /tmp/x\n")
+
+        (sandbox.root / "env.sh").write_text(env_body)
+
+        script = sandbox.root / "scripts" / "update.sh"
+        script.write_text(
+            UPDATE_SH.read_text()
+            .replace("/etc/litclock/", f"{fake_etc}/")
+            .replace("/etc/systemd/system/litclock.service", str(fake_unit))
+        )
+        script.chmod(0o755)
+
+        result = sandbox.run(str(script))
+        calls = [json.loads(line) for line in sandbox.call_log.read_text().splitlines() if line.strip()]
+        marker = str(fake_etc / ".handoff-complete")
+        touched = any(
+            call["cmd"] == "sudo" and call["args"][:1] == ["touch"] and marker in call["args"] for call in calls
+        )
+        return result, touched
+
+    # ---------- the reported bug ----------
+
+    def test_it_refuses_a_pr2_device_whose_timezone_is_unknown(self, script_sandbox, tmp_path):
+        """An update landing mid-setup would start the clock on whatever
+        timezone the Pi currently believes — on a clone, the GIFTER's."""
+        result, touched = self._run_with(
+            script_sandbox, tmp_path, env_body="export WEATHER_LATITUDE=\nexport WEATHER_LONGITUDE=\n"
+        )
+
+        assert not touched, "completed the handoff with an unknown timezone"
+        output = result.stdout + result.stderr
+        assert "Not completing the handoff" in output
+        assert "WRONG time is worse than no clock" in output
+        assert "handoff: completed via" not in output, (
+            "claimed a completion that did not happen — an operator greps that one string"
+        )
+
+    def test_the_refusal_does_not_expire(self, script_sandbox, tmp_path):
+        """The whole point of dropping the age condition. A device stuck with an
+        unknown timezone stays stuck for days by design (the fallback timer
+        refuses on the same predicate), and the weekly updater must not quietly
+        complete the handoff on the next tick."""
+        fake_etc_marker = tmp_path / "etc" / "litclock"
+        result, touched = self._run_with(
+            script_sandbox, tmp_path, env_body="export WEATHER_LATITUDE=\nexport WEATHER_LONGITUDE=\n"
+        )
+        # Age the marker by 90 days and re-run: same answer.
+        marker = fake_etc_marker / ".setup-complete"
+        stamp = time.time() - 90 * 24 * 3600
+        os.utime(marker, (stamp, stamp))
+        assert not touched
+        assert "Not completing the handoff" in result.stdout + result.stderr
+
+    # ---------- the completion paths ----------
+
+    def test_it_completes_when_the_timezone_is_known(self, script_sandbox, tmp_path):
+        result, touched = self._run_with(
+            script_sandbox, tmp_path, env_body="export WEATHER_LATITUDE=30.27\nexport WEATHER_LONGITUDE=-97.74\n"
+        )
+        assert touched, "refused a handoff whose timezone IS known"
+        assert "handoff: completed via the in-place updater" in result.stdout + result.stderr
+
+    def test_it_still_migrates_a_genuinely_pre_handoff_device(self, script_sandbox, tmp_path):
+        """Brick prevention, and the migration's actual purpose. A pre-PR2
+        device with weather turned off has no coordinates and a perfectly correct
+        timezone; refusing it stops the quotes on a device that has been painting
+        for months. Its INSTALLED unit has no handoff gate, which is what says so
+        — no clock involved."""
+        result, touched = self._run_with(
+            script_sandbox,
+            tmp_path,
+            env_body="export WEATHER_LATITUDE=\nexport WEATHER_LONGITUDE=\n",
+            unit=self.UNGATED,
+        )
+        assert touched, "refused the pre-PR2 migration and would have stopped a working clock"
+        output = result.stdout + result.stderr
+        assert "handoff: completed via the in-place updater" in output
+        assert "predates the handoff" in output, "the journal must say WHY it migrated"
+
+    def test_a_missing_unit_is_not_treated_as_pre_handoff(self, script_sandbox, tmp_path):
+        """Fail safe. Quotes cannot paint without the unit anyway, so refusing
+        costs nothing — and it avoids starting a wrong-time clock the moment
+        Phase 5 installs the gated unit later in this same run."""
+        _, touched = self._run_with(
+            script_sandbox,
+            tmp_path,
+            env_body="export WEATHER_LATITUDE=\nexport WEATHER_LONGITUDE=\n",
+            unit=self.ABSENT,
+        )
+        assert not touched
+
+    # ---------- the predicate ----------
+
+    def test_a_latitude_without_a_longitude_is_not_a_known_timezone(self, script_sandbox, tmp_path):
+        """handoff.py requires both. The bash copies checked latitude alone, so
+        this env.sh was 'unknown' to the PWA and 'known' here — two writers of
+        one marker disagreeing about the predicate that gates it."""
+        _, touched = self._run_with(
+            script_sandbox, tmp_path, env_body="export WEATHER_LATITUDE=30.27\nexport WEATHER_LONGITUDE=\n"
+        )
+        assert not touched
+
+    @pytest.mark.parametrize("lat,lon", [("0", "0"), ("0.0", "0.0"), ("-0.0", "-0.0")])
+    def test_the_equator_counts_as_a_known_timezone(self, script_sandbox, tmp_path, lat, lon):
+        """0 is a legitimate coordinate. A numeric emptiness check would refuse
+        every device on the equator, so the string test is pinned."""
+        _, touched = self._run_with(
+            script_sandbox, tmp_path, env_body=f"export WEATHER_LATITUDE={lat}\nexport WEATHER_LONGITUDE={lon}\n"
+        )
+        assert touched
+
+    def test_a_blanked_value_with_a_trailing_comment_is_still_blank(self, script_sandbox, tmp_path):
+        """`WEATHER_LATITUDE= # unset` is ordinary shell. Without stripping the
+        comment the comment TEXT became the value and read as a populated
+        coordinate, so a device with no location completed the handoff."""
+        _, touched = self._run_with(
+            script_sandbox,
+            tmp_path,
+            env_body="export WEATHER_LATITUDE= # cleared by the PWA\nexport WEATHER_LONGITUDE= # cleared\n",
+        )
+        assert not touched
+
+    def test_a_missing_env_file_is_not_a_known_timezone(self, script_sandbox, tmp_path):
+        _, touched = self._run_with(script_sandbox, tmp_path, env_body="")
+        assert not touched
+
+    # ---------- idempotency ----------
+
+    def test_it_does_nothing_when_the_handoff_is_already_complete(self, script_sandbox, tmp_path):
+        """Parameters chosen so the completion branch WOULD fire if the
+        existence guard were removed — otherwise this passes for an unrelated
+        reason and the guard can be deleted with the suite still green."""
+        result, touched = self._run_with(
+            script_sandbox,
+            tmp_path,
+            env_body="export WEATHER_LATITUDE=30.27\nexport WEATHER_LONGITUDE=-97.74\n",
+            handoff_done=True,
+        )
+        assert not touched, "the migration must be idempotent"
+        assert "handoff: completed via" not in result.stdout + result.stderr
+
+
+def test_the_two_bash_handoff_writers_share_one_predicate():
+    """update.sh and litclock-handoff-fallback.sh both write .handoff-complete
+    and cannot import handoff.py, so the predicate is duplicated. It has already
+    drifted once — the fallback checked latitude alone while handoff.py's
+    _has_location required both coordinates. Pin that all three agree on WHICH
+    keys mean "the timezone is known"."""
+    fallback = (REPO_ROOT / "scripts" / "litclock-handoff-fallback.sh").read_text()
+    updater = UPDATE_SH.read_text()
+    handoff_py = (REPO_ROOT / "src" / "control_server" / "handoff.py").read_text()
+
+    for name, source in (("litclock-handoff-fallback.sh", fallback), ("update.sh", updater)):
+        for key in ("WEATHER_LATITUDE", "WEATHER_LONGITUDE"):
+            assert f"read_env_value {key}" in source, f"{name} no longer reads {key}"
+        assert 'value="${value%%#*}"' in source, f"{name} stopped stripping trailing comments from env.sh values"
+
+    # Reading a value and USING it are different claims. An earlier version of
+    # this test asserted only the read, so dropping the longitude from the
+    # fallback's actual condition left it green.
+    assert '[[ -z "$lat_val" || -z "$lon_val" ]]' in fallback, (
+        "litclock-handoff-fallback.sh reads the longitude but no longer decides on it"
+    )
+    assert '[[ -n "$handoff_lat" && -n "$handoff_lon" ]]' in updater, (
+        "update.sh reads the longitude but no longer decides on it"
+    )
+
+    for key in ("WEATHER_LATITUDE", "WEATHER_LONGITUDE"):
+        assert key in handoff_py, f"handoff.py no longer reads {key} — the bash copies now disagree with it"
+
+
+# --- litclock-dev#676 ------------------------------------------------------
+
+
+class TestTheHandoffFallbackTimerIsReArmedOnUpdate:
+    """litclock-dev#676 gave litclock-handoff-fallback.timer a cadence. Getting that
+    cadence onto a device that is ALREADY in the handoff window needs one more
+    thing than a new unit file.
+
+    `daemon-reload` does not re-arm a timer that has already elapsed — it keeps
+    NextElapse=infinity — and the unit loop starts only timers this run NEWLY
+    enabled, which this one never is (pi-gen enables it). Measured both ways on
+    systemd 255: reload alone gave 0 firings in 15s at a 5s cadence; a restart
+    resumed it immediately. Without the restart the cadence waits for the next
+    boot, and the handoff window is exactly the population it exists for.
+    """
+
+    def test_it_re_arms_the_timer_after_daemon_reload(self):
+        src = UPDATE_SH.read_text()
+        assert "systemctl restart litclock-handoff-fallback.timer" in src, (
+            "update.sh no longer re-arms the handoff fallback timer, so a device that takes an OTA "
+            "while in the handoff window gets the new cadence only after a reboot"
+        )
+        restart_at = src.index("systemctl restart litclock-handoff-fallback.timer")
+        # The LAST daemon-reload before the restart — update.sh has more than
+        # one (the authorclock migration has its own), so indexing the first
+        # would compare against the wrong marker.
+        reload_at = src.rindex("sudo systemctl daemon-reload", 0, restart_at)
+        assert reload_at < restart_at, "the re-arm must follow daemon-reload, or it re-arms the OLD unit"
+        between = src[reload_at:restart_at]
+        assert "for unit in" not in between, "the re-arm must come after the unit-install loop has finished"
+
+    def test_the_re_arm_is_guarded_on_the_unit_being_enabled(self):
+        """Restarting a unit the operator disabled would silently undo their
+        opt-out — the same respect-user-state rule the enable loop follows."""
+        src = UPDATE_SH.read_text()
+        restart_at = src.index("systemctl restart litclock-handoff-fallback.timer")
+        block = src[max(0, restart_at - 800) : restart_at]
+        assert "is-enabled --quiet litclock-handoff-fallback.timer" in block
+
+    def test_the_re_arm_is_not_generalised_to_every_timer(self):
+        """Deliberately narrow: restarting litclock.timer mid-update could drop
+        a minute's render, and restarting litclock-update.timer from inside
+        litclock-update.service is a job-ordering hazard."""
+        src = UPDATE_SH.read_text()
+        body = "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
+        for risky in ("systemctl restart litclock.timer", "systemctl restart litclock-update.timer"):
+            assert risky not in body, f"update.sh now restarts {risky}, which this change deliberately avoided"
+
+
+# --- litclock-dev#662 ------------------------------------------------------
+
+
+class TestTheSuiteCannotHangCI:
+    """`timeout = 300` in pyproject.toml only does anything when pytest-timeout
+    is installed — an absent plugin makes it an "Unknown config option" WARNING
+    and the protection silently does nothing. That is the same shape as every
+    other guard this batch repaired, one level up, so both halves are pinned:
+    the setting must exist AND the plugin must be declared where CI installs it.
+    """
+
+    def test_a_per_test_timeout_is_configured(self):
+        pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r"^timeout\s*=\s*(\d+)", pyproject, re.M)
+        assert match, (
+            "pyproject.toml no longer sets a per-test timeout — a hanging test goes back to burning "
+            "CI to its wall-clock limit and reporting a timeout instead of the regression"
+        )
+        seconds = int(match.group(1))
+        assert 60 <= seconds <= 900, f"timeout={seconds} is not a usable ceiling"
+
+    def test_the_plugin_that_enforces_it_is_declared(self):
+        """Non-comment lines only. A substring check over the raw file stays
+        green when the requirement is commented OUT — and this file already
+        carries a comment block naming pytest-timeout, so the literal survives
+        its own removal (/review, Codex; mutation-proven)."""
+        lines = [
+            ln.split("#", 1)[0].strip()
+            for ln in (REPO_ROOT / "requirements-dev.txt").read_text(encoding="utf-8").splitlines()
+        ]
+        declared = [ln for ln in lines if ln.lower().startswith("pytest-timeout")]
+        assert declared, (
+            "pytest-timeout is not an active requirement, so `timeout = 300` is an inert "
+            "unknown-config warning and the suite can hang again"
+        )
+
+    def test_ci_installs_the_dev_requirements(self):
+        """The declaration only matters if CI installs the file it lives in —
+        and again on a non-comment line, since the workflow's own comments
+        mention the filename (/review, Codex)."""
+        workflow = (REPO_ROOT / ".github" / "workflows" / "lint.yml").read_text(encoding="utf-8")
+        installs = [
+            ln
+            for ln in workflow.splitlines()
+            if "pip install" in ln and "requirements-dev.txt" in ln and not ln.lstrip().startswith("#")
+        ]
+        assert installs, (
+            "no uncommented `pip install ... requirements-dev.txt` in lint.yml, so pytest-timeout "
+            "never reaches CI and the timeout ceiling is inert there too"
+        )
+
+
+# ───────────────────── litclock-dev#721: origin-derived resolver pair ───────
+
+
+def _extract_origin_repo_pair() -> str:
+    body = UPDATE_SH.read_text()
+    start = body.index("origin_repo_pair() {")
+    end = body.index("\n}\n", start) + len("\n}\n")
+    span = body[start:end]
+    assert "git remote get-url origin" in span, "span lost the origin read"
+    assert '"kapoorankush" "litclock"' in span, "span lost the fallback pair"
+    return span
+
+
+class TestOriginRepoPair:
+    """litclock-dev#721: the resolver asked the hardcoded PUBLIC repo for its
+    latest tag regardless of the device's own origin, permanently pinning
+    every dev-image device (and half-applying any update that touched
+    update.sh, via the checksum re-exec re-resolving a different target).
+    The pair now derives from origin; these EXECUTE the real function with a
+    stubbed `git`."""
+
+    def _run(self, url_or_fail):
+        if url_or_fail is None:
+            git_stub = "git() { return 1; }"
+        else:
+            git_stub = f'git() {{ printf "%s\\n" {shlex.quote(url_or_fail)}; }}'
+        script = f"""{git_stub}
+{_extract_origin_repo_pair()}
+origin_repo_pair
+"""
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr
+        return r.stdout.strip()
+
+    def test_https_dev_origin_resolves_dev(self):
+        assert self._run("https://github.com/kapoorankush/litclock-dev.git") == "kapoorankush litclock-dev"
+
+    def test_https_without_dot_git(self):
+        assert self._run("https://github.com/kapoorankush/litclock-dev") == "kapoorankush litclock-dev"
+
+    def test_ssh_form(self):
+        # DEV-shaped on purpose: a public ssh URL's correct answer coincides
+        # with the fallback pair, so dropping the ssh parse arm stayed green
+        # against it (mutation-caught during /review prep).
+        assert self._run("git@github.com:kapoorankush/litclock-dev.git") == "kapoorankush litclock-dev"
+
+    def test_public_https_resolves_public(self):
+        assert self._run("https://github.com/kapoorankush/litclock.git") == "kapoorankush litclock"
+
+    def test_unparseable_falls_back_to_public(self):
+        assert self._run("ssh://weird.example/foo") == "kapoorankush litclock"
+
+    def test_missing_remote_falls_back_to_public(self):
+        assert self._run(None) == "kapoorankush litclock"
+
+    def test_deep_path_falls_back_not_mangles(self):
+        """/review litclock-dev#722 F3: `^(.+)/` instead of `^([^/]+)/` survived every
+        other shape — the exactly-one-slash rule needs its own pin."""
+        assert self._run("https://github.com/o/r/extra") == "kapoorankush litclock"
+
+    def test_trailing_slash_tolerated(self):
+        assert self._run("https://github.com/kapoorankush/litclock-dev/") == "kapoorankush litclock-dev"
+
+    def test_credentialed_https_resolves_its_own_pair(self):
+        """litclock-dev#728 (/review litclock-dev#729): the origin shape a hand-provisioned
+        PAT produces must resolve to ITS pair — the fallback would silently
+        reproduce the litclock-dev#721 pinning. DEV-shaped so the fallback can't fake it."""
+        assert (
+            self._run("https://oauth2:ghp_tok@github.com/kapoorankush/litclock-dev.git")
+            == "kapoorankush litclock-dev"
+        )
+
+    def test_charset_invalid_component_falls_back(self):
+        """Slug charset gate (/review litclock-dev#729): a space would otherwise reach the
+        API URL templates."""
+        assert self._run("https://github.com/o wner/repo") == "kapoorankush litclock"
+
+    def test_dot_dot_component_falls_back(self):
+        assert self._run("https://github.com/../notifications") == "kapoorankush litclock"
+
+    def test_resolver_passes_the_derived_pair_at_runtime(self, tmp_path):
+        """EXECUTED wiring pin (/review litclock-dev#722 F6): the textual pin below can be
+        satisfied while an overwrite after the read still queries public.
+        Lift resolve_target_sha, stub the api function to record its args,
+        stub git for both the remote read and the (never-reached) fetch."""
+        body = UPDATE_SH.read_text()
+        start = body.index("resolve_target_sha() {")
+        end = body.index("\n}\n", start) + len("\n}\n")
+        fn = body[start:end]
+        rec = tmp_path / "args"
+        script = f"""git() {{
+    case "$1" in
+        remote) printf "https://github.com/kapoorankush/litclock-dev.git\\n" ;;
+        *) return 1 ;;
+    esac
+}}
+github_api_latest_release_tag() {{ printf "%s %s\\n" "$1" "$2" > {shlex.quote(str(rec))}; }}
+{_extract_origin_repo_pair()}
+{fn}
+resolve_target_sha
+"""
+        subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        assert rec.exists(), "the resolver never queried the api function"
+        assert rec.read_text().strip() == "kapoorankush litclock-dev", (
+            "a dev-shaped origin produced a non-dev API query at RUNTIME — the litclock-dev#721 defect"
+        )
+
+    def test_resolver_actually_uses_the_derived_pair(self):
+        """The wiring, not just the parser: resolve_target_sha must pass the
+        derived pair to github_api_latest_release_tag. A dev-shaped origin
+        must never produce a public-repo query (the exact litclock-dev#721 defect)."""
+        body = UPDATE_SH.read_text()
+        start = body.index("resolve_target_sha() {")
+        end = body.index("\n}\n", start)
+        span = "\n".join(
+            ln for ln in body[start:end].splitlines() if not ln.lstrip().startswith("#")
+        )
+        assert 'github_api_latest_release_tag "$_owner" "$_repo"' in span, (
+            "resolve_target_sha no longer queries the origin-derived pair (litclock-dev#721)"
+        )
+        assert 'github_api_latest_release_tag "kapoorankush"' not in span, (
+            "a hardcoded repo pair is back in resolve_target_sha — dev-image devices pin forever"
+        )
+        assert "origin_repo_pair" in span, "the derivation call vanished from resolve_target_sha"
+
+
+def test_env_sh_lock_is_gitignored():
+    """litclock-dev#721 bench pass: env.sh.lock is created by every boot;
+    untracked it made `git status --porcelain` permanently non-empty, so
+    update.sh's 'Uncommitted changes detected' warning fired on every OTA
+    forever — the litclock-dev#682 noise class by another door. Executed against git,
+    not grepped against .gitignore prose."""
+    r = subprocess.run(
+        ["git", "check-ignore", "env.sh.lock"],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
+    )
+    assert r.returncode == 0, "env.sh.lock is not gitignored — every OTA warns about it forever"
+
+
+# ───────────────────── litclock-dev#724: detached-HEAD warning ──────────────
+
+
+class TestDetachedHeadWarning:
+    """litclock-dev#724 + /review litclock-dev#730: devices are pinned to release-tag
+    SHAs, so detached-at-a-release-tag is the fleet's permanent, correct
+    state and must be silent — while a detached NON-release commit (hand
+    checkout, interrupted-update recovery) and a named non-master branch
+    both still warn. These EXECUTE the lifted span with git stubbed
+    per-subcommand (a catch-all stub would satisfy any git call and verify
+    nothing about the command contract)."""
+
+    def _run(self, branch: str, at_release_tag: bool = True) -> str:
+        body = UPDATE_SH.read_text()
+        anchor = "CURRENT_BRANCH=$(git rev-parse"
+        assert body.count(anchor) == 1, "span anchor must be unique"
+        start = body.index(anchor)
+        end = body.index("\nfi\n", start) + len("\nfi\n")
+        span = body[start:end]
+        assert "log_warn" in span, "span lost the warning call"
+        assert "git status" not in span, "span overgrew into the porcelain block"
+        describe = "printf 'v9.9.9\\n'" if at_release_tag else "return 1"
+        script = (
+            'git() {\n'
+            '  case "$1 $2" in\n'
+            '    "rev-parse --abbrev-ref") printf %s\\\\n ' + shlex.quote(branch) + " ;;\n"
+            '    "describe --tags") ' + describe + " ;;\n"
+            '    "rev-parse --short") printf abc1234\\\\n ;;\n'
+            "    *) return 1 ;;\n"
+            "  esac\n"
+            "}\n"
+            'log_warn() { printf \'WARN: %s\\n\' "$1"; }\n' + span
+        )
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    def test_detached_at_release_tag_is_silent(self):
+        # `git rev-parse --abbrev-ref HEAD` prints literally "HEAD" when
+        # detached; a release tag names the commit — the every-run false
+        # alarm this issue is about.
+        assert "WARN" not in self._run("HEAD", at_release_tag=True)
+
+    def test_detached_at_non_release_commit_warns(self):
+        # Hand checkout / interrupted-update recovery: real anomalous state
+        # (/review litclock-dev#730 — an absolute suppression would hide it).
+        out = self._run("HEAD", at_release_tag=False)
+        assert "WARN" in out
+        assert "abc1234" in out
+        assert "non-release" in out
+
+    def test_master_is_silent(self):
+        assert "WARN" not in self._run("master")
+
+    def test_named_branch_still_warns(self):
+        out = self._run("feat/experiment")
+        assert "WARN" in out
+        assert "feat/experiment" in out
+
+    def test_warning_names_no_destination(self):
+        # The old text claimed "reset to master" — wrong on the modern path
+        # (release target) AND the rollback path (recovery SHA). The new
+        # copy must not name any destination (/review litclock-dev#730).
+        out = self._run("feat/experiment")
+        assert "reset to master" not in out
+        assert "master" not in out

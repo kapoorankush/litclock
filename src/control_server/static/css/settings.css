@@ -209,93 +209,9 @@
  * raw-coords <details> + browser-tz fallback. All values from tokens.css.
  * ─────────────────────────────────────────────────────────────────────── */
 
-/* Visually hidden — for fieldset legends used to label radio groups for
- * screen readers without consuming visual space. Standard a11y pattern;
- * matches what bootstrap calls .sr-only. */
-.settings-visually-hidden {
-  position: absolute;
-  width: 1px; height: 1px;
-  margin: -1px; padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-/* Segmented pill (litclock-dev#337 A12 + A13). Two-button binary picker styled with
- * --accent fill on the selected side and --ink-muted text on the unselected.
- * Wraps two `<input type=radio>` so it degrades to a real radio group
- * with no JS — see settings.js for the JS layer that keeps `.is-selected`
- * in sync as the user clicks. */
-.settings-row--pill {
-  /* The pill is the row's own visual element — no extra label column. */
-  border: none;
-  padding: var(--sp-md) 0;
-}
-.settings-row--pill:last-of-type {
-  border-bottom: none;
-}
-.settings-segmented {
-  display: flex;
-  gap: 0;
-  background: var(--bg);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-md);
-  /* 4px inset = var(--sp-xs). Pill container's own padding around the
-   * inner options, NOT the option's clickable area. */
-  padding: var(--sp-xs);
-  margin: 0;
-}
-.settings-segmented__opt {
-  flex: 1;
-  text-align: center;
-  /* 10px 12px = component-internal inset that doesn't map cleanly to the
-   * --sp-* scale (var(--sp-sm) var(--sp-md) = 8px 12px would clip the
-   * touch target below the DESIGN.md 44pt minimum). Kept as a literal
-   * because the value is hand-tuned for the pill's specific anatomy
-   * (option label + 4px outer padding adds up to ~44px tap target).
-   * litclock-dev#414 maintainability /review: tokenizing this would require a
-   * component-specific token like --pill-padding, which is more cruft
-   * than the value's reuse-potential warrants. */
-  padding: 10px 12px;
-  font-size: var(--fs-small);
-  color: var(--ink-muted);
-  cursor: pointer;
-  border-radius: calc(var(--r-md) - var(--sp-xs));
-  transition:
-    background var(--t-micro) ease-out,
-    color var(--t-micro) ease-out;
-  /* Min touch target — DESIGN.md "Touch target spacing" calls 44pt. The
-   * 10+10 padding plus the natural line-height of fs-small gets us to ~40px
-   * inner; the 4px outer pill padding pushes the visible target to ~44px.
-   * 36px literal is component-internal (pill option intrinsic height before
-   * the outer pill inset adds the final 8px). */
-  min-height: 36px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.settings-segmented__opt.is-selected {
-  background: var(--accent);
-  color: var(--bg);
-}
-/* Hide the actual radio inputs visually but keep them in the tab order
- * and keyboard-focusable. Real radios provide form-submit semantics + a11y
- * announcements ("Automatic, selected, 1 of 2"); the segmented pill is
- * pure visual styling on top. */
-.settings-segmented__input {
-  position: absolute;
-  opacity: 0;
-  width: 0;
-  height: 0;
-  pointer-events: none;
-}
-/* Keyboard focus ring on the parent label when the inner radio has focus.
- * Mirrors DESIGN.md "Focus indicators": 2px solid --accent at 2px offset. */
-.settings-segmented__opt:has(.settings-segmented__input:focus-visible) {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
+/* Segmented pill + .settings-visually-hidden moved to segmented.css
+ * (shared with /system's gift-language pill — litclock-dev#532 pickers
+ * 5b; see that file's header). Both pages load it via extra_head. */
 
 /* Currently-row (Auto-mode display) — read-only "Currently: City, State". */
 .settings-currently-row {

@@ -27,17 +27,17 @@ PYTHON="$INSTALL_DIR/venv/bin/python3"
 # (c) explicit `reboot|poweroff` allowlist — anything else falls through to
 # the list-jobs detection, so a spoofed "junk" hint can't suppress the
 # legitimate reboot signal.
-# litclock-dev#529: splash suppression. The first-boot Setup-Incomplete poweroff has
-# already painted its recovery instructions and needs them to PERSIST on
-# the bistable e-ink through shutdown — so it touches this marker (via
-# sudo) and we exit without painting anything. The marker lives directly
-# in root-owned /run, NOT in pi-owned /run/litclock/ next to the action
-# hint, so that creating it requires root. Note: on images carrying the
-# 010 passwordless-sudo grant (all current images), a pi-level process can
-# still `sudo touch` it — but such a process already has full root, so the
-# marker adds no new exposure there; the root-owned path only becomes a
-# real boundary once 010 is dropped. tmpfs, so it self-clears on the next
-# boot; no stale suppression can survive.
+# litclock-dev#529: splash suppression. The first-boot Setup-Incomplete
+# poweroff has already painted its recovery instructions and needs them to
+# PERSIST on the bistable e-ink through shutdown — so it touches this marker
+# (via sudo) and we exit without painting anything. The marker lives directly
+# in root-owned /run, NOT in pi-owned /run/litclock/ next to the action hint,
+# so that creating it requires root. Note: on images carrying the 010
+# passwordless-sudo grant (all current images), a pi-level process can still
+# `sudo touch` it — but such a process already has full root, so the marker
+# adds no new exposure there; the root-owned path only becomes a real boundary
+# once 010 is dropped. tmpfs, so it self-clears on the next boot; no stale
+# suppression can survive.
 if [[ -f /run/litclock-splash-suppress ]] && [[ ! -L /run/litclock-splash-suppress ]]; then
     exit 0
 fi
@@ -92,9 +92,15 @@ case "$SHUTDOWN_ACTION" in
         if [[ -f "$WELCOME_MESSAGE_FILE" ]] && [[ ! -L "$WELCOME_MESSAGE_FILE" ]]; then
             WELCOME_TITLE="$(timeout 1 head -c 100 "$WELCOME_MESSAGE_FILE" 2>/dev/null | sed -e 's/[[:space:]]*$//')"
         fi
-        TITLE="${WELCOME_TITLE:-Welcome to LitClock}"
-        MESSAGE=$'1. Plug in power\n2. Connect to LitClock-Setup WiFi when prompted\n3. Be patient — first boot takes a moment :)'
-        SUBMESSAGE="${QUOTES[$((RANDOM % ${#QUOTES[@]}))]}"
+        # litclock-dev#532 slice 2: title + instruction copy resolve from
+        # the catalog (shutdown.splash.welcome.*); a gifter's custom
+        # message overrides the title, and the farewell quote stays a
+        # curated literal (per-language sets are a registry-schema
+        # question — the scope audit's item 2 — not a translation).
+        PREFIX="shutdown.splash.welcome"
+        TITLE_OVERRIDE="$WELCOME_TITLE"
+        MESSAGE_OVERRIDE=""
+        SUBMESSAGE_OVERRIDE="${QUOTES[$((RANDOM % ${#QUOTES[@]}))]}"
         ;;
     reboot)
         # Reboot: transient state, keep LitClock branding prominent
@@ -105,9 +111,10 @@ case "$SHUTDOWN_ACTION" in
             '"Be back before the next chapter begins."'
             '"And miles to go before I sleep." — Robert Frost'
         )
-        TITLE="LitClock"
-        MESSAGE="Restarting..."
-        SUBMESSAGE="${QUOTES[$((RANDOM % ${#QUOTES[@]}))]}"
+        PREFIX="shutdown.splash.reboot"
+        TITLE_OVERRIDE=""
+        MESSAGE_OVERRIDE=""
+        SUBMESSAGE_OVERRIDE="${QUOTES[$((RANDOM % ${#QUOTES[@]}))]}"
         ;;
     *)
         # Shutdown: final state — this persists on screen while powered off.
@@ -119,14 +126,29 @@ case "$SHUTDOWN_ACTION" in
             '"So we beat on, boats against the current." — Fitzgerald'
             '"A far, far better rest that I go to." — Dickens'
         )
-        TITLE="Powered Off"
-        MESSAGE="${QUOTES[$((RANDOM % ${#QUOTES[@]}))]}"
-        SUBMESSAGE="LitClock"
+        PREFIX="shutdown.splash.poweroff"
+        TITLE_OVERRIDE=""
+        MESSAGE_OVERRIDE="${QUOTES[$((RANDOM % ${#QUOTES[@]}))]}"
+        SUBMESSAGE_OVERRIDE=""
         ;;
 esac
 
 if [[ -f "$INSTALL_DIR/src/eink_display.py" ]]; then
     cd "$INSTALL_DIR" || exit 0
-    $PYTHON src/eink_display.py status "$TITLE" \
-        --message "$MESSAGE" --submessage "$SUBMESSAGE" || true
+    # --catalog-prefix fills the parts not explicitly overridden; the quote
+    # (and a custom gift title) ride as explicit literals.
+    SPLASH_ARGS=(--catalog-prefix "$PREFIX")
+    [[ -n "$MESSAGE_OVERRIDE" ]] && SPLASH_ARGS+=(--message "$MESSAGE_OVERRIDE")
+    [[ -n "$SUBMESSAGE_OVERRIDE" ]] && SPLASH_ARGS+=(--submessage "$SUBMESSAGE_OVERRIDE")
+    # Title LAST, behind the `--` end-of-options separator: the custom gift
+    # title is user-typed (80 chars, PWA) and a space-free leading-dash
+    # value like "-Mom-" would otherwise be parsed as an unknown OPTION —
+    # argparse exits 2 and the welcome splash paints nothing (probed live;
+    # pre-existing in the literal form, fixed while converting).
+    [[ -n "$TITLE_OVERRIDE" ]] && SPLASH_ARGS+=(-- "$TITLE_OVERRIDE")
+    # timeout matches first-boot's paint shape (Codex slice-2 /review): the
+    # catalog adds file reads to a paint that runs while the system is
+    # unwinding — a wedged read must not eat the whole TimeoutStopSec
+    # budget and leave stale e-ink.
+    timeout 20 $PYTHON src/eink_display.py status "${SPLASH_ARGS[@]}" || true
 fi

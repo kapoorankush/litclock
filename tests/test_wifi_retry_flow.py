@@ -91,7 +91,7 @@ class TestWiFiBanners:
     def test_no_banner_by_default(self, monkeypatch):
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", False)
         html = setup_server._build_setup_html()
-        assert "Couldn&rsquo;t join your WiFi" not in html
+        assert "Couldn’t join your WiFi" not in html
         assert "Connecting to WiFi..." not in html
 
     def test_connecting_banner_when_in_flight(self, monkeypatch):
@@ -99,12 +99,12 @@ class TestWiFiBanners:
         html = setup_server._build_setup_html()
         assert "Connecting to WiFi..." in html
         assert 'meta http-equiv="refresh"' in html
-        assert "Couldn&rsquo;t join your WiFi" not in html
+        assert "Couldn’t join your WiFi" not in html
 
     def test_error_banner_on_wifi_failure(self, monkeypatch):
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", "Wrong password")
         html = setup_server._build_setup_html()
-        assert "Couldn&rsquo;t join your WiFi" in html
+        assert "Couldn’t join your WiFi" in html
         assert "Wrong password" in html
         assert "try again" in html
 
@@ -114,7 +114,7 @@ class TestWiFiBanners:
         # The error banner must escape the injected content
         assert "&lt;script&gt;" in html
         # The injected content must NOT appear unescaped in the banner area
-        banner_start = html.index("Couldn&rsquo;t join your WiFi")
+        banner_start = html.index("Couldn’t join your WiFi")
         banner_end = html.index("try again", banner_start)
         banner_region = html[banner_start:banner_end]
         assert "<script>" not in banner_region
@@ -179,7 +179,7 @@ class TestWiFiBanners:
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", "Some old error")
         html = setup_server._build_setup_html()
         assert "Connecting to WiFi..." in html
-        assert "Couldn&rsquo;t join your WiFi" not in html
+        assert "Couldn’t join your WiFi" not in html
 
 
 # ── Success page content variations ─────────────────────────────────
@@ -299,42 +299,6 @@ class TestDoPostWiFiFlow:
                 time.sleep(0.05)
         finally:
             sys.modules.pop("wifi_provision", None)
-
-    def test_normal_mode_sends_setup_complete(self, monkeypatch, tmp_env_file, mocker):
-        """In normal mode (no provisioning), response says 'Setup Complete!'"""
-        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", False)
-        monkeypatch.setattr(setup_server, "ENV_FILE", tmp_env_file)
-        monkeypatch.setattr("os.kill", lambda pid, sig: None)
-        # Isolate from this branch's async side-effects (test only asserts the
-        # response text). The normal-mode thread sleeps 1s, then runs the IP-geo
-        # resolver, then `_schedule_self_terminate(delay=2.0)` — which spawns a
-        # daemon thread that os.kill()s 2s LATER. Crucially that thread does NOT
-        # set WIFI_CONNECT_IN_FLIGHT, so a naive IN_FLIGHT-poll returns
-        # instantly, the test ends, monkeypatches revert, and the *real*
-        # delayed-SIGTERM thread then fires into a later test's patched os.kill
-        # (the flaky leak that surfaced under PR2's connecting-splash latency).
-        # Fix: stub the resolver (no retry budget) + record the self-terminate
-        # call, then wait until that call lands — proving the thread consumed
-        # our stubs and never spawned a real delayed-kill thread. The 2s-delay
-        # timing itself is covered by test_no_wifi_branch_delays_sigterm_by_2s.
-        monkeypatch.setattr(setup_server, "_resolve_location_from_ip", lambda: None)
-        schedule_calls = []
-        monkeypatch.setattr(setup_server, "_schedule_self_terminate", lambda delay=0.0: schedule_calls.append(delay))
-
-        body = self._make_post_body()
-        req = FakeRequest("POST", "/setup", body)
-        handler = make_handler(req)
-        response = post_setup(handler)
-
-        assert "Setup Complete!" in response
-        assert 'meta http-equiv="refresh"' not in response
-
-        # Wait until the background thread reaches the (stubbed) self-terminate
-        # — guarantees it finished using our stubs before they revert.
-        deadline = time.monotonic() + 4.0
-        while not schedule_calls and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert schedule_calls == [2.0]
 
     def test_in_flight_guard_blocks_duplicate_submit(self, monkeypatch, tmp_env_file):
         """If WIFI_CONNECT_IN_FLIGHT is True, do_POST returns early (sends success but no new thread)."""
@@ -674,14 +638,14 @@ class TestResetState:
     def test_reset_state_clears_connect_globals(self):
         setup_server.WIFI_CONNECT_IN_FLIGHT = True
         setup_server.WIFI_CONNECT_ERROR = "leaked from prior test"
-        setup_server._WIFI_SCAN_CACHE = "<option>stale</option>"
+        setup_server._WIFI_SCAN_NETWORKS = [{"ssid": "stale", "signal": 1, "security": ""}]
         setup_server._WIFI_SCAN_TIME = 12345
 
         setup_server.reset_state(wait_for_inflight=0.0)
 
         assert setup_server.WIFI_CONNECT_IN_FLIGHT is False
         assert setup_server.WIFI_CONNECT_ERROR is None
-        assert setup_server._WIFI_SCAN_CACHE is None
+        assert setup_server._WIFI_SCAN_NETWORKS is None
         assert setup_server._WIFI_SCAN_TIME == 0
 
     def test_reset_state_drains_inflight_thread_before_clearing(self):
@@ -764,25 +728,6 @@ class TestResetState:
         assert not t.is_alive()
         with setup_server._BG_THREADS_LOCK:
             assert t not in setup_server._BG_THREADS
-
-    def test_reset_state_cancels_delayed_sigterm_without_firing(self, monkeypatch):
-        # litclock-dev#478 safety: joining a real _delayed SIGTERM timer must NOT wait out
-        # its sleep and then fire os.kill. At test-teardown time monkeypatch has
-        # already reverted os.kill to the real one (conftest tears monkeypatch
-        # down BEFORE the reset fixture), so a fired SIGTERM would kill the
-        # runner. reset_state sets _BG_CANCEL to wake the timer so it exits
-        # WITHOUT calling os.kill. (os.kill is mocked here so a regression is a
-        # clean assertion failure, not a dead test process.)
-        kills = []
-        monkeypatch.setattr("os.kill", lambda pid, sig: kills.append((pid, sig)))
-
-        setup_server._schedule_self_terminate(delay=5.0)  # spawns a real _delayed
-        start = time.monotonic()
-        setup_server.reset_state(wait_for_inflight=1.0)
-        elapsed = time.monotonic() - start
-
-        assert elapsed < 1.0, f"reset_state waited out the timer instead of cancelling it ({elapsed:.2f}s)"
-        assert kills == [], "the delayed timer fired os.kill despite being cancelled"
 
     def test_reset_state_joins_before_clearing_globals(self):
         # litclock-dev#478 follow-up (/review): the join must happen BEFORE reset_state
@@ -1084,8 +1029,8 @@ class TestConnectAndTeardownOrdering:
 
         # When reset_state returns, SIGTERM must have been queued already.
         assert os_kill_called.is_set(), (
-            "reset_state returned before SIGTERM was queued — drain-barrier false positive "
-            "(litclock-dev#364 regression)."
+            "reset_state returned before SIGTERM was queued — drain-barrier false positive (litclock-dev#364 "
+            "regression)."
         )
 
 
@@ -1355,170 +1300,6 @@ class TestConnectAndTeardownFailureAndExceptionPaths:
         )
 
 
-class TestNoWiFiBranchSigterm:
-    """No-WiFi-form-data branch (normal-mode setup): post-EPIC-383 the
-    handler spawns a daemon thread that runs the IP-geo resolver, then
-    fires signal_completion + schedules SIGTERM after a 2s flush delay.
-    Pre-pivot this all ran synchronously in the request thread; the move
-    to a thread keeps the response flush instant while the resolver's
-    retry budget (~13s worst case) sits in the background."""
-
-    def _make_post_body(self, **overrides):
-        # Post-EPIC-383 the form only collects WiFi credentials; empty values
-        # for both fields still trigger the else branch in normal mode.
-        defaults = {
-            "wifi_ssid": "",
-            "wifi_password": "",
-        }
-        defaults.update(overrides)
-        return urllib.parse.urlencode(defaults)
-
-    @staticmethod
-    def _wait_for(predicate, timeout=3.0, interval=0.02):
-        """Poll until predicate() is truthy or timeout. The daemon thread
-        spawned by do_POST's else branch does a 1s sleep + resolver + signal +
-        schedule — predicate gives the test something concrete to wait on."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if predicate():
-                return True
-            time.sleep(interval)
-        return False
-
-    def test_no_wifi_branch_signals_then_schedules_terminate(
-        self,
-        monkeypatch,
-        tmp_env_file,
-    ):
-        """Signal fires from the daemon thread (after resolver), then the
-        helper is called with delay=2.0 to flush the response before SIGTERM."""
-        # Normal mode means do_POST routes to the else branch — no
-        # WIFI_CONNECT_IN_FLIGHT interaction.
-        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", False)
-        monkeypatch.setattr(setup_server, "ENV_FILE", tmp_env_file)
-        # Stub out the resolver + sleep so the daemon thread finishes
-        # quickly without making real network calls.
-        monkeypatch.setattr(setup_server, "_resolve_location_from_ip", lambda: None)
-        monkeypatch.setattr("time.sleep", lambda _s: None)
-
-        signal_calls = []
-
-        def fake_signal_completion():
-            signal_calls.append(True)
-            return True  # Production contract: returns True on success.
-
-        monkeypatch.setattr(setup_server, "signal_completion", fake_signal_completion)
-
-        schedule_calls = []
-        monkeypatch.setattr(
-            setup_server,
-            "_schedule_self_terminate",
-            lambda delay=0.0: schedule_calls.append(delay),
-        )
-
-        body = self._make_post_body()
-        req = FakeRequest("POST", "/setup", body)
-        handler = make_handler(req)
-        post_setup(handler)
-
-        # Daemon thread runs resolver (stubbed) → signal → schedule.
-        assert self._wait_for(lambda: signal_calls and schedule_calls), (
-            f"daemon thread didn't fire signal+schedule: signal={signal_calls} schedule={schedule_calls}"
-        )
-        assert signal_calls == [True]
-        assert schedule_calls == [2.0]
-        # No IN_FLIGHT activity on this branch.
-        assert setup_server.WIFI_CONNECT_IN_FLIGHT is False
-
-    def test_no_wifi_branch_delays_sigterm_by_2s(self, monkeypatch, tmp_env_file):
-        """End-to-end: os.kill fires ≥1.5s after the resolver finishes (the
-        scheduler's 2s flush delay), <6s. Uses the real helper, mocks
-        os.kill and stubs the resolver so the timing isn't perturbed by
-        retry backoff.
-
-        Post-EPIC-383: the no-WiFi branch wraps everything in a daemon thread
-        that does ``time.sleep(1) → resolver → signal → schedule(delay=2.0)``,
-        so the floor is 1s + ~0 (stubbed resolver) + 2s = ~3s."""
-        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", False)
-        monkeypatch.setattr(setup_server, "ENV_FILE", tmp_env_file)
-        monkeypatch.setattr(setup_server, "_resolve_location_from_ip", lambda: None)
-
-        kill_event = threading.Event()
-        kill_times = []
-
-        def mock_kill(pid, sig):
-            kill_times.append(time.monotonic() - t0)
-            kill_event.set()
-
-        monkeypatch.setattr("os.kill", mock_kill)
-
-        body = self._make_post_body()
-        req = FakeRequest("POST", "/setup", body)
-        handler = make_handler(req)
-        t0 = time.monotonic()
-        post_setup(handler)
-
-        assert kill_event.wait(timeout=6.0), "SIGTERM never fired"
-        # Floor: 1s response-flush sleep + ~0 stubbed resolver + 2s schedule delay = ~3s
-        assert kill_times[0] >= 2.5, f"SIGTERM fired too early: {kill_times[0]}s"
-        assert kill_times[0] < 6.0, f"SIGTERM fired too late: {kill_times[0]}s"
-
-    def test_no_wifi_branch_signal_completion_failure_does_not_sigterm(
-        self,
-        monkeypatch,
-        tmp_env_file,
-    ):
-        """Codex post-review fix for D4 (replaces the prior raise-based test).
-
-        When signal_completion returns False in the no-WiFi branch,
-        _schedule_self_terminate must NOT be called — SIGTERMing the server
-        with no signal file written would leave firstboot.sh waiting forever
-        for a handoff that never arrives. The HTTP success response has
-        already been flushed at this point, so the user sees the success
-        page; the server staying up lets them recover (resubmit, or
-        firstboot.sh times out and re-enters AP mode on next boot).
-
-        Note: the prior shape of this test asserted that signal_completion
-        raised. Production was changed to bool-return (codex Finding 1) so
-        the response-already-flushed problem doesn't cascade into a hung
-        server with no recovery path.
-        """
-        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", False)
-        monkeypatch.setattr(setup_server, "ENV_FILE", tmp_env_file)
-        # Stub resolver + sleep so the daemon thread finishes fast.
-        monkeypatch.setattr(setup_server, "_resolve_location_from_ip", lambda: None)
-        monkeypatch.setattr("time.sleep", lambda _s: None)
-
-        # signal_completion now returns False instead of raising.
-        signal_event = threading.Event()
-
-        def fake_signal_completion():
-            signal_event.set()
-            return False
-
-        monkeypatch.setattr(setup_server, "signal_completion", fake_signal_completion)
-
-        schedule_calls = []
-        monkeypatch.setattr(
-            setup_server,
-            "_schedule_self_terminate",
-            lambda delay=0.0: schedule_calls.append(delay),
-        )
-
-        body = self._make_post_body()
-        req = FakeRequest("POST", "/setup", body)
-        handler = make_handler(req)
-
-        # No raise — do_POST returns normally; daemon thread does the work.
-        post_setup(handler)
-        assert signal_event.wait(timeout=3.0), "signal_completion never fired in daemon thread"
-
-        assert schedule_calls == [], (
-            "_schedule_self_terminate must not run when signal_completion returns False — "
-            "would SIGTERM with no signal file and leave firstboot.sh waiting forever (litclock-dev#364)"
-        )
-
-
 class _ManualSsidHarness:
     """Shared rig for the manual/hidden-SSID POST tests: fake
     wifi_provision module, POST driver, thread drain. Deliberately holds no
@@ -1706,7 +1487,7 @@ class TestManualSsidEntry(_ManualSsidHarness):
         """litclock-dev#397's guard filters the hotspot from the dropdown. The free-text
         field is a second entry point straight past that filter, so the
         rejection has to sit after the manual value is resolved, not before
-        (a lesson learned the hard way: filter at EVERY entry point, not just one)."""
+        ([[learning-filter-all-entry-points]])."""
         calls = []
         response = self._post(
             monkeypatch,
@@ -2015,3 +1796,91 @@ class TestManualSsidReviewHardening(_ManualSsidHarness):
         )
         assert setup_server.WIFI_LAST_MANUAL_SSID == ""
         assert calls == []
+
+
+@pytest.fixture(autouse=True)
+def _fresh_language_state(monkeypatch):
+    """/review litclock-dev#742 follow-up F3: the registry fixtures reset the catalog
+    cache BEFORE but never after, positive-caching a two-language registry
+    for process lifetime — any later registry-reading test inherited it
+    (the litclock-dev#355 order-dependence class). Reset around every test here."""
+    import strings_catalog
+
+    monkeypatch.delenv("LITCLOCK_LANGUAGE", raising=False)
+    strings_catalog.reset_cache()
+    yield
+    strings_catalog.reset_cache()
+
+
+class TestLanguagePersistOnPost:
+    """litclock-dev#532 pickers: the provisioning POST persists
+    LITCLOCK_LANGUAGE via config.atomic_update BEFORE the connect thread —
+    a failed-WiFi retry keeps the choice. Tampered codes fall back to the
+    GET's own default rather than failing the join."""
+
+    def _registry(self, tmp_path, monkeypatch):
+        import json as _json
+
+        import strings_catalog
+
+        reg = tmp_path / "languages.json"
+        reg.write_text(_json.dumps({
+            "fleet_default": "en",
+            "languages": {
+                "en": {"code": "en", "native_name": "English", "status": "active",
+                       "strings": "languages/en/strings.json"},
+                "de": {"code": "de", "native_name": "Deutsch", "status": "active",
+                       "strings": "languages/de/strings.json"},
+            },
+        }))
+        monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", reg)
+        strings_catalog.reset_cache()
+
+    def _post(self, monkeypatch, tmp_env_file, extra):
+        import sys
+        import types
+
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        monkeypatch.setattr(setup_server, "ENV_FILE", tmp_env_file)
+        monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(tmp_env_file) + ".no-marker")
+        fake_wp = types.ModuleType("wifi_provision")
+        fake_wp.connect_to_wifi = lambda ssid, pw, hidden=False: (False, "test")
+        fake_wp.teardown_hotspot = lambda: None
+        sys.modules.pop("wifi_provision", None)
+        sys.modules["wifi_provision"] = fake_wp
+        monkeypatch.setattr("os.kill", lambda pid, sig: None)
+        try:
+            defaults = {
+                "wifi_ssid": "TestNetwork",
+                "wifi_password": "secret123",
+            }
+            defaults.update(extra)
+            body = urllib.parse.urlencode(defaults)
+            req = FakeRequest("POST", "/setup", body)
+            handler = make_handler(req)
+            post_setup(handler)
+            deadline = time.monotonic() + 3.0
+            while setup_server.WIFI_CONNECT_IN_FLIGHT and time.monotonic() < deadline:
+                time.sleep(0.05)
+        finally:
+            sys.modules.pop("wifi_provision", None)
+            setup_server.reset_state()
+        from pathlib import Path as _Path
+
+        return _Path(tmp_env_file).read_text()
+
+    def test_valid_submitted_code_persists(self, monkeypatch, tmp_env_file, tmp_path):
+        self._registry(tmp_path, monkeypatch)
+        env = self._post(monkeypatch, tmp_env_file, {"litclock_language": "de"})
+        assert "LITCLOCK_LANGUAGE=de" in env
+
+    def test_tampered_code_falls_back_to_default(self, monkeypatch, tmp_env_file, tmp_path):
+        self._registry(tmp_path, monkeypatch)
+        env = self._post(monkeypatch, tmp_env_file, {"litclock_language": "zz;rm -rf"})
+        assert "LITCLOCK_LANGUAGE=en" in env
+        assert "zz" not in env
+
+    def test_absent_param_writes_the_default(self, monkeypatch, tmp_env_file, tmp_path):
+        self._registry(tmp_path, monkeypatch)
+        env = self._post(monkeypatch, tmp_env_file, {})
+        assert "LITCLOCK_LANGUAGE=en" in env

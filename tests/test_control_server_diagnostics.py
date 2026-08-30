@@ -31,6 +31,7 @@ from control_server._diagnostics_privacy import (  # noqa: E402
     schema_keys,
 )
 from control_server.routes import diagnostics  # noqa: E402
+from control_server.routes.diagnostics import _collectors  # noqa: E402
 
 
 @pytest.fixture
@@ -123,9 +124,15 @@ class TestPerRowReaders:
         assert values["weather_units"] == "imperial"
         assert values["weather_enabled"] is True
 
-    def test_missing_files_degrade_to_none(self, diag_env):
+    def test_missing_files_degrade_to_none(self, diag_env, monkeypatch):
         # Override the paths so every file-backed read points at a
         # non-existent location. Schema must still be intact.
+        #
+        # lan_ip is no longer file-backed (litclock-dev#672 made the live
+        # interface read authoritative), so it is stubbed rather than pointed
+        # at a missing file — otherwise this test reads the DEVELOPER's own IP
+        # and asserts it is None, which is both flaky and a leak.
+        monkeypatch.setattr(_collectors, "_network_read_lan_ip_live", lambda **kw: (None, True))
         diag_env.config["DIAG_LAST_IP_PATH"] = "/nonexistent/ip"
         diag_env.config["DIAG_CURRENT_QUOTE_PATH"] = "/nonexistent/quote"
         diag_env.config["DIAG_IMAGES_VERSION_PATH"] = "/nonexistent/images"
@@ -136,6 +143,34 @@ class TestPerRowReaders:
         assert values["images_version"] is None
         # Schema gate still passes.
         assert set(values.keys()) == schema_keys()
+
+    def test_the_live_read_beats_a_stale_marker(self, diag_env, monkeypatch, tmp_path):
+        """litclock-dev#672, the whole point. Nothing ever clears
+        /run/litclock/last-rendered-ip, so a clock that loses DHCP without
+        rebooting kept serving its pre-outage address and this section reported
+        a healthy network for the entire outage — hardware-confirmed over four
+        minutes with wlan0 holding no IPv4 at all."""
+        marker = tmp_path / "last-rendered-ip"
+        marker.write_text("192.168.2.99\n", encoding="utf-8")
+        diag_env.config["DIAG_LAST_IP_PATH"] = str(marker)
+
+        # The kernel says there is no usable IPv4. That is authoritative.
+        monkeypatch.setattr(_collectors, "_network_read_lan_ip_live", lambda **kw: (None, True))
+        with diag_env.app_context():
+            assert diagnostics.collect_diagnostics()["lan_ip"] is None, (
+                "the stale marker muted a real missing-IP fault"
+            )
+
+        # ...but when the live read cannot RUN, the marker is still better than
+        # inventing a fault.
+        monkeypatch.setattr(_collectors, "_network_read_lan_ip_live", lambda **kw: (None, False))
+        with diag_env.app_context():
+            assert diagnostics.collect_diagnostics()["lan_ip"] == "192.168.2.99"
+
+        # A live address always wins over whatever the marker happens to hold.
+        monkeypatch.setattr(_collectors, "_network_read_lan_ip_live", lambda **kw: ("10.0.0.7", True))
+        with diag_env.app_context():
+            assert diagnostics.collect_diagnostics()["lan_ip"] == "10.0.0.7"
 
     def test_quote_payload_round_trips(self, diag_env):
         with diag_env.app_context():

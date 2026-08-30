@@ -1,4 +1,4 @@
-"""Structural guards on CHANGELOG.md (litclock-dev#697, arriving via litclock-dev#707).
+"""Structural guards on CHANGELOG.md (litclock-dev#697).
 
 This repo's `## [Unreleased]` carried two `### Changed` headings (introduced
 2026-08-11 in df01118e, #48) — the same defect litclock-dev#697 found and
@@ -9,23 +9,30 @@ the whole time. In both cases the file asserted two different groups for one
 release, and a reader had no way to tell which of them shipped. That is a
 defect in the record itself, which is the changelog's only job.
 
-**It is not a rendering fix.** No update card any owner has already seen
-changes: `fetch_release_notes` is only ever called with a tag from
-`fetch_latest_release_tag()` (`^v\\d+\\.\\d+\\.\\d+$`) and
-`_extract_changelog_section` reads the file AT THAT TAG'S REF, so neither a
-master-branch edit to a released section nor `[Unreleased]` is reachable by
-any card. (The NEXT release's card, cut after this merge, will show Changed
-bullets where the pre-merge layout put `### Removed`/`### Added` lines inside
-the 10-non-empty-line cap — a consequence of merging, stated rather than
-hidden. What hides content from an owner is that cap; this guard does not
-touch it and must not be read as covering it.)
+**It is not a rendering fix, and the first version of this file claimed it was.**
+The device's update card is byte-identical before and after the merge, for two
+independent reasons, both measured rather than assumed:
 
-The development repo also refuses two `## [Unreleased]` headings at
-release-cut time (its release tooling lives there); this repo has no release
-script, so this file is the only structural guard here, and it fails on the
-commit that introduces a defect rather than at tag time — a formatting rule
-enforced at the worst possible moment is one you meet at the worst possible
-moment.
+  1. `fetch_release_notes` is only ever called with a tag from
+     `fetch_latest_release_tag()` (`^v\\d+\\.\\d+\\.\\d+$`), so `[Unreleased]`
+     is never fetched for any owner, under either heading.
+  2. `_extract_changelog_section` caps at the first 10 non-empty lines of the
+     WHOLE section, not per subheading. The first `### Changed` block's bullets
+     already exhaust that budget, so everything after them is off the card
+     whether it sits under one heading or two -- including after the section is
+     promoted to a release tag.
+
+What hides content from an owner is that cap. This guard does not touch it and
+must not be read as covering it. `scripts/check-changelog-section.py` guards the
+adjacent failure (a tag cut while its content is still under `[Unreleased]`
+ships a blank card); a budget guard on the first ten lines would be a third,
+separate thing, and does not exist.
+
+Deliberately NOT enforced at release-cut time: the release script refuses two
+`## [Unreleased]` headings, because promoting the wrong one releases the wrong
+notes. A repeated `###` is formatting, and a formatting rule enforced at tag
+time is one you meet at the worst possible moment. Here it fails on the commit
+that introduces it.
 """
 
 import collections

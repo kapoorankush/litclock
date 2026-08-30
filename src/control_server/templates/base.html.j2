@@ -150,7 +150,7 @@
        Status and the Gift Mode toggle on Settings for first-run users.
        Inline placement honors the same DESIGN.md "First-run hint" spec
        and remains conventional (a bottom-of-content notification card). #}
-    <aside class="aths-hint aths-hint--ios" role="region" aria-label="Add to Home Screen hint">
+    <aside class="aths-hint aths-hint--ios" role="region" aria-label="{{ t('aria.aths.region') }}">
     {# DD2 + codex /review M6 — platform-branched icon and instruction copy.
        Both variants ship in the HTML; aths-hint.js detects the platform via
        navigator.userAgent and toggles `aths-hint--ios` / `aths-hint--android`
@@ -180,12 +180,12 @@
       </svg>
     </span>
     <div class="aths-hint__body">
-      <p class="aths-hint__title">Add to Home Screen</p>
-      <p class="aths-hint__detail">for one-tap access to your clock</p>
-      <p class="aths-hint__instruction aths-hint__instruction--ios">Tap the share icon below, then choose Add to Home Screen</p>
-      <p class="aths-hint__instruction aths-hint__instruction--android">Tap the menu (&#x22EE;), then Install app or Add to Home screen</p>
+      <p class="aths-hint__title">{{ t('aths.title') }}</p>
+      <p class="aths-hint__detail">{{ t('aths.detail') }}</p>
+      <p class="aths-hint__instruction aths-hint__instruction--ios">{{ t('aths.instruction_ios') }}</p>
+      <p class="aths-hint__instruction aths-hint__instruction--android">{{ t('aths.instruction_android') }}</p>
     </div>
-    <button type="button" class="aths-hint__dismiss" aria-label="Dismiss hint">
+    <button type="button" class="aths-hint__dismiss" aria-label="{{ t('aria.aths.dismiss') }}">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <line x1="6" y1="6" x2="18" y2="18"></line>
         <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -208,7 +208,7 @@
   <button type="button"
           class="diag-ribbon"
           data-diag-ribbon-button
-          aria-label="Open live diagnostics drawer"
+          aria-label="{{ t('aria.shell.drawer_open') }}"
           aria-haspopup="dialog"
           aria-controls="diag-drawer-region">
     <span class="diag-ribbon__icon" aria-hidden="true">
@@ -217,7 +217,7 @@
         <path d="M140,128a12,12,0,1,1-12-12A12,12,0,0,1,140,128ZM128,72a12,12,0,1,0-12-12A12,12,0,0,0,128,72Zm0,112a12,12,0,1,0,12,12A12,12,0,0,0,128,184Z"/>
       </svg>
     </span>
-    <span class="diag-ribbon__label">Live diagnostics</span>
+    <span class="diag-ribbon__label">{{ t('shell.drawer.label') }}</span>
   </button>
 
   {# Page-dim under the drawer (12% per OV-D-A). Sits between page content
@@ -248,7 +248,7 @@
     <div class="diag-drawer__handle" data-diag-drawer-handle aria-hidden="true"></div>
 
     <header class="diag-drawer__header">
-      <h2 id="diag-drawer-title" class="diag-drawer__title">Live diagnostics</h2>
+      <h2 id="diag-drawer-title" class="diag-drawer__title">{{ t('shell.drawer.label') }}</h2>
       {# #431a (v0.214.4) — dropped trailing "→". The arrow pointed directly
          at the adjacent × close button creating tap-target ambiguity. The
          underline + --accent color carries the affordance; aria-label
@@ -256,13 +256,13 @@
       <a class="diag-drawer__open-page"
          href="/diagnostics"
          data-diag-drawer-open-page
-         aria-label="Open full diagnostics page">
-        Open full diagnostics
+         aria-label="{{ t('aria.shell.drawer_full_page') }}">
+        {{ t('shell.drawer.open_full') }}
       </a>
       <button type="button"
               class="diag-drawer__close"
               data-diag-drawer-close
-              aria-label="Close drawer">
+              aria-label="{{ t('aria.shell.drawer_close') }}">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none"
              stroke="currentColor" stroke-width="2" stroke-linecap="round"
              stroke-linejoin="round" aria-hidden="true">
@@ -276,15 +276,13 @@
        on subsequent opens via localStorage 'litclock.diag.welcomed.v1'. #}
     <div class="diag-drawer__welcome" data-diag-drawer-welcome>
       <p class="diag-drawer__welcome-body">
-        These are real-time messages from your clock. Most are routine.
-        If something looks amiss, the support payload at the bottom of
-        the diagnostics page is the best thing to share.
+        {{ t('shell.welcome.body') }}
       </p>
       <div class="diag-drawer__welcome-actions">
         <button type="button"
                 class="diag-drawer__welcome-dismiss"
                 data-diag-drawer-welcome-dismiss>
-          Got it
+          {{ t('shell.welcome.dismiss') }}
         </button>
       </div>
     </div>
@@ -294,23 +292,23 @@
     <div class="diag-drawer__filters">
       <div class="diag-level-filter"
            role="radiogroup"
-           aria-label="Filter log entries by level">
+           aria-label="{{ t('aria.shell.level_filter') }}">
         <button type="button" class="diag-level-filter__option"
-                role="radio" aria-checked="true" data-diag-level="">All</button>
+                role="radio" aria-checked="true" data-diag-level="">{{ t('shell.level.all') }}</button>
         <button type="button" class="diag-level-filter__option"
-                role="radio" aria-checked="false" data-diag-level="INFO">Info</button>
+                role="radio" aria-checked="false" data-diag-level="INFO">{{ t('shell.level.info') }}</button>
         <button type="button" class="diag-level-filter__option"
-                role="radio" aria-checked="false" data-diag-level="WARNING">Warn</button>
+                role="radio" aria-checked="false" data-diag-level="WARNING">{{ t('shell.level.warn') }}</button>
         <button type="button" class="diag-level-filter__option"
-                role="radio" aria-checked="false" data-diag-level="ERROR">Error</button>
+                role="radio" aria-checked="false" data-diag-level="ERROR">{{ t('shell.level.error') }}</button>
       </div>
       {# D15: "Start fresh from now" client-side filter. Reset to "show
          all" once the user wants the historical context back. #}
       <button type="button"
               class="diag-drawer__filter-fresh"
               data-diag-drawer-fresh
-              aria-label="Start fresh from now (hide existing entries)">
-        Start fresh
+              aria-label="{{ t('aria.shell.fresh') }}">
+        {{ t('shell.drawer.fresh') }}
       </button>
     </div>
 
@@ -320,28 +318,28 @@
     <div class="diag-drawer__empty"
          data-diag-drawer-empty="no-entries"
          hidden>
-      <p class="diag-drawer__empty-headline">It's quiet.</p>
-      <p>No log entries yet. Real-time messages will appear as the clock runs.</p>
+      <p class="diag-drawer__empty-headline">{{ t('shell.empty.quiet_headline') }}</p>
+      <p>{{ t('shell.empty.quiet_body') }}</p>
     </div>
     <div class="diag-drawer__empty"
          data-diag-drawer-empty="no-matches"
          hidden>
-      <p class="diag-drawer__empty-headline">No matching entries.</p>
-      <p>Try a different filter, or tap "All" to clear the level filter.</p>
+      <p class="diag-drawer__empty-headline">{{ t('shell.empty.no_match_headline') }}</p>
+      <p>{{ t('shell.empty.no_match_body') }}</p>
     </div>
     <div class="diag-drawer__empty"
          data-diag-drawer-empty="journal-denied"
          hidden>
-      <p class="diag-drawer__empty-headline">Log access is denied.</p>
-      <p>The clock's user can't read its own journal. Try this in a terminal:</p>
+      <p class="diag-drawer__empty-headline">{{ t('shell.empty.denied_headline') }}</p>
+      <p>{{ t('shell.empty.denied_body') }}</p>
       <pre class="diag-drawer__empty-paste"><code>sudo usermod -aG adm pi
 sudo reboot</code></pre>
     </div>
     <div class="diag-drawer__empty"
          data-diag-drawer-empty="disconnected"
          hidden>
-      <p class="diag-drawer__empty-headline">Stream lost.</p>
-      <p>Trying to reconnect…</p>
+      <p class="diag-drawer__empty-headline">{{ t('shell.empty.lost_headline') }}</p>
+      <p>{{ t('shell.empty.lost_body') }}</p>
     </div>
 
     {# Hidden-batch header (D21): shows "earlier N hidden — Open
@@ -365,7 +363,7 @@ sudo reboot</code></pre>
     <button type="button"
             class="diag-drawer__follow-pill"
             data-diag-drawer-follow-pill
-            hidden>↓ <span data-diag-drawer-follow-count>0</span> new</button>
+            hidden>{%- set fp = t('shell.drawer.follow_pill').split('{n}') -%}{{ fp[0] }}<span data-diag-drawer-follow-count>0</span>{{ fp[1] if fp|length > 1 else '' }}</button>
   </section>
 
   {# M7 OV-5 (codex /design-review) — Phosphor icons per DESIGN.md "Icon
@@ -381,27 +379,27 @@ sudo reboot</code></pre>
      while the user is actually navigating between pages — semantically
      wrong. Drop the tabs framing, keep aria-current="page" which is the
      correct landmark idiom for "you are here". #}
-  <nav class="tabbar" aria-label="Primary">
+  <nav class="tabbar" aria-label="{{ t('aria.nav.primary') }}">
     <a href="/"{% if active_tab == 'status' %} aria-current="page"{% endif %}>
       <svg class="tabbar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M3 19V5l9 4 9-4v14l-9 4z"/>
         <line x1="12" y1="9" x2="12" y2="23"/>
       </svg>
-      <span class="tabbar__label">Status</span>
+      <span class="tabbar__label">{{ t('nav.status') }}</span>
     </a>
     <a href="/settings"{% if active_tab == 'settings' %} aria-current="page"{% endif %}>
       <svg class="tabbar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="3"/>
         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
       </svg>
-      <span class="tabbar__label">Settings</span>
+      <span class="tabbar__label">{{ t('nav.settings') }}</span>
     </a>
     <a href="/system"{% if active_tab == 'system' %} aria-current="page"{% endif %}>
       <svg class="tabbar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
         <line x1="12" y1="2" x2="12" y2="12"/>
       </svg>
-      <span class="tabbar__label">System</span>
+      <span class="tabbar__label">{{ t('nav.system') }}</span>
     </a>
     <a href="/updates"{% if active_tab == 'updates' %} aria-current="page"{% endif %}>
       <svg class="tabbar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -409,7 +407,7 @@ sudo reboot</code></pre>
         <polyline points="7 10 12 15 17 10"/>
         <line x1="12" y1="15" x2="12" y2="3"/>
       </svg>
-      <span class="tabbar__label">Updates</span>
+      <span class="tabbar__label">{{ t('nav.updates') }}</span>
     </a>
   </nav>
 
@@ -421,6 +419,16 @@ sudo reboot</code></pre>
   {# EPIC litclock-dev#383 PR2 (litclock-dev#388) — handoff banner controller. Loaded before aths-hint
      so the suppression coordination is wired before the hint's first-run
      logic runs. #}
+{# litclock-dev#532 slice 8: SHELL strings blob for the base-wide scripts
+   (drawer.js, handoff.js). Deliberately a DIFFERENT attribute from the
+   per-page blob — the page-blob invariant (base carries none; first-match
+   querySelector) stays intact, and the shell attribute name is prefix-free
+   against the page one. #}
+<script type="application/json" data-litclock-shell-strings>{{ catalog_subset([
+  'shell.drawer.hidden_batch',
+  'shell.drawer.fresh_clicked',
+  'handoff.fail_body_tz',
+]) | tojson }}</script>
   <script src="{{ url_for('static', filename='js/handoff.js') }}" defer></script>
   <script src="{{ url_for('static', filename='js/aths-hint.js') }}" defer></script>
 

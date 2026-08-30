@@ -26,6 +26,20 @@ if str(_SRC) not in sys.path:
 from control_server import create_app  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _pinned_repo_pair(monkeypatch):
+    """litclock-dev#728: build_check_payload derives the repo pair via a real
+    `git remote get-url origin` subprocess. Pin it so no test in this module
+    forks git per request or is steered by the dev checkout's ambient origin
+    or a stray LITCLOCK_DIR (/review litclock-dev#729 testing pass)."""
+    from control_server import update_state  # noqa: PLC0415
+
+    monkeypatch.delenv("LITCLOCK_DIR", raising=False)
+    monkeypatch.setattr(
+        update_state, "origin_repo_pair", lambda repo_dir=None: ("kapoorankush", "litclock")
+    )
+
+
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     monkeypatch.setenv("LITCLOCK_UPDATE_CHECK_CACHE", str(tmp_path / "update-check.json"))
@@ -81,13 +95,19 @@ class TestUpdatesPage:
     def test_renders_pill_when_no_cache(self, client):
         # No cache file → unknown pill state with the in-flight "checking…"
         # label (JS is about to fire /api/update/check momentarily).
-        body = client.get("/updates").data
-        assert b"updates-pill" in body
-        assert b'data-state="unknown"' in body or b"updates-pill--unknown" in body
-        # litclock-dev#381 — initial-load pill is "checking…" (JS is firing the check)
-        assert b"checking" in body, body[:500]
-        # And NOT "couldn't check" (that's the terminal-failed label)
-        assert b"couldn't check" not in body
+        html = client.get("/updates").data.decode()
+        assert "updates-pill" in html
+        assert 'data-state="unknown"' in html or "updates-pill--unknown" in html
+        # Anchor on the PILL ELEMENT, not whole-page bytes: the strings
+        # blob also carries "checking…"/"couldn't check", so a page-wide
+        # substring check observes the blob, not the pill (Codex slice-4
+        # /review). Autoescape encodes the apostrophe as &#39;.
+        import re as _re
+
+        m = _re.search(r'updates-pill--unknown"[^>]*>([^<]*)<', html)
+        assert m, "unknown pill element missing"
+        assert "checking" in m.group(1), m.group(1)
+        assert "couldn&#39;t check" not in m.group(1)
 
     def test_renders_couldnt_check_pill_when_cache_says_available_is_null(self, client):
         """litclock-dev#381 regression — when the cached check landed with
@@ -112,7 +132,9 @@ class TestUpdatesPage:
         )
         body = client.get("/updates").data
         assert b"updates-pill--unknown" in body
-        assert b"couldn't check" in body, (
+        # Catalog-routed since litclock-dev#532: autoescape entity-encodes
+        # the apostrophe (rendered text unchanged).
+        assert b"couldn&#39;t check" in body, (
             f"expected 'couldn't check' label for terminal-unknown state; got: {body[:800]!r}"
         )
         # And NOT the in-flight "checking…" label.
@@ -122,17 +144,25 @@ class TestUpdatesPage:
 
     def test_renders_phase_reading_list_skeleton(self, client):
         body = client.get("/updates").data.decode()
-        # All 7 D3 phase names must appear in the skeleton.
-        for phase in [
-            "Checking for updates",
-            "Pulling new code",
-            "Syncing quote images",
-            "Updating Python packages",
-            "Verifying clock starts",
-            "Installing services",
-            "Restarting",
-        ]:
-            assert phase in body
+        # All 7 D3 phase names, IN ORDER, paired with their 1-based
+        # data-phase-index — presence-anywhere would miss a key-order
+        # drift that highlights the wrong row mid-update (Codex slice-4
+        # /review; the names resolve from the catalog since litclock-dev
+        # litclock-dev#532, so ordering lives in the template's key loop).
+        import re as _re
+
+        rows = _re.findall(
+            r'data-phase-index="(\d+)"[^>]*>.*?phase-row__name">([^<]*)<', body, _re.DOTALL
+        )
+        assert [(int(i), name) for i, name in rows] == [
+            (1, "Checking for updates"),
+            (2, "Pulling new code"),
+            (3, "Syncing quote images"),
+            (4, "Updating Python packages"),
+            (5, "Verifying clock starts"),
+            (6, "Installing services"),
+            (7, "Restarting"),
+        ], rows
         assert 'id="phase-reading-list"' in body
 
     def test_loads_updates_css_and_js(self, client):
@@ -220,6 +250,28 @@ class TestApiUpdateCheck:
         body = response.json
         assert body["latest_tag"] == "v0.211.0"
         assert body["available"] is True
+
+    def test_stale_semantics_cache_recomputed_at_serve(self, client):
+        """litclock-dev#728: a fresh cache written by pre-fix code
+        (available=True for a lower tag) must not serve the lie for its 6h
+        TTL — check() re-derives `available` from latest_tag at serve time."""
+        cache = Path(os.environ.get("LITCLOCK_UPDATE_CHECK_CACHE"))
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(
+            json.dumps(
+                {
+                    "fetched_at_unix": 9999999999,
+                    "current_version": "v0.210.0",
+                    "latest_tag": "v0.209.0",
+                    "available": True,
+                }
+            )
+        )
+        response = client.get("/api/update/check")
+        assert response.status_code == 200
+        body = response.json
+        assert body["latest_tag"] == "v0.209.0"
+        assert body["available"] is False
 
     def test_corrupt_cache_refetches_without_500(self, client, monkeypatch):
         # F13 — corrupt JSON in the cache file is tolerated (refetch + overwrite).
@@ -336,6 +388,61 @@ class TestApiUpdateApply:
         assert body["error"]["code"] == "already_up_to_date"
         assert body["error"]["current_version"] == "v0.210.0"
         mock_run.assert_not_called()
+
+    def test_apply_recomputes_stale_available_true(self, client):
+        """litclock-dev#728 serve-time recompute: a fresh cache carrying the
+        pre-fix semantics (available=True for a LOWER tag) must not let the
+        apply gate treat a downgrade as an update — recompute says False,
+        so the gate 409s."""
+        cache = Path(os.environ.get("LITCLOCK_UPDATE_CHECK_CACHE"))
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(
+            json.dumps(
+                {
+                    "fetched_at_unix": 9999999999,
+                    "current_version": "v0.210.0",
+                    "latest_tag": "v0.209.0",
+                    "available": True,
+                }
+            )
+        )
+        store = client.application.extensions["confirm_tokens"]
+        token = store.issue("update_apply")[0]
+        with (
+            patch("control_server.routes.updates.update_state.update_is_busy", return_value=False),
+            patch("control_server.routes.updates.subprocess.run") as mock_run,
+        ):
+            response = client.post("/api/update/apply", json={"token": token})
+        assert response.status_code == 409
+        assert response.json["error"]["code"] == "already_up_to_date"
+        mock_run.assert_not_called()
+
+    def test_apply_recomputes_stale_available_false(self, client):
+        """Mirror image: cache says available=False but the cached tag is
+        NEWER than the live current_version (post-update-rollback shapes,
+        or a cache written under a different version). Recompute unblocks
+        the dispatch."""
+        cache = Path(os.environ.get("LITCLOCK_UPDATE_CHECK_CACHE"))
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(
+            json.dumps(
+                {
+                    "fetched_at_unix": 9999999999,
+                    "current_version": "v0.211.0",
+                    "latest_tag": "v0.211.0",
+                    "available": False,
+                }
+            )
+        )
+        store = client.application.extensions["confirm_tokens"]
+        token = store.issue("update_apply")[0]
+        with (
+            patch("control_server.routes.updates.update_state.update_is_busy", return_value=False),
+            patch("control_server.routes.updates.subprocess.run") as mock_run,
+        ):
+            response = client.post("/api/update/apply", json={"token": token})
+        assert response.status_code == 202
+        mock_run.assert_called_once()
 
     def test_missing_token_returns_401(self, client):
         response = client.post("/api/update/apply", json={})
@@ -991,9 +1098,9 @@ class TestChangelogParser:
         )
         notes = _extract_changelog_section(body, "v0.211.0")
         assert notes is not None
-        assert "M5 shipped" in notes
-        assert "earlier release" not in notes
-        assert "## v0.210.0" not in notes
+        # Exact equality, not containment — the containment form stayed green
+        # while litclock-dev#699 ate the "### Added" line (/review litclock-dev#709).
+        assert notes.splitlines() == ["### Added", "- M5 shipped", "- another bullet"]
 
     def test_returns_none_for_unknown_tag(self):
         from control_server.update_state import _extract_changelog_section
@@ -1008,6 +1115,135 @@ class TestChangelogParser:
         notes = _extract_changelog_section(body, "v0.211.0")
         assert notes is not None
         assert "bullet" in notes
+
+    # ── litclock-dev#699: the first content line must survive for EVERY documented
+    # heading shape. The old pattern's (\s+.*)? trailer crossed the newline
+    # on undated headings and ate the line after the heading (usually the
+    # "### Changed" category label). The dated shape worked by accident —
+    # its " - YYYY-MM-DD" satisfied the trailer on the heading line itself.
+
+    SECTION = "### Changed\n- alpha\n- beta\n"
+
+    @pytest.mark.parametrize(
+        "heading,tag",
+        [
+            ("## v0.211.0", "v0.211.0"),
+            ("## [v0.211.0]", "v0.211.0"),
+            ("## [v0.211.0] - 2026-04-30", "v0.211.0"),
+            ("## [Unreleased]", "Unreleased"),
+        ],
+        ids=["plain", "bracketed", "dated", "unreleased"],
+    )
+    def test_first_content_line_survives_every_heading_shape(self, heading, tag):
+        from control_server.update_state import _extract_changelog_section
+
+        body = f"# Changelog\n{heading}\n{self.SECTION}## v0.100.0\n- old\n"
+        notes = _extract_changelog_section(body, tag)
+        assert notes is not None
+        assert notes.splitlines()[0] == "### Changed", (
+            f"heading shape {heading!r} lost its first content line: {notes!r}"
+        )
+        assert notes.splitlines() == ["### Changed", "- alpha", "- beta"]
+
+    def test_blank_line_after_heading_does_not_eat_content(self):
+        r"""The blank line after the heading was the bridge the old \s trailer
+        crossed; pin that a blank-separated section survives intact."""
+        from control_server.update_state import _extract_changelog_section
+
+        body = "## v0.211.0\n\n" + self.SECTION + "## v0.100.0\n"
+        notes = _extract_changelog_section(body, "v0.211.0")
+        assert notes is not None
+        assert notes.splitlines() == ["### Changed", "- alpha", "- beta"]
+
+    def test_tag_prefix_of_longer_tag_does_not_match(self):
+        """Preservation pin, not a litclock-dev#699 regression test: the OLD pattern also
+        required whitespace after the tag, so this passed before the fix too.
+        It guards against a future bare-`.*` trailer mutant
+        (greppable-constant prefix hazard)."""
+        from control_server.update_state import _extract_changelog_section
+
+        body = "## v0.211.0\n- bullet\n"
+        assert _extract_changelog_section(body, "v0.21") is None
+
+    def test_tag_that_is_a_prefix_of_a_suffixed_heading_does_not_match(self):
+        """The mirror image: heading `## v0.211.0-rc1` must not satisfy tag
+        v0.211.0 — `-` is not a space/tab, so the trailer refuses it."""
+        from control_server.update_state import _extract_changelog_section
+
+        body = "## v0.211.0-rc1\n- bullet\n"
+        assert _extract_changelog_section(body, "v0.211.0") is None
+
+    @pytest.mark.parametrize(
+        "heading,tag",
+        [
+            ("## v0.211.0", "v0.211.0"),
+            ("## [v0.211.0]", "v0.211.0"),
+            ("## [v0.211.0] - 2026-04-30", "v0.211.0"),
+            ("## [Unreleased]", "Unreleased"),
+        ],
+        ids=["plain", "bracketed", "dated", "unreleased"],
+    )
+    def test_crlf_body_survives_every_heading_shape(self, heading, tag):
+        """GitHub raw serves bytes as stored, and this repo has shipped CRLF
+        files before (public CONTRIBUTING). Without normalization the
+        line-confined trailer cannot consume the \\r before MULTILINE $, so an
+        undated CRLF heading returned NO section at all — a worse failure than
+        the litclock-dev#699 line loss (/review litclock-dev#709, found by all three reviewers)."""
+        from control_server.update_state import _extract_changelog_section
+
+        body = f"# Changelog\n{heading}\n{self.SECTION}## v0.100.0\n- old\n".replace("\n", "\r\n")
+        notes = _extract_changelog_section(body, tag)
+        assert notes is not None, f"CRLF body lost the whole section for {heading!r}"
+        assert notes.splitlines() == ["### Changed", "- alpha", "- beta"]
+
+    def test_heading_with_trailing_whitespace_keeps_its_section(self):
+        """`## v0.211.0 ` (trailing space) — the [ \t]-confined trailer accepts
+        it on the heading line; the old \\s trailer crossed into the section."""
+        from control_server.update_state import _extract_changelog_section
+
+        body = "## v0.211.0 \n" + self.SECTION + "## v0.100.0\n"
+        notes = _extract_changelog_section(body, "v0.211.0")
+        assert notes is not None
+        assert notes.splitlines() == ["### Changed", "- alpha", "- beta"]
+
+    def test_empty_section_returns_none_not_the_next_releases_notes(self):
+        """`## v0.211.0` immediately followed by `## v0.100.0`: the old trailer
+        swallowed the NEXT heading line and returned the PREVIOUS release's
+        bullets as this release's notes — a wrong-notes leak, a worse litclock-dev#699
+        symptom than a lost label. The fix must return None."""
+        from control_server.update_state import _extract_changelog_section
+
+        body = "## v0.211.0\n## v0.100.0\n- old stuff\n"
+        assert _extract_changelog_section(body, "v0.211.0") is None
+
+    def test_tab_separated_next_heading_terminates_the_section(self):
+        """The heading pattern accepts `##\\t`, so the terminator must too, or
+        a tab-separated next heading bleeds the following release's lines into
+        this card (/review litclock-dev#709)."""
+        from control_server.update_state import _extract_changelog_section
+
+        body = "## v0.211.0\n- mine\n##\tv0.100.0\n- not mine\n"
+        notes = _extract_changelog_section(body, "v0.211.0")
+        assert notes is not None
+        assert notes.splitlines() == ["- mine"]
+
+    def test_heading_at_eof_with_no_content_returns_none(self):
+        from control_server.update_state import _extract_changelog_section
+
+        assert _extract_changelog_section("## v0.211.0", "v0.211.0") is None
+
+    def test_section_is_capped_at_ten_non_empty_lines(self):
+        """The cap had zero coverage; an off-by-one or a reorder of the break
+        vs the cap check would ship green (/review litclock-dev#709)."""
+        from control_server.update_state import _extract_changelog_section
+
+        bullets = "\n".join(f"- line {i}" for i in range(1, 13))
+        body = f"## v0.211.0\n{bullets}\n## v0.100.0\n"
+        notes = _extract_changelog_section(body, "v0.211.0")
+        assert notes is not None
+        assert len(notes.splitlines()) == 10
+        assert notes.splitlines()[-1] == "- line 10"
+        assert "- line 11" not in notes
 
 
 # ───────────────────── GH auth (private-repo support) ──────────────────────
