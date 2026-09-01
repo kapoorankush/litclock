@@ -1,4 +1,4 @@
-ruff>=0.16.0
+ruff>=0.16.5
 pytest>=9.1.1
 pytest-mock>=3.15.1
 # litclock-dev#662: without a per-test timeout a hang burns CI to its
