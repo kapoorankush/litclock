@@ -57,8 +57,10 @@ requests==2.34.2
     # via -r requirements.in
 spidev==3.8
     # via -r requirements.in
-timezonefinder==8.2.5
+timezonefinder==8.3.0
     # via -r requirements.in
+timezonefinder-data==1.2026.3
+    # via timezonefinder
 urllib3==2.7.0
     # via
     #   -r requirements.in
