@@ -24,9 +24,17 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Highest issue-or-PR number in THIS repo as of the v0.226.0 port audit
-# (2026-08-30: highest issue 57, highest PR 61; this port lands as #62).
-PUBLIC_NUMBER_CEILING = 62
+# Highest issue-or-PR number in THIS repo. Bumping this is the deliberate act
+# the module docstring describes, not a chore — see below for the audit.
+#
+# 2026-08-30 (v0.226.0 port): highest issue 57, highest PR 61; that port landed
+#   as #62, so the ceiling was 62.
+# 2026-09-09: highest issue still 57, highest PR now 67 (Dependabot raised
+#   #63-#66 and the retirement PR is #67). Audited every bare `#N` in 63..67
+#   across all tracked files: exactly ONE, in .github/DEPENDABOT-NOTE.md, and
+#   it genuinely refers to this repo's own PRs #63-#66. Nothing in that range
+#   is a development-repo reference. Ceiling raised to 67.
+PUBLIC_NUMBER_CEILING = 67
 
 # EVERY tracked text file, not an extension allowlist. The first version of
 # this listed ten extensions, inherited from the audit's own scan command, and
