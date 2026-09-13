@@ -17,9 +17,26 @@ User=pi
 # Bound the worst case for a real update on a Pi Zero 2W. M5 plan-eng-review
 # (litclock-dev#245) caught the prior 120s ceiling: a real pip-install + image-sync + smoke
 # can exceed 2 min under CPU pressure, so the timer was killing real updates
-# mid-Phase-4. 600s lets a worst-case run finish; the script's own internal
-# `timeout 60` on smoke + `timeout 30` on git-fetch is the second layer.
+# mid-Phase-4. 600s then let a worst-case run finish, with the script's own
+# `timeout 60` on smoke + `timeout 30` on git-fetch as the second layer.
 # F1 in PLAN-LitClock-Control-PWA.md "Codex amendments" table.
-TimeoutStartSec=600
+#
+# litclock-dev#835 — 1800s. The litclock-dev#531 re-stamp (Phase 4.5 KEEP arm) added
+# a bounded measurement pass (the script's VALIDATOR_TIMEOUT_S; 182s
+# measured on the bench Pi Zero 2W) that runs on every fielded device's
+# first tick after it ships, and permanently on any device whose freetype
+# wheel fails it. Inside a 600s unit that bound was decoration: systemd's
+# SIGTERM landed first, mid-validation, with litclock.timer stopped since
+# Phase 1. The budget must hold the SUM of the script's inner bounds with
+# margin; tests/test_runtime_render_autostamp.py pins that composition, and
+# the script defers the validator when the budget systemd actually LOADED
+# for this run (on the transition tick still the old one) cannot hold it.
+TimeoutStartSec=1800
+# The stop window after that SIGTERM (default was 90s). The script's signal
+# handler now exits at once and the EXIT trap, immune to further signals
+# while it runs, does a `timeout -k 5 10` non-blocking timer re-arm and the
+# status stamp (a file write) — 60s is ample; an explicit value keeps the
+# trap's budget visible next to the start budget it complements.
+TimeoutStopSec=60
 StandardOutput=journal
 StandardError=journal

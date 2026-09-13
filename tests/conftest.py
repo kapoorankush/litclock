@@ -94,19 +94,14 @@ class ScriptSandbox:
         script.write_text(
             textwrap.dedent(f"""\
                 #!/bin/bash
-                # Build JSON array of args
-                args_json="["
-                first=1
-                for a in "$@"; do
-                    esc=$(printf '%s' "$a" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
-                    if [[ $first -eq 1 ]]; then
-                        args_json="${{args_json}}${{esc}}"
-                        first=0
-                    else
-                        args_json="${{args_json}},${{esc}}"
-                    fi
-                done
-                args_json="${{args_json}}]"
+                # Build the JSON array of args in ONE argv-based python call.
+                # The previous per-argument `printf | python3 -c` pipeline lost
+                # its FIRST element whenever the shim ran under a process-group
+                # wrapper (`timeout`, `setsid`), corrupting the call log into
+                # `"args": [,"ls-remote",...]` — litclock-dev#835 review, rounds
+                # 4-9, which cost three hand-rolled watchdogs before the cause
+                # was pinned on the harness rather than the script.
+                args_json=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@")
                 printf '{{"cmd": %s, "args": %s}}\\n' '"'{esc_name}'"' "$args_json" >> {esc_log}
                 if [[ -n {esc_stdout} ]]; then printf '%s' {esc_stdout}; fi
                 if [[ -n {esc_stderr} ]]; then printf '%s' {esc_stderr} >&2; fi

@@ -3054,3 +3054,246 @@ class TestAMissingInterpreterIsAFailureNotASkip:
         assert "STUB_STATUS_UNRECOVERED" not in r.stdout, (
             f"an ordinary smoke failure was escalated to 'manual recovery needed'.\n{r.stdout}"
         )
+
+
+
+class TestTheExitTrapRearmsTheClock:
+    """litclock-dev#835, EXECUTED — the first version of this class scanned the
+    trap's non-comment lines and passed with the re-arm inside `if false`
+    (review mutation). Now the lifted trap block runs under bash with sudo,
+    timeout and the status stamp stubbed, and a TERM is delivered to the
+    shell the way systemd delivers one.
+
+    Two properties, both found by the v0.227.0 port review: a signal must
+    TERMINATE the run (bash resumes an interrupted phase after a handler
+    returns, and the old shared handler never exited — the update carried on
+    into Phase 5-7 inside systemd's stop window), and the unfinalized EXIT
+    path must re-arm litclock.timer before stamping, best-effort."""
+
+    def _lifted(self, update_sh_content):
+        start = update_sh_content.index("_LITCLOCK_UPDATE_FINALIZED=0\n_LITCLOCK_UPDATE_CLEANED=0")
+        marker = "trap _litclock_update_on_signal TERM INT HUP\n"
+        end = update_sh_content.index(marker, start) + len(marker)
+        return update_sh_content[start:end]
+
+    def _run(self, update_sh_content, *, finalized: int, signal: bool, sudo_fails: bool = False):
+        program = (
+            "set -u\n"
+            'sudo() { [ "$SUDO_FAILS" = 1 ] && return 1; echo "STUB_SUDO $*"; }\n'
+            'timeout() { [ "$1" = -k ] && shift 2; shift; "$@"; }\n'
+            'update_status_failed_unrecovered() { echo STUB_STAMP; }\n'
+            'atomic_write_file() { echo STUB_GRACE; }\n'
+            "_PHASE3_ADDED_FILE=\nPOST_UPDATE_GRACE_FILE=/dev/null\n"
+            f"SUDO_FAILS={1 if sudo_fails else 0}\n"
+            f"{self._lifted(update_sh_content)}"
+            f"_LITCLOCK_UPDATE_FINALIZED={finalized}\n"
+            "_LITCLOCK_UPDATE_PHASE_INDEX=4\n"
+            + ("kill -TERM $$\n" if signal else "")
+            + "echo MUTATING_PHASE_CONTINUES\n"
+            "exit 0\n"
+        )
+        return subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+
+    def test_a_signal_terminates_the_run_and_the_exit_trap_rearms_then_stamps(self, update_sh_content):
+        r = self._run(update_sh_content, finalized=0, signal=True)
+        assert r.returncode == 143, (r.returncode, r.stdout, r.stderr)
+        assert "MUTATING_PHASE_CONTINUES" not in r.stdout, (
+            "bash resumed the interrupted phase after the signal handler — the handler must exit"
+        )
+        grace = r.stdout.find("STUB_GRACE")
+        rearm = r.stdout.find("systemctl start --no-block litclock.timer")
+        stamp = r.stdout.find("STUB_STAMP")
+        assert rearm != -1, r.stdout
+        assert stamp != -1, r.stdout
+        assert grace != -1 and grace < rearm, (
+            "re-touch the LKG grace marker BEFORE the painter can heartbeat, or the writer "
+            "promotes a never-finalized HEAD (round-2 review, F3)"
+        )
+        assert rearm < stamp, "re-arm the clock first; the status stamp is best-effort"
+        assert r.stdout.count("STUB_STAMP") == 1, "the EXIT trap must run exactly once"
+
+    def test_a_finalized_exit_neither_rearms_nor_stamps(self, update_sh_content):
+        r = self._run(update_sh_content, finalized=1, signal=False)
+        assert r.returncode == 0
+        assert "STUB_SUDO" not in r.stdout and "STUB_STAMP" not in r.stdout, r.stdout
+
+    def test_the_stamp_survives_a_failed_rearm(self, update_sh_content):
+        r = self._run(update_sh_content, finalized=0, signal=True, sudo_fails=True)
+        assert r.returncode == 143
+        assert "STUB_STAMP" in r.stdout, r.stdout
+
+    def test_a_signal_during_cleanup_does_not_abort_it(self, update_sh_content):
+        """Round-2 review, reproduced: a TERM landing while the EXIT trap is
+        already running (systemd's timeout hitting during an ordinary
+        `exit 1` cleanup) fired the exiting handler INSIDE the trap, and the
+        nested exit does not restart EXIT processing — no re-arm completed,
+        no stamp. The trap now ignores further signals for its duration."""
+        program = (
+            "set -u\n"
+            # The re-arm itself delivers a TERM to the shell mid-cleanup.
+            'sudo() { echo "STUB_SUDO $*"; kill -TERM $$; sleep 0.2; echo REARM_FINISHED; }\n'
+            'timeout() { [ "$1" = -k ] && shift 2; shift; "$@"; }\n'
+            'update_status_failed_unrecovered() { echo STUB_STAMP; }\n'
+            'atomic_write_file() { echo STUB_GRACE; }\n'
+            "_PHASE3_ADDED_FILE=\nPOST_UPDATE_GRACE_FILE=/dev/null\n"
+            f"{self._lifted(update_sh_content)}"
+            "_LITCLOCK_UPDATE_FINALIZED=0\n_LITCLOCK_UPDATE_PHASE_INDEX=4\n"
+            "exit 1\n"
+        )
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        assert "REARM_FINISHED" in r.stdout, r.stdout
+        assert "STUB_STAMP" in r.stdout, r.stdout
+        assert r.returncode == 1, "the original exit status is preserved; the ignored signal does not replace it"
+
+    def test_the_reachability_gate_is_bounded_and_the_traps_follow_the_status_init(self, update_sh_content):
+        """Round-2 review (Claude): on the re-exec path Phase 1 has already
+        stopped litclock.timer by the time the new script reaches the
+        `git ls-remote` gate, and the traps come after it. They must — the
+        EXIT trap's stamp needs update_status_init, and initialising before
+        the gate would stamp an offline tick as unrecovered — so the window
+        is closed the other way: the gate is bounded."""
+        executed = _executed_lines(update_sh_content)
+        assert "_remote_reachable() {" in executed and "! _remote_reachable; then" in executed
+        assert 'timeout -k 5 "$_LS_REMOTE_TIMEOUT_S" git ls-remote --exit-code origin' in executed, (
+            "coreutils timeout, group-killing with KILL escalation — not a hand-rolled watchdog"
+        )
+        init_at = update_sh_content.index('update_status_init "$OLD_SHA"')
+        trap_at = update_sh_content.index("trap _litclock_update_trap EXIT")
+        stop_at = update_sh_content.index("systemctl stop litclock.timer")
+        assert init_at < trap_at < stop_at, "traps after the status init, before Phase 1 stops the timer"
+
+    def _watchdog_block(self, update_sh_content):
+        start = update_sh_content.index("_LS_REMOTE_TIMEOUT_S=")
+        end = update_sh_content.index("\n}\n", update_sh_content.index("_remote_reachable() {", start)) + len("\n}\n")
+        return update_sh_content[start:end]
+
+    def _shim(self, tmp_path, body):
+        """A PATH shim for git: `timeout` execs the real command lookup, so a
+        shell function would be bypassed."""
+        bindir = tmp_path / "bin"
+        bindir.mkdir(exist_ok=True)
+        shim = bindir / "git"
+        shim.write_text("#!/bin/bash\n" + body + "\n")
+        shim.chmod(0o755)
+        return bindir
+
+    def _gate_block(self, update_sh_content):
+        start = update_sh_content.index("_LS_REMOTE_TIMEOUT_S=")
+        end = update_sh_content.index("\n}\n", update_sh_content.index("_remote_reachable() {", start)) + len("\n}\n")
+        return update_sh_content[start:end]
+
+    def test_a_hung_ls_remote_is_cut_at_the_bound(self, update_sh_content, tmp_path):
+        bindir = self._shim(tmp_path, "sleep 30")
+        program = (
+            f"set -u\nexport PATH={bindir}:$PATH\nexport LITCLOCK_LS_REMOTE_TIMEOUT_S=1\n"
+            + self._gate_block(update_sh_content)
+            + "t0=$SECONDS; _remote_reachable; rc=$?; echo \"rc=$rc elapsed=$((SECONDS-t0))\"\n"
+            f"printf '#!/bin/bash\\nexit 0\\n' > {bindir}/git\n_remote_reachable; echo \"ok_rc=$?\"\n"
+        )
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        assert "ok_rc=0" in r.stdout, (r.stdout, r.stderr)
+        m = re.search(r"rc=(\d+) elapsed=(\d+)", r.stdout)
+        assert m and int(m.group(1)) >= 124 and int(m.group(2)) <= 8, (r.stdout, r.stderr)
+
+    def test_a_term_immune_probe_tree_is_killed_by_the_escalation(self, update_sh_content, tmp_path):
+        """`timeout` without --foreground makes itself a process-group leader
+        and signals the GROUP on expiry, TERM then (with -k) KILL — so a git
+        that ignores TERM, and any helper in its group, still dies. Readiness
+        is signalled after the trap, the marker is unique per call, and the
+        survivor inspection must itself have run. What `timeout` does NOT do
+        — kill a helper git left behind, whether git exited on its own or
+        honoured the TERM while the helper ignored it — is stated on the
+        function as a residual."""
+        marker = f"2727.{int(time.time() * 1000) % 1_000_000:06d}"
+        ready = tmp_path / "ready"
+        bindir = self._shim(tmp_path, f"trap '' TERM; touch {ready}; sleep {marker}")
+        program = (
+            f"set -u\nexport PATH={bindir}:$PATH\nexport LITCLOCK_LS_REMOTE_TIMEOUT_S=1\n"
+            + self._gate_block(update_sh_content)
+            + "_remote_reachable; echo \"rc=$?\"\n"
+            "sleep 0.5\n"
+            # Anchored: an unanchored -f matches this very harness's command line.
+            f'pgrep -f "^sleep {marker}$" >/dev/null; echo "pgrep_rc=$?"\n'
+        )
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        assert ready.exists(), (r.stdout, r.stderr)
+        m = re.search(r"rc=(\d+)", r.stdout)
+        assert m and int(m.group(1)) >= 124, (r.stdout, r.stderr)
+        assert "pgrep_rc=1" in r.stdout, r.stdout  # 1 = no match; 0 = survivor; 2+ = pgrep itself failed
+
+    def test_the_lock_keeps_its_inherited_descriptor_on_purpose(self, update_sh_content):
+        """Rounds 8-10 of the litclock-dev#835 review: `--close` would stop a
+        leaked descendant holding the lock, but under systemd's group-wide
+        TERM the flock parent dies first and the script's signal cleanup then
+        runs unlocked against a second updater (reproduced). The pre-existing
+        inheritance stays; the lock design is the issue's follow-up."""
+        executed = _executed_lines(update_sh_content)
+        assert 'flock -n -E 75 "$LITCLOCK_UPDATE_LOCK_FILE" "$0" "$@"' in executed
+        assert "--close" not in executed
+
+    def test_cleanup_ignores_every_signal_the_handler_catches(self, update_sh_content):
+        lifted = _executed_lines(self._lifted(update_sh_content))
+        assert lifted.count("trap '' TERM INT HUP") == 2, (
+            "both the cleanup and the signal handler must start by ignoring the three signals"
+        )
+
+    @pytest.mark.parametrize("nth_statement", [1, 2, 3, 5])
+    def test_a_term_injected_inside_cleanup_never_loses_the_recovery(self, update_sh_content, nth_statement):
+        """Round-5 review (Codex) delivered a TERM deterministically between
+        two statements of the cleanup with a DEBUG-trap injection; round 6
+        then showed the first version of this test never actually injected
+        (it keyed on $BASH_COMMAND, which inside an EXIT trap still reads
+        `exit 7`). This one keys on FUNCNAME: the N-th DEBUG event inside
+        _litclock_update_cleanup fires the TERM — N=1 is before the mask (the
+        handler must run the whole cleanup itself), N=2 is the old
+        flag-before-mask window, later N are mid-work (must be ignored) — and
+        it asserts the injection HAPPENED and that recovery ran exactly once.
+
+        Honesty note: the reviewer's harness reproduced the LOSS with the old
+        ordering; this one, on bash 5.2 with the TERM raised from inside a
+        DEBUG trap inside the EXIT trap, sees bash complete the interrupted
+        cleanup anyway, so the old ordering passes here too. The mask-first
+        order is kept because it is correct by construction (nothing before
+        the mask can be interrupted into a "done" state); this test guards
+        delivery and single execution, not that specific ordering."""
+        program = (
+            "set -u\nset -T\n"
+            'sudo() { echo "STUB_SUDO $*"; }\n'
+            'timeout() { [ "$1" = -k ] && shift 2; shift; "$@"; }\n'
+            'update_status_failed_unrecovered() { echo STUB_STAMP; }\n'
+            'atomic_write_file() { echo STUB_GRACE; }\n'
+            "_PHASE3_ADDED_FILE=\nPOST_UPDATE_GRACE_FILE=/dev/null\n"
+            f"{self._lifted(update_sh_content)}"
+            "_LITCLOCK_UPDATE_FINALIZED=0\n_LITCLOCK_UPDATE_PHASE_INDEX=4\n"
+            "_N=0\n"
+            "trap 'if [ \"${FUNCNAME[0]:-}\" = _litclock_update_cleanup ]; then _N=$((_N+1)); "
+            f"if [ \"$_N\" = {nth_statement} ]; then echo INJECTED; kill -TERM $$; fi; fi' DEBUG\n"
+            "exit 7\n"
+        )
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        assert "INJECTED" in r.stdout, (nth_statement, r.stdout, r.stderr)
+        assert r.stdout.count("systemctl start --no-block litclock.timer") == 1, (nth_statement, r.stdout)
+        assert r.stdout.count("STUB_STAMP") == 1, (nth_statement, r.stdout)
+        assert r.stdout.count("STUB_GRACE") == 1, (nth_statement, r.stdout)
+
+    def test_the_signal_handler_cleans_up_itself_and_cleanup_is_idempotent(self, update_sh_content):
+        """Round-3 review (Codex): `trap ''` at the top of the EXIT trap is not
+        atomic with entering it (40/1000 stress runs lost both the re-arm and
+        the stamp). The handler must not rely on EXIT being entered again:
+        it cleans up itself, and the flag makes the EXIT pass a no-op — one
+        re-arm, one stamp, even though both paths run."""
+        r = self._run(update_sh_content, finalized=0, signal=True)
+        assert r.returncode == 143
+        assert r.stdout.count("STUB_STAMP") == 1 and r.stdout.count("systemctl start") == 1, r.stdout
+        lifted = self._lifted(update_sh_content)
+        handler = lifted[lifted.index("_litclock_update_on_signal() {"):]
+        assert "_litclock_update_cleanup" in handler.split("exit 143")[0], (
+            "the signal handler must run the cleanup BEFORE exiting, not leave it to the EXIT trap"
+        )
+
+    def test_the_rearm_is_bounded_and_non_interactive(self, update_sh_content):
+        lifted = _executed_lines(self._lifted(update_sh_content))
+        assert "timeout -k 5 10 sudo -n systemctl start --no-block litclock.timer" in lifted, (
+            "a trap that can block on a wedged manager or a password prompt holds the stop job "
+            "past TimeoutStopSec and loses the status stamp with it"
+        )

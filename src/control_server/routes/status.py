@@ -78,10 +78,13 @@ PHASE3_SKIP_FRESH_WINDOW_S = 86400
 # state=complete or state=failed_* — /run is tmpfs and clears at reboot,
 # but a user who only interacts via the web (no reboot) would otherwise
 # see the Settings "Update in progress" banner stuck forever every 15s.
-# Budget = systemd's TimeoutStartSec=600s + 90s SIGKILL grace + ~20min
-# headroom for the slow Pi Zero 2W pip install on a contended SD card.
-# Past this window, treat as stale and return None so the banner self-clears.
-UPDATE_RUNNING_TIMEOUT_S = 1800
+# Budget = systemd's TimeoutStartSec (1800s since litclock-dev#835; it was
+# 600) + its TimeoutStopSec (60s) + ~14min headroom. Past this window, treat
+# as stale and return None so the banner self-clears. Must stay ABOVE the
+# unit's start+stop budget or a legitimately long run that is still alive
+# under systemd has its banner cleared as stale — tests/test_sudoers_m5.py
+# pins that against systemd/litclock-update.service.
+UPDATE_RUNNING_TIMEOUT_S = 2700
 
 # Stale threshold (litclock-dev#245 D2). Banner appears in the PWA when picked_at_age_s
 # exceeds this; corresponds to ~90 seconds of dead clock-tick service.
