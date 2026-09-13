@@ -1865,8 +1865,8 @@ class TestSshHandoffGate:
         by another route.
         """
         # SKIP, not fail, for the explicit opt-out (/review). A set-but-empty
-        # LITCLOCK_COUNTERPART_CHECKOUT / LITCLOCK_PUBLIC_CHECKOUT is a
-        # DOCUMENTED, supported configuration —
+        # LITCLOCK_COUNTERPART_CHECKOUT (the only override this repo reads —
+        # see _COUNTERPART_ENV_KEYS) is a DOCUMENTED, supported configuration —
         # `test_the_counterpart_resolution_rejects_what_it_says_it_rejects`
         # asserts exactly that behaviour — so exercising it must not turn the
         # whole suite red. Failing here made pass/fail depend on an ambient
@@ -1906,10 +1906,22 @@ class TestSshHandoffGate:
             with pytest.raises(ValueError):
                 _resolve_counterpart_checkout({key: "scripts/reset-setup.sh"})
 
-        # Precedence, and only-then the fallback.
+        # The property this repo's header comment calls deliberate, pinned:
+        # LITCLOCK_PUBLIC_CHECKOUT names THIS repository, so honouring it would
+        # resolve the counterpart to ourselves (the litclock-dev#765 self-
+        # comparison). The development copy reads it as the pre-litclock-dev#765 name; a
+        # hand-merge that copies its two-key tuple across is exactly what this
+        # assertion catches — the port review measured that the previous
+        # precedence check stayed green with the key re-added.
+        assert "LITCLOCK_PUBLIC_CHECKOUT" not in _COUNTERPART_ENV_KEYS, (
+            "this repository must not read LITCLOCK_PUBLIC_CHECKOUT (see the header "
+            "comment above _COUNTERPART_ENV_KEYS)"
+        )
         assert _resolve_counterpart_checkout(
-            {"LITCLOCK_COUNTERPART_CHECKOUT": "/a", "LITCLOCK_PUBLIC_CHECKOUT": "/b"}
-        ) == "/a"
+            {"LITCLOCK_PUBLIC_CHECKOUT": "/b"}
+        ) == _DEFAULT_COUNTERPART_CHECKOUT, (
+            "LITCLOCK_PUBLIC_CHECKOUT is ignored here; only the default may answer"
+        )
 
     def test_the_self_comparison_guard_is_not_decorative(self, tmp_path):
         """litclock-dev#765: the parity test above is skipped on CI, so nothing in

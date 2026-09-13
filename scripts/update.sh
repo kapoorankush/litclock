@@ -426,7 +426,7 @@ fi
 # The OUTGOING script runs first, in a different process, and in that window its
 # copy of this same migration is UNCONDITIONAL. Cited against the PUBLIC tags,
 # because that is the repository fielded devices track and therefore the script
-# that actually runs on them — this repo's own tags jump v0.222.0 -> v0.225.0
+# that actually runs on them — the development repo's own tags jump v0.222.0 -> v0.225.0
 # and never saw a v0.224.x at all:
 #
 #   public v0.224.0 update.sh:313       if sudo touch /etc/litclock/.handoff-complete

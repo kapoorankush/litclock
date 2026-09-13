@@ -100,7 +100,7 @@ def _weather_is_enabled(values: dict[str, Any]) -> bool:
 
     A missing or None value stays FALSY here, which is NOT config's rule (an
     absent env KEY means enabled). That difference is intentional: an absent
-    env key is a normal pre-dev#783 device, whereas a payload without the key
+    env key is a normal pre-litclock-dev#783 device, whereas a payload without the key
     is malformed, and muting a section on malformed input is the wrong default.
     """
     raw = values.get("weather_enabled")
