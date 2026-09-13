@@ -418,6 +418,49 @@ fi
 # unit is still on disk and answers the question exactly, with no clock and no
 # expiry. We migrate only when the device is POSITIVELY identified as pre-PR2;
 # anything else honours the timezone refusal, indefinitely.
+#
+# litclock-dev#768 — THIS GUARD IS INERT WHENEVER THE OUTGOING SCRIPT ALREADY
+# WROTE THE MARKER, which is every run of a release in [v0.214.0, v0.225.0).
+# Not a defect in the guard; a consequence of where update.sh re-execs itself.
+#
+# The OUTGOING script runs first, in a different process, and in that window its
+# copy of this same migration is UNCONDITIONAL. Cited against the PUBLIC tags,
+# because that is the repository fielded devices track and therefore the script
+# that actually runs on them — this repo's own tags jump v0.222.0 -> v0.225.0
+# and never saw a v0.224.x at all:
+#
+#   public v0.224.0 update.sh:313       if sudo touch /etc/litclock/.handoff-complete
+#   public v0.224.0 update.sh:532       git reset --hard "$TARGET_SHA"
+#   public v0.224.0 update.sh:543-552   re-exec guard, then exec the NEW update.sh
+#
+# So the marker is already present when this file loads and the `! -f` test
+# below is false. The device gets the behaviour litclock-dev#675 calls unacceptable.
+#
+# THE WINDOW HAS A FLOOR, and the arm below depends on it. Releases before
+# v0.214.0 have no handoff migration at all (`git show v0.212.2:scripts/update.sh`
+# does not mention .handoff-complete), so a genuinely pre-PR2 device arrives with
+# the marker ABSENT, this guard runs, and the handoff_pre_pr2 arm migrates it —
+# which is the entire reason the INSTALLED_CLOCK_UNIT discriminator exists. Do
+# not read "inert on old releases" as "that arm is dead code"; it is the arm
+# that serves exactly the population it was written for.
+#
+# THE TRIGGER IS A TIMER TICK, NOT AN UPGRADE. The outgoing migration sits ABOVE
+# the reachability gate (public v0.224.0 update.sh:320), above target resolution
+# (:448) and above both graceful-offline `exit 0` arms (:480, :491). A device in
+# that window writes the marker on its FIRST weekly tick, offline, with no
+# release available and no version jump — so exposure is not limited to clocks
+# taking a large hop, and the `sudo touch` failing (:316) is the only way the
+# incoming guard stays live.
+#
+# It cannot be fixed by moving this block earlier: the old script's write happens
+# in another process before any byte of this file runs. Closing it would mean
+# REVOKING a marker — deleting .handoff-complete when the installed unit carries
+# the gate and the timezone is unknown — which stops quotes on a fielded device
+# and is a materially larger change than the refusal itself. Deliberately not
+# done here; owner's call, tracked on litclock-dev#768.
+#
+# From v0.225.0 onward the outgoing script carries this guarded block itself, so
+# every tick on a guarded release refuses correctly.
 INSTALLED_CLOCK_UNIT="${LITCLOCK_INSTALLED_CLOCK_UNIT:-/etc/systemd/system/litclock.service}"
 
 if [[ ! -f /etc/litclock/.handoff-complete ]]; then
@@ -1052,6 +1095,20 @@ if [[ "$NEED_PIP" == "true" ]]; then
         # REVERT_SHA == OLD_SHA in a normal update (unchanged behavior); in
         # bootcheck rollback mode it is the LKG target, so a failure here
         # stays on the last-known-good rather than falling back to the bad code.
+        # SELF-MODIFYING, and safe — litclock-dev#773 item 3 asked why this has
+        # no re-exec guard when the pull path at :758 does. Measured with strace
+        # against git 2.43.0: `git reset --hard` does `unlink()` then
+        # `openat(O_WRONLY|O_CREAT|O_EXCL)`. O_EXCL means git NEVER writes into
+        # the existing inode, so the bash executing this file keeps reading the
+        # PRE-reset content through its already-open fd (verified end to end: a
+        # script that git-resets itself mid-block, forks, and falls through to
+        # top level ran every remaining statement correctly, inode 4906177 ->
+        # 4906189). The stale-fd hazard the pull path guards needs an IN-PLACE
+        # rewrite; git never does one.
+        #
+        # The pull path re-execs for a different reason anyway: it CONTINUES and
+        # must run the new code against the new tree. A revert arm terminates,
+        # so it never needs the new code. There is no asymmetry to defend.
         if ! git reset --hard "$REVERT_SHA" 2>&1 | sed 's/^/[revert] /'; then
             REVERT_OK=0
         fi
@@ -1121,9 +1178,10 @@ fi
 
 # ─── Phase 4.5: Post-rebuild smoke test ──────────────────────────────
 # Invoke --dry-run against the freshly-rebuilt venv. If it fails we have
-# a bad release — revert the working tree + wipe the pip hash (so the
-# next run re-rebuilds from scratch) + mark update-failed, skip Phase 5/7,
-# and exit non-zero so the systemd unit records failure.
+# a bad release — revert the working tree + wipe the pip hash (so the next
+# run re-runs pip; it does not by itself recreate the venv) + mark
+# update-failed, skip Phase 5/7, and exit non-zero so the systemd unit
+# records failure.
 #
 # 60s timeout bounds a hung render (missing font, broken corpus, I/O deadlock).
 # The smoke test never touches GPIO/SPI — --dry-run defers display_driver import.
@@ -1136,6 +1194,15 @@ fi
 # Row 5 of the D3 phase reading-list: "Verifying clock starts" (Phase 4.5 smoke).
 update_status_set_phase 5
 
+# litclock-dev#773 — both of these are initialised HERE, outside the
+# interpreter check, because the KEEP/revert dispatch below now runs for both
+# arms. `smoke_rc` is belt, not load-bearing: today's two arms each assign it
+# unconditionally, so deleting this line changes nothing — it guards a THIRD
+# arm nobody has added yet. `smoke_no_interpreter` is load-bearing: the
+# dispatch reads it to choose the terminal status, and only the else arm
+# raises it.
+smoke_rc=0
+smoke_no_interpreter=0
 if [[ -x "$PYTHON" ]]; then
     log_info "Running smoke test against rebuilt venv..."
     # Invoke the same way runtheclock.sh does (script-style, NOT `python -m
@@ -1152,11 +1219,45 @@ if [[ -x "$PYTHON" ]]; then
     # litclock-dev#532 (/review litclock-dev#738): the dry-run never imports the string
     # catalog, so a half-applied OTA missing languages/ passed smoke and
     # shipped raw keys to /api/status and every catalog-get script. Probe a
-    # known key and require the RESOLVED value — catalog-get always exits 0
-    # by contract (degradation is survivable at runtime), so the exit code
-    # cannot discriminate; the output can.
+    # known key and require the RESOLVED value. The exit code cannot
+    # discriminate: catalog-get exits 0 by contract and degrades visibly
+    # instead — a missing key prints the key, and since litclock-dev#766 a
+    # missing or broken strings_catalog does too, rather than exiting 1 with
+    # empty stdout. Comparing the OUTPUT is what covers both, and it is why
+    # that contract had to be made true rather than merely documented.
+    #
+    # litclock-dev#763 — LITCLOCK_LANGUAGE=en is load-bearing, not decoration.
+    # The expected values are English literals, but catalog-get resolves through
+    # strings_catalog.active_language(), which reads the process environment and
+    # only THEN env.sh. litclock-update.service passes no LITCLOCK_LANGUAGE, so
+    # the resolver falls through to _env_file_path()'s repo-root branch — the
+    # running install's OWN env.sh — and the probe returns the device owner's
+    # chosen language while the comparison stays English. (Setting
+    # LITCLOCK_ENV_FILE would not have helped: it selects WHICH env.sh, and the
+    # fallback already finds the right one. The pin is the fix because
+    # active_language() gives the process environment precedence and returns
+    # immediately for "en".)
+    #
+    # Latent only while the registry lists one active language. Once a release
+    # activates a second and an owner selects it, the FIRST probe mismatches and
+    # short-circuits the rest, smoke_rc=1 takes the revert arm, and nothing
+    # writes a blocked-sha on that path — only bootcheck does — so the next
+    # weekly tick resolves the same target and reverts again. It is not
+    # unrecoverable: the re-exec above (update.sh changed => exec the new copy)
+    # means the first release that modifies THIS file with the pin runs the
+    # fixed gate and the device heals itself. Until such a release lands, an
+    # affected device stays on its old SHA, shows "Update FAILED (reverted)" in
+    # the PWA, and re-runs the whole pip install every week (the revert deletes
+    # HASH_FILE, which sets NEED_PIP — it does not recreate the venv).
+    #
+    # The pin deliberately checks the CANONICAL catalog rather than the device's
+    # own bundle. A missing translation degrades zz -> en inside get(), which is
+    # survivable and not worth reverting an OTA over; serving the raw KEY is the
+    # failure that is not, and that is the en -> key branch this still catches.
+    # The cost is that the gate no longer exercises the owner's language at all
+    # (litclock-dev#772).
     if [[ "$smoke_rc" -eq 0 ]]; then
-        catalog_probe="$(timeout 30 "$PYTHON" src/eink_display.py catalog-get status.relative.just_now 2>/dev/null)"
+        catalog_probe="$(LITCLOCK_LANGUAGE=en timeout 30 "$PYTHON" src/eink_display.py catalog-get status.relative.just_now 2>/dev/null)"
         if [[ "$catalog_probe" = "just now" ]]; then
             log_info "Catalog smoke passed"
         else
@@ -1174,7 +1275,7 @@ if [[ -x "$PYTHON" ]]; then
         for probe in "boot.splash.starting.title=LitClock" "firstboot.splash.setup_incomplete.title=Setup Incomplete"; do
             probe_key="${probe%%=*}"
             probe_want="${probe#*=}"
-            probe_got="$(timeout 30 "$PYTHON" src/eink_display.py catalog-get "$probe_key" 2>/dev/null)"
+            probe_got="$(LITCLOCK_LANGUAGE=en timeout 30 "$PYTHON" src/eink_display.py catalog-get "$probe_key" 2>/dev/null)"
             if [[ "$probe_got" != "$probe_want" ]]; then
                 log_error "Catalog smoke failed: catalog-get $probe_key returned '$probe_got' (want '$probe_want')"
                 smoke_rc=1
@@ -1183,39 +1284,170 @@ if [[ -x "$PYTHON" ]]; then
         done
         [[ "$smoke_rc" -eq 0 ]] && log_info "Splash-triplet smoke passed"
     fi
+    # litclock-dev#773 item 2 — the three probes above check VALUES, and values
+    # cannot see truncation. Measured: an `en` bundle cut from 438 keys to just
+    # those three passes every probe above green, with 435 strings gone and
+    # every other status and splash surface degraded to raw keys. Catching that
+    # by luck gets worse as litclock-dev#532's bulk extraction grows the surface.
+    #
+    # The expectation CANNOT be the committed strings.json: the loader reads
+    # that same file, so comparing them is a no-op precisely when the file is
+    # the thing that is damaged. It has to be a number that travels with
+    # update.sh — which is the copy that has already re-exec'd itself onto the
+    # new code, so it is present and current whenever the bundle is not.
+    #
+    # A FLOOR, not an equality: the catalog only grows, so a floor ages safely
+    # (looser, never wrong) where an exact count would fail every release that
+    # adds a string. tests/test_update_sh.py keeps it honest from the other
+    # side — it fails if the floor drifts above the real count OR falls below
+    # 75% of it, so a growing catalog forces a deliberate bump rather than
+    # letting the gate quietly go slack.
+    CATALOG_MIN_KEYS=400
     if [[ "$smoke_rc" -eq 0 ]]; then
-        log_info "Smoke test passed"
-        atomic_remove_file "$UPDATE_FAILED_FILE"
-    else
-        log_error "Smoke test failed (exit $smoke_rc) — reverting to $REVERT_SHA"
-        # REVERT_SHA == OLD_SHA normally; in bootcheck rollback mode it is the
-        # LKG target so a failed LKG smoke stays on LKG (never the bad code).
-        git reset --hard "$REVERT_SHA" 2>&1 | sed 's/^/[revert] /' || true
-        git submodule update --init --recursive 2>&1 | sed 's/^/[revert] /' || true
-        # Delete the pip hash so the next run re-rebuilds the venv from
-        # scratch. Otherwise a revert could leave the venv half-upgraded
-        # while the hash claims it matches.
-        rm -f "$HASH_FILE"
-        # Loud failure indicator the e-ink can pick up.
-        if ! atomic_write_file "$UPDATE_FAILED_FILE" ""; then
-            log_warn "Could not write $UPDATE_FAILED_FILE — corner glyph will not render"
+        catalog_count="$(LITCLOCK_LANGUAGE=en timeout 30 "$PYTHON" src/eink_display.py catalog-count 2>/dev/null)"
+        if [[ "$catalog_count" =~ ^[0-9]+$ ]] && [[ "$catalog_count" -ge "$CATALOG_MIN_KEYS" ]]; then
+            log_info "Catalog size smoke passed ($catalog_count keys)"
+        else
+            log_error "Catalog smoke failed: catalog-count returned '$catalog_count' (want >= $CATALOG_MIN_KEYS)"
+            smoke_rc=1
         fi
-        # Bring the clock back up on the OLD SHA before exiting.
-        log_info "Restoring clock on previous SHA..."
-        sudo systemctl start litclock.service 2>/dev/null || true
-        sudo systemctl start litclock.timer 2>/dev/null || true
-        echo ""
+    fi
+else
+    # litclock-dev#773 — this arm is load-bearing. The gate used to be skipped
+    # SILENTLY when $PYTHON was absent, and the update then walked on to Phase
+    # 5/7 and reported SUCCESS having run nothing: not the dry run, not the
+    # three pinned catalog probes — the whole inventory. A false GREEN
+    # in the dangerous direction, firing exactly when the device is most likely
+    # broken — Phase 4 has just built or repaired this venv, so a
+    # non-executable interpreter HERE means that step did not do its job. The
+    # block above already argues the neighbouring case ("a pip rebuild can break
+    # the venv without changing the git SHA ... would let a broken venv reach
+    # Phase 5/7"); a missing interpreter is the same argument, further along.
+    log_error "Smoke test SKIPPED: $PYTHON is missing or not executable after Phase 4."
+    log_error "Nothing was verified — treating this as a smoke FAILURE, not a success."
+    smoke_rc=1
+    smoke_no_interpreter=1
+fi
+
+# litclock-dev#773 — OUTSIDE the `-x $PYTHON` check on purpose. This used to
+# live inside it, so a missing interpreter skipped the dispatch entirely and
+# the update walked on to Phase 5/7 reporting SUCCESS. Setting smoke_rc in the
+# else arm would have been a no-op: nothing read it out here.
+if [[ "$smoke_rc" -eq 0 ]]; then
+    log_info "Smoke test passed"
+    atomic_remove_file "$UPDATE_FAILED_FILE"
+
+    # litclock-dev#531 — (RE-)STAMP the runtime-render validation marker.
+    #
+    # Until this existed, NOTHING wrote that marker: not pi-gen, not this
+    # script, and there is no install.sh. `_runtime_render_enabled()` requires
+    # the flag AND the marker, so on every fielded device the flag was inert
+    # and the runtime renderer was unreachable — shipped, soaked, and dead.
+    # The block ~500 lines above only REVOKES it (litclock-dev#604) when an update
+    # changes the proof inputs, which without a re-stamp is a one-way ratchet
+    # down to the pre-rendered tier forever.
+    #
+    # POSITION IS LOAD-BEARING, three ways:
+    #   * AFTER Phase 4, so the venv — and the freetype-py wheel whose bundled
+    #     libfreetype this whole check is about — is the one that will run.
+    #   * AFTER Phase 4.5, so a venv that cannot even import is not certified.
+    #   * INSIDE the KEEP arm, so a smoke failure that git-resets the tree
+    #     cannot leave a marker certifying code that was just reverted.
+    #
+    # NEVER fails the update. A failed or slow validation means no marker,
+    # which means the pre-rendered PNG tier — the safe side. A wrong fallback
+    # is impossible; a wrong render is not.
+    #
+    # Only when the marker is ABSENT: a surviving marker already passed this
+    # check and its proof inputs are unchanged (the revoke block above is what
+    # decides that), so re-running ~21s of work on x86 — minutes on a Pi Zero
+    # 2W — on every weekly tick would be pure cost.
+    if [[ ! -f "$RUNTIME_MARKER" && -x "$PYTHON" ]]; then
+        log_info "Validating GD-exact measurement for the runtime renderer..."
+        # PIPESTATUS, not the pipeline's exit — the same lesson the smoke test
+        # above already encodes. `if cmd | sed; then` tests SED, which always
+        # succeeds, so the failure arm was unreachable and a failing validator
+        # logged "reported success". Caught by an executed test, not by reading.
+        timeout 600 "$PYTHON" tools/validate_measurement.py check --stamp \
+            --marker "$RUNTIME_MARKER" 2>&1 | sed 's/^/[validate] /'
+        _validate_rc="${PIPESTATUS[0]}"
+        if [[ "$_validate_rc" -eq 0 && -f "$RUNTIME_MARKER" ]]; then
+            log_info "runtime-render validation PASSED — marker stamped; LITCLOCK_RUNTIME_RENDER will be honored"
+        else
+            log_info "runtime-render validation did not pass on this device (rc=$_validate_rc) — staying on pre-rendered images (this is not an update failure)"
+        fi
+        unset _validate_rc
+    fi
+else
+    log_error "Smoke test failed (exit $smoke_rc) — reverting to $REVERT_SHA"
+    # REVERT_SHA == OLD_SHA normally; in bootcheck rollback mode it is the
+    # LKG target so a failed LKG smoke stays on LKG (never the bad code).
+    # SELF-MODIFYING, and safe — litclock-dev#773 item 3 asked why this has
+    # no re-exec guard when the pull path at :758 does. Measured with strace
+    # against git 2.43.0: `git reset --hard` does `unlink()` then
+    # `openat(O_WRONLY|O_CREAT|O_EXCL)`. O_EXCL means git NEVER writes into
+    # the existing inode, so the bash executing this file keeps reading the
+    # PRE-reset content through its already-open fd (verified end to end: a
+    # script that git-resets itself mid-block, forks, and falls through to
+    # top level ran every remaining statement correctly, inode 4906177 ->
+    # 4906189). The stale-fd hazard the pull path guards needs an IN-PLACE
+    # rewrite; git never does one.
+    #
+    # The pull path re-execs for a different reason anyway: it CONTINUES and
+    # must run the new code against the new tree. A revert arm terminates,
+    # so it never needs the new code. There is no asymmetry to defend.
+    git reset --hard "$REVERT_SHA" 2>&1 | sed 's/^/[revert] /' || true
+    git submodule update --init --recursive 2>&1 | sed 's/^/[revert] /' || true
+    # Delete the pip hash so the next run re-runs `pip install` (it sets
+    # NEED_PIP; it does NOT by itself recreate the venv — see :1236 and the
+    # missing-interpreter arm below). Otherwise a revert could leave the venv
+    # half-upgraded while the hash claims it matches.
+    rm -f "$HASH_FILE"
+    # Loud failure indicator the e-ink can pick up.
+    if ! atomic_write_file "$UPDATE_FAILED_FILE" ""; then
+        log_warn "Could not write $UPDATE_FAILED_FILE — corner glyph will not render"
+    fi
+    # Bring the clock back up on the OLD SHA before exiting.
+    log_info "Restoring clock on previous SHA..."
+    sudo systemctl start litclock.service 2>/dev/null || true
+    sudo systemctl start litclock.timer 2>/dev/null || true
+    echo ""
+    echo "========================================"
+    if [[ "$smoke_no_interpreter" -eq 1 ]]; then
+        # litclock-dev#773 (/review) — the revert above CANNOT restore this
+        # device: venv/ is not in git, so `git reset --hard` returns the code
+        # and leaves the interpreter still missing, and runtheclock.sh sources
+        # ./venv/bin/activate. The two `systemctl start`s just above therefore
+        # cannot bring the clock back, and "rolled back, clock is fine" would
+        # be a lie. The pip-failure branch ~250 lines up reasons exactly this
+        # way for a strictly WEAKER condition (an INDETERMINATE venv): "Lying
+        # about state is worse than admitting we don't know." A missing
+        # interpreter is not indeterminate — it is known broken.
+        #
+        # Self-heals on the next weekly tick: Phase 4 recreates the venv on
+        # whichever of its first three branches matches what survived — venv/
+        # gone (branch 1), activate missing or stale (branch 2), or the import
+        # probe returning 127 (branch 3). Branch 1 just creates it; 2 and 3
+        # `rm -rf` first. NOT via the HASH_FILE deletion above, which only sets
+        # NEED_PIP. But the owner must not be told the clock is running while
+        # it is dead in the meantime.
+        echo -e "${RED}  Update FAILED — venv interpreter missing; clock NOT restored${NC}"
         echo "========================================"
+        update_status_failed_unrecovered \
+            "Smoke test could not run: the venv interpreter was missing after Phase 4. Code reverted to ${REVERT_SHA}, but the venv is not in git so the clock may not restart until an update rebuilds it. The next scheduled update does that automatically."
+    else
         echo -e "${RED}  Update FAILED (smoke test) — reverted to $REVERT_SHA${NC}"
         echo "========================================"
         # litclock-dev#245 M5 D9 — terminal status. PWA renders the "rolled back, clock
         # is fine" copy from this state (NOT the alarm-bell unrecovered copy).
+        # Honest HERE because smoke fires after a SUCCESSFUL pip install, so
+        # reverting git leaves a venv that matches REVERT_SHA's requirements.
         # REVERT_SHA == OLD_SHA normally; the LKG target in rollback mode (so we
         # never report the bad SHA we were fleeing).
         update_status_failed_reverted "Smoke test failed; reverted to ${REVERT_SHA}."
-        _LITCLOCK_UPDATE_FINALIZED=1
-        exit 1
     fi
+    _LITCLOCK_UPDATE_FINALIZED=1
+    exit 1
 fi
 
 # Row 6 of the D3 phase reading-list: "Installing services" (Phase 5 + 5b + 6).

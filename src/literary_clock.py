@@ -8,13 +8,14 @@ import sys
 import tempfile
 import time as _time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from glob import glob
 from pathlib import Path
 from random import randrange
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+import config
 import quote_corpus
 from control_url import control_base_url  # QR target — single source of truth (litclock-dev#343)
 from log import setup_logging
@@ -40,7 +41,15 @@ def signal_handler(signum, frame):
     # every `systemctl stop`, and the unit's TimeoutStopSec kill — so leaving it
     # would have made the traceback rarer AND correlated with reboots, which
     # reads as "the fix mostly worked": the worst possible diagnostic signal.
-    logging.shutdown()
+    # litclock-dev#813 applied consistently (/review): `logging.shutdown()`
+    # re-raises non-OSError/ValueError while `raiseExceptions` is True, so an
+    # unguarded call here can cost the exit and drop the process into the very
+    # finalization this line exists to skip. Same rule as the pre-paint handler:
+    # everything that can fail is INSIDE the guard, os._exit is outside and last.
+    try:
+        logging.shutdown()
+    except BaseException:
+        pass
     os._exit(1)
 
 
@@ -60,6 +69,101 @@ DISPLAY_SIZE = (800, 480)
 # means zero SD wear from per-minute writes; override via env so dev boxes
 # / CI can point it elsewhere.
 STATUS_FILE = os.environ.get("LITCLOCK_STATUS_FILE", "/run/litclock/current-quote.json")
+
+# litclock-dev#762 — the timer fires ~4s BEFORE the minute boundary and we
+# render the UPCOMING minute, so the panel's unavoidable blackout falls at the
+# boundary instead of after it.
+#
+# Measured on-device over 6942 runs (litclock-dev#590): refresh p50 10.45s, of which
+# ~2.6s is prep and ~2.4s is trigger-to-legible on the glass. Firing at :00
+# landed the new frame around :06.6 — so for ~4s of every minute the panel
+# showed the PREVIOUS minute's timestring. A quote reading 11:59 still on screen
+# at 12:00:03 reads as a broken clock.
+#
+# This offset is MANDATORY, not cosmetic: with the timer at :56 and no offset,
+# datetime.now() still reports the old minute and the clock would render the
+# previous minute's quote permanently. The timer and this constant are one
+# change (tests/test_timer_lead.py pins them together).
+#
+# 4s suits the shipped PNG path. Runtime-render mode costs ~1.3s more prep;
+# override per-device rather than editing this default.
+def _render_lead_seconds() -> float:
+    """The lead, parsed defensively and bounded.
+
+    A bare `float(os.getenv(...))` at import is a brick: an empty or malformed
+    value raises ValueError BEFORE the litclock-dev#531 `except BaseException`
+    guard exists (that guard lives inside `if __name__ == "__main__"`, far
+    below), so the painter dies at import every minute and the panel freezes on
+    the last quote — the same PANEL signature this repo documents as confusable
+    with the litclock-dev#531 lgpio wedge.
+
+    The journal, however, does tell them apart, and an earlier version of this
+    docstring wrongly claimed it did not (/review). `litclock.service` sets
+    `StandardError=journal`, so an uncaught module-level ValueError prints a
+    full traceback naming LITCLOCK_RENDER_LEAD_S and its line number — verified.
+    The frozen panel is genuinely ambiguous; the journal is the one thing that
+    resolves it at 1am, so do not tell a reader it is absent.
+
+    Empty is not hypothetical: `export KEY=` is env.sh.sample's own idiom for
+    an unset key, and update.sh merges sample keys into every device's env.sh.
+    The OTA smoke gate does not backstop it either — Phase 4.5 runs the dry-run
+    without sourcing env.sh, so a bad value passes smoke and Phase 7 then starts
+    a service that fails forever.
+
+    Bounded as well as parsed, and the FLOOR is not zero. The timer fires at
+    :56, so the lead is what carries the target into the next minute: any value
+    below ~4 lands in the minute that is ENDING and the clock renders the
+    previous minute's quote permanently — the failure this file calls mandatory
+    to avoid. Zero is the value an operator reaching for "turn this off" would
+    set, and it produces a worse clock than before the change, silently
+    (/review). A negative lead renders into the past; a lead past a minute skips
+    one. Out-of-range and unparseable both fall back to the default, loudly.
+
+    The floor cannot be exact here, because the correct value depends on the
+    TIMER's second and this module does not read the unit file. `lead ~= 60 -
+    second` is the real invariant, and tests/test_timer_lead.py pins the shipped
+    pair. This bound only rules out the values that are wrong for ANY plausible
+    timer.
+    """
+    raw = os.getenv("LITCLOCK_RENDER_LEAD_S")
+    if raw is None or not raw.strip():
+        return RENDER_LEAD_DEFAULT_S
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logging.warning("LITCLOCK_RENDER_LEAD_S=%r is not a number; using %s", raw, RENDER_LEAD_DEFAULT_S)
+        return RENDER_LEAD_DEFAULT_S
+    if not RENDER_LEAD_MIN_S <= value <= RENDER_LEAD_MAX_S:
+        logging.warning(
+            "LITCLOCK_RENDER_LEAD_S=%r is outside [%s, %s]; using %s. Below the floor the "
+            "target lands in the minute that is ENDING and the clock paints the previous "
+            "minute's quote every tick.",
+            raw,
+            RENDER_LEAD_MIN_S,
+            RENDER_LEAD_MAX_S,
+            RENDER_LEAD_DEFAULT_S,
+        )
+        return RENDER_LEAD_DEFAULT_S
+    return value
+
+
+RENDER_LEAD_DEFAULT_S = 4.0
+# 4.0, matching the SHIPPED timer, not a permissive band (/review).
+#
+# It was 3.0, which this function's own docstring calls broken: "any value below
+# ~4 lands in the minute that is ENDING and the clock renders the previous
+# minute's quote permanently". With `OnCalendar=*-*-* *:*:56`, a lead of 3.0-3.9
+# targets :59 of the minute that is ending — verified — so the validator
+# ACCEPTED the exact failure it exists to reject, and
+# tests/test_timer_lead.py asserted 3.0 was honoured, locking it in.
+#
+# The real invariant is `lead >= 60 - timer_second`, and this module cannot read
+# the unit file. So the floor is pinned to the shipped pair instead: change
+# litclock.timer's second and this constant must change with it —
+# tests/test_timer_lead.py already pins the two together and will go red.
+RENDER_LEAD_MIN_S = 4.0
+RENDER_LEAD_MAX_S = 30.0
+RENDER_LEAD_S = _render_lead_seconds()
 
 # Persistent QR code on the e-ink top strip (litclock-dev#245 A6). 75x75 px at x=713,y=0,
 # encodes the PWA URL so non-tech users can scan-to-open instead of typing.
@@ -305,7 +409,13 @@ def main():
     # WEATHER_ENABLED master toggle (Control PWA M3, litclock-dev#245). Default true
     # to preserve pre-M3 behavior on Pis that don't have the key yet —
     # update.sh's env.sh.sample merge will add it on the next update.
-    weather_enabled = os.getenv("WEATHER_ENABLED", "true").lower() == "true"
+    #
+    # litclock-dev#790: resolved through config.weather_enabled() rather than
+    # inline, because diagnostics answered the same question with the opposite
+    # default and the panel and the support bundle disagreed. One function, so
+    # they cannot drift again. No argument = read os.environ, which is what
+    # runtheclock.sh has already sourced env.sh into.
+    weather_enabled = config.weather_enabled()
 
     weather = None
     if not weather_enabled:
@@ -354,7 +464,24 @@ def main():
             icon_path = os.path.join(PROJECT_ROOT, "icons", f"{icon}.xbm") if isinstance(icon, str) and icon else None
             logging.debug(f"Weather: {temp_high} / {temp_low}, icon: {icon_path}")
 
-    now = datetime.now()
+    # ONE offset target, threaded through every downstream time site: the quote
+    # pick, the masthead date, the time-fallback draw, the status file and the
+    # nightly clear gate. Independent datetime.now() calls would disagree with
+    # it — at 23:59:56 the masthead date must already be tomorrow's.
+    #
+    # AWARE arithmetic, not naive addition. `datetime.now() + timedelta` would
+    # fabricate a minute that does not exist across a DST spring-forward: at
+    # 01:59:56 CST naive +4s gives 02:00, while the real local time four
+    # seconds later is 03:00 CDT — and that fake minute would reach the panel,
+    # the masthead and /api/status. Attaching the offset, adding, then
+    # re-normalising resolves the zone at the TARGET instant and lands on 03:00.
+    #
+    # It stays routed through datetime.now() ON PURPOSE. Every time-freezing
+    # test in this repo subclasses datetime and overrides now(); an
+    # implementation reading _time.time() instead escapes all of them, and
+    # because the escape yields the REAL clock the resulting failure is
+    # time-dependent — green locally, red in CI, or the reverse (/review).
+    now = (datetime.now().astimezone() + timedelta(seconds=RENDER_LEAD_S)).astimezone().replace(tzinfo=None)
     quote_meta = None
     runtime_attempted = _runtime_render_enabled()
     if runtime_attempted:
@@ -927,9 +1054,26 @@ if __name__ == "__main__":
         # likely to BE litclock-dev#531 (a GPIO-busy import from the previous minute).
         # Under LOG_LEVEL=CRITICAL the process would otherwise exit 1 with
         # nothing in journald at all. stderr goes to the journal for this unit.
-        traceback.print_exc()
-        logging.exception("Failed before the display could be initialised")
-        logging.shutdown()
+        #
+        # litclock-dev#813 — the diagnostics are wrapped and the exit is not.
+        # These three statements used to sit bare, ahead of `os._exit(1)`, and
+        # `traceback.print_exc()` RAISES on a broken stderr (BrokenPipeError).
+        # That escaped this handler, skipped the exit, and ran the very
+        # interpreter finalization litclock-dev#531 exists to avoid — with Thread-1
+        # alive. Demonstrated end to end. `logging.exception` would have
+        # survived (logging swallows OSError); `traceback.print_exc()` does not,
+        # and `logging.shutdown()` re-raises non-OSError/ValueError while
+        # `raiseExceptions` is True, so it is no safer.
+        #
+        # The ordering is the contract: everything that can fail is INSIDE the
+        # guard, and `os._exit(1)` is outside it and last. Diagnostics are
+        # best-effort; terminating without finalization is not.
+        try:
+            traceback.print_exc()
+            logging.exception("Failed before the display could be initialised")
+            logging.shutdown()
+        except BaseException:
+            pass
         os._exit(1)
 
     try:
@@ -942,7 +1086,12 @@ if __name__ == "__main__":
         logging.info("EPD initialized.")
 
         display_clear_hour = int(os.getenv("DISPLAY_CLEAR_HOUR", 2))
-        if datetime.now().minute == 0 and datetime.now().hour == display_clear_hour:
+        # litclock-dev#762 Trap 2: this MUST read the offset target, not
+        # datetime.now(). With the timer at :56 a live now().minute is never 0,
+        # so the hourly full clear would simply stop firing and ghosting would
+        # accumulate over weeks with nothing in the logs. At 01:59:56 the target
+        # is 02:00:00 and the clear correctly fires on the 02:00 render.
+        if now.minute == 0 and now.hour == display_clear_hour:
             epd.Clear()
 
         epd.display(epd.getbuffer(image))
@@ -981,7 +1130,35 @@ if __name__ == "__main__":
             except Exception:
                 pass
 
+    # litclock-dev#814 — BaseException, matching the pre-paint guard above,
+    # whose comment already argues the rule this block did not follow: "a
+    # SystemExit or KeyboardInterrupt raised in here must not slip past to
+    # normal finalization either." Without this arm a SystemExit — or any
+    # non-Exception BaseException — raised anywhere in the paint block escapes
+    # to normal finalization with Thread-1 alive.
+    #
+    # No reachable trigger was found (the vendored waveshare driver contains no
+    # sys.exit, and _write_status_file / _write_heartbeat raise nothing), so
+    # this closes a gap rather than a live bug. It is worth closing because the
+    # reason it was safe is a property of vendored third-party code that this
+    # repo does not control and no test asserts.
+    #
+    # KeyboardInterrupt keeps its own arm above and never reaches here.
+    except BaseException as e:
+        logging.error(f"Unexpected non-Exception error: {e!r}")
+        if epd is not None:
+            try:
+                epd.sleep()
+            except BaseException:
+                pass
+
     # litclock-dev#531 — exit WITHOUT running interpreter finalization.
+    #
+    # NOTE (litclock-dev#816): "litclock-dev#531" here is SHORTHAND for the lgpio
+    # teardown crash, not a real issue reference — litclock-dev#531 is the
+    # runtime-render epic and no issue was ever opened for this bug. The
+    # behaviour change is written up in CHANGELOG.md; litclock-dev#815 covers
+    # the splash renderers, which ran the same race until it landed.
     #
     # `import lgpio` (pulled in by gpiozero's LGPIOFactory, which the display
     # driver uses) unconditionally spawns a daemon thread, `_callback_thread`.
@@ -1014,5 +1191,13 @@ if __name__ == "__main__":
     #
     # Exit code stays 0 in every branch above, matching the prior behaviour of
     # falling off the end of this block.
-    logging.shutdown()
+    # litclock-dev#813 applied consistently (/review): `logging.shutdown()`
+    # re-raises non-OSError/ValueError while `raiseExceptions` is True, so an
+    # unguarded call here can cost the exit and drop the process into the very
+    # finalization this line exists to skip. Same rule as the pre-paint handler:
+    # everything that can fail is INSIDE the guard, os._exit is outside and last.
+    try:
+        logging.shutdown()
+    except BaseException:
+        pass
     os._exit(0)

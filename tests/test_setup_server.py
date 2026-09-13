@@ -2085,6 +2085,33 @@ class TestSetupServerStructuralInvariants:
             f"invariant (litclock-dev#364)."
         )
 
+    def test_bg_cancel_event_not_reintroduced(self):
+        """litclock-dev#785 removed ``_BG_CANCEL``, an Event that was set and
+        cleared by ``reset_state`` and waited on by nothing — dead since
+        litclock-dev#715 deleted the ``_delayed`` timer it was built for, while
+        four comments went on describing it as live. It misled three readers in
+        one sitting, one of whom proposed adding a test that waited on it.
+
+        Reviving it (the other option in the issue) was rejected: the only
+        caller that would set it is ``reset_state``, which is test-only, so
+        cancellation checks would be threaded through the first-boot
+        provisioning path for something no device could ever trigger.
+
+        This guard is the cheap half of not repeating that.
+        """
+        assert not hasattr(setup_server, "_BG_CANCEL"), (
+            "_BG_CANCEL was re-introduced. If a cancellation Event is genuinely "
+            "wanted, something must WAIT on it — see litclock-dev#785 for why "
+            "the previous one was removed rather than revived."
+        )
+        src = self._setup_server_source()
+        code = [
+            f"{i}: {ln.strip()}"
+            for i, ln in enumerate(src.splitlines(), 1)
+            if "_BG_CANCEL" in ln and not ln.lstrip().startswith("#")
+        ]
+        assert not code, "only COMMENTS may mention _BG_CANCEL now:\n  " + "\n  ".join(code)
+
     def test_delayed_shutdown_function_removed(self):
         """The old ``_delayed_shutdown`` inner function in the no-WiFi
         branch is replaced by ``_schedule_self_terminate(delay=2.0)``. Pin

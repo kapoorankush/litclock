@@ -107,6 +107,7 @@ gift_language_marker_consumable() {
     [[ -f /etc/litclock/.gift-language ]] || return 1
     "$PYTHON" - "$INSTALL_DIR/src" /etc/litclock/.gift-language <<'PY'
 import os
+import stat
 import sys
 
 src_dir, marker = sys.argv[1], sys.argv[2]
@@ -116,7 +117,17 @@ try:
 except OSError:
     sys.exit(1)
 try:
+    # litclock-dev#766: same regular-file check as setup_server._read_marker_code,
+    # its security-reviewed twin (/review litclock-dev#742). O_NONBLOCK does not substitute:
+    # a FIFO with no writer opens fine and reads zero bytes, so "not a marker"
+    # becomes indistinguishable from "marker present but empty". Not exploitable
+    # while /etc/litclock is root-owned — the point is that the two copies of one
+    # reviewed primitive must not drift, because the next reader compares them.
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        sys.exit(1)
     code = os.read(fd, 64).decode("utf-8", errors="replace").strip()
+except OSError:
+    sys.exit(1)
 finally:
     os.close(fd)
 import strings_catalog  # noqa: E402
@@ -526,16 +537,49 @@ main() {
         # litclock-dev#337 A3: WEATHER_LOCATION_MODE + WEATHER_IP_COUNTRY shipped from
         # the very first boot. MODE=auto means the on-boot reresolve service
         # will populate the rest once WiFi connects + IP-geo succeeds.
+        # litclock-dev#783 — this list must cover EVERY key in env.sh.sample.
+        # update.sh Phase 3 merges missing sample keys into env.sh, but that
+        # only runs on an OTA: a freshly flashed device that never updates was
+        # born missing nine documented knobs, so env.sh was not the knob
+        # surface the docs describe. Pinned by
+        # tests/test_first_boot_flow.py::test_every_env_write_matches_env_sample, and
+        # ::test_first_boot_actually_writes_every_env_sample_key which EXECUTES
+        # both arms and asserts on the env.sh actually written.
+        #
+        # VALUES may differ from the sample and two deliberately do: the sample
+        # documents WEATHER_LATITUDE/LONGITUDE with real Austin coordinates as
+        # an example, while first boot must leave them EMPTY. With
+        # WEATHER_LOCATION_MODE=auto the IP-geo resolver fills them on a good
+        # boot, but on the ip-api.com-blocked path (a QA scenario we test) a
+        # seeded coordinate would render Austin weather on a device that is not
+        # in Austin — worse than the honest empty state. So this seeds NAMES
+        # from the sample, not values, and the guard checks names only.
+        #
+        # COMMENT STATUS is copied from the sample and matters: an ACTIVE
+        # LITCLOCK_RENDER_LEAD_S would hard-pin 4 into the field and make a
+        # later retune leave every device rendering the wrong minute (litclock-dev#762),
+        # and an empty active value is parsed at import above the litclock-dev#531
+        # BaseException guard, killing the painter every minute.
         local _defaults
-        _defaults='export OPENWEATHERMAP_APIKEY=
+        _defaults='# export OPENWEATHERMAP_APIKEY=
+export WEATHER_ENABLED=true
 export WEATHER_LATITUDE=
 export WEATHER_LONGITUDE=
+export WEATHER_LOCATION_NAME=
 export WEATHER_UNITS=imperial
 export WEATHER_LOCATION_MODE=auto
 export WEATHER_IP_COUNTRY=
+export WEATHER_LAST_IP_GEO_AT=
 export WEATHER_TTL=3600
 export ALLOW_NSFW_QUOTES=false
 export LITCLOCK_LANGUAGE=
+export SHOW_DIAGNOSTICS_SHORTCUT=false
+export GIFT_MODE_MESSAGE=
+export LITCLOCK_RUNTIME_RENDER=false
+# export DISPLAY_CLEAR_HOUR=2
+# export LITCLOCK_RENDER_LEAD_S=4
+# export WEATHER_API_TIMEOUT=15
+# export LOG_LEVEL=WARNING
 '
         if declare -F atomic_write_env_sh >/dev/null 2>&1; then
             if ! atomic_write_env_sh "$ENV_FILE" "$_defaults"; then
@@ -551,16 +595,31 @@ export LITCLOCK_LANGUAGE=
             # to the legacy heredoc; production Pis always have state.sh
             # because it ships in the same release as first-boot.sh.
             log "WARN scripts/lib/state.sh missing — falling back to unlocked default-env write"
+            # litclock-dev#783 — kept in step with the _defaults block above and
+            # with env.sh.sample. This degraded path was MISSED by the first
+            # version of that fix (found by /review): it is a second seeder in
+            # the same file, and a guard that named `_defaults=` could not see
+            # it. The guard now DISCOVERS seed blocks by shape instead.
             cat > "$ENV_FILE" << 'ENVEOF'
-export OPENWEATHERMAP_APIKEY=
+# export OPENWEATHERMAP_APIKEY=
+export WEATHER_ENABLED=true
 export WEATHER_LATITUDE=
 export WEATHER_LONGITUDE=
+export WEATHER_LOCATION_NAME=
 export WEATHER_UNITS=imperial
 export WEATHER_LOCATION_MODE=auto
 export WEATHER_IP_COUNTRY=
+export WEATHER_LAST_IP_GEO_AT=
 export WEATHER_TTL=3600
 export ALLOW_NSFW_QUOTES=false
 export LITCLOCK_LANGUAGE=
+export SHOW_DIAGNOSTICS_SHORTCUT=false
+export GIFT_MODE_MESSAGE=
+export LITCLOCK_RUNTIME_RENDER=false
+# export DISPLAY_CLEAR_HOUR=2
+# export LITCLOCK_RENDER_LEAD_S=4
+# export WEATHER_API_TIMEOUT=15
+# export LOG_LEVEL=WARNING
 ENVEOF
         fi
     fi

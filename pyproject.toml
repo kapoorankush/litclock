@@ -8,6 +8,18 @@ pythonpath = ["src", "image-gen"]
 # slowest real test here (the whole suite runs in ~235s), so this only ever
 # fires on a genuine hang.
 timeout = 300
+# litclock-dev#769 — `timeout` is an option pytest-timeout ADDS. Without the
+# plugin installed, pytest prints `Unknown config option: timeout` as a warning
+# and runs with NO per-test timeout at all. That is the exact inversion of what
+# litclock-dev#662 wanted: a hang hangs forever on a developer machine and is
+# caught only in CI, where requirements-dev.txt is always installed. It went
+# unnoticed for months — a warning among several is not a signal.
+#
+# `required_plugins` makes the coupling load-bearing: pytest refuses to START
+# rather than silently dropping the protection. If this errors, the fix is
+# `pip install -r requirements-dev.txt`; the version matches that file, and a
+# test pins the two together so they cannot drift.
+required_plugins = ["pytest-timeout>=2.4.0"]
 
 [tool.ruff]
 target-version = "py311"

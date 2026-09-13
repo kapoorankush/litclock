@@ -154,6 +154,59 @@ def test_no_release_section_repeats_a_subheading():
     assert dupes == [], f"duplicate ### headings within one ## section (litclock-dev#697): {dupes}"
 
 
+def find_duplicate_entries(text: str) -> list[str]:
+    """Entry bullets (`- **Title**`) repeated within one `##` release section.
+
+    litclock-dev#697's sibling guard catches duplicate `###` HEADINGS. It does
+    not catch a duplicated ENTRY, and a duplicated entry is what a mechanical
+    CHANGELOG conflict resolution actually produces: resolving `<<<<<<<` by
+    keeping BOTH sides duplicates any entry that had already reached the other
+    branch. That shipped a byte-identical `_BG_CANCEL` entry twice and the
+    existing structure tests stayed green.
+    """
+    dupes: list[str] = []
+    section = None
+    seen: dict[str, set[str]] = {}
+    for line in text.splitlines():
+        if line.startswith("## "):
+            section = line.strip()
+            seen.setdefault(section, set())
+        elif section is not None and line.startswith("- **"):
+            title = line.split("**")[1] if line.count("**") >= 2 else line.strip()
+            if title in seen[section]:
+                dupes.append(f"{section} :: {title}")
+            seen[section].add(title)
+    return dupes
+
+
+def test_no_release_section_repeats_an_entry():
+    """The real file, same reasoning as the heading guard above."""
+    dupes = find_duplicate_entries(CHANGELOG.read_text(encoding="utf-8"))
+    assert dupes == [], f"duplicate entry bullets within one ## section: {dupes}"
+
+
+def test_entry_detector_catches_a_duplicate_it_is_shown():
+    """Mutate the input and watch the guard go red, or it is not a guard.
+
+    This is the exact shape a keep-both-sides merge resolution produces.
+    """
+    text = (
+        "## [Unreleased]\n\n### Fixed\n"
+        "- **Removed the thing** (dev#1). Body.\n"
+        "- **Removed the thing** (dev#1). Body.\n"
+    )
+    assert find_duplicate_entries(text) == ["## [Unreleased] :: Removed the thing"]
+
+
+def test_entry_detector_does_not_leak_across_release_sections():
+    """The same entry title may legitimately appear in two releases."""
+    text = (
+        "## [Unreleased]\n\n### Fixed\n- **Fixed X** (dev#1).\n\n"
+        "## [v0.1.0] - 2026-01-01\n\n### Fixed\n- **Fixed X** (dev#1).\n"
+    )
+    assert find_duplicate_entries(text) == []
+
+
 def test_detector_catches_a_duplicate_it_is_shown():
     """Mutate the input and watch the guard go red, or it is not a guard."""
     text = "# Changelog\n\n## [Unreleased]\n\n### Changed\n- one\n\n### Fixed\n- two\n\n### Changed\n- three\n"

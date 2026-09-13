@@ -134,8 +134,28 @@ class TestMainBlockActuallyTerminatesViaOsExit:
             self.code = code
             super().__init__(code)
 
-    def _exec_main_block(self, source=None, dry_run=False):
-        """Returns ('os._exit', code) | ('SystemExit', code) | ('fell-through', None)."""
+    def _exec_main_block(
+        self,
+        source=None,
+        dry_run=False,
+        main_raises=None,
+        traceback_raises=None,
+        display_raises=None,
+    ):
+        """Returns ('os._exit', code) | ('SystemExit', code) | ('fell-through', None).
+
+        The three ``*_raises`` hooks exist for litclock-dev#813 / litclock-dev#814. Before
+        them every caller stubbed ``main()`` to SUCCEED, so the pre-paint
+        handler and the paint block's except arms were never EXECUTED by any
+        test in this file — which is exactly how a demonstrated escape from the
+        pre-paint handler stayed green through 16 tests.
+
+        - ``main_raises``     : exception instance ``main()`` raises.
+        - ``traceback_raises``: exception ``traceback.print_exc()`` raises, i.e.
+          a broken stderr. The real trigger is BrokenPipeError.
+        - ``display_raises``  : exception ``epd.display()`` raises, for the
+          paint block's arms.
+        """
         src = source if source is not None else open(LITERARY_CLOCK).read()
         tree = ast.parse(src)
         main_if = next(
@@ -167,7 +187,8 @@ class TestMainBlockActuallyTerminatesViaOsExit:
                 return img
 
             def display(self, buf):
-                pass
+                if display_raises is not None:
+                    raise display_raises
 
             def sleep(self):
                 pass
@@ -177,6 +198,16 @@ class TestMainBlockActuallyTerminatesViaOsExit:
 
         fake_os = types.SimpleNamespace(
             _exit=lambda code: (_ for _ in ()).throw(hard(code)),
+            # getenv was MISSING until litclock-dev#814. Without it the block's
+            # `display_clear_hour = int(os.getenv("DISPLAY_CLEAR_HOUR", 2))`
+            # raised AttributeError, the paint try's `except Exception` caught
+            # it, and execution never reached epd.display(). So no test in this
+            # file had ever executed the paint block past its second statement —
+            # including test_shipped_block_terminates_via_os_exit_zero, which
+            # was reaching the terminal exit via the Exception ARM rather than
+            # via the happy path it claims to check. Found by mutation-testing
+            # the litclock-dev#814 handler.
+            getenv=os.getenv,
             path=os.path,
             environ=os.environ,
             replace=os.replace,
@@ -197,7 +228,35 @@ class TestMainBlockActuallyTerminatesViaOsExit:
                 signal=lambda *a: None, SIGTERM=15, SIGINT=2
             ),
             "signal_handler": lambda *a: None,
-            "main": lambda: (types.SimpleNamespace(size=(800, 480)), {"time": "00:00"}, None),
+            "main": (
+                (lambda: (_ for _ in ()).throw(main_raises))
+                if main_raises is not None
+                # `now` must be a REAL datetime, not None. With None the block's
+                # `if now.minute == 0` raises AttributeError, the paint try's
+                # `except Exception` swallows it, and epd.display() is never
+                # reached — so every paint-block injection below would be
+                # vacuous, and the "happy path" test above would actually be
+                # exercising the Exception arm. Found by mutation-testing the
+                # litclock-dev#814 arm: the tests passed with it removed.
+                # 00:30 deliberately: minute != 0, so the nightly epd.Clear()
+                # branch stays out of the way.
+                else (
+                    lambda: (
+                        types.SimpleNamespace(size=(800, 480)),
+                        {"time": "00:30"},
+                        datetime(2026, 9, 5, 0, 30, 0),
+                    )
+                )
+            ),
+            # Real module unless a test asks for a broken stderr. The block
+            # calls traceback.print_exc() inside the pre-paint handler.
+            "traceback": (
+                types.SimpleNamespace(
+                    print_exc=lambda *a, **k: (_ for _ in ()).throw(traceback_raises)
+                )
+                if traceback_raises is not None
+                else __import__("traceback")
+            ),
             "_write_status_file": lambda *a, **k: None,
             "_write_heartbeat": lambda *a, **k: None,
             "display_clear_hour": lambda *a, **k: False,
@@ -250,13 +309,85 @@ class TestMainBlockActuallyTerminatesViaOsExit:
         fix dead code. The executing test sees them because it observes HOW the
         block terminates rather than what it looks like."""
         src = open(LITERARY_CLOCK).read()
-        needle = "    logging.shutdown()\n    os._exit(0)"
-        assert needle in src, "shipped exit tail not found; update this fixture"
+        # Anchored on the exit alone. It used to include the preceding
+        # `logging.shutdown()` line, which /review then wrapped in a guard —
+        # the fixture's own "update this fixture" case. The exit is what the
+        # mutation must be injected ahead of, so anchor on just that.
+        needle = "    os._exit(0)"
+        assert src.count(needle) == 1, (
+            f"expected exactly one top-level `os._exit(0)` to anchor on; found {src.count(needle)}"
+        )
         indented = "\n".join("    " + ln for ln in mutation.split("\n"))
         how, _ = self._exec_main_block(source=src.replace(needle, indented + "\n" + needle, 1))
         assert how != "os._exit", (
             f"mutation {mutation!r} was NOT detected — it terminated via os._exit anyway"
         )
+
+    # ---- litclock-dev#813 / litclock-dev#814: the handlers themselves, EXECUTED --------
+    #
+    # Everything above this point either stubs main() to succeed (so no except
+    # arm runs) or inspects the AST. That is how a demonstrated escape survived
+    # 16 tests: test_pre_paint_failures_also_skip_finalization asserts only that
+    # the handler's LAST statement is os._exit, and says nothing about whether
+    # the statements before it can raise.
+
+    def test_pre_paint_handler_reaches_the_exit_when_diagnostics_are_fine(self):
+        """Baseline, so the two tests below cannot pass for the wrong reason."""
+        how, code = self._exec_main_block(main_raises=RuntimeError("GPIO busy"))
+        assert (how, code) == ("os._exit", 1), f"got {(how, code)}"
+
+    def test_pre_paint_handler_reaches_the_exit_even_when_stderr_IS_BROKEN(self):
+        """litclock-dev#813 — the regression this file could not see.
+
+        `traceback.print_exc()` sat bare, three statements ahead of the exit.
+        On a broken stderr it raises BrokenPipeError, escapes the handler, and
+        the process runs interpreter finalization with Thread-1 alive — the
+        exact outcome litclock-dev#531's os._exit exists to prevent, on the exact failure
+        (a GPIO-busy import from the previous minute) this handler instruments.
+
+        Reproduced for real before fixing: a subprocess whose stderr was a pipe
+        with the reader closed reached its atexit handler with Thread-1 alive
+        and exited 120.
+        """
+        how, code = self._exec_main_block(
+            main_raises=RuntimeError("GPIO busy from the previous minute"),
+            traceback_raises=BrokenPipeError(32, "Broken pipe"),
+        )
+        assert (how, code) == ("os._exit", 1), (
+            f"got {(how, code)} — a failing stderr must not cost the os._exit. "
+            "Diagnostics in this handler are best-effort; terminating without "
+            "finalization is not."
+        )
+
+    @pytest.mark.parametrize(
+        "exc",
+        [SystemExit(3), BaseException("bare BaseException"), GeneratorExit()],
+        ids=["SystemExit", "BaseException", "GeneratorExit"],
+    )
+    def test_paint_block_non_exception_failures_also_skip_finalization(self, exc):
+        """litclock-dev#814 — the paint try caught FileNotFoundError, OSError,
+        KeyboardInterrupt and Exception, but not BaseException, so a SystemExit
+        raised mid-paint escaped to normal finalization. The guard three lines
+        above it already argued for exactly this breadth:
+
+            BaseException, not Exception: a SystemExit or KeyboardInterrupt
+            raised in here must not slip past to normal finalization either.
+
+        Latent rather than live — no trigger was found in the vendored waveshare
+        driver — but the reason it was safe is a property of third-party code
+        this repo does not control.
+        """
+        how, code = self._exec_main_block(display_raises=exc)
+        assert (how, code) == ("os._exit", 0), (
+            f"{type(exc).__name__} from epd.display() gave {(how, code)}; it must "
+            "still reach the terminal os._exit rather than run finalization"
+        )
+
+    def test_keyboardinterrupt_still_takes_its_own_arm(self):
+        """The new BaseException arm must not steal KeyboardInterrupt, which has
+        a dedicated handler that sleeps the panel."""
+        how, code = self._exec_main_block(display_raises=KeyboardInterrupt())
+        assert (how, code) == ("os._exit", 0), f"got {(how, code)}"
 
     def test_signal_handler_terminates_via_os_exit(self):
         """Exercised, not grepped. The previous test asserted `'os._exit(1)' in
@@ -301,8 +432,16 @@ class TestShippedExitPath:
         """os._exit skips atexit, so logging handlers are never flushed unless
         we do it. Without this a crash-adjacent log line can be lost."""
         body = self._main_block().body
-        assert ast.unparse(body[-2]) == "logging.shutdown()", (
-            f"statement before os._exit is {ast.unparse(body[-2])!r}, expected logging.shutdown(). "
+        # The PROPERTY is "logging is flushed before the exit", not a literal
+        # statement shape. /review wrapped the call in try/except BaseException
+        # (litclock-dev#813: logging.shutdown() re-raises non-OSError/ValueError
+        # while raiseExceptions is True, so an unguarded call can cost the exit
+        # and drop the process into the finalization os._exit exists to skip).
+        # Asserting equality against "logging.shutdown()" made the hardening
+        # look like a regression. Assert the call is THERE, guarded or not.
+        preceding = ast.unparse(body[-2])
+        assert "logging.shutdown()" in preceding, (
+            f"statement before os._exit is {preceding!r}, expected it to call logging.shutdown(). "
             f"os._exit skips handler flushing."
         )
 

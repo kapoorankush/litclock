@@ -307,15 +307,40 @@ _SCAN_CACHE_LOCK = threading.Lock()
 # the next test's counters. Tracking + joining makes isolation deterministic.
 _BG_THREADS: list[threading.Thread] = []
 _BG_THREADS_LOCK = threading.Lock()
-# Set by :func:`reset_state` (test-only) to WAKE a sleeping ``_delayed`` SIGTERM
-# timer so it exits WITHOUT firing ``os.kill``. Without this, joining a
-# ``_delayed`` thread would wait out its ``sleep(delay)`` and then fire a
-# SIGTERM — but by test-teardown time ``monkeypatch`` has already reverted
-# ``os.kill`` to the real one (conftest tears monkeypatch down BEFORE this
-# fixture), so the SIGTERM would kill the test runner. Never set in production
-# (``reset_state`` isn't a production path); ``Event.wait(delay)`` is otherwise
-# identical to ``time.sleep(delay)``.
-_BG_CANCEL = threading.Event()
+# litclock-dev#786: how many times ``reset_state`` re-snapshots the registry
+# looking for threads appended DURING the join. Bounded so a pathological
+# spawner cannot spin the loop; the join_deadline already bounds wall-clock, so
+# this only bounds iteration count once the budget is spent and every join
+# returns instantly. Four is generous — the registry holds one thread kind.
+_RESET_JOIN_MAX_PASSES = 4
+# There is deliberately NO cancellation Event here — litclock-dev#785 removed
+# one, and this note exists so it does not come back.
+#
+# ``_BG_CANCEL`` was set by :func:`reset_state` to wake a sleeping ``_delayed``
+# SIGTERM timer so it exited WITHOUT firing ``os.kill``. ``_delayed`` was
+# DELETED by litclock-dev#715 and nothing waited on the Event afterwards, but
+# four comments went on describing it as live — and they actively misled three
+# readers in one sitting during the litclock-dev#781 review (one of whom
+# proposed ADDING a test that waited on the Event purely so the flag could be
+# observed being set, which would have pinned dead machinery against the test's
+# own construct).
+#
+# Reviving it was the other option on the table and was rejected on evidence,
+# not taste. Making the tracked thread cooperative means threading cancellation
+# checks through ``_connect_and_teardown`` — the first-boot provisioning path,
+# whose every branch is commented with which early exit must NOT be taken
+# because it would tear down the hotspot or destroy the WiFi link just joined.
+# And the only caller that would ever set the flag is :func:`reset_state`,
+# which is TEST-ONLY (full-repo grep: no shell script, systemd unit or
+# control_server caller). So reviving would add early-exit paths to
+# provisioning code that nothing but a test could trigger, to save test
+# teardown wall-clock. That is the wrong direction.
+#
+# The consequence for reading :func:`reset_state`: the one thread kind tracked
+# today (``_connect_and_teardown``, the sole ``_spawn_bg`` call site) is
+# UNCOOPERATIVE — ``time.sleep(1)`` plus blocking nmcli — so a join budget is
+# spent as real wall-clock and cannot be short-circuited. Do not write comments
+# here that assume otherwise.
 
 
 def _spawn_bg(target, name: str) -> threading.Thread:
@@ -349,8 +374,18 @@ HANDLER_TIMEOUT = 15
 MAX_POST_BODY = 32 * 1024
 
 
-def reset_state(wait_for_inflight: float = 2.0) -> None:
+def reset_state(wait_for_inflight: float = 2.0) -> tuple[str, ...]:
     """Reset all module-level connect-flow state to defaults.
+
+    Returns the NAMES of tracked threads that outran the join budget — empty
+    on the normal path. litclock-dev#786 finding 1: this used to return
+    ``None``, so the only trace of an escape was a non-empty ``_BG_THREADS``
+    and nothing looked. That is exactly backwards, because an escape is the
+    one event this machinery exists to prevent: the escapee later fires the
+    real ``os.kill`` and kills the runner, and the consequence lands in a
+    DIFFERENT test as ``Terminated`` / exit 143 with nothing pointing back
+    (the litclock-dev#769 diagnosis, which cost a week). ``tests/conftest.py``
+    consumes this and reports it through ``pytest_terminal_summary``.
 
     Test-isolation helper (litclock-dev#355). The WiFi connect handler spawns a daemon
     thread that writes ``WIFI_CONNECT_ERROR`` and ``WIFI_CONNECT_IN_FLIGHT``
@@ -358,11 +393,23 @@ def reset_state(wait_for_inflight: float = 2.0) -> None:
     from a prior test's thread leak into the next test's assertions and
     cause order-dependent flakes.
 
-    Waits up to ``wait_for_inflight`` seconds for any in-flight WiFi connect
-    thread to finish (so we don't race a still-running thread that's about
-    to clobber the values we just reset), then zeroes the connect-flow
-    globals and clears the WiFi scan cache. Idempotent and cheap when there
-    is no in-flight work — a no-op in the common case.
+    Runs TWO bounded waits, each capped at ``wait_for_inflight`` (litclock-dev#781):
+
+    1. drains ``WIFI_CONNECT_IN_FLIGHT``, so we don't race a still-running
+       connect thread that's about to clobber the values we just reset; then
+    2. joins every thread in the ``_BG_THREADS`` registry (litclock-dev#478), sharing one
+       fresh budget among them — each thread is offered an equal slice of
+       whatever remains, so no thread is ever handed ``timeout=0`` while
+       budget is left, and the total stays bounded.
+
+    ...then zeroes the connect-flow globals and clears the WiFi scan cache.
+
+    So the WORST case is ``2 * wait_for_inflight``, not ``wait_for_inflight``.
+    In the common case neither budget is spent: the drain returns immediately
+    and the joins find nothing live, making this a cheap no-op. Idempotent.
+
+    A thread that outruns its slice stays a daemon (dies at process exit) and
+    stays REGISTERED so a later reset can retry it — this never hangs.
 
     Not used by production code paths; safe to call from any test fixture.
     """
@@ -373,35 +420,88 @@ def reset_state(wait_for_inflight: float = 2.0) -> None:
 
     import time
 
-    deadline = time.monotonic() + max(0.0, wait_for_inflight)
-    while WIFI_CONNECT_IN_FLIGHT and time.monotonic() < deadline:
+    # litclock-dev#781 — the drain and the join below get SEPARATE budgets. They
+    # used to share one `deadline`: with WIFI_CONNECT_IN_FLIGHT stuck, the drain
+    # burned the whole thing and every join was handed timeout=0, so a tracked
+    # thread outlived the reset and later fired its (now un-monkeypatched)
+    # os.kill into a subsequent test. Each wait is independently bounded by
+    # wait_for_inflight, so the worst case is 2x that -- still bounded, never
+    # unbounded, and unchanged in the common case where the drain returns
+    # immediately and neither budget is spent.
+    drain_deadline = time.monotonic() + max(0.0, wait_for_inflight)
+    while WIFI_CONNECT_IN_FLIGHT and time.monotonic() < drain_deadline:
         time.sleep(0.01)
 
-    # litclock-dev#478 — the flag-drain above only covers threads that set
-    # WIFI_CONNECT_IN_FLIGHT (the connect thread). _delayed (SIGTERM timer) and
-    # _resolve_and_signal don't touch it, so join EVERY tracked background
-    # thread against the SAME deadline. This is what actually stops a prior
-    # test's thread from firing its (now next-test-monkeypatched) os.kill /
-    # retry function into the next test's counters. _BG_CANCEL wakes any
-    # sleeping _delayed timer so it exits WITHOUT firing a (now-real) SIGTERM;
-    # a thread that still outlives the budget stays a daemon (dies at process
-    # exit) — bounded, never hangs.
-    _BG_CANCEL.set()
-    try:
+    # litclock-dev#478 — the flag-drain above only covers the connect thread, the one kind
+    # that sets WIFI_CONNECT_IN_FLIGHT, so join EVERY tracked background thread
+    # too. This is what actually stops a prior test's thread from firing its
+    # (now next-test-monkeypatched) os.kill / retry function into the next
+    # test's counters.
+    #
+    # The budget is FRESH, not the drain's leftovers, and it is shared among the
+    # threads as an EQUAL SLICE of what remains rather than first-come-first-
+    # served (litclock-dev#781). Both halves are load-bearing and each was a
+    # separate bug:
+    #
+    #   * one deadline for drain AND joins meant a stuck drain left every join
+    #     with timeout=0 — the original litclock-dev#781 defect;
+    #   * a fresh but first-come deadline RELOCATED it: the first live thread
+    #     absorbed the whole budget and every later thread still got timeout=0,
+    #     reachable with the drain not stuck at all (found by the /review
+    #     adversarial pass, reproduced with WIFI_CONNECT_IN_FLIGHT False).
+    #     The retention filter below deliberately keeps a live thread across
+    #     resets, so a single permanently-stuck thread starved the tail FOREVER.
+    #
+    # An equal slice fixes both while keeping the SAME total bound: the divisor
+    # is the number of threads not yet joined, so a thread that returns early
+    # hands what it did not use to the ones behind it, and the loop as a whole
+    # still cannot run past join_deadline.
+    #
+    # NOTE: there is no cancellation signal (litclock-dev#785 removed the inert
+    # one). Every slice below is spent as real wall-clock. Do not reason about
+    # this loop as though a sleeping thread can be woken out of its join.
+    #
+    # litclock-dev#786 finding 2: the snapshot is RE-TAKEN. The previous version
+    # snapshotted once under the lock and joined only that list, so a request
+    # thread that set WIFI_CONNECT_IN_FLIGHT and appended a worker after the
+    # drain and after the snapshot was never joined — and the globals were then
+    # cleared out from under it, potentially including that worker's own
+    # freshly-set in-flight flag. That reopens the duplicate-connect and
+    # late-os.kill shapes this helper exists to close.
+    #
+    # The litclock-dev#781 equal-slice invariant is preserved INSIDE each pass (the
+    # divisor is the number not yet joined in that pass, so a thread that
+    # returns early hands its remainder to the ones behind it), and the total
+    # bound is preserved ACROSS passes because every slice is measured against
+    # the one ``join_deadline``. A later pass whose budget is already spent
+    # hands out ``timeout=0``, which is the same treatment the tail of a single
+    # over-budget pass has always had.
+    join_deadline = time.monotonic() + max(0.0, wait_for_inflight)
+    joined: set[threading.Thread] = set()  # holds references, so identity is stable
+    for _pass in range(_RESET_JOIN_MAX_PASSES):
         with _BG_THREADS_LOCK:
-            threads = list(_BG_THREADS)
-        for t in threads:
-            t.join(timeout=max(0.0, deadline - time.monotonic()))
-        # Drop only the threads that actually finished; KEEP any that outran the
-        # join budget so a later reset can retry cancelling/joining them
-        # (/review). Clearing the whole list up-front would forget a still-live
-        # daemon — it could then write the globals after we clear them below, and
-        # no future reset could join it. is_alive() also drops any new threads
-        # spawned during the join once they finish.
-        with _BG_THREADS_LOCK:
-            _BG_THREADS[:] = [t for t in _BG_THREADS if t.is_alive()]
-    finally:
-        _BG_CANCEL.clear()
+            pending = [t for t in _BG_THREADS if t not in joined]
+        if not pending:
+            break
+        for _i, t in enumerate(pending):
+            _unjoined = len(pending) - _i
+            t.join(timeout=max(0.0, (join_deadline - time.monotonic()) / _unjoined))
+            joined.add(t)
+
+    # Drop only the threads that actually finished; KEEP any that outran the
+    # join budget so a later reset can retry joining them (/review). Clearing
+    # the whole list up-front would forget a still-live daemon — it could then
+    # write the globals after we clear them below, and no future reset could
+    # join it. is_alive() also drops any new threads spawned during the join
+    # once they finish.
+    #
+    # The try/finally that used to wrap this block existed ONLY to clear the
+    # inert Event, so it went with it (litclock-dev#785). Nothing here needs
+    # unwind protection: a join() that raises leaves the registry unpruned,
+    # which is the same conservative state a timed-out join leaves.
+    with _BG_THREADS_LOCK:
+        _BG_THREADS[:] = [t for t in _BG_THREADS if t.is_alive()]
+        escaped = tuple(t.name for t in _BG_THREADS)
 
     with _WIFI_CONNECT_LOCK:
         WIFI_CONNECT_ERROR = None
@@ -411,6 +511,11 @@ def reset_state(wait_for_inflight: float = 2.0) -> None:
         _WIFI_SCAN_NETWORKS = None
         _WIFI_SCAN_TIME = 0
         _WIFI_SCAN_SSIDS = frozenset()
+
+    # Reported, not raised. A raise here would fail whichever test happened to
+    # be finishing rather than the one that leaked, and would turn a diagnostic
+    # into a second, differently-misattributed failure.
+    return escaped
 
 
 def _schedule_self_terminate() -> None:

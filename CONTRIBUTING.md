@@ -187,9 +187,20 @@ pip install -r requirements.txt
 
 ### Dev Dependencies
 
+**Required to run the tests at all**, not just to lint. `pyproject.toml` lists
+`pytest-timeout` in `required_plugins`, so `pytest` refuses to start without it
+rather than silently running with no per-test timeout — which is what it did,
+unnoticed, for months (litclock-dev#769). If you see
+`ERROR: Missing required plugins`, this is the step you skipped.
+
 ```bash
-pip install -r requirements-dev.txt  # ruff linter
+pip install -r requirements-dev.txt  # ruff, pytest-mock, pytest-timeout
 ```
+
+Inside the venv above, that plain form is the right one. Outside a venv on a
+Debian/Ubuntu box, PEP 668 marks the system Python externally-managed and pip
+refuses; `pip install --user --break-system-packages -r requirements-dev.txt`
+installs to `~/.local` instead.
 
 ### JavaScript tests (control PWA)
 

@@ -270,6 +270,14 @@ if ! mkdir -p "$STATE_DIR" 2>/dev/null || ! touch "$_UNFINISHED_MARKER" 2>/dev/n
 fi
 
 
+# litclock-dev#821 — Step 2's env.sh wipe used to be best-effort with no abort:
+# a flock timeout or a failed write printed one YELLOW line and the script ran
+# on to "SD Card Ready for Cloning!" and powered off, so every card cut from the
+# master carried the owner's API key and home location. Declared HERE rather
+# than at Step 2 because the gate that reads it runs ~230 lines later and this
+# script has no `set -u`.
+ENV_WIPE_FAILED=false
+
 # Step 1: Stop the setup-state writers, then remove the setup-state markers.
 #
 # The markers below are RE-CREATABLE, so they must be removed with their
@@ -380,14 +388,31 @@ if [[ -f "$INSTALL_DIR/env.sh" ]]; then
     # rest). Without these, a cloned env.sh would inherit whatever MODE
     # the cloner had — could be "specific" with stale coords for a
     # location 1000 miles from the cloned device's actual WiFi.
-    DEFAULTS='export OPENWEATHERMAP_APIKEY=
+    # litclock-dev#783 — must cover EVERY env.sh.sample key; comment status is
+    # copied from the sample and is load-bearing (an active
+    # LITCLOCK_RENDER_LEAD_S would hard-pin 4 into the field, litclock-dev#762). This
+    # list was the SHORTEST of the four and was missing WEATHER_LOCATION_NAME
+    # and LITCLOCK_LANGUAGE, so every SD card cut from this flow produced
+    # devices lacking the language knob litclock-dev#532 depends on.
+    DEFAULTS='# export OPENWEATHERMAP_APIKEY=
+export WEATHER_ENABLED=true
 export WEATHER_LATITUDE=
 export WEATHER_LONGITUDE=
+export WEATHER_LOCATION_NAME=
 export WEATHER_UNITS=imperial
 export WEATHER_LOCATION_MODE=auto
 export WEATHER_IP_COUNTRY=
+export WEATHER_LAST_IP_GEO_AT=
 export WEATHER_TTL=3600
 export ALLOW_NSFW_QUOTES=false
+export LITCLOCK_LANGUAGE=
+export SHOW_DIAGNOSTICS_SHORTCUT=false
+export GIFT_MODE_MESSAGE=
+export LITCLOCK_RUNTIME_RENDER=false
+# export DISPLAY_CLEAR_HOUR=2
+# export LITCLOCK_RENDER_LEAD_S=4
+# export WEATHER_API_TIMEOUT=15
+# export LOG_LEVEL=WARNING
 '
     # `|| true` not needed: every code path inside the if/else below
     # ends with a 0-exit statement, so `set -e` won't trip.
@@ -401,7 +426,11 @@ export ALLOW_NSFW_QUOTES=false
             echo -e "${YELLOW}failed (rc=$_rc) — env.sh untouched${NC}"
         fi
         unset _rc
-        true  # explicit success for `set -e`
+        # litclock-dev#821 — was `true  # explicit success for set -e`, which is
+        # what let a failed wipe reach the success banner. The gate before the
+        # banner reads this; `set -e` is still satisfied because assigning to a
+        # variable exits 0.
+        ENV_WIPE_FAILED=true
     fi
 else
     echo -e "${GREEN}done${NC}"
@@ -621,6 +650,41 @@ if [[ -e "$STATE_DIR/hotspot-password" || -L "$STATE_DIR/hotspot-password" ]] ||
     echo -e "${RED}Do NOT clone this card — every copy would share a key you know.${NC}"
     exit 1
 fi
+echo -e "${GREEN}done${NC}"
+
+# litclock-dev#821 — the env.sh credential gate. Placed here, before the banner
+# and before the power-off, because those are the two things that make a failed
+# wipe invisible: the operator is not watching a scrolled-past yellow line on a
+# Pi that then shuts itself down.
+#
+# TWO checks, because they fail differently. The flag catches a write that
+# REPORTED failure (flock timeout rc=75, or a failed mktemp/printf/mv). The
+# re-read catches a write that returned 0 and produced a bad file anyway —
+# Step 8's idiom, and the reason this is a verify rather than a trusted return
+# code. Either one is disqualifying.
+echo -n "Verifying env.sh carries no owner credentials... "
+_ENV_LEAKS=""
+if [[ "$ENV_WIPE_FAILED" == "true" ]]; then
+    _ENV_LEAKS="the env.sh rewrite did not complete"
+elif [[ -f "$INSTALL_DIR/env.sh" ]]; then
+    # Non-empty value on any secret-bearing key. A commented line is fine (the
+    # defaults comment OPENWEATHERMAP_APIKEY out entirely), so anchor on a live
+    # `export KEY=<something>`.
+    for _k in OPENWEATHERMAP_APIKEY WEATHER_LATITUDE WEATHER_LONGITUDE \
+        WEATHER_LOCATION_NAME GIFT_MODE_MESSAGE; do
+        if grep -qE "^[[:space:]]*export[[:space:]]+${_k}=[^[:space:]]" "$INSTALL_DIR/env.sh" 2>/dev/null; then
+            _ENV_LEAKS="${_ENV_LEAKS}${_ENV_LEAKS:+, }${_k}"
+        fi
+    done
+    unset _k
+fi
+if [[ -n "$_ENV_LEAKS" ]]; then
+    echo -e "${RED}FAILED${NC}"
+    echo -e "${RED}env.sh still holds this device's owner data: ${_ENV_LEAKS}.${NC}"
+    echo -e "${RED}Do NOT clone this card — every copy would carry the API key and home location.${NC}"
+    exit 1
+fi
+unset _ENV_LEAKS
 echo -e "${GREEN}done${NC}"
 
 echo ""

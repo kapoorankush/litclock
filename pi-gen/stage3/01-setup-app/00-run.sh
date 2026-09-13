@@ -55,6 +55,34 @@ grep -vE "^(${EXCLUDE_RE})==" requirements.txt > /tmp/requirements-pigen.txt
 ./venv/bin/pip install --upgrade -r /tmp/requirements-pigen.txt
 rm -f /tmp/requirements-pigen.txt
 
+# litclock-dev#531 — stamp the runtime-render validation marker at BUILD time,
+# so a freshly flashed card can use the runtime renderer without waiting for an
+# OTA to certify it. update.sh re-stamps after any update that revokes it.
+#
+# This has to run HERE, after pip, and it has to run IN THE CHROOT: the check
+# proves that THIS environment's freetype-py — whose wheel bundles its own
+# libfreetype, and whose hinted metrics decide every line break — reproduces
+# GD's measurements exactly. Running it on the build host would certify the
+# host's wheel, which is not the one the device runs. The chroot is arm64 and
+# the venv above is the device's, so the wheel under test is the shipped one.
+#
+# NON-FATAL by design. This script runs under `set -e`, but a failing command
+# in an `if` CONDITION does not trip errexit (verified, not assumed) — which is
+# why no `|| true` is needed here and why adding one would be decoration. A
+# validation failure must not fail the image build: no marker simply means the
+# device serves pre-rendered PNGs, the tier that has always shipped. A wrong
+# fallback is impossible; a wrong render is not. The failure is logged loudly
+# so a build that quietly lost the runtime tier shows up in the CI log rather
+# than being discovered on a device.
+echo "Validating GD-exact measurement (litclock-dev#531)..."
+if ./venv/bin/python3 tools/validate_measurement.py check --stamp; then
+    echo "  runtime-render validation PASSED — marker stamped into the image"
+else
+    echo "  WARNING: runtime-render validation FAILED in the build chroot."
+    echo "  The image is usable: it will serve pre-rendered images and ignore"
+    echo "  LITCLOCK_RUNTIME_RENDER. Investigate before relying on the runtime tier."
+fi
+
 # Clean pip cache to reduce image size (litclock-dev#112)
 rm -rf /root/.cache/pip /home/pi/.cache/pip
 

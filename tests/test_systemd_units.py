@@ -145,8 +145,21 @@ class TestBootOrdering:
         assert "litclock-splash.service" not in after
 
     def test_timer_fires_every_minute(self):
+        """Once per minute, at a fixed second — the CADENCE, which is what this
+        test is named for and what the boot ordering around it depends on.
+
+        The assertion used to be the literal `*-*-* *:*:00`. litclock-dev#762
+        moved the second to `:56` so the panel's blackout falls at the minute
+        boundary rather than after it, which does not change the cadence at all.
+        WHICH second, and that it agrees with the painter's RENDER_LEAD_S — the
+        two are only correct together — is pinned in tests/test_timer_lead.py.
+        """
         unit = parse_unit("litclock.timer")
-        assert unit.get("Timer", "OnCalendar") == "*-*-* *:*:00"
+        oncal = unit.get("Timer", "OnCalendar")
+        assert re.fullmatch(r"\*-\*-\* \*:\*:\d{2}", oncal or ""), (
+            f"OnCalendar={oncal!r} is no longer a once-per-minute schedule at a fixed "
+            "second. Anything else changes how often the clock repaints"
+        )
 
     def test_timer_accuracy_is_one_second(self):
         unit = parse_unit("litclock.timer")

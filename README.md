@@ -371,7 +371,7 @@ This is managed by systemd services — the important ones:
 
 | Service | Purpose |
 |---------|---------|
-| `litclock.timer` / `litclock.service` | Renders a quote to the display every minute at :00 |
+| `litclock.timer` / `litclock.service` | Renders a quote to the display every minute, firing at :56 so the new frame lands on the boundary rather than ~7s after it |
 | `litclock-control.service` | Serves the control app on port 80 |
 | `litclock-splash.service` | Shows the welcome splash on every boot |
 | `litclock-firstboot.service` | Runs first-boot setup (disables itself after) |

@@ -155,6 +155,35 @@ def _validate_weather_ip_country(value: str) -> tuple[bool, str | None]:
     return True, None
 
 
+# litclock-dev#791 — WEATHER_LAST_IP_GEO_AT. Runtime-populated like
+# WEATHER_IP_COUNTRY, so empty is valid and is the seeded state. The pattern is
+# deliberately tighter than datetime.fromisoformat() accepts: this value is
+# written into a file bash SOURCES, and fromisoformat() would happily admit
+# strings with characters that have meaning to the shell. Only the shape the
+# resolver actually emits is allowed through.
+# [0-9], NOT \d. Python's \d is Unicode-aware and matches Arabic-Indic and
+# other decimal digits, so `\d{4}-...` accepts "٢٠٢٦-٠٩-٠٥T١٤:٣١:٠٠" (verified).
+# The `value.isascii()` check below already rejects those, but it was the ONLY
+# thing doing so — a later "simplification" dropping it as redundant would have
+# reopened the hole silently. Both guards now stand alone (litclock-dev#790
+# /review). A Unicode-digit value is not shell-injectable, but it round-trips
+# into env.sh and then fails `datetime.fromisoformat()` inside the anomaly
+# detector's bare `except ValueError: pass` — silently disabling the staleness
+# anomaly again, which is the exact defect litclock-dev#791 just fixed.
+_ISO_TIMESTAMP_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})?"
+)
+
+
+def _validate_iso_timestamp(value: str) -> tuple[bool, str | None]:
+    if value == "":
+        return True, None
+    if not value.isascii() or not _ISO_TIMESTAMP_RE.fullmatch(value):
+        return False, _v("validator.iso_timestamp")
+    return True, None
+
+
 def _validate_bool(value: str) -> tuple[bool, str | None]:
     if value.lower() not in ("true", "false"):
         return False, _v("validator.bool_enum")
@@ -350,6 +379,10 @@ SETTINGS_ALLOWLIST: dict[str, Validator] = {
     # save paths.
     "WEATHER_LOCATION_MODE": _validate_weather_location_mode,
     "WEATHER_IP_COUNTRY": _validate_weather_ip_country,
+    # litclock-dev#791 — "when did IP-geo last succeed". Must be in the
+    # allowlist or atomic_update rejects the resolver's own write, which is
+    # how this key stayed writer-less: nothing could have written it.
+    "WEATHER_LAST_IP_GEO_AT": _validate_iso_timestamp,
     "WEATHER_ENABLED": _validate_bool,
     "ALLOW_NSFW_QUOTES": _validate_bool,
     # litclock-dev#532 Stage 3: the device language. Gate on the ACTIVE
@@ -447,6 +480,45 @@ def validate_setting(key: str, value: str) -> tuple[bool, str | None]:
 
 
 # ---------- Reader ----------
+
+
+# litclock-dev#790 — the ONE definition of "is weather on?". Two consumers used
+# to answer this independently and disagreed on BOTH halves of the input space:
+#
+#   src/literary_clock.py      os.getenv("WEATHER_ENABLED", "true") == "true"
+#   .../diagnostics/_collectors.py   (get("WEATHER_ENABLED") or "").lower() in
+#                                    ("true", "1", "yes")
+#
+# so on a device whose env.sh lacks the key the panel rendered weather while the
+# support bundle reported it disabled — wrong in exactly the situation someone
+# reads the bundle to explain. They also disagreed on the literals "1"/"yes",
+# which the issue did not name: the collector accepted them and the renderer did
+# not. Both halves are gone because there is now one function.
+#
+# The default is TRUE, which is the renderer's answer, because the renderer's
+# answer is the one the owner can SEE. A key-absent device is pre-litclock-dev#783
+# (all four env.sh seeders now write it explicitly) or hand-edited; on either the
+# panel paints weather, so "disabled" was never the honest report.
+#
+# ``_validate_bool`` admits only "true"/"false", so the "1"/"yes" arm is
+# unreachable through ``atomic_update`` and exists solely to be generous to a
+# hand-edited env.sh. It is deliberately NOT widened further: an unrecognised
+# value reads as DISABLED, so a typo fails toward the quieter panel.
+WEATHER_ENABLED_DEFAULT = "true"
+_WEATHER_ENABLED_TRUTHY = frozenset({"true", "1", "yes"})
+
+
+def weather_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Resolve the WEATHER_ENABLED master toggle (Control PWA M3, litclock-dev#245).
+
+    ``env`` is any mapping of env.sh keys — a ``load_config()`` result, a
+    ``read_env_settings()`` result, or ``None`` to read ``os.environ`` (which
+    is how the renderer sees it, since runtheclock.sh sources env.sh first).
+    An absent or empty key resolves to ``WEATHER_ENABLED_DEFAULT``.
+    """
+    source: Mapping[str, str] = os.environ if env is None else env
+    raw = (source.get("WEATHER_ENABLED") or WEATHER_ENABLED_DEFAULT).strip().lower()
+    return raw in _WEATHER_ENABLED_TRUTHY
 
 
 def load_config(path: str | os.PathLike[str] = ENV_FILE_DEFAULT) -> dict[str, str]:

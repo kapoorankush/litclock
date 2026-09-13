@@ -1650,6 +1650,10 @@ _Status and error messages._
 - **Placeholders (copy exactly):** `{ch}` = a single character
 - **Translation:** 
 
+### `validator.iso_timestamp`
+- **English:** must be an ISO 8601 timestamp (e.g. '2026-09-05T14:31:00+00:00')
+- **Translation:** 
+
 ### `validator.language_active`
 - **English:** must be one of the active languages: {codes}
 - **Placeholders (copy exactly):** `{codes}` = a list of codes

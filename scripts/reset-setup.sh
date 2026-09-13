@@ -709,16 +709,28 @@ if [[ -f "$INSTALL_DIR/env.sh" ]]; then
     # the recipient's device boots in the gifter's chosen language. Plain
     # resets leave it empty, which keeps Accept-Language negotiation alive
     # on the next first-boot (the litclock-dev#743 empty-seed contract).
-    DEFAULTS="export OPENWEATHERMAP_APIKEY=
+    # litclock-dev#783 — must cover EVERY env.sh.sample key; comment status is
+    # copied from the sample and is load-bearing (litclock-dev#762). LITCLOCK_LANGUAGE
+    # keeps its gift-mode interpolation.
+    DEFAULTS="# export OPENWEATHERMAP_APIKEY=
+export WEATHER_ENABLED=true
 export WEATHER_LATITUDE=
 export WEATHER_LONGITUDE=
 export WEATHER_LOCATION_NAME=
 export WEATHER_UNITS=imperial
 export WEATHER_LOCATION_MODE=auto
 export WEATHER_IP_COUNTRY=
+export WEATHER_LAST_IP_GEO_AT=
 export WEATHER_TTL=3600
 export ALLOW_NSFW_QUOTES=false
 export LITCLOCK_LANGUAGE=$GIFT_LANGUAGE_CODE
+export SHOW_DIAGNOSTICS_SHORTCUT=false
+export GIFT_MODE_MESSAGE=
+export LITCLOCK_RUNTIME_RENDER=false
+# export DISPLAY_CLEAR_HOUR=2
+# export LITCLOCK_RENDER_LEAD_S=4
+# export WEATHER_API_TIMEOUT=15
+# export LOG_LEVEL=WARNING
 "
     if atomic_write_env_sh "$INSTALL_DIR/env.sh" "$DEFAULTS"; then
         echo -e "${GREEN}done${NC}"

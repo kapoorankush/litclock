@@ -34,7 +34,18 @@ Type=oneshot
 # worst case). Writes lat/lon/name/units/tz/MODE/IP_COUNTRY atomically via
 # config.atomic_update — same flock as every other writer.
 WorkingDirectory=/home/pi/litclock
-EnvironmentFile=/home/pi/litclock/env.sh
+# litclock-dev#791: there is deliberately NO `EnvironmentFile=` here. One used
+# to point at env.sh and loaded exactly ZERO variables, while reading as though
+# it worked. systemd's parser is not bash: every line in env.sh is
+# `export KEY=VALUE`, and systemd takes the variable NAME to be `export KEY`,
+# which is invalid, so it drops the line. Measured on systemd 255 with
+# `systemd-run -p EnvironmentFile=<a real seeded env.sh> /usr/bin/env`: the
+# `export`-prefixed keys are absent and only a bare `KEY=VALUE` line survives.
+# It was harmless purely by accident -- `Environment=LITCLOCK_ENV_FILE` below
+# tells location_resolver to open and parse the file itself -- but anyone
+# adding a key and expecting this unit to see it would have been wrong.
+# It is the only unit in systemd/ that ever carried the directive; the guard in
+# tests/test_env_sh_surface.py keeps it that way.
 # LITCLOCK_ENV_FILE tells location_resolver.main() which file to read/write.
 # Without this the oneshot would fall through to setup_server.ENV_FILE which
 # is None outside the first-boot context.
