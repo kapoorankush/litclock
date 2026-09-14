@@ -17,7 +17,7 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 - Diagnostics no longer report weather as off on a clock that is showing it.
 - Diagnostics now show when your location was last auto-detected, and can warn when it has not been refreshed in a week; that row was always empty before.
 - Automatic updates now roll back when the downloaded update's text catalog is truncated or its interpreter is missing, and no longer risk rolling back every week on a clock set to a language other than English.
-- The weekly update gives the new on-device rendering check enough time to finish, skips it when the remaining time cannot hold it, and always restarts the clock if the update is interrupted, so a slow update can no longer leave the display frozen until a power-cycle.
+- The weekly update gives the new on-device rendering check enough time to finish, skips it when the remaining time cannot hold it, and tries to restart the clock if the update is cut short, so a slow update is much less likely to leave the display frozen until a power-cycle.
 
 ## [v0.226.0] - 2026-08-30
 

@@ -14,8 +14,11 @@ position is what makes them safe.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -283,7 +286,7 @@ class TestUpdateShStampBlockExecutes:
         assert "[validate] FAKE_VALIDATOR_RAN" in r.stdout, r.stdout
 
     def test_an_unknown_budget_defers_rather_than_waives(self, tmp_path):
-        """Round-2 review: every measurement failure used to WAIVE the budget.
+        """litclock-dev#835 review: every measurement failure used to WAIVE the budget.
         Unknown must read as "cannot afford it" — only a confirmed manual run
         (no INVOCATION_ID) has no budget to respect."""
         r = self._run(tmp_path, marker_exists=False, validator_rc=0, elapsed_s="unknown", installed_budget_s=1800)
@@ -298,9 +301,59 @@ class TestUpdateShStampBlockExecutes:
         assert "[validate] FAKE_VALIDATOR_RAN" in r.stdout, r.stdout
 
 
+    def test_a_failing_validation_lets_the_update_continue(self, tmp_path):
+        r = self._run(tmp_path, marker_exists=False, validator_rc=1)
+        # The block pipes the validator through `sed 's/^/[validate] /'` with
+        # 2>&1, so its stderr lands in STDOUT, prefixed. Look there.
+        assert "[validate] FAKE_VALIDATOR_RAN" in r.stdout, (
+            "the validator must actually be invoked when the marker is absent"
+        )
+        assert "REACHED_END" in r.stdout, f"a failed validation stopped the updater\n{r.stdout}\n{r.stderr}"
+        # The failure arm must be REACHED — the first version of the block tested
+        # the pipeline's exit (sed's, always 0) and logged "reported success" for
+        # a validator that exited 1. This executed test is what caught it.
+        assert "did not pass" in r.stdout and "rc=1" in r.stdout, (
+            f"a failing validator must take the failure arm with its real rc\n{r.stdout}"
+        )
+        assert "not an update failure" in r.stdout
+        assert r.returncode == 0
+
+    def test_a_present_marker_skips_the_validation(self, tmp_path):
+        r = self._run(tmp_path, marker_exists=True, validator_rc=1)
+        assert "FAKE_VALIDATOR_RAN" not in r.stdout, "a present marker must skip the (expensive) check"
+        assert "REACHED_END" in r.stdout
+
+    def test_the_arm_survives_set_u(self, tmp_path):
+        """The exact way it first broke: the harness in test_update_sh.py runs
+        under `set -u`, and an unseeded RUNTIME_MARKER killed bash at the
+        guard. Every variable the block reads must be one the script defines."""
+        r = self._run(tmp_path, marker_exists=False, validator_rc=0)
+        assert "unbound variable" not in r.stderr, r.stderr
+        assert "REACHED_END" in r.stdout
+
+    def test_the_failure_arm_removes_the_validators_litter_and_nothing_else(self, tmp_path):
+        """litclock-dev#835 port review (Codex): the litter glob was six `?`,
+        but Python's mkstemp appends EIGHT characters, so a validator killed
+        by `timeout` left its temp file behind on every failure — and the
+        six-wide glob DID match `<marker>.backup`, which a sibling file with
+        that name would have paid for. This creates the litter with the real
+        tempfile call the validator uses, so the glob is pinned to the
+        writer's scheme rather than to a count someone read off a docstring."""
+        marker = tmp_path / "marker"
+        fd, litter = tempfile.mkstemp(dir=str(tmp_path), prefix=marker.name + ".")
+        os.close(fd)
+        keep = [tmp_path / "marker.backup", tmp_path / "marker.bak", tmp_path / "marker.old.json"]
+        for k in keep:
+            k.write_text("keep me")
+        r = self._run(tmp_path, marker_exists=False, validator_rc=1)
+        assert "did not pass" in r.stdout, r.stdout
+        assert not Path(litter).exists(), f"mkstemp litter {Path(litter).name} survived the failure arm"
+        for k in keep:
+            assert k.exists(), f"{k.name} is not validator litter and must not be removed"
+
 
 class TestBudgetHelpersExecute:
-    """litclock-dev#835 round-2 review (Claude): the guard's two feeders —
+    """litclock-dev#835 review: the guard's two feeders —
     `_update_elapsed_seconds` and `_update_budget_seconds` — were stubbed in
     every executed test, so a one-token slip in either (the µs divisor, the
     property name) would defer the runtime tier fleet-wide with only a
@@ -309,7 +362,7 @@ class TestBudgetHelpersExecute:
 
     def _run(self, tmp_path, *, invocation_id, owner, start_us, budget_us, systemctl_rc=0, busctl_rc=0):
         """A fake systemctl and a fake busctl that answer ONLY the exact
-        queries the helpers are supposed to make (round-3 review: a
+        queries the helpers are supposed to make (the review found: a
         substring-matching fake let a wrong unit or property pass)."""
         bindir = tmp_path / "bin"
         bindir.mkdir()
@@ -401,3 +454,81 @@ class TestBudgetHelpersExecute:
         out = self._run(tmp_path, invocation_id="abc", owner="abc", start_us=1_000_000, **kw)
         assert out["budget_rc"] == "1", out
 
+
+class TestPiGenStampsInTheChroot:
+    def test_it_runs_after_pip_in_the_chroot(self):
+        """The wheel under test must be the device's, not the build host's."""
+        body = PIGEN_APP.read_text()
+        pip_at = body.index("./venv/bin/pip install --upgrade -r /tmp/requirements-pigen.txt")
+        stamp_at = STAMP_CALL.search(body).start()
+        assert pip_at < stamp_at, "the stamp must run after the chroot's pip install"
+
+    def test_it_uses_the_venv_interpreter(self):
+        """`python3` alone would be the chroot's system interpreter, whose
+        freetype-py is not the one the clock runs."""
+        body = PIGEN_APP.read_text()
+        line = next(ln for ln in body.splitlines() if STAMP_CALL.search(ln))
+        assert "./venv/bin/python3" in line, f"must use the venv interpreter, got: {line.strip()}"
+
+    def test_it_precedes_the_ownership_fix(self):
+        """The marker is written as root; `chown -R pi:pi` must come after or the
+        pi user owns a directory containing a root-owned marker."""
+        body = PIGEN_APP.read_text()
+        stamp_at = STAMP_CALL.search(body).start()
+        chown_at = body.index("chown -R pi:pi /home/pi/litclock")
+        assert stamp_at < chown_at, "the stamp must precede the chown that fixes its ownership"
+
+    def test_a_failed_validation_does_not_fail_the_image_build(self):
+        body = PIGEN_APP.read_text()
+        stamp_at = STAMP_CALL.search(body).start()
+        window = body[stamp_at:stamp_at + 900]
+        assert "WARNING" in window and "usable" in window, (
+            "a failed validation must warn and continue — the image still works on the "
+            "pre-rendered tier"
+        )
+
+
+class TestTheCheckItselfBehaves:
+    """Executed, against the real validator and the real dump."""
+
+    def test_check_passes_and_stamps_here(self, tmp_path):
+        # The validator imports freetype-py, which lives in requirements.txt
+        # (it ships to the device), not requirements-dev.txt. CI installs
+        # both; the documented dev setup installs only -dev, and this test
+        # was red there for that reason alone (litclock-dev#840). Skip with
+        # the diagnosis rather than fail on a box that cannot run the check.
+        pytest.importorskip(
+            "freetype",
+            reason="freetype-py is not installed: `pip install --user --break-system-packages freetype-py` "
+                   "to run the real validator here (litclock-dev#840)",
+        )
+        marker = tmp_path / ".runtime-render-validated"
+        r = subprocess.run(
+            [sys.executable, str(VALIDATOR), "check", "--stamp", "--marker", str(marker)],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=600,
+        )
+        assert r.returncode == 0, f"validation failed on the dev box\n{r.stdout}\n{r.stderr}"
+        assert marker.is_file(), "PASS must write the marker at the requested path"
+
+    def test_stamp_refuses_a_dump_that_is_not_the_committed_one(self, tmp_path):
+        """The guard update.sh and pi-gen rely on without knowing it.
+
+        `--stamp` against a `--dump` that differs from the committed
+        tools/gd-expected-measurements.json.gz exits 2 and touches NOTHING —
+        not the marker, not the dump. An earlier version of this test expected
+        a bogus dump to REMOVE a stale marker; it does not, and that is
+        correct: acting on an unverified dump in either direction would let a
+        tampered or half-written file decide whether the runtime tier is on.
+        """
+        marker = tmp_path / ".runtime-render-validated"
+        marker.write_text("pre-existing")
+        bogus = tmp_path / "bogus.json.gz"
+        bogus.write_bytes(b"not a gzip")
+        r = subprocess.run(
+            [sys.executable, str(VALIDATOR), "check", "--stamp",
+             "--dump", str(bogus), "--marker", str(marker)],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=120,
+        )
+        assert r.returncode == 2, f"expected the refusal exit (2), got {r.returncode}\n{r.stderr}"
+        assert "refusing --stamp" in (r.stdout + r.stderr)
+        assert marker.read_text() == "pre-existing", "a refused stamp must leave the marker untouched"

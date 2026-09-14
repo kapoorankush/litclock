@@ -3162,11 +3162,6 @@ class TestTheExitTrapRearmsTheClock:
         stop_at = update_sh_content.index("systemctl stop litclock.timer")
         assert init_at < trap_at < stop_at, "traps after the status init, before Phase 1 stops the timer"
 
-    def _watchdog_block(self, update_sh_content):
-        start = update_sh_content.index("_LS_REMOTE_TIMEOUT_S=")
-        end = update_sh_content.index("\n}\n", update_sh_content.index("_remote_reachable() {", start)) + len("\n}\n")
-        return update_sh_content[start:end]
-
     def _shim(self, tmp_path, body):
         """A PATH shim for git: `timeout` execs the real command lookup, so a
         shell function would be bypassed."""

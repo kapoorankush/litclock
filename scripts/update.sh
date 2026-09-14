@@ -540,30 +540,24 @@ fi
 # bootcheck already verified is present, so a git reset needs no network. A
 # device bricked by a bad update that also broke connectivity must still be
 # able to self-heal, so skip this gate when a rollback is pending.
-# Bounded (litclock-dev#835 round-4 review): on the Phase 2 re-exec path
+# Bounded (litclock-dev#835 review): on the Phase 2 re-exec path
 # litclock.timer is already stopped by the time the new script gets here,
 # and the traps below are installed after this gate (they need the status
 # init, and initialising before the gate would stamp an offline tick as
 # unrecovered), so an ls-remote that hung would hold a stopped clock with no
-# trap armed. A bash watchdog rather than `timeout(1)`: the coreutils wrapper
-# runs its child in a fresh process group, which the executed test harness
-# cannot follow, and the point of this gate is reachability, not a hard
-# process-group kill.
+# trap armed.
 _LS_REMOTE_TIMEOUT_S="${LITCLOCK_LS_REMOTE_TIMEOUT_S:-30}"
 # Bounded by coreutils `timeout`, which is the right tool and the one the
 # rest of this script already uses: without --foreground it makes itself
 # the leader of a new process group and, on expiry, signals that GROUP —
 # TERM, then KILL after -k — so git's network helper dies with it however
 # it re-parents or ignores TERM, and nothing that inherited the updater's
-# flock descriptor can outlive the deadline. Rounds 4-9 of the
-# litclock-dev#835 review tried three hand-rolled bash watchdogs here
-# (per-pid kills, a file-published pgid, a self-reaping subshell) and
-# broke each one under injected scheduling: an unprotected interval before
-# a trap, a truncated pgid becoming a broadcast kill, a KILL landing on the
-# sole cleanup owner. The lesson is that this is coreutils' job. (`timeout`
-# was avoided at first only because the executed sandbox harness's git
-# shim corrupted its call log under any process-group wrapper — a harness
-# defect, since fixed in tests/conftest.py.)
+# flock descriptor can outlive the deadline. The litclock-dev#835 review
+# tried three hand-rolled bash watchdogs here (per-pid kills, a
+# file-published pgid, a self-reaping subshell) and broke each one under
+# injected scheduling: an unprotected interval before a trap, a truncated
+# pgid becoming a broadcast kill, a KILL landing on the sole cleanup owner.
+# The lesson is that this is coreutils' job.
 # Residual, stated: `timeout` bounds the MONITORED command's lifetime, not
 # what it leaves behind. If git exited while a helper of its own lingered
 # — on its own before the deadline, or because git honoured the TERM at
@@ -1483,6 +1477,11 @@ fi
 # unit's TimeoutStartSec) and the guard that decides whether THIS run can
 # still afford it.
 VALIDATOR_TIMEOUT_S=300
+# What Phases 5-7 need AFTER the validator returns: unit installs, daemon
+# reload, the clock restart and the stamp. Measured 16s on the bench Pi Zero
+# 2W (litclock-dev#835); the reserve is generous because an update that runs
+# out of budget here loses the stamp, not just the validation.
+VALIDATOR_BUDGET_RESERVE_S=120
 
 # The budget systemd LOADED for this unit, in whole seconds, on stdout
 # (0 = no limit); non-zero return when unknown. Read as the raw D-Bus
@@ -1563,8 +1562,8 @@ _validation_fits_remaining_budget() {
     # hold this run at all, and reaching Phase 4.5 under one is impossible,
     # so treating the two alike is harmless in that direction only).
     [[ "$budget" -eq 0 ]] && return 0
-    if (( elapsed + VALIDATOR_TIMEOUT_S + 120 > budget )); then
-        log_info "deferring runtime-render validation to the next update: ${elapsed}s of this run's ${budget}s budget are gone and the check needs up to ${VALIDATOR_TIMEOUT_S}s with litclock.timer stopped (litclock-dev#835)"
+    if (( elapsed + VALIDATOR_TIMEOUT_S + VALIDATOR_BUDGET_RESERVE_S > budget )); then
+        log_info "deferring runtime-render validation to the next update: ${elapsed}s of this run's ${budget}s budget are gone and the check needs up to ${VALIDATOR_TIMEOUT_S}s plus a ${VALIDATOR_BUDGET_RESERVE_S}s reserve for the phases after it, with litclock.timer stopped (litclock-dev#835)"
         return 1
     fi
     return 0
@@ -1628,8 +1627,14 @@ if [[ "$smoke_rc" -eq 0 ]]; then
         else
             log_info "runtime-render validation did not pass on this device (rc=$_validate_rc) — staying on pre-rendered images (this is not an update failure)"
             # A validator killed by `timeout` leaves its mkstemp litter next
-            # to the marker; only the exact marker name is gitignored.
-            rm -f "$RUNTIME_MARKER".?????? 2>/dev/null || true   # mkstemp litter is exactly six chars; the marker path is operator-settable
+            # to the marker; only the exact marker name is gitignored. The
+            # glob is Python's tempfile scheme exactly — `<marker>.` plus
+            # EIGHT characters from [a-z0-9_] — so nothing else that shares
+            # the prefix can match (the first version used six `?`, which
+            # missed the litter and would have matched a `.backup` sibling;
+            # litclock-dev#835 port review). The marker path is
+            # operator-settable, hence the variable prefix.
+            rm -f "$RUNTIME_MARKER".[a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_] 2>/dev/null || true
         fi
         unset _validate_rc
     fi
