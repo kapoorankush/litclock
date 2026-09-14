@@ -4,6 +4,8 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+## [v0.227.0] - 2026-09-13
+
 ### Changed
 
 - Quotes now change right on the minute. The clock starts its refresh a few seconds early and paints the upcoming minute, so the new quote is settled as the minute turns instead of several seconds after it.
