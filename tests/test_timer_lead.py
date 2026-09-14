@@ -14,6 +14,7 @@ timer alone renders the previous minute's quote permanently (litclock-dev#762 Tr
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from datetime import datetime
@@ -520,6 +521,41 @@ class TestTheOperatorKnobCannotBrickTheClock:
         assert literary_clock._render_lead_seconds() == literary_clock.RENDER_LEAD_DEFAULT_S, (
             f"LITCLOCK_RENDER_LEAD_S={raw!r} ({why}) did not fall back to the default"
         )
+
+    @pytest.mark.parametrize("raw", ["4s", "four", "-90", "999", "0", "3.9", "30.1"])
+    def test_a_bad_value_is_logged_not_just_swallowed(self, monkeypatch, caplog, raw):
+        """The journal line is the ONLY thing that separates a rejected
+        `LITCLOCK_RENDER_LEAD_S=0` from the litclock-dev#531 wedge (the QA
+        checklist says "read the journal", and the fallback test above is
+        green for a parser that returns the default silently). The empty
+        value is env.sh.sample's own unset idiom and stays silent by design.
+        Executed against the function, not the module-level call, which runs
+        at import before any test can attach caplog."""
+        import literary_clock
+
+        monkeypatch.setenv("LITCLOCK_RENDER_LEAD_S", raw)
+        with caplog.at_level(logging.WARNING):
+            assert literary_clock._render_lead_seconds() == literary_clock.RENDER_LEAD_DEFAULT_S
+        hits = [
+            r for r in caplog.records
+            if r.levelno >= logging.WARNING and "LITCLOCK_RENDER_LEAD_S" in r.getMessage()
+        ]
+        assert hits, (
+            f"LITCLOCK_RENDER_LEAD_S={raw!r} fell back silently; the journal must name the variable\n{caplog.text}"
+        )
+        assert repr(raw) in hits[0].getMessage(), "the warning must carry the raw value the operator typed"
+
+    @pytest.mark.parametrize("raw", ["", "   ", "5.3"])
+    def test_a_silent_value_stays_silent(self, monkeypatch, caplog, raw):
+        """Empty/whitespace is the sample's unset idiom; a good value is good.
+        A warning on every tick for either would train operators to ignore the
+        line that matters."""
+        import literary_clock
+
+        monkeypatch.setenv("LITCLOCK_RENDER_LEAD_S", raw)
+        with caplog.at_level(logging.WARNING):
+            literary_clock._render_lead_seconds()
+        assert not [r for r in caplog.records if "LITCLOCK_RENDER_LEAD_S" in r.getMessage()], caplog.text
 
     @pytest.mark.parametrize("raw,expect", [("5.3", 5.3), ("4", 4.0), ("30", 30.0), (" 6 ", 6.0)])
     def test_a_good_value_is_honoured(self, monkeypatch, raw, expect):

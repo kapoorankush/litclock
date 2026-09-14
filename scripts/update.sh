@@ -570,7 +570,15 @@ _LS_REMOTE_TIMEOUT_S="${LITCLOCK_LS_REMOTE_TIMEOUT_S:-30}"
 _remote_reachable() {
     timeout -k 5 "$_LS_REMOTE_TIMEOUT_S" git ls-remote --exit-code origin &>/dev/null
 }
-if [[ ! -f "$ROLLBACK_TARGET_FILE" ]] && ! _remote_reachable; then
+# Skipped on the re-exec path, where $1 is the outgoing script's OLD_SHA:
+# by then the outgoing script has fetched and reset successfully, so
+# reachability is proven, and Phase 1 has already stopped litclock.timer
+# with the traps below not yet armed. A transient failure here — or the
+# 30s bound expiring on a slow link — would `exit 1` with the clock
+# stopped and the status file stuck at `running` until the next weekly
+# tick (v0.227.0 port review, adversarial pass). A fresh run has nothing
+# stopped yet, so its offline early-out is harmless.
+if [[ -z "${1:-}" && ! -f "$ROLLBACK_TARGET_FILE" ]] && ! _remote_reachable; then
     log_error "Cannot reach remote repository. Check network connectivity."
     exit 1
 fi
@@ -584,14 +592,13 @@ OLD_SHA="${1:-$(git rev-parse --short HEAD)}"
 # absent (pre-M5 self-reexec path).
 update_status_init "$OLD_SHA"
 
-# litclock-dev#835 round-4 review considered installing these traps ABOVE the
+# The litclock-dev#835 review considered installing these traps ABOVE the
 # `git ls-remote` gate (on the re-exec path Phase 1 has already stopped
 # litclock.timer by then). Rejected: the EXIT trap's stamp needs
 # update_status_init, and initialising the status before the gate would turn
 # an ordinary offline tick into a "manual recovery needed" stamp. The gate
-# is bounded to 30s instead, so the un-trapped window on the re-exec path is
-# at most that, and the only things that signal us inside it are the reset
-# units, which stop the timer themselves.
+# is bounded to 30s and skipped on the re-exec path instead, so nothing
+# network-shaped runs with the clock stopped before the traps are armed.
 # litclock-dev#245 M5 D4 / F9 — install a finalize-on-exit trap. If the script exits
 # normally (after update_status_complete / update_status_failed_reverted),
 # _LITCLOCK_UPDATE_FINALIZED=1 is set and the trap is a no-op. Otherwise

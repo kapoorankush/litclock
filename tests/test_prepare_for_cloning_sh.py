@@ -2137,9 +2137,15 @@ class TestEnvCredentialGate:
         # the wrong thing. Caught by running it.
         banner_at = body.index('echo -e "${GREEN}  SD Card Ready for Cloning!${NC}"')
         assert gate_at < banner_at, "the credential gate must run before the success banner"
-        poweroff_at = body.find("poweroff", banner_at)
-        if poweroff_at != -1:
-            assert gate_at < poweroff_at, "the credential gate must run before the power-off"
+        # The EXECUTED call, searched from the gate on the comment-stripped
+        # text. The first version did `body.find("poweroff", banner_at)`
+        # inside `if != -1`: a search that starts AT the banner can only
+        # find something after it, and a miss passed silently, so the
+        # assertion could not go red (v0.227.0 port review, testing pass).
+        executed = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
+        gate_exec_at = executed.index(_ENV_GATE_START)
+        poweroff_at = executed.index("poweroff || {")
+        assert gate_exec_at < poweroff_at, "the credential gate must run before the power-off"
 
     def test_the_failure_arm_no_longer_swallows_the_failure(self):
         """The specific regression: `true  # explicit success for set -e`."""

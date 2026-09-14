@@ -145,7 +145,11 @@ them together, but the payoff is only observable on hardware.
   sample keys into every device's `env.sh`, so the empty value is not
   hypothetical. Set `export LITCLOCK_RENDER_LEAD_S=` (empty), then `=abc`, then
   `=0`, restarting `litclock.timer` each time. Every one must keep painting on
-  the 4.0s default and log a warning. **`=0` is the dangerous one** — it is what
+  the 4.0s default; `=abc` and `=0` must log a warning naming the variable,
+  while the EMPTY value is silent BY DESIGN — it is the sample's own unset
+  idiom and `update.sh` merges it onto every device, so a warning there would
+  fire every minute on every clock and train you to ignore the line that
+  matters (v0.227.0 port review). **`=0` is the dangerous one** — it is what
   an operator reaching for "turn this off" would set, and it is accepted-looking
   but produces the previous minute's quote forever, so confirm the journal
   actually says it fell back. If the guard ever regressed, the frozen panel

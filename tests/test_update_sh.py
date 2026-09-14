@@ -3177,6 +3177,46 @@ class TestTheExitTrapRearmsTheClock:
         end = update_sh_content.index("\n}\n", update_sh_content.index("_remote_reachable() {", start)) + len("\n}\n")
         return update_sh_content[start:end]
 
+    def _gate_statement(self, update_sh_content):
+        """The `if` that consumes _remote_reachable: the first `if [[` after
+        the function's closing brace, to its `fi`. Anchored on the function,
+        not on the condition text, so a mutated condition still lifts and
+        the test fails on behaviour rather than on a missing substring."""
+        fn_end = update_sh_content.index("\n}\n", update_sh_content.index("_remote_reachable() {")) + len("\n}\n")
+        start = update_sh_content.index("if [[", fn_end)
+        end = update_sh_content.index("\nfi\n", start) + len("\nfi\n")
+        stmt = update_sh_content[start:end]
+        assert "_remote_reachable" in stmt.splitlines()[0], stmt
+        return stmt
+
+    @pytest.mark.parametrize("reexec", [True, False], ids=["re-exec", "fresh-run"])
+    def test_an_unreachable_remote_only_exits_a_fresh_run(self, update_sh_content, tmp_path, reexec):
+        """v0.227.0 port review (adversarial): on the re-exec path Phase 1 has
+        already stopped litclock.timer and the traps are not armed yet, so a
+        gate failure there `exit 1`s with the clock stopped and the status
+        stuck at `running` until the next weekly tick. The outgoing script
+        has just fetched and reset, so reachability is proven: the gate is
+        skipped when $1 (the outgoing script's OLD_SHA) is set, and still
+        exits an offline FRESH run, where nothing is stopped yet."""
+        bindir = self._shim(tmp_path, "exit 128")
+        argv = "set -- deadbeef\n" if reexec else ""
+        program = (
+            f"set -u\nexport PATH={bindir}:$PATH\nexport LITCLOCK_LS_REMOTE_TIMEOUT_S=2\n"
+            'log_error() { echo "[ERROR] $1"; }\n'
+            f"ROLLBACK_TARGET_FILE={tmp_path}/absent-rollback-target\n"
+            + argv
+            + self._gate_block(update_sh_content)
+            + self._gate_statement(update_sh_content)
+            + "echo REACHED_PAST_GATE\n"
+        )
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        if reexec:
+            assert r.returncode == 0 and "REACHED_PAST_GATE" in r.stdout, (r.stdout, r.stderr)
+            assert "Cannot reach remote" not in r.stdout
+        else:
+            assert r.returncode == 1 and "Cannot reach remote" in r.stdout, (r.stdout, r.stderr)
+            assert "REACHED_PAST_GATE" not in r.stdout
+
     def test_a_hung_ls_remote_is_cut_at_the_bound(self, update_sh_content, tmp_path):
         bindir = self._shim(tmp_path, "sleep 30")
         program = (

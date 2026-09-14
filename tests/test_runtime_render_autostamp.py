@@ -279,6 +279,22 @@ class TestUpdateShStampBlockExecutes:
         assert "[validate] FAKE_VALIDATOR_RAN" in r.stdout, r.stdout
         assert "deferring" not in r.stdout
 
+    @pytest.mark.parametrize("slack,runs", [(0, True), (-1, False)], ids=["exactly-fits", "one-second-short"])
+    def test_the_budget_boundary_is_exact(self, tmp_path, slack, runs):
+        """`elapsed + timeout + reserve > budget` defers. The two cases either
+        side of that line are derived from the script's OWN constants, so a
+        `>=`, or a constant dropped from the sum, goes red here rather than
+        surviving the 400/600 and 400/1800 cases above (v0.227.0 port review,
+        testing pass)."""
+        helpers = self._budget_helpers()
+        timeout_s = int(re.search(r"^VALIDATOR_TIMEOUT_S=(\d+)", helpers, re.M).group(1))
+        reserve_s = int(re.search(r"^VALIDATOR_BUDGET_RESERVE_S=(\d+)", helpers, re.M).group(1))
+        budget = 600
+        elapsed = budget - timeout_s - reserve_s - slack
+        r = self._run(tmp_path, marker_exists=False, validator_rc=0, elapsed_s=elapsed, installed_budget_s=budget)
+        assert ("[validate] FAKE_VALIDATOR_RAN" in r.stdout) is runs, f"elapsed={elapsed} budget={budget}\n{r.stdout}"
+        assert ("deferring runtime-render validation" in r.stdout) is (not runs)
+
     def test_a_run_outside_systemd_has_no_budget_to_respect(self, tmp_path):
         """A manual `sudo ./scripts/update.sh` has no TimeoutStartSec; the
         helper returns non-zero and the guard waives the check."""
