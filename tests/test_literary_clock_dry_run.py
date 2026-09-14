@@ -274,19 +274,40 @@ class TestStructural:
         """M3 litclock-dev#245 — the Settings tab's "Show weather on display" toggle
         writes WEATHER_ENABLED. main() must check it before constructing
         a provider, otherwise toggling off has no runtime effect (caught
-        on test Pi 2026-04-29)."""
-        src = LITERARY_CLOCK.read_text()
-        # Read the env var.
-        assert 'os.getenv("WEATHER_ENABLED"' in src, "main() must read WEATHER_ENABLED to honor the Settings tab toggle"
-        # Default is "true" so pre-M3 Pis (without the key in env.sh)
-        # keep their existing behavior on the next update.
-        assert 'os.getenv("WEATHER_ENABLED", "true")' in src, (
-            "WEATHER_ENABLED default must be 'true' for pre-M3 backward compat"
+        on test Pi 2026-04-29).
+
+        litclock-dev#790 rewrote this. It used to assert the literal source
+        text ``os.getenv("WEATHER_ENABLED", "true")``, which is the
+        prose-satisfied shape litclock-dev#782 catalogued: the string also
+        appears in comments, and the assertion pinned an INLINE read that has
+        since been replaced by the shared ``config.weather_enabled()``. The
+        DEFAULT is now pinned by execution in test_weather_enabled_parity.py;
+        what survives here is the one claim that is genuinely about source
+        ORDER and cannot be executed without a display: the toggle is consulted
+        before the provider is built.
+        """
+        # COMMENT-STRIPPED, and that is the whole point (/review).
+        #
+        # The previous version searched the raw source, and the litclock-dev#790 comment
+        # five lines above the executed read contains the literal string
+        # "config.weather_enabled()". str.find returned the COMMENT's offset, so
+        # both assertions below held with the executed call deleted —
+        # mutation-verified. This test was rewritten to escape exactly that
+        # litclock-dev#782 shape and landed straight back in it, because the
+        # rewrite added the prose that satisfies it.
+        #
+        # The BEHAVIOUR is now covered by execution in
+        # tests/test_weather_enabled_parity.py::TestRendererSurface, which runs
+        # the shipped painter. What survives here is only the source-ORDER claim,
+        # which cannot be executed without a display.
+        src = "\n".join(
+            ln for ln in LITERARY_CLOCK.read_text().splitlines() if not ln.lstrip().startswith("#")
         )
-        # Falsy branch must short-circuit before the provider is constructed.
-        # We don't pin the exact control flow, just that the var is consulted
-        # in the same conditional that guards the provider call.
-        get_idx = src.find('os.getenv("WEATHER_ENABLED"')
+        get_idx = src.find("config.weather_enabled()")
         provider_idx = src.find("weather_provider = ")
-        assert get_idx != -1 and provider_idx != -1
+        assert get_idx != -1, (
+            "main() must read the toggle via config.weather_enabled() in EXECUTED code "
+            "(comments are stripped before this search)"
+        )
+        assert provider_idx != -1
         assert get_idx < provider_idx, "WEATHER_ENABLED must be checked BEFORE the weather provider is constructed"

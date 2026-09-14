@@ -41,6 +41,8 @@ from typing import Any
 
 from flask import current_app
 
+import config as _config  # src/ on sys.path; same hard dep as settings.py
+
 from ... import handoff
 from ..._diagnostics_privacy import PRIVACY_POLICY, REDACTED_VALUE, redact, schema_keys
 from ..._env import read_env_settings
@@ -863,7 +865,10 @@ def collect_diagnostics() -> dict[str, Any]:
         "weather_location_mode": env_settings.get("WEATHER_LOCATION_MODE") or None,
         "weather_ip_country": env_settings.get("WEATHER_IP_COUNTRY") or None,
         "weather_units": env_settings.get("WEATHER_UNITS") or None,
-        "weather_enabled": (env_settings.get("WEATHER_ENABLED") or "").lower() in ("true", "1", "yes"),
+        # litclock-dev#790 — shared with the renderer. This line used to default
+        # an ABSENT key to False while literary_clock defaulted it to True, so
+        # the bundle reported weather off on a device that was painting it.
+        "weather_enabled": _config.weather_enabled(env_settings),
         "last_ip_geo_at": env_settings.get("WEATHER_LAST_IP_GEO_AT") or None,
         # Services
         "service_states": services,

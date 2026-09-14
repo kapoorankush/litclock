@@ -17,7 +17,9 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -139,7 +141,11 @@ class TestUpdateScriptStructure:
         nothing. Restore is save/restore, not a blind `shopt -u`, so a future
         `shopt -s nullglob` earlier in this 1400-line script is not silently
         cleared for every later phase."""
-        block = _tmpfiles_block(update_sh_content)
+        # litclock-dev#782 — assert on EXECUTED lines. This block's comments
+        # name `shopt -s nullglob` while explaining why it is needed, so a raw
+        # membership test was satisfied by the prose: measured green with the
+        # executed line deleted.
+        block = _executed_lines(_tmpfiles_block(update_sh_content))
         assert "shopt -s nullglob" in block, "the tmpfiles glob is not guarded by nullglob"
         assert "_ng_saved=$(shopt -p nullglob)" in block, "nullglob must be saved before being set"
         assert 'eval "$_ng_saved"' in block, "nullglob must be RESTORED, not blindly cleared"
@@ -233,9 +239,13 @@ class TestUpdateScriptStructure:
     def test_author_clock_migration_present(self, update_sh_content):
         """The author-clock → litclock rename migration must stay in place
         until we're sure no author-clock installs remain in the wild."""
-        assert "author-clock" in update_sh_content
-        assert "/etc/authorclock" in update_sh_content
-        assert "/etc/litclock" in update_sh_content
+        # litclock-dev#782 — EXECUTED lines: the docstring above and the
+        # migration's own comments say "author-clock", so the raw form passed
+        # with the migration deleted (measured).
+        executed = _executed_lines(update_sh_content)
+        assert "author-clock" in executed
+        assert "/etc/authorclock" in executed
+        assert "/etc/litclock" in executed
         assert "authorclock*.service" in update_sh_content
         assert "authorclock*.timer" in update_sh_content
 
@@ -272,8 +282,10 @@ class TestUpdateScriptStructure:
         existing values in env.sh."""
         # The merge loop reads sample, appends only when varname is NOT
         # already present in env.sh.
-        assert "env.sh.sample" in update_sh_content
-        assert 'grep -q "^[# ]*export[[:space:]]\\+${varname}=" "$INSTALL_DIR/env.sh"' in update_sh_content
+        # litclock-dev#782 — EXECUTED lines (3 executed lines could vanish green).
+        executed = _executed_lines(update_sh_content)
+        assert "env.sh.sample" in executed
+        assert 'grep -q "^[# ]*export[[:space:]]\\+${varname}=" "$INSTALL_DIR/env.sh"' in executed
 
     def test_stale_symlinks_removed(self, update_sh_content):
         """Post-litclock-dev#79 reorg: root-level script symlinks (boot-splash.sh etc.)
@@ -354,7 +366,13 @@ class TestUpdateScriptStructure:
     def test_sources_lib_state(self, update_sh_content):
         """litclock-dev#241 D3 — atomic helpers were factored to scripts/lib/state.sh.
         update.sh must source it instead of redefining them inline."""
-        assert "lib/state.sh" in update_sh_content, "update.sh must source scripts/lib/state.sh"
+        # litclock-dev#782 — EXECUTED lines. The `source` lines are described in
+        # neighbouring comments naming lib/state.sh, so the raw form stayed green
+        # with all three executed `source` lines deleted (measured). This is the
+        # material one: every atomic write in update.sh goes through those helpers.
+        assert "lib/state.sh" in _executed_lines(update_sh_content), (
+            "update.sh must source scripts/lib/state.sh"
+        )
         # And the helpers must NOT be redefined inside update.sh itself.
         # `atomic_write_file()` definition would look like the function header.
         import re
@@ -373,7 +391,9 @@ class TestUpdateScriptStructure:
         next_phase_idx = update_sh_content.find("Phase 6:", phase5_idx)
         assert phase5_idx != -1 and next_phase_idx != -1
         phase5_block = update_sh_content[phase5_idx:next_phase_idx]
-        assert "WantedBy=litclock.service" in phase5_block, (
+        # litclock-dev#782 — EXECUTED lines: the surrounding comment quotes
+        # `WantedBy=litclock.service` while explaining the legacy install.
+        assert "WantedBy=litclock.service" in _executed_lines(phase5_block), (
             "Phase 5 must detect the legacy WantedBy=litclock.service install"
         )
         assert "systemctl disable litclock-lkg.service" in phase5_block, (
@@ -458,7 +478,10 @@ class TestUpdateScriptStructure:
 
         Must stay in sync with pi-gen/stage3/01-setup-app/00-run.sh:34.
         """
-        assert "requirements-apt.txt" in update_sh_content, (
+        # litclock-dev#782 — EXECUTED lines. The litclock-dev#214 sdist-compile hazard is
+        # explained in a comment that names the file, so the raw form passed
+        # with the executed read deleted (measured).
+        assert "requirements-apt.txt" in _executed_lines(update_sh_content), (
             "update.sh must read apt-provisioned names from requirements-apt.txt (litclock-dev#214)"
         )
         assert "grep -vE" in update_sh_content, (
@@ -723,10 +746,14 @@ class TestAutoUpdateStructure:
         )
 
     def test_smoke_failure_reverts_head_and_wipes_hash(self, update_sh_content):
-        """On smoke-test failure, revert to REVERT_SHA AND delete pip hash file
-        so the next run re-rebuilds the venv from scratch. Leaving the hash
-        in place would mean the partially-updated venv appears clean to
-        Phase 4's hash gate on the next timer fire.
+        """On smoke-test failure, revert to REVERT_SHA AND delete the pip hash
+        file so the next run re-runs `pip install`. (Deleting the hash sets
+        NEED_PIP; it does NOT by itself recreate the venv — the falsified
+        "rebuilds from scratch" phrasing this docstring used to carry is the
+        one `test_pip_install_failure_comment_honest_about_hash_delete`
+        below forbids in the script.) Leaving the hash in place would mean the
+        partially-updated venv appears clean to Phase 4's hash gate on the next
+        timer fire.
 
         REVERT_SHA == OLD_SHA in a normal update; in bootcheck rollback mode it
         is the LKG target, so a failure stays on the last-known-good rather than
@@ -821,11 +848,18 @@ class TestAutoUpdateStructure:
         # EXIT trap would not arm and update.status would be stuck at
         # `running`. Setting it first lets the trap's failed_unrecovered
         # fallback still fire on a status-write crash.
-        assert "_LITCLOCK_UPDATE_FINALIZED=1" in fail_block, (
+        # litclock-dev#782 — EXECUTED lines throughout this test. update.sh's own
+        # comments quote `_LITCLOCK_UPDATE_FINALIZED=1` and `REVERT_OK` while
+        # explaining them, so the raw forms were satisfied by prose: measured
+        # green with all 4 executed FINALIZED lines and all 8 executed REVERT_OK
+        # lines deleted. Both find() offsets must come from the SAME executed
+        # string or the ordering comparison is meaningless.
+        fail_executed = _executed_lines(fail_block)
+        assert "_LITCLOCK_UPDATE_FINALIZED=1" in fail_executed, (
             "pip-install failure must set _LITCLOCK_UPDATE_FINALIZED=1 (litclock-dev#324)"
         )
-        finalized_idx = fail_block.find("_LITCLOCK_UPDATE_FINALIZED=1")
-        status_write_idx = fail_block.find("update_status_failed_unrecovered")
+        finalized_idx = fail_executed.find("_LITCLOCK_UPDATE_FINALIZED=1")
+        status_write_idx = fail_executed.find("update_status_failed_unrecovered")
         assert finalized_idx != -1 and status_write_idx != -1
         # The duplicate ordering check below is also covered by the dedicated
         # test_pip_install_failure_finalized_before_status_write test; keep
@@ -840,7 +874,7 @@ class TestAutoUpdateStructure:
         # `|| true` swallowed git reset / submodule update failures, so the
         # script would record failed_reverted (now: failed_unrecovered) even
         # when the revert itself failed. Track REVERT_OK to distinguish.
-        assert "REVERT_OK" in fail_block, (
+        assert "REVERT_OK" in fail_executed, (
             "pip-install failure branch must capture revert exit codes via REVERT_OK so we can "
             "tell 'code reverted, venv uncertain' from 'revert itself failed' (codex Finding 2)"
         )
@@ -848,7 +882,7 @@ class TestAutoUpdateStructure:
         # The "|| true" patterns from the original commit must be gone —
         # they swallowed real failure signal. The branch should rely on
         # explicit if-tests + PIPESTATUS instead.
-        assert "git reset --hard \"$OLD_SHA\" 2>&1 | sed 's/^/[revert] /' || true" not in fail_block, (
+        assert "git reset --hard \"$OLD_SHA\" 2>&1 | sed 's/^/[revert] /' || true" not in fail_executed, (
             "rollback `git reset` must NOT use `|| true` — that swallows revert failures and "
             "lets the script lie about state (codex Finding 2)"
         )
@@ -868,8 +902,10 @@ class TestAutoUpdateStructure:
         assert fail_idx != -1 and exit_idx != -1
         fail_block = update_sh_content[fail_idx:exit_idx]
 
-        finalized_idx = fail_block.find("_LITCLOCK_UPDATE_FINALIZED=1")
-        unrecovered_idx = fail_block.find("update_status_failed_unrecovered")
+        # litclock-dev#782 — both offsets from the same EXECUTED string.
+        fail_executed = _executed_lines(fail_block)
+        finalized_idx = fail_executed.find("_LITCLOCK_UPDATE_FINALIZED=1")
+        unrecovered_idx = fail_executed.find("update_status_failed_unrecovered")
         assert finalized_idx != -1, "FINALIZED=1 must appear in pip-fail branch"
         assert unrecovered_idx != -1, "failed_unrecovered call must appear in pip-fail branch"
         assert finalized_idx < unrecovered_idx, (
@@ -890,11 +926,15 @@ class TestAutoUpdateStructure:
         assert fail_idx != -1 and exit_idx != -1
         fail_block = update_sh_content[fail_idx:exit_idx]
 
-        # The "from scratch" wording specifically should not survive in
-        # the pip-fail branch — it overstates what rm -f HASH_FILE does.
-        # The smoke-fail branch still uses similar wording but that one
-        # also runs against a known-good post-install venv, so semantics
-        # differ; we only assert against the pip-fail block.
+        # The "from scratch" wording overstates what `rm -f HASH_FILE` does —
+        # it sets NEED_PIP, it does not recreate the venv.
+        #
+        # This comment used to add that the smoke-fail branch "still uses
+        # similar wording but ... semantics differ". That justification was
+        # rejected in review (litclock-dev#773) and the wording is gone from
+        # that branch too, so the carve-out is stale. The assert stays scoped to
+        # the pip-fail block because that is the block this test lifts; the
+        # whole-file version is the self-heal comment audit on the same issue.
         assert "re-rebuilds the venv from scratch" not in fail_block, (
             "pip-install failure branch must not claim hash-delete rebuilds the venv from "
             "scratch — rm -f HASH_FILE only forces the next Phase 4 to re-attempt pip install "
@@ -941,7 +981,10 @@ class TestAutoUpdateStructure:
         import re
         from pathlib import Path
 
-        assert "lib/state.sh" in update_sh_content, "update.sh must source the shared atomic helpers"
+        # litclock-dev#782 — EXECUTED lines (see test_sources_lib_state).
+        assert "lib/state.sh" in _executed_lines(update_sh_content), (
+            "update.sh must source the shared atomic helpers"
+        )
         state_lib = Path(__file__).resolve().parent.parent / "scripts" / "lib" / "state.sh"
         assert state_lib.exists(), "scripts/lib/state.sh must exist"
         lib_text = state_lib.read_text()
@@ -1078,7 +1121,11 @@ class TestPersistentLastUpdateWriter:
         assert ".state ==" in block, "validate-then-cp must check .state"
         assert ".to_version ==" in block, "validate-then-cp must check .to_version matches new SHA"
         assert ".finished_at_unix" in block, "validate-then-cp must check .finished_at_unix freshness"
-        assert "jq -e" in block, "validate-then-cp must use jq -e for the boolean exit code"
+        # litclock-dev#782 — EXECUTED lines: this block's docstring and comments
+        # both say "jq -e".
+        assert "jq -e" in _executed_lines(block), (
+            "validate-then-cp must use jq -e for the boolean exit code"
+        )
         # And it must reference $NEW_SHA — that's the just-installed target.
         assert "$NEW_SHA" in block or "expected" in block, (
             "validate-then-cp must compare to_version against the just-installed SHA ($NEW_SHA)"
@@ -2126,3 +2173,1162 @@ class TestDetachedHeadWarning:
         out = self._run("feat/experiment")
         assert "reset to master" not in out
         assert "master" not in out
+
+
+# The exact initialiser block Phase 4.5 relies on (litclock-dev#773). Both
+# harnesses below LIFT this from the script rather than define their own, so
+# deleting or renaming either variable fails the lift instead of being
+# silently supplied by the test.
+_SMOKE_INIT = "smoke_rc=0\nsmoke_no_interpreter=0\n"
+
+
+def _executed_lines(text: str) -> str:
+    """`text` with comment-only lines dropped.
+
+    A source-text assertion SHOULD run against this rather than the raw span:
+    update.sh's comments quote the very tokens the guards anchor on, so a raw
+    assert is satisfied by prose while the executed line it names is gone.
+    Measured on three separate guards in this file.
+
+    "Should", not "must" — nothing enforces it, and ~115 assertions in this file
+    still compare against raw `update.sh` text against only four that come
+    through here. Of the 24 whose anchor also occurs in a comment, eight to nine
+    were measured comment-satisfiable AND whole-file green (the count moves by
+    one with deletion granularity): `REVERT_OK` and `lib/state.sh` are the
+    material ones, at eight and three executed lines respectively. All predate
+    this helper and are tracked on litclock-dev#773 rather than fixed here
+    (/review).
+    """
+    return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+
+
+def _full_gate_span(content: str) -> str:
+    """The initialisers, the `-x` condition AND the dispatch, in one span.
+
+    The litclock-dev#662 rule: the branch under test has to be INSIDE the
+    lifted text.
+
+    The dry-run line is INSIDE this span and IS reached — by the
+    `no_interpreter=False` control, whose `$PYTHON` is a stub that exits 1
+    immediately, so the real painter never runs. (Two earlier versions of this
+    docstring were wrong in opposite directions: "excluded deliberately" — it
+    is not excluded — and then "never EXECUTED" — the control reaches it. The
+    safety comes from WHAT `$PYTHON` points at, not from the branch being
+    unreachable.) Any change that lets a real interpreter reach this line runs
+    the painter inside a fixture checkout with no corpus, so re-check the stub
+    first.
+    """
+    start = content.index(_SMOKE_INIT)
+    end = content.index('update_status_failed_reverted "Smoke test failed', start)
+    end = content.index("fi\n", content.index("exit 1", end)) + len("fi\n")
+    span = content[start:end]
+    assert span.startswith(_SMOKE_INIT), "the initialisers must lead the span, not be injected"
+    # Comment-STRIPPED. Both anchors also occur in COMMENTS inside this span,
+    # so the raw-text version was satisfied by prose (/review).
+    executed = _executed_lines(span)
+    assert "git reset --hard" in executed, "the revert dispatch is missing from the span"
+    # And ANCHORED ON THE ELSE ARM, not on the bare token. There are three
+    # executed `smoke_rc=1` lines in this span — two probe-failure arms and the
+    # missing-interpreter one — so a bare `"smoke_rc=1" in executed` stayed
+    # green with the whole else arm gutted to `:`, which is exactly the
+    # regression the message claims to catch (/review, round 3). The pair below
+    # is unique to the else arm, and the count pins the other two.
+    assert "smoke_rc=1\n    smoke_no_interpreter=1" in executed, (
+        "the missing-interpreter else arm is missing from the span, or its two assignments are "
+        "no longer ADJACENT AND IN THIS ORDER (smoke_rc first). The order is not semantic — "
+        "swapping them is behaviour-identical — but the pair pins both flags at once, which a "
+        "single-token anchor cannot. If you swapped them deliberately, update this "
+        "anchor; the arm itself is driven by the executed tests below"
+    )
+    # `== 3`, not `>= 1`: a bare `"smoke_rc=1" in executed` was satisfied by any
+    # of the three, so gutting the else arm entirely stayed green (/review). The
+    # they are the two probe-failure arms, the count-probe arm (litclock-dev#773
+    # item 2) and the missing-interpreter arm.
+    # (`_gate_span`'s `len(invocations) == 2`, ~80 lines BELOW, is also exact but
+    # for a different reason: there the stitch discards a region, so a third
+    # probe could land where no test looks. Both are exact; do not read one as
+    # the precedent for the other.)
+    # Adding a fourth failure arm is legitimate — bump this number and add its
+    # own executed test; do not relax the comparison.
+    # 4 since litclock-dev#773 item 2 added the catalog-COUNT failure arm; its
+    # executed test is TestCatalogTruncationIsCaught below, as this comment
+    # requires.
+    assert executed.count("smoke_rc=1") == 4, (
+        f"expected 4 executed `smoke_rc=1` lines in the span (two probe-failure arms + the "
+        f"count-probe arm + the missing-interpreter arm); found {executed.count('smoke_rc=1')}"
+    )
+    return span
+
+
+class TestCatalogSmokeGateIsLanguageAgnostic:
+    """litclock-dev#763 — the catalog smoke gate compares against hardcoded
+    English literals, but `catalog-get` resolves through
+    `strings_catalog.active_language()`, which reads the process environment and
+    only then env.sh. `litclock-update.service` passes no `LITCLOCK_LANGUAGE`,
+    so the probe returned the DEVICE OWNER'S chosen language while the expected
+    values stayed English. The full mechanism lives on the code, in the
+    litclock-dev#763 comment in `scripts/update.sh`.
+
+    What this class proves, and why it is shaped this way:
+
+    It drives the REAL lifted gate against a REAL second active language,
+    through the real `catalog-get` CLI and the real resolver. A stub `$PYTHON`
+    would have tested the shape of the gate against a MODEL of the resolver —
+    and the resolver's precedence rules are where the entire defect lives, so
+    the model is the one part that must not be assumed.
+
+    The span is lifted through the KEEP/revert dispatch, not just the probes.
+    Stopping at the probes let `if [[ "$smoke_rc" -eq 0 ]]` -> `if true` on the
+    dispatch, and `break` -> `exit 1` inside the loop, both survive: the tests
+    saw the error text and no success marker, while production skipped the
+    entire revert arm.
+
+    Every probe invocation is logged by a `$PYTHON` wrapper, so a test can
+    assert WHICH probes ran and in what order. Output alone cannot: the
+    "Splash-triplet smoke passed" line is suppressed by a trailing `&&` whether
+    or not the block ran, so asserting on its absence proves nothing about the
+    `smoke_rc` gating it appears to prove.
+    """
+
+    STATUS_KEY = "status.relative.just_now"
+    SPLASH_KEYS = ("boot.splash.starting.title", "firstboot.splash.setup_incomplete.title")
+
+    @staticmethod
+    def _gate_span(content: str) -> str:
+        """Lift the probe blocks AND the dispatch as ONE span, conditions included.
+
+        litclock-dev#662's rule: a branch condition has to be inside the lifted
+        span or the test proves nothing. That applies to the KEEP/revert
+        dispatch too — it is the branch the probes exist to drive.
+        """
+        probe_at = content.index("catalog_probe=")
+        start = content.rindex('if [[ "$smoke_rc" -eq 0 ]]; then', 0, probe_at)
+
+        # LIFT the initialisers rather than inject them (/review). Injecting
+        # `smoke_rc=0` made deleting it from the script an equivalent mutant —
+        # the harness supplied its own. Lifted, a deleted initialiser is an
+        # IndexError here, i.e. red.
+        init = content[content.index(_SMOKE_INIT):][: len(_SMOKE_INIT)]
+
+        # litclock-dev#773 moved the KEEP/revert dispatch OUT of the
+        # `if [[ -x "$PYTHON" ]]` block, so the text between the probes and the
+        # dispatch now contains that block's `else` arm and its closing `fi`.
+        # Lifting it verbatim yields an `else` with no `if` — a bash syntax
+        # error, which surfaces as "the gate did not keep the update" rather
+        # than as anything about the span. Stitch the two halves instead.
+        probes_end = content.index("\nelse\n", probe_at)
+        dispatch_start = content.index('if [[ "$smoke_rc" -eq 0 ]]; then', content.index("\nfi\n", probes_end))
+        end = content.index('update_status_failed_reverted "Smoke test failed', dispatch_start)
+        end = content.index("fi\n", content.index("exit 1", end)) + len("fi\n")
+        span = init + content[start:probes_end] + "\n" + content[dispatch_start:end]
+
+        invocations = [
+            ln for ln in span.splitlines() if '"$PYTHON" src/eink_display.py catalog-get' in ln
+        ]
+        assert len(invocations) == 2, (
+            f"expected exactly 2 probe sites inside the lifted span; found {len(invocations)}. "
+            "Counting the bare word 'catalog-get' would count the comments too. This is `==`, "
+            "not `>=`: the stitch DISCARDS the text between the probes and the dispatch, so a "
+            "third probe landing in that gap would drop out of every executed test below while "
+            "all of them stayed green."
+        )
+        # litclock-dev#773 item 2 added a COUNT probe. It is held to the same
+        # two contracts as the value probes below (pinned to English, bounded by
+        # a timeout), so it joins `invocations` rather than getting a weaker
+        # check of its own — an unpinned or unbounded probe is the same hazard
+        # whichever subcommand it calls.
+        count_invocations = [
+            ln for ln in span.splitlines() if '"$PYTHON" src/eink_display.py catalog-count' in ln
+        ]
+        assert len(count_invocations) == 1, (
+            f"expected exactly 1 catalog-count probe inside the lifted span; found "
+            f"{len(count_invocations)}. Same `==` reasoning as above."
+        )
+        invocations += count_invocations
+        # The same blind spot, asserted directly. Anything the stitch throws
+        # away is invisible to every test in this class, so nothing that the
+        # class exists to check may live there.
+        discarded = content[probes_end:dispatch_start]
+        discarded_code = "\n".join(
+            ln for ln in discarded.splitlines() if not ln.lstrip().startswith("#")
+        )
+        for subcommand in ("catalog-get", "catalog-count"):
+            assert subcommand not in discarded_code, (
+                f"a {subcommand} probe sits in the region the stitch discards — it would be "
+                "exercised by NO test in this class, and the pin/timeout assertions below "
+                "could not see it"
+            )
+        # The discarded region is the `-x` block's else arm, which IS executed —
+        # by TestAMissingInterpreterIsAFailureNotASkip, whose span starts at the
+        # initialisers and runs past the dispatch. Pin that, so the gap can never
+        # widen into text no harness runs.
+        assert discarded in _full_gate_span(content), (
+            "the text this stitch discards is no longer inside the span the missing-interpreter "
+            "harness executes, so it is now run by NO test in this file"
+        )
+        # EVERY probe stays pinned. litclock-dev#772 proposed an unpinned one to
+        # exercise the device's own language; it was built, measured, and
+        # removed — get()'s `de -> en -> key` fallback is total, so a broken
+        # translation serves English rather than raw keys and the probe could
+        # not fail while English was intact. The gate's job is DELIVERY
+        # integrity — that the checkout arrived intact — and delivery damage is
+        # not language-selective, which is why English works as the canary.
+        # (An earlier version of this comment claimed catalog_lint and the
+        # Stage-3/4 gates cover the content side. They do not, for the general
+        # case: Stage-3 diffs the other languages AGAINST English, and
+        # catalog_lint iterates the keys PRESENT in each bundle. Two source
+        # sweeps DO exist and were measured live — catalog_lint.rich_capable_keys
+        # over the 13 t_rich/_rich sites, and
+        # TestBashTripletParity::test_every_painted_prefix_is_in_this_table over
+        # the five splash scripts' --catalog-prefix sites. Measured UNSWEPT: a
+        # ghost key in a Jinja `t()` call and in an in-function
+        # `_catalog_get()`. Either way it is not this gate's job; tracked on
+        # litclock-dev#773.)
+        for ln in invocations:
+            assert "LITCLOCK_LANGUAGE=en" in ln, f"unpinned catalog probe (litclock-dev#763): {ln.strip()}"
+            assert "timeout 30" in ln, f"unbounded catalog probe — a hang inside the OTA: {ln.strip()}"
+        # Comment-STRIPPED, same as the sibling belts in _full_gate_span. These
+        # two were left raw when those were fixed (/review): "git reset --hard"
+        # occurs in a comment inside this span, so the raw assert was satisfied
+        # by prose. It only looked red because the `discarded in
+        # _full_gate_span(content)` check above fires first — an accidental
+        # shadow, not a guard.
+        span_executed = _executed_lines(span)
+        assert "smoke_rc=1" in span_executed, "the failure arm must be inside the span, or nothing can go red"
+        assert "git reset --hard" in span_executed, "the revert dispatch must be inside the span"
+        return span
+
+    def _fake_checkout(self, tmp_path):
+        """A tree that IS a repo root as far as strings_catalog is concerned.
+
+        `_REPO_ROOT` is `Path(__file__).resolve().parent.parent`, so a real copy
+        of `src/` here makes the registry, the bundles and env.sh all resolve out
+        of tmp_path. Copied, not symlinked — `resolve()` would follow a symlink
+        straight back to the real checkout and the fixture would test nothing.
+        """
+        root = tmp_path / "checkout"
+        (root / "languages" / "zz").mkdir(parents=True)
+        (root / "src").mkdir()
+        # The .py modules only, not copytree: src/ picks up runtime debris a
+        # tree copy chokes on (an lgpio notify FIFO survives a crashed painter),
+        # and catalog-get needs nothing else.
+        modules = sorted(REPO_ROOT.glob("src/*.py"))
+        assert any(m.name == "strings_catalog.py" for m in modules), "src/*.py glob found no catalog"
+        for module in modules:
+            shutil.copy2(module, root / "src" / module.name)
+        shutil.copytree(REPO_ROOT / "languages" / "en", root / "languages" / "en")
+
+        registry = json.loads((REPO_ROOT / "languages.json").read_text(encoding="utf-8"))
+        registry["languages"]["zz"] = dict(
+            registry["languages"]["en"],
+            code="zz",
+            native_name="Zzzz",
+            status="active",
+            strings="languages/zz/strings.json",
+        )
+        (root / "languages.json").write_text(json.dumps(registry), encoding="utf-8")
+
+        # EVERY value differs from English, not just the probed keys. With only
+        # those translated, a future probe added WITHOUT the pin would resolve
+        # the English value out of the zz bundle and this class would stay green
+        # on the exact regression it exists to catch.
+        english = json.loads((REPO_ROOT / "languages" / "en" / "strings.json").read_text(encoding="utf-8"))
+        (root / "languages" / "zz" / "strings.json").write_text(
+            json.dumps({k: f"ZZ-{v}" for k, v in english.items()}), encoding="utf-8"
+        )
+
+        # The real mechanism: the OWNER's language lives in env.sh, and the
+        # update unit passes no environment at all. Setting LITCLOCK_LANGUAGE in
+        # the test's own env instead would let the pin "work" for the wrong
+        # reason — the probe would inherit it rather than set it.
+        (root / "env.sh").write_text("export LITCLOCK_LANGUAGE=zz\n", encoding="utf-8")
+        return root
+
+    @staticmethod
+    def _clean_env(**overrides):
+        """Every LITCLOCK_* var dropped, not just LITCLOCK_LANGUAGE.
+
+        `_env_file_path()` honours LITCLOCK_ENV_FILE and then LITCLOCK_DIR
+        BEFORE the repo-root fallback the fixture relies on. Measured: an
+        ambient `LITCLOCK_DIR` left three of these tests passing vacuously,
+        because zz never activated — the class stayed loud only by accident,
+        through the fixture guard.
+        """
+        return {**{k: v for k, v in os.environ.items() if not k.startswith("LITCLOCK_")}, **overrides}
+
+    def _english(self, root, key):
+        strings = json.loads((root / "languages" / "en" / "strings.json").read_text(encoding="utf-8"))
+        return strings[key]
+
+    def _drop_english_keys(self, root, *keys):
+        bundle = root / "languages" / "en" / "strings.json"
+        strings = json.loads(bundle.read_text(encoding="utf-8"))
+        for key in keys:
+            assert strings.pop(key, None) is not None, f"{key} was not in the English bundle to begin with"
+        bundle.write_text(json.dumps(strings), encoding="utf-8")
+
+    def _catalog_get(self, root, key, **overrides):
+        return subprocess.run(
+            [sys.executable, "src/eink_display.py", "catalog-get", key],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=self._clean_env(**overrides),
+        ).stdout.strip()
+
+    def _run_gate(self, root, span):
+        """Execute the lifted span. Returns (result, probes_in_order)."""
+        probe_log = root / "probes.log"
+        wrapper = root / "python-probe-wrapper"
+        wrapper.write_text(
+            "#!/bin/bash\n"
+            f'printf "%s\\n" "${{@: -1}}" >> {shlex.quote(str(probe_log))}\n'
+            f'exec {shlex.quote(sys.executable)} "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+
+        _harness_marker = root / ".runtime-render-validated"
+        _harness_marker.write_text("harness")
+        program = (
+            "set -u\n"
+            'GREEN=""\nRED=""\nYELLOW=""\nNC=""\n'
+            'log_info() { echo "[INFO] $1"; }\n'
+            'log_warn() { echo "[WARN] $1"; }\n'
+            'log_error() { echo "[ERROR] $1"; }\n'
+            # The revert arm is real code with real side effects. Stub every one
+            # of them AND run from the fake checkout (not a git repo), so even an
+            # unstubbed git could not touch the developer's tree.
+            'git() { echo "STUB_GIT $*"; }\n'
+            'sudo() { echo "STUB_SUDO $*"; }\n'
+            'atomic_remove_file() { echo "STUB_ATOMIC_REMOVE $1"; }\n'
+            'atomic_write_file() { echo "STUB_ATOMIC_WRITE $1"; }\n'
+            'update_status_failed_reverted() { echo "STUB_STATUS_REVERTED $1"; }\n'
+            # Both terminal statuses stubbed, DISTINGUISHABLY. Stubbing only
+            # one is the litclock-dev#764 blind spot: these harnesses omit
+            # `set -e`, so the unstubbed call would emit `command not found`
+            # to stderr and execution would carry on green.
+            'update_status_failed_unrecovered() { echo "STUB_STATUS_UNRECOVERED $1"; }\n'
+            f"PYTHON={shlex.quote(str(wrapper))}\n"
+            "REVERT_SHA=deadbeef\nUPDATE_FAILED_FILE=/dev/null\nHASH_FILE=/dev/null\n"
+            # litclock-dev#531 — the KEEP arm now re-stamps the runtime-render
+            # marker when it is ABSENT. This harness runs under `set -u` and the
+            # variable is defined ~500 lines above the lifted span, so without
+            # this line bash dies at the guard and never reaches REACHED_END.
+            # A REAL regular file, created below, so the guard sees a present
+            # marker and skips the block — these tests are about the catalog
+            # probes; the stamp block is executed on its own in
+            # tests/test_runtime_render_autostamp.py. NOT /dev/null: the guard is
+            # `! -f`, and /dev/null is a character device, so `-f` is false and
+            # the block ran anyway, logging '/dev/null' as a fifth probe. Caught
+            # by running it.
+            f"RUNTIME_MARKER={shlex.quote(str(_harness_marker))}\n"
+            "_LITCLOCK_UPDATE_FINALIZED=0\n"
+            f"{span}\n"
+            'echo "REACHED_END rc=$smoke_rc"\n'
+        )
+        result = subprocess.run(
+            ["bash", "-c", program],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=self._clean_env(),
+        )
+        probes = probe_log.read_text(encoding="utf-8").split() if probe_log.exists() else []
+        return result, probes
+
+    def _assert_kept(self, r):
+        """The gate KEPT the update — the whole dispatch ran, not just the probes."""
+        assert "REACHED_END rc=0" in r.stdout, f"the gate did not keep the update\n{r.stdout}\n{r.stderr}"
+        assert r.returncode == 0, r.stderr
+        assert "Smoke test passed" in r.stdout
+        assert "STUB_GIT reset --hard" not in r.stdout, "a passing gate must not revert"
+
+    def _assert_reverted(self, r):
+        """The gate REVERTED — and reached the revert arm, rather than dying.
+
+        `"Catalog smoke failed" in stdout` is not enough on its own: `break` ->
+        `exit 1` inside the probe loop emits that line and then leaves, skipping
+        `git reset --hard`, the HASH_FILE delete, the failure marker and the
+        service restart. Measured green before this assertion existed.
+        """
+        assert "Smoke test failed" in r.stdout, f"the gate did not revert\n{r.stdout}\n{r.stderr}"
+        assert "STUB_GIT reset --hard deadbeef" in r.stdout, (
+            f"the gate reported failure but never reached the revert arm\n{r.stdout}"
+        )
+        assert "STUB_SUDO systemctl start litclock.service" in r.stdout, (
+            "a reverting OTA must bring the clock back up on the old SHA"
+        )
+        assert r.returncode == 1, f"the revert arm exits 1; got {r.returncode}\n{r.stdout}"
+
+    def test_the_fixture_really_does_create_the_failure_condition(self, tmp_path):
+        """The harness gets its own test, because a fixture that quietly failed
+        to activate `zz` would make every test below pass for the reason they
+        always passed — and that is the exact defect under repair."""
+        root = self._fake_checkout(tmp_path)
+        for key in (self.STATUS_KEY, *self.SPLASH_KEYS):
+            assert self._catalog_get(root, key) == f"ZZ-{self._english(root, key)}", (
+                f"the fixture did not activate zz for {key} — without it this class asserts nothing"
+            )
+        # ...and the pin is what pulls it back to English.
+        assert self._catalog_get(root, self.STATUS_KEY, LITCLOCK_LANGUAGE="en") == "just now"
+
+    def test_the_gate_passes_on_a_non_english_device(self, update_sh_content, tmp_path):
+        root = self._fake_checkout(tmp_path)
+        r, probes = self._run_gate(root, self._gate_span(update_sh_content))
+        assert "Catalog smoke passed" in r.stdout, (
+            "the catalog smoke gate failed on a device whose owner picked a non-English "
+            f"language. That reverts the OTA on every weekly tick.\n{r.stdout}\n{r.stderr}"
+        )
+        assert "Splash-triplet smoke passed" in r.stdout
+        assert "Catalog size smoke passed" in r.stdout, (
+            f"the litclock-dev#773 count probe must also pass here\n{r.stdout}\n{r.stderr}"
+        )
+        self._assert_kept(r)
+        # The count probe logs as "catalog-count": the wrapper records the LAST
+        # argument, and that subcommand takes none.
+        assert probes == [self.STATUS_KEY, *self.SPLASH_KEYS, "catalog-count"], (
+            f"all four probes must run on the happy path; got {probes}. Dropping an entry "
+            "from the `for probe in ...` list is otherwise invisible."
+        )
+
+    def test_the_gate_still_fails_when_the_catalog_is_gone(self, update_sh_content, tmp_path):
+        """The litclock-dev#532 failure the gate was written for: `languages/`
+        absent, so even the English lookup degrades to the raw key."""
+        root = self._fake_checkout(tmp_path)
+        shutil.rmtree(root / "languages")
+        r, _ = self._run_gate(root, self._gate_span(update_sh_content))
+        assert "Catalog smoke failed" in r.stdout
+        self._assert_reverted(r)
+
+    def test_the_status_probe_has_its_own_teeth(self, update_sh_content, tmp_path):
+        """With `languages/` deleted every probe fails, so neutering any single
+        comparison stayed green (measured). Each probe needs a failure only it
+        can catch — here, the status key alone."""
+        root = self._fake_checkout(tmp_path)
+        self._drop_english_keys(root, self.STATUS_KEY)
+        r, probes = self._run_gate(root, self._gate_span(update_sh_content))
+        assert f"catalog-get returned '{self.STATUS_KEY}'" in r.stdout, (
+            f"the failure must name the degraded value\n{r.stdout}"
+        )
+        self._assert_reverted(r)
+        assert probes == [self.STATUS_KEY], (
+            "the splash-triplet block is gated on smoke_rc and must not run after the status "
+            f"probe failed; probes actually run: {probes}. Asserting on the absence of the "
+            '"Splash-triplet smoke passed" line proves nothing here — a trailing `&&` '
+            "suppresses that line whether or not the block ran."
+        )
+
+    @pytest.mark.parametrize("index", (0, 1))
+    def test_each_splash_probe_has_its_own_teeth(self, update_sh_content, tmp_path, index):
+        """Parametrised over the two entries of the `for probe in ...` list.
+
+        Dropping BOTH splash keys is not enough: the loop `break`s on the first
+        mismatch, so the second entry is never probed on any failing path and
+        deleting it from the list survived. This is the litclock-dev#532
+        bulk-extraction case the loop exists for — status keys fine, recovery
+        screens showing raw keys — and update.sh calls the firstboot one "the
+        copy a stuck user is left staring at".
+        """
+        key = self.SPLASH_KEYS[index]
+        root = self._fake_checkout(tmp_path)
+        self._drop_english_keys(root, key)
+
+        assert self._catalog_get(root, self.STATUS_KEY, LITCLOCK_LANGUAGE="en") == "just now", (
+            "precondition: the status probe must still PASS, or this repeats the test above"
+        )
+
+        r, probes = self._run_gate(root, self._gate_span(update_sh_content))
+        assert "Catalog smoke passed" in r.stdout, "the status probe was supposed to pass"
+        assert f"catalog-get {key} returned" in r.stdout, (
+            f"the failure must name {key}, or that probe-list entry is untested\n{r.stdout}"
+        )
+        assert "Splash-triplet smoke passed" not in r.stdout
+        self._assert_reverted(r)
+        assert probes == [self.STATUS_KEY, *self.SPLASH_KEYS[: index + 1]], (
+            f"the loop must probe up to {key} and break there; got {probes}"
+        )
+
+    def test_the_pin_is_confined_to_the_smoke_gate(self):
+        """The inverse property, and the one this class makes it easy to break:
+        panel text must render in the OWNER'S language. Every other
+        `catalog-get` caller — boot splash, first-boot, shutdown, bootcheck
+        recovery — must stay unpinned, so copying this prefix onto one of them
+        would force English panels on a translated device.
+        """
+        # A COMMAND PREFIX specifically — `LITCLOCK_LANGUAGE=x cmd ...` — not the
+        # `export LITCLOCK_LANGUAGE=...` lines that seed env.sh, which are how
+        # the owner's choice gets persisted in the first place.
+        prefix = re.compile(r"(?<![-\w])LITCLOCK_LANGUAGE=\S*\s+\S")
+        offenders = []
+        for script in sorted(REPO_ROOT.glob("scripts/*.sh")):
+            for lineno, line in enumerate(script.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith("#") or stripped.startswith("export "):
+                    continue
+                if not prefix.search(line):
+                    continue
+                if script.name == "update.sh" and ("catalog-get" in line or "catalog-count" in line):
+                    continue
+                offenders.append(f"{script.name}:{lineno}: {stripped}")
+        assert not offenders, (
+            "LITCLOCK_LANGUAGE is pinned outside the update.sh smoke gate. Panel copy is "
+            "deliberately rendered in the owner's language (litclock-dev#532); pinning it "
+            "forces English on a translated device:\n" + "\n".join(offenders)
+        )
+
+
+class TestCatalogTruncationIsCaught:
+    """litclock-dev#773 item 2 — the three value probes cannot see truncation.
+
+    Measured in the issue: an `en` bundle cut from 438 keys to just the three
+    the gate probes passes every value comparison green, with 435 strings gone
+    and every other status and splash surface degraded to raw keys. `languages/`
+    being ABSENT is caught; truncation was caught only if it happened to hit one
+    of three keys — a coin flip that gets worse as litclock-dev#532's bulk extraction
+    grows the surface.
+
+    Inherits the sibling class's fixtures deliberately: the count probe must be
+    driven through the same REAL lifted span, the same real `$PYTHON` wrapper
+    and the same real resolver. A stub would test a model of the loader, and
+    the loader's filtering (`_catalog` drops non-str values and `_`-prefixed
+    keys) is exactly what the count has to measure.
+    """
+
+    # COMPOSITION, not inheritance (/review). Subclassing a `Test`-prefixed
+    # class makes pytest re-collect and re-run all SEVEN of the parent's tests
+    # under this class's name: 10 node IDs collected here, only 3 of them new.
+    # Each parent test builds a fake checkout (every src/*.py plus a copytree of
+    # languages/en) and spawns several subprocesses plus a bash gate run, so it
+    # roughly doubled the cost of the most expensive class in this file for zero
+    # added coverage — and a genuine parent failure reported twice under two
+    # different class names, which muddies attribution.
+    #
+    # The harness methods are stateless, so borrowing one instance is enough.
+    _harness = TestCatalogSmokeGateIsLanguageAgnostic()
+
+    STATUS_KEY = TestCatalogSmokeGateIsLanguageAgnostic.STATUS_KEY
+    SPLASH_KEYS = TestCatalogSmokeGateIsLanguageAgnostic.SPLASH_KEYS
+
+    def __getattr__(self, name):
+        """Delegate the `_`-prefixed harness helpers to the shared instance."""
+        if name.startswith("_"):
+            return getattr(self._harness, name)
+        raise AttributeError(name)
+
+    def _truncate_english_to(self, root, keys):
+        path = root / "languages" / "en" / "strings.json"
+        full = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({k: full[k] for k in keys}), encoding="utf-8")
+
+    def test_a_bundle_truncated_to_the_probed_keys_is_now_caught(self, update_sh_content, tmp_path):
+        """THE case the issue measured, reproduced end to end."""
+        root = self._fake_checkout(tmp_path)
+        probed = [self.STATUS_KEY, *self.SPLASH_KEYS]
+        self._truncate_english_to(root, probed)
+
+        # Precondition: every VALUE probe still passes. Without this the test
+        # could go green because the status probe failed first, proving nothing
+        # about the count probe.
+        assert self._catalog_get(root, self.STATUS_KEY, LITCLOCK_LANGUAGE="en") == "just now"
+
+        r, probes = self._run_gate(root, self._gate_span(update_sh_content))
+        assert "Catalog smoke passed" in r.stdout, "the value probes were supposed to pass"
+        assert "Splash-triplet smoke passed" in r.stdout, "the value probes were supposed to pass"
+        assert "Catalog smoke failed: catalog-count returned" in r.stdout, (
+            f"a bundle truncated to the 3 probed keys must fail the COUNT probe\n{r.stdout}"
+        )
+        self._assert_reverted(r)
+        assert probes == [*probed, "catalog-count"], (
+            f"the count probe must run after the value probes; got {probes}"
+        )
+
+    def test_the_count_probe_reports_zero_rather_than_dying_when_the_catalog_is_broken(self, tmp_path):
+        """Same `always exit 0 with a value` contract as catalog-get, and for
+        the same reason: the gate compares STDOUT, so a non-zero exit with empty
+        stdout is indistinguishable from a dead interpreter. 0 is honest AND
+        below any floor, so the gate fails closed either way."""
+        root = self._fake_checkout(tmp_path)
+        (root / "languages" / "en" / "strings.json").write_text("{ this is not json", encoding="utf-8")
+        r = subprocess.run(
+            [sys.executable, "src/eink_display.py", "catalog-count"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=self._clean_env(LITCLOCK_LANGUAGE="en"),
+        )
+        assert r.returncode == 0, f"catalog-count must exit 0 by contract\n{r.stderr}"
+        assert r.stdout.strip() == "0", r.stdout
+
+    def test_the_count_measures_what_the_loader_sees_not_the_raw_file(self, tmp_path):
+        """`_catalog` drops `_`-prefixed keys and non-string values, so a count
+        taken off the raw JSON would be wrong by exactly those. The gate has to
+        measure what the app will actually resolve."""
+        root = self._fake_checkout(tmp_path)
+        path = root / "languages" / "en" / "strings.json"
+        full = json.loads(path.read_text(encoding="utf-8"))
+        raw = len(full)
+        loaded_expected = len([k for k, v in full.items() if isinstance(v, str) and not k.startswith("_")])
+        assert loaded_expected < raw, "fixture premise: the en bundle carries at least one _-prefixed key"
+
+        r = subprocess.run(
+            [sys.executable, "src/eink_display.py", "catalog-count"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=self._clean_env(LITCLOCK_LANGUAGE="en"),
+        )
+        assert int(r.stdout.strip()) == loaded_expected, r.stdout
+
+
+class TestCatalogFloorStaysHonest:
+    """The floor in update.sh is a constant, so something has to stop it drifting.
+
+    An expectation derived from the committed `strings.json` would be a no-op:
+    the loader reads that same file, so the comparison is vacuous precisely when
+    the file is the thing that is damaged. The number therefore has to travel
+    with update.sh — and this is the other side of that bargain.
+    """
+
+    # Anchored to a whole line so a mention inside a comment or an error
+    # string cannot satisfy it, but tolerant of indentation -- the
+    # assignment sits inside the `-x "$PYTHON"` block.
+    FLOOR_RE = re.compile(r"^[ \t]*CATALOG_MIN_KEYS=(\d+)[ \t]*$", re.MULTILINE)
+
+    @staticmethod
+    def _loaded_english_key_count() -> int:
+        full = json.loads((REPO_ROOT / "languages" / "en" / "strings.json").read_text(encoding="utf-8"))
+        return len([k for k, v in full.items() if isinstance(v, str) and not k.startswith("_")])
+
+    def test_the_floor_is_below_the_real_count(self, update_sh_content):
+        m = self.FLOOR_RE.search(update_sh_content)
+        assert m, "CATALOG_MIN_KEYS is gone from update.sh — the truncation probe has no expectation"
+        floor = int(m.group(1))
+        actual = self._loaded_english_key_count()
+        assert floor <= actual, (
+            f"CATALOG_MIN_KEYS={floor} exceeds the {actual} keys the English bundle actually "
+            "loads, so the OTA smoke gate would revert every update on every device"
+        )
+
+    def test_the_floor_has_not_gone_slack_as_the_catalog_grew(self, update_sh_content):
+        """A floor ages LOOSE, which is safe but eventually useless. litclock-dev#532's
+        bulk extraction is actively growing this surface, so require the floor
+        to stay within 75% of the real count — a growing catalog then forces a
+        deliberate bump rather than letting the gate quietly stop catching
+        anything short of near-total loss."""
+        floor = int(self.FLOOR_RE.search(update_sh_content).group(1))
+        actual = self._loaded_english_key_count()
+        assert floor >= actual * 0.75, (
+            f"CATALOG_MIN_KEYS={floor} is now under 75% of the {actual} keys the English bundle "
+            f"loads. Raise it (roughly {int(actual * 0.9)}) so the truncation probe keeps teeth."
+        )
+
+
+class TestHandoffGuardIsInertOnAnArrivingPreGuardUpgrade:
+    """litclock-dev#768 — the litclock-dev#675 timezone refusal cannot arm when the
+    OUTGOING script already wrote the marker, and the v0.225.0 CHANGELOG claimed
+    otherwise.
+
+    update.sh re-execs itself AFTER pulling the new code, so the outgoing
+    script's migration runs first, in a different process, before any byte of
+    the incoming file. In [v0.214.0, v0.225.0) that block is unconditional.
+
+    The point is not that the ordering should change — it cannot, short of
+    revoking a marker on a fielded device — but that the fact the correction
+    rests on is load-bearing and easy to lose.
+    """
+
+    @staticmethod
+    def _executed(body: str) -> list[str]:
+        """Full-line comments dropped.
+
+        Needed because this file now DESCRIBES the re-exec and the migration in
+        prose right beside them; a raw search finds the explanation instead of
+        the code. Inline trailing comments are left alone — none of the
+        landmarks below appear in one, and stripping them properly would mean
+        parsing quotes.
+        """
+        return [ln for ln in body.splitlines() if not ln.lstrip().startswith("#")]
+
+    def test_the_migration_still_runs_before_the_re_exec_at_top_level(self, update_sh_content):
+        """Ordering AND nesting, because ordering alone is not the property.
+
+        /review measured the file-position version blind to the one refactor
+        that genuinely inverts this: wrap the migration in
+        `_handoff_migration() { ... }` left at the same offsets and call it
+        after the re-exec. That is `bash -n` clean, really does move the write
+        past the re-exec, and every test in this file passed. litclock-dev#719 already
+        applied exactly that hoist to reset-setup.sh for SIGHUP reasons, so it
+        is a refactor this repo performs.
+
+        A `{`-depth scan is what closes it: inside a function body the
+        migration is no longer reached at that point in the script, whatever
+        its byte offset says.
+        """
+        lines = self._executed(update_sh_content)
+
+        depth, marks = 0, {}
+        for i, ln in enumerate(lines):
+            if "touch /etc/litclock/.handoff-complete" in ln and "migration" not in marks:
+                marks["migration"] = (i, depth)
+            if 'git reset --hard "$TARGET_SHA"' in ln and "reset" not in marks:
+                marks["reset"] = (i, depth)
+            if 'exec "$SELF_SCRIPT"' in ln and "reexec" not in marks:
+                marks["reexec"] = (i, depth)
+            depth += ln.count("{") - ln.count("}")
+
+        for name in ("migration", "reset", "reexec"):
+            assert name in marks, f"landmark {name!r} not found in update.sh"
+
+        assert marks["migration"][0] < marks["reset"][0] < marks["reexec"][0], (
+            "update.sh's handoff migration no longer runs before the git reset and the "
+            f"self re-exec: { {k: v[0] for k, v in marks.items()} }. The litclock-dev#768 "
+            "CHANGELOG correction is written against that ordering — if it changed "
+            "deliberately, update the correction too"
+        )
+        assert marks["migration"][1] == 0, (
+            "the handoff migration is nested inside a function (brace depth "
+            f"{marks['migration'][1]}). Its byte offset still precedes the re-exec, but a "
+            "definition is not a call — hoisting it into a function and invoking it later "
+            "moves the write PAST the re-exec while every position-based assertion stays "
+            "green. Measured (litclock-dev#719 applied this hoist to reset-setup.sh)"
+        )
+
+
+class TestAMissingInterpreterIsAFailureNotASkip:
+    """litclock-dev#773(a) — the whole gate sits inside `if [[ -x "$PYTHON" ]]`.
+    When that was false the dry run, all three pinned probes and the shape probe
+    were skipped SILENTLY and the update walked on to Phase 5/7 reporting
+    SUCCESS: a false green in the dangerous direction, firing exactly when the
+    device is most likely broken, since Phase 4 has just built this venv.
+
+    The dispatch had to move OUT of that block to fix it. Setting `smoke_rc=1`
+    in an `else` arm alone would have been a no-op — nothing read the variable
+    outside the block, so the update would still have proceeded. Caught before
+    shipping; this test is what keeps it caught.
+    """
+
+    @staticmethod
+    def _full_span(content: str) -> str:
+        return _full_gate_span(content)
+
+    def test_the_dispatch_is_outside_the_interpreter_check(self, update_sh_content):
+        """Structural, and the reason: `smoke_rc` is not read anywhere after the
+        gate, so an `else` arm that only sets it changes nothing."""
+        executed = "\n".join(
+            ln for ln in update_sh_content.splitlines() if not ln.lstrip().startswith("#")
+        )
+        gate = executed.index('if [[ -x "$PYTHON" ]]; then')
+        dispatch = executed.index('if [[ "$smoke_rc" -eq 0 ]]; then\n    log_info "Smoke test passed"')
+        # Column 0 == top level == outside the -x block.
+        line_start = executed.rindex("\n", 0, dispatch) + 1
+        assert executed[line_start] != " ", (
+            "the KEEP/revert dispatch is indented, i.e. still inside the `-x $PYTHON` block. "
+            "A missing interpreter then skips it entirely and the update reports success "
+            "having verified nothing (litclock-dev#773)"
+        )
+        assert gate < dispatch
+
+    def _run_missing_interpreter(self, update_sh_content, root, no_interpreter=True):
+        """Drive the real lifted span with `$PYTHON` either absent or failing.
+
+        `no_interpreter=True` points it at a path that does not exist — what a
+        half-built venv leaves behind. `False` points it at an executable that
+        exits non-zero, i.e. an ORDINARY smoke failure, which is the control for
+        the terminal-status assertions.
+        """
+        import shlex as _shlex
+        import subprocess
+
+        span = self._full_span(update_sh_content)
+        if no_interpreter:
+            python = root / "venv" / "bin" / "python3"
+        else:
+            python = root / "failing-python3"
+            python.write_text("#!/bin/sh\necho 'boom' >&2\nexit 1\n")
+            python.chmod(0o755)
+
+        _harness_marker = root / ".runtime-render-validated"
+        _harness_marker.write_text("harness")
+        program = (
+            "set -u\n"
+            'GREEN=""\nRED=""\nYELLOW=""\nNC=""\n'
+            'log_info() { echo "[INFO] $1"; }\n'
+            'log_warn() { echo "[WARN] $1"; }\n'
+            'log_error() { echo "[ERROR] $1"; }\n'
+            'git() { echo "STUB_GIT $*"; }\n'
+            'sudo() { echo "STUB_SUDO $*"; }\n'
+            'atomic_remove_file() { echo "STUB_ATOMIC_REMOVE $1"; }\n'
+            'atomic_write_file() { echo "STUB_ATOMIC_WRITE $1"; }\n'
+            'update_status_failed_reverted() { echo "STUB_STATUS_REVERTED $1"; }\n'
+            # Both terminal statuses stubbed, DISTINGUISHABLY. Stubbing only
+            # one is the litclock-dev#764 blind spot: these harnesses omit
+            # `set -e`, so the unstubbed call would emit `command not found`
+            # to stderr and execution would carry on green.
+            'update_status_failed_unrecovered() { echo "STUB_STATUS_UNRECOVERED $1"; }\n'
+            f"PYTHON={_shlex.quote(str(python))}\n"
+            "REVERT_SHA=deadbeef\nUPDATE_FAILED_FILE=/dev/null\nHASH_FILE=/dev/null\n"
+            # litclock-dev#531 — the KEEP arm now re-stamps the runtime-render
+            # marker when it is ABSENT. This harness runs under `set -u` and the
+            # variable is defined ~500 lines above the lifted span, so without
+            # this line bash dies at the guard and never reaches REACHED_END.
+            # A REAL regular file, created below, so the guard sees a present
+            # marker and skips the block — these tests are about the catalog
+            # probes; the stamp block is executed on its own in
+            # tests/test_runtime_render_autostamp.py. NOT /dev/null: the guard is
+            # `! -f`, and /dev/null is a character device, so `-f` is false and
+            # the block ran anyway, logging '/dev/null' as a fifth probe. Caught
+            # by running it.
+            f"RUNTIME_MARKER={shlex.quote(str(_harness_marker))}\n"
+            "_LITCLOCK_UPDATE_FINALIZED=0\n"
+            f"{span}\n"
+            'echo "REACHED_END rc=$smoke_rc"\n'
+        )
+        return subprocess.run(
+            ["bash", "-c", program], cwd=root, capture_output=True, text=True, timeout=120,
+            env={k: v for k, v in os.environ.items() if not k.startswith("LITCLOCK_")},
+        )
+
+    def test_a_missing_interpreter_reverts(self, update_sh_content, tmp_path):
+        """Executed. `$PYTHON` points at a path that does not exist, which is
+        what a half-built venv leaves behind."""
+        f = TestCatalogSmokeGateIsLanguageAgnostic()
+        root = f._fake_checkout(tmp_path)
+        r = self._run_missing_interpreter(update_sh_content, root)
+
+        assert "Smoke test SKIPPED" in r.stdout, (
+            f"the missing interpreter was not reported\n{r.stdout}\n{r.stderr}"
+        )
+        assert "STUB_GIT reset --hard deadbeef" in r.stdout, (
+            "a missing interpreter did not revert. Every check was skipped, so the update "
+            f"would install and report SUCCESS having verified nothing.\n{r.stdout}"
+        )
+        assert r.returncode == 1, f"expected the revert arm's exit 1; got {r.returncode}\n{r.stdout}"
+        assert "REACHED_END" not in r.stdout, "the revert arm must exit, not fall through"
+        assert "command not found" not in r.stderr, (
+            "something the revert arm calls is not stubbed. These harnesses omit `set -e`, so "
+            f"that runs green while the call does nothing (litclock-dev#764):\n{r.stderr}"
+        )
+
+    def test_a_missing_interpreter_reports_unrecovered_not_reverted(self, update_sh_content, tmp_path):
+        """The revert CANNOT restore this device, so the status must not say it did.
+
+        `venv/` is not in git: `git reset --hard` returns the code and leaves the
+        interpreter still missing, and `runtheclock.sh` sources
+        `./venv/bin/activate`. `failed_reverted` renders "rolled back. Your clock
+        is running normally." — false here. The pip-failure branch reasons the
+        same way for the strictly weaker case of an INDETERMINATE venv; a missing
+        interpreter is known broken.
+        """
+        f = TestCatalogSmokeGateIsLanguageAgnostic()
+        root = f._fake_checkout(tmp_path)
+        r = self._run_missing_interpreter(update_sh_content, root)
+
+        assert "STUB_STATUS_UNRECOVERED" in r.stdout, (
+            "the missing-interpreter path did not report failed_unrecovered. If it reported "
+            f"failed_reverted the owner is told the clock is running while it is dead.\n{r.stdout}"
+        )
+        assert "STUB_STATUS_REVERTED" not in r.stdout, (
+            f"both terminal statuses fired; exactly one must.\n{r.stdout}"
+        )
+        assert "clock NOT restored" in r.stdout, (
+            f"the console banner still claims a clean rollback.\n{r.stdout}"
+        )
+
+    def test_a_genuine_probe_failure_still_reports_reverted(self, update_sh_content, tmp_path):
+        """The control. Without it, `failed_unrecovered` unconditionally — which
+        would alarm every ordinary smoke failure — passes the test above.
+        """
+        f = TestCatalogSmokeGateIsLanguageAgnostic()
+        root = f._fake_checkout(tmp_path)
+        r = self._run_missing_interpreter(update_sh_content, root, no_interpreter=False)
+
+        assert "STUB_STATUS_REVERTED" in r.stdout, (
+            "an ordinary smoke failure must still report failed_reverted — smoke runs after a "
+            f"SUCCESSFUL pip install, so the revert really does restore a matching venv.\n{r.stdout}"
+        )
+        assert "STUB_STATUS_UNRECOVERED" not in r.stdout, (
+            f"an ordinary smoke failure was escalated to 'manual recovery needed'.\n{r.stdout}"
+        )
+
+
+
+class TestTheExitTrapRearmsTheClock:
+    """litclock-dev#835, EXECUTED — the first version of this class scanned the
+    trap's non-comment lines and passed with the re-arm inside `if false`
+    (review mutation). Now the lifted trap block runs under bash with sudo,
+    timeout and the status stamp stubbed, and a TERM is delivered to the
+    shell the way systemd delivers one.
+
+    Two properties, both found by the v0.227.0 port review: a signal must
+    TERMINATE the run (bash resumes an interrupted phase after a handler
+    returns, and the old shared handler never exited — the update carried on
+    into Phase 5-7 inside systemd's stop window), and the unfinalized EXIT
+    path must re-arm litclock.timer before stamping, best-effort."""
+
+    def _lifted(self, update_sh_content):
+        start = update_sh_content.index("_LITCLOCK_UPDATE_FINALIZED=0\n_LITCLOCK_UPDATE_CLEANED=0")
+        marker = "trap _litclock_update_on_signal TERM INT HUP\n"
+        end = update_sh_content.index(marker, start) + len(marker)
+        return update_sh_content[start:end]
+
+    def _run(self, update_sh_content, *, finalized: int, signal: bool, sudo_fails: bool = False):
+        program = (
+            "set -u\n"
+            'sudo() { [ "$SUDO_FAILS" = 1 ] && return 1; echo "STUB_SUDO $*"; }\n'
+            'timeout() { [ "$1" = -k ] && shift 2; shift; "$@"; }\n'
+            'update_status_failed_unrecovered() { echo STUB_STAMP; }\n'
+            'atomic_write_file() { echo STUB_GRACE; }\n'
+            "_PHASE3_ADDED_FILE=\nPOST_UPDATE_GRACE_FILE=/dev/null\n"
+            f"SUDO_FAILS={1 if sudo_fails else 0}\n"
+            f"{self._lifted(update_sh_content)}"
+            f"_LITCLOCK_UPDATE_FINALIZED={finalized}\n"
+            "_LITCLOCK_UPDATE_PHASE_INDEX=4\n"
+            + ("kill -TERM $$\n" if signal else "")
+            + "echo MUTATING_PHASE_CONTINUES\n"
+            "exit 0\n"
+        )
+        return subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+
+    def test_a_signal_terminates_the_run_and_the_exit_trap_rearms_then_stamps(self, update_sh_content):
+        r = self._run(update_sh_content, finalized=0, signal=True)
+        assert r.returncode == 143, (r.returncode, r.stdout, r.stderr)
+        assert "MUTATING_PHASE_CONTINUES" not in r.stdout, (
+            "bash resumed the interrupted phase after the signal handler — the handler must exit"
+        )
+        grace = r.stdout.find("STUB_GRACE")
+        rearm = r.stdout.find("systemctl start --no-block litclock.timer")
+        stamp = r.stdout.find("STUB_STAMP")
+        assert rearm != -1, r.stdout
+        assert stamp != -1, r.stdout
+        assert grace != -1 and grace < rearm, (
+            "re-touch the LKG grace marker BEFORE the painter can heartbeat, or the writer "
+            "promotes a never-finalized HEAD (round-2 review, F3)"
+        )
+        assert rearm < stamp, "re-arm the clock first; the status stamp is best-effort"
+        assert r.stdout.count("STUB_STAMP") == 1, "the EXIT trap must run exactly once"
+
+    def test_a_finalized_exit_neither_rearms_nor_stamps(self, update_sh_content):
+        r = self._run(update_sh_content, finalized=1, signal=False)
+        assert r.returncode == 0
+        assert "STUB_SUDO" not in r.stdout and "STUB_STAMP" not in r.stdout, r.stdout
+
+    def test_the_stamp_survives_a_failed_rearm(self, update_sh_content):
+        r = self._run(update_sh_content, finalized=0, signal=True, sudo_fails=True)
+        assert r.returncode == 143
+        assert "STUB_STAMP" in r.stdout, r.stdout
+
+    def test_a_signal_during_cleanup_does_not_abort_it(self, update_sh_content):
+        """Round-2 review, reproduced: a TERM landing while the EXIT trap is
+        already running (systemd's timeout hitting during an ordinary
+        `exit 1` cleanup) fired the exiting handler INSIDE the trap, and the
+        nested exit does not restart EXIT processing — no re-arm completed,
+        no stamp. The trap now ignores further signals for its duration."""
+        program = (
+            "set -u\n"
+            # The re-arm itself delivers a TERM to the shell mid-cleanup.
+            'sudo() { echo "STUB_SUDO $*"; kill -TERM $$; sleep 0.2; echo REARM_FINISHED; }\n'
+            'timeout() { [ "$1" = -k ] && shift 2; shift; "$@"; }\n'
+            'update_status_failed_unrecovered() { echo STUB_STAMP; }\n'
+            'atomic_write_file() { echo STUB_GRACE; }\n'
+            "_PHASE3_ADDED_FILE=\nPOST_UPDATE_GRACE_FILE=/dev/null\n"
+            f"{self._lifted(update_sh_content)}"
+            "_LITCLOCK_UPDATE_FINALIZED=0\n_LITCLOCK_UPDATE_PHASE_INDEX=4\n"
+            "exit 1\n"
+        )
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        assert "REARM_FINISHED" in r.stdout, r.stdout
+        assert "STUB_STAMP" in r.stdout, r.stdout
+        assert r.returncode == 1, "the original exit status is preserved; the ignored signal does not replace it"
+
+    def test_the_reachability_gate_is_bounded_and_the_traps_follow_the_status_init(self, update_sh_content):
+        """Round-2 review (Claude): on the re-exec path Phase 1 has already
+        stopped litclock.timer by the time the new script reaches the
+        `git ls-remote` gate, and the traps come after it. They must — the
+        EXIT trap's stamp needs update_status_init, and initialising before
+        the gate would stamp an offline tick as unrecovered — so the window
+        is closed the other way: the gate is bounded."""
+        executed = _executed_lines(update_sh_content)
+        assert "_remote_reachable() {" in executed and "! _remote_reachable; then" in executed
+        assert 'timeout -k 5 "$_LS_REMOTE_TIMEOUT_S" git ls-remote --exit-code origin' in executed, (
+            "coreutils timeout, group-killing with KILL escalation — not a hand-rolled watchdog"
+        )
+        init_at = update_sh_content.index('update_status_init "$OLD_SHA"')
+        trap_at = update_sh_content.index("trap _litclock_update_trap EXIT")
+        stop_at = update_sh_content.index("systemctl stop litclock.timer")
+        assert init_at < trap_at < stop_at, "traps after the status init, before Phase 1 stops the timer"
+
+    def _shim(self, tmp_path, body):
+        """A PATH shim for git: `timeout` execs the real command lookup, so a
+        shell function would be bypassed."""
+        bindir = tmp_path / "bin"
+        bindir.mkdir(exist_ok=True)
+        shim = bindir / "git"
+        shim.write_text("#!/bin/bash\n" + body + "\n")
+        shim.chmod(0o755)
+        return bindir
+
+    def _gate_block(self, update_sh_content):
+        start = update_sh_content.index("_LS_REMOTE_TIMEOUT_S=")
+        end = update_sh_content.index("\n}\n", update_sh_content.index("_remote_reachable() {", start)) + len("\n}\n")
+        return update_sh_content[start:end]
+
+    def _gate_statement(self, update_sh_content):
+        """The `if` that consumes _remote_reachable: the first `if [[` after
+        the function's closing brace, to its `fi`. Anchored on the function,
+        not on the condition text, so a mutated condition still lifts and
+        the test fails on behaviour rather than on a missing substring."""
+        fn_end = update_sh_content.index("\n}\n", update_sh_content.index("_remote_reachable() {")) + len("\n}\n")
+        start = update_sh_content.index("if [[", fn_end)
+        end = update_sh_content.index("\nfi\n", start) + len("\nfi\n")
+        stmt = update_sh_content[start:end]
+        assert "_remote_reachable" in stmt.splitlines()[0], stmt
+        return stmt
+
+    @pytest.mark.parametrize("reexec", [True, False], ids=["re-exec", "fresh-run"])
+    def test_an_unreachable_remote_only_exits_a_fresh_run(self, update_sh_content, tmp_path, reexec):
+        """v0.227.0 port review (adversarial): on the re-exec path Phase 1 has
+        already stopped litclock.timer and the traps are not armed yet, so a
+        gate failure there `exit 1`s with the clock stopped and the status
+        stuck at `running` until the next weekly tick. The outgoing script
+        has just fetched and reset, so reachability is proven: the gate is
+        skipped when $1 (the outgoing script's OLD_SHA) is set, and still
+        exits an offline FRESH run, where nothing is stopped yet."""
+        bindir = self._shim(tmp_path, "exit 128")
+        argv = "set -- deadbeef\n" if reexec else ""
+        program = (
+            f"set -u\nexport PATH={bindir}:$PATH\nexport LITCLOCK_LS_REMOTE_TIMEOUT_S=2\n"
+            'log_error() { echo "[ERROR] $1"; }\n'
+            f"ROLLBACK_TARGET_FILE={tmp_path}/absent-rollback-target\n"
+            + argv
+            + self._gate_block(update_sh_content)
+            + self._gate_statement(update_sh_content)
+            + "echo REACHED_PAST_GATE\n"
+        )
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        if reexec:
+            assert r.returncode == 0 and "REACHED_PAST_GATE" in r.stdout, (r.stdout, r.stderr)
+            assert "Cannot reach remote" not in r.stdout
+        else:
+            assert r.returncode == 1 and "Cannot reach remote" in r.stdout, (r.stdout, r.stderr)
+            assert "REACHED_PAST_GATE" not in r.stdout
+
+    def test_a_hung_ls_remote_is_cut_at_the_bound(self, update_sh_content, tmp_path):
+        bindir = self._shim(tmp_path, "sleep 30")
+        program = (
+            f"set -u\nexport PATH={bindir}:$PATH\nexport LITCLOCK_LS_REMOTE_TIMEOUT_S=1\n"
+            + self._gate_block(update_sh_content)
+            + "t0=$SECONDS; _remote_reachable; rc=$?; echo \"rc=$rc elapsed=$((SECONDS-t0))\"\n"
+            f"printf '#!/bin/bash\\nexit 0\\n' > {bindir}/git\n_remote_reachable; echo \"ok_rc=$?\"\n"
+        )
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        assert "ok_rc=0" in r.stdout, (r.stdout, r.stderr)
+        m = re.search(r"rc=(\d+) elapsed=(\d+)", r.stdout)
+        assert m and int(m.group(1)) >= 124 and int(m.group(2)) <= 8, (r.stdout, r.stderr)
+
+    def test_a_term_immune_probe_tree_is_killed_by_the_escalation(self, update_sh_content, tmp_path):
+        """`timeout` without --foreground makes itself a process-group leader
+        and signals the GROUP on expiry, TERM then (with -k) KILL — so a git
+        that ignores TERM, and any helper in its group, still dies. Readiness
+        is signalled after the trap, the marker is unique per call, and the
+        survivor inspection must itself have run. What `timeout` does NOT do
+        — kill a helper git left behind, whether git exited on its own or
+        honoured the TERM while the helper ignored it — is stated on the
+        function as a residual."""
+        marker = f"2727.{int(time.time() * 1000) % 1_000_000:06d}"
+        ready = tmp_path / "ready"
+        bindir = self._shim(tmp_path, f"trap '' TERM; touch {ready}; sleep {marker}")
+        program = (
+            f"set -u\nexport PATH={bindir}:$PATH\nexport LITCLOCK_LS_REMOTE_TIMEOUT_S=1\n"
+            + self._gate_block(update_sh_content)
+            + "_remote_reachable; echo \"rc=$?\"\n"
+            "sleep 0.5\n"
+            # Anchored: an unanchored -f matches this very harness's command line.
+            f'pgrep -f "^sleep {marker}$" >/dev/null; echo "pgrep_rc=$?"\n'
+        )
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        assert ready.exists(), (r.stdout, r.stderr)
+        m = re.search(r"rc=(\d+)", r.stdout)
+        assert m and int(m.group(1)) >= 124, (r.stdout, r.stderr)
+        assert "pgrep_rc=1" in r.stdout, r.stdout  # 1 = no match; 0 = survivor; 2+ = pgrep itself failed
+
+    def test_the_lock_keeps_its_inherited_descriptor_on_purpose(self, update_sh_content):
+        """Rounds 8-10 of the litclock-dev#835 review: `--close` would stop a
+        leaked descendant holding the lock, but under systemd's group-wide
+        TERM the flock parent dies first and the script's signal cleanup then
+        runs unlocked against a second updater (reproduced). The pre-existing
+        inheritance stays; the lock design is the issue's follow-up."""
+        executed = _executed_lines(update_sh_content)
+        assert 'flock -n -E 75 "$LITCLOCK_UPDATE_LOCK_FILE" "$0" "$@"' in executed
+        assert "--close" not in executed
+
+    def test_cleanup_ignores_every_signal_the_handler_catches(self, update_sh_content):
+        lifted = _executed_lines(self._lifted(update_sh_content))
+        assert lifted.count("trap '' TERM INT HUP") == 2, (
+            "both the cleanup and the signal handler must start by ignoring the three signals"
+        )
+
+    @pytest.mark.parametrize("nth_statement", [1, 2, 3, 5])
+    def test_a_term_injected_inside_cleanup_never_loses_the_recovery(self, update_sh_content, nth_statement):
+        """Round-5 review (Codex) delivered a TERM deterministically between
+        two statements of the cleanup with a DEBUG-trap injection; round 6
+        then showed the first version of this test never actually injected
+        (it keyed on $BASH_COMMAND, which inside an EXIT trap still reads
+        `exit 7`). This one keys on FUNCNAME: the N-th DEBUG event inside
+        _litclock_update_cleanup fires the TERM — N=1 is before the mask (the
+        handler must run the whole cleanup itself), N=2 is the old
+        flag-before-mask window, later N are mid-work (must be ignored) — and
+        it asserts the injection HAPPENED and that recovery ran exactly once.
+
+        Honesty note: the reviewer's harness reproduced the LOSS with the old
+        ordering; this one, on bash 5.2 with the TERM raised from inside a
+        DEBUG trap inside the EXIT trap, sees bash complete the interrupted
+        cleanup anyway, so the old ordering passes here too. The mask-first
+        order is kept because it is correct by construction (nothing before
+        the mask can be interrupted into a "done" state); this test guards
+        delivery and single execution, not that specific ordering."""
+        program = (
+            "set -u\nset -T\n"
+            'sudo() { echo "STUB_SUDO $*"; }\n'
+            'timeout() { [ "$1" = -k ] && shift 2; shift; "$@"; }\n'
+            'update_status_failed_unrecovered() { echo STUB_STAMP; }\n'
+            'atomic_write_file() { echo STUB_GRACE; }\n'
+            "_PHASE3_ADDED_FILE=\nPOST_UPDATE_GRACE_FILE=/dev/null\n"
+            f"{self._lifted(update_sh_content)}"
+            "_LITCLOCK_UPDATE_FINALIZED=0\n_LITCLOCK_UPDATE_PHASE_INDEX=4\n"
+            "_N=0\n"
+            "trap 'if [ \"${FUNCNAME[0]:-}\" = _litclock_update_cleanup ]; then _N=$((_N+1)); "
+            f"if [ \"$_N\" = {nth_statement} ]; then echo INJECTED; kill -TERM $$; fi; fi' DEBUG\n"
+            "exit 7\n"
+        )
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        assert "INJECTED" in r.stdout, (nth_statement, r.stdout, r.stderr)
+        assert r.stdout.count("systemctl start --no-block litclock.timer") == 1, (nth_statement, r.stdout)
+        assert r.stdout.count("STUB_STAMP") == 1, (nth_statement, r.stdout)
+        assert r.stdout.count("STUB_GRACE") == 1, (nth_statement, r.stdout)
+
+    def test_the_signal_handler_cleans_up_itself_and_cleanup_is_idempotent(self, update_sh_content):
+        """Round-3 review (Codex): `trap ''` at the top of the EXIT trap is not
+        atomic with entering it (40/1000 stress runs lost both the re-arm and
+        the stamp). The handler must not rely on EXIT being entered again:
+        it cleans up itself, and the flag makes the EXIT pass a no-op — one
+        re-arm, one stamp, even though both paths run."""
+        r = self._run(update_sh_content, finalized=0, signal=True)
+        assert r.returncode == 143
+        assert r.stdout.count("STUB_STAMP") == 1 and r.stdout.count("systemctl start") == 1, r.stdout
+        lifted = self._lifted(update_sh_content)
+        handler = lifted[lifted.index("_litclock_update_on_signal() {"):]
+        assert "_litclock_update_cleanup" in handler.split("exit 143")[0], (
+            "the signal handler must run the cleanup BEFORE exiting, not leave it to the EXIT trap"
+        )
+
+    def test_the_rearm_is_bounded_and_non_interactive(self, update_sh_content):
+        lifted = _executed_lines(self._lifted(update_sh_content))
+        assert "timeout -k 5 10 sudo -n systemctl start --no-block litclock.timer" in lifted, (
+            "a trap that can block on a wedged manager or a password prompt holds the stop job "
+            "past TimeoutStopSec and loses the status stamp with it"
+        )

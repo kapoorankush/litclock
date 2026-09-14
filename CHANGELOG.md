@@ -4,6 +4,21 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- Quotes now change right on the minute. The clock starts its refresh a few seconds early and paints the upcoming minute, so the new quote is settled as the minute turns instead of several seconds after it.
+- Updated the timezone database (timezonefinder 8.3.0).
+
+### Fixed
+
+- On-device text rendering can now actually be switched on: the validation it depends on is performed when an image is built, and after an update whenever it is missing, so `LITCLOCK_RUNTIME_RENDER` is no longer silently ignored.
+- A freshly set-up, reset, or cloned clock now carries every documented setting in `env.sh`, instead of being born with some of them missing.
+- Preparing an SD card for cloning now stops with a clear warning if your settings could not be wiped, rather than reporting the card ready while it still held your location and API key.
+- Diagnostics no longer report weather as off on a clock that is showing it.
+- Diagnostics now show when your location was last auto-detected, and can warn when it has not been refreshed in a week; that row was always empty before.
+- Automatic updates now roll back when the downloaded update's text catalog is truncated or its interpreter is missing, and no longer risk rolling back every week on a clock set to a language other than English.
+- The weekly update gives the new on-device rendering check enough time to finish, skips it when the remaining time cannot hold it, and tries to restart the clock if the update is cut short, so a slow update is much less likely to leave the display frozen until a power-cycle.
+
 ## [v0.226.0] - 2026-08-30
 
 ### Added

@@ -10,6 +10,7 @@ import argparse
 import logging
 import os
 import sys
+import traceback
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -1601,6 +1602,18 @@ def main():
         help="fill a {NAME} slot (repeatable)",
     )
 
+    # litclock-dev#773 item 2: the OTA smoke gate probed three catalog VALUES,
+    # so a bundle truncated to just those three passed green with 434 strings
+    # gone. Values cannot detect that; only a count can, and the count has to
+    # come from the loader (not from re-reading the JSON) so it measures what
+    # the app will actually see after the filters in ``_catalog``.
+    catalog_count_parser = subparsers.add_parser(
+        "catalog-count", help="Print how many strings the active language catalog loaded"
+    )
+    catalog_count_parser.add_argument(
+        "--language", default=None, help="resolve this language code instead of the active one"
+    )
+
     handoff_parser = subparsers.add_parser("handoff-splash", help="Display the post-WiFi handoff splash")
     handoff_parser.add_argument("qr_url", help="PWA QR URL encoded on the splash")
     handoff_parser.add_argument("--settings-json", required=True, help="handoff_context dict as JSON")
@@ -1631,13 +1644,54 @@ def main():
             display_image(image)
 
     elif args.command == "catalog-get":
-        import strings_catalog  # noqa: PLC0415
-
         slots = _parse_slots(args.slot)
-        # The loader never raises; a missing key prints the key itself,
-        # which is the visible-but-safe degradation the catalog contract
-        # promises (litclock-dev#532 audit item 7).
-        print(strings_catalog.get(args.key, **slots))
+        # The loader never raises; a missing key prints the key itself, which
+        # is the visible-but-safe degradation the catalog contract promises
+        # (litclock-dev#532 audit item 7).
+        #
+        # litclock-dev#766: the IMPORT was the unguarded half, while
+        # scripts/update.sh's smoke gate documented "catalog-get always exits 0
+        # by contract". False if strings_catalog.py is itself missing or
+        # syntactically broken post-checkout: it raised, printed a traceback and
+        # exited 1 with empty stdout. Guarded the same way and for the same
+        # reason as _resolve_status_parts above — a half-deployed venv can carry
+        # a module that IMPORTS but is stale or truncated, so AttributeError and
+        # SyntaxError must degrade like ImportError. Printing the key keeps the
+        # contract true for every caller, including the update smoke gate, which
+        # compares stdout and would otherwise be reading an empty string with no
+        # way to tell "broken" from "resolved to nothing".
+        # Resolve inside the guard, PRINT outside it. With the print inside, a
+        # stdout write failure (a closed pipe, an encoding error under a
+        # restrictive PYTHONIOENCODING) would be caught and mislabelled
+        # "catalog resolution failed", and could emit a partial line and then
+        # the key on top of it. Only catalog resolution is being guarded here.
+        try:
+            import strings_catalog  # noqa: PLC0415
+
+            resolved = strings_catalog.get(args.key, **slots)
+        except Exception as exc:  # noqa: BLE001 — the contract is "always exits 0 with a value"
+            print(f"warning: catalog resolution failed ({exc!r}); printing the key", file=sys.stderr)
+            resolved = args.key
+        print(resolved)
+        return
+
+    elif args.command == "catalog-count":
+        # Same "always exit 0 with a value" contract as catalog-get, and for
+        # the same reason: scripts/update.sh compares STDOUT. A count that
+        # exited non-zero with empty stdout would be indistinguishable from
+        # "the interpreter died", and the gate would have to guess. 0 is the
+        # honest answer for every failure here — a catalog that cannot be
+        # loaded has loaded no strings — and 0 is below any sane floor, so the
+        # gate fails closed.
+        try:
+            import strings_catalog  # noqa: PLC0415
+
+            code = args.language or strings_catalog.active_language()
+            count = len(strings_catalog._catalog(code))
+        except Exception as exc:  # noqa: BLE001 — the contract is "always exits 0 with a value"
+            print(f"warning: catalog count failed ({exc!r}); reporting 0", file=sys.stderr)
+            count = 0
+        print(count)
         return
 
     elif args.command == "clear":
@@ -1667,4 +1721,43 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # litclock-dev#815 — terminate WITHOUT interpreter finalization, for the
+    # same reason src/literary_clock.py does (litclock-dev#531): every path that touches
+    # the display has imported `display_driver`, which pulls in lgpio via
+    # gpiozero and spawns the daemon thread `Thread-1`. That thread parks in a
+    # blocking read and nothing removes it, so at Py_FinalizeEx it can unwind
+    # against half-cleared globals and raise. `os._exit` skips finalization
+    # entirely. litclock-dev#556 fixed this in the per-minute painter only; this file is
+    # the boot / hotspot / QR / handoff / shutdown / reset-failed splash, so it
+    # ran the race on every invocation.
+    #
+    # FLUSHING IS LOAD-BEARING, not tidiness. `os._exit` discards buffered
+    # writes, and `catalog-get` / `catalog-count` print to stdout which
+    # scripts/update.sh's OTA smoke gate COMPARES. Python buffers stdout when it
+    # is a pipe — which is exactly how the gate invokes this — so exiting
+    # without an explicit flush would return an empty string to the gate and
+    # fail it on every device, forever. That is the false-RED direction
+    # litclock-dev#773 exists to prevent, and it would have been introduced by
+    # the fix for a different bug.
+    #
+    # Every step is individually guarded: a flush can itself raise
+    # (BrokenPipeError on a closed reader), and litclock-dev#813 is the lesson
+    # that anything unguarded ahead of the exit can cost you the exit.
+    _exit_code = 0
+    try:
+        main()
+    except SystemExit as _e:  # preserve argparse's codes and the explicit sys.exit(1)
+        _exit_code = 0 if _e.code is None else (_e.code if isinstance(_e.code, int) else 1)
+    except BaseException:
+        traceback.print_exc()
+        _exit_code = 1
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.flush()
+        except BaseException:
+            pass
+    try:
+        logging.shutdown()
+    except BaseException:
+        pass
+    os._exit(_exit_code)

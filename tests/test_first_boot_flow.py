@@ -939,7 +939,7 @@ class TestGiftLanguageConditionalConsumption:
 
     # ── executed behavior against the REAL registry (en active only) ──
 
-    def _run_helper_py(self, tmp_path, marker_content=None, symlink=False):
+    def _run_helper_py(self, tmp_path, marker_content=None, symlink=False, kind="file"):
         import subprocess
         import sys
 
@@ -949,6 +949,10 @@ class TestGiftLanguageConditionalConsumption:
             target = tmp_path / "target"
             target.write_text("en", encoding="utf-8")
             marker.symlink_to(target)
+        elif kind == "fifo":
+            os.mkfifo(marker)
+        elif kind == "dir":
+            marker.mkdir()
         elif marker_content is not None:
             marker.write_text(marker_content, encoding="utf-8")
         return subprocess.run(
@@ -956,6 +960,12 @@ class TestGiftLanguageConditionalConsumption:
             input=py,
             capture_output=True,
             text=True,
+            # A bound, not a formality: without O_NONBLOCK the open of a
+            # writer-less FIFO blocks forever, which is a PASS-shaped failure
+            # that would hang the suite rather than fail it. That is the exact
+            # hazard pyproject's `timeout = 300` exists for, and that setting is
+            # inert on a dev box without pytest-timeout (litclock-dev#769).
+            timeout=30,
         )
 
     def test_active_code_is_consumable(self, tmp_path):
@@ -980,6 +990,93 @@ class TestGiftLanguageConditionalConsumption:
         per-path reasoning (the 5a read-side posture)."""
         proc = self._run_helper_py(tmp_path, symlink=True)
         assert proc.returncode != 0
+
+    def test_fifo_marker_not_consumable(self, tmp_path):
+        """litclock-dev#766 — a non-regular marker is not a marker.
+
+        The reader had O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK to match
+        setup_server._read_marker_code, its security-reviewed twin, but not that
+        twin's `S_ISREG(os.fstat(fd).st_mode)`. A FIFO with no writer opens FINE
+        under O_NONBLOCK and reads zero bytes, so "this is not a marker at all"
+        arrived indistinguishable from "the marker is present but empty".
+
+        Both are non-consumable, which is why this was a silent divergence from
+        a reviewed primitive rather than a live bug. The drift itself is what
+        test_the_reader_matches_its_reviewed_twin covers; this pins the
+        behaviour so the pair cannot BOTH be wrong.
+        """
+        proc = self._run_helper_py(tmp_path, kind="fifo")
+        assert proc.returncode != 0, proc.stdout + proc.stderr
+
+    def test_directory_marker_not_consumable(self, tmp_path):
+        """The other non-regular case. It exits non-zero whether the S_ISREG
+        check rejects it first or `os.read` raises EISDIR underneath — so this
+        is a behaviour floor, not a guard for either mechanism. The ORDER is
+        pinned structurally in the parity test instead."""
+        proc = self._run_helper_py(tmp_path, kind="dir")
+        assert proc.returncode != 0, proc.stdout + proc.stderr
+
+    @staticmethod
+    def _executed_python(source: str) -> str:
+        """Source with comments and docstrings gone, via the parser.
+
+        Load-bearing, and learned the hard way: a token sweep over RAW source is
+        satisfied by prose on BOTH sides here. `_read_marker_code`'s docstring
+        literally reads "O_NOFOLLOW+O_NONBLOCK+regular-file+size cap", and the
+        first-boot copy's comment says "O_NONBLOCK does not substitute" — so a
+        raw grep for those tokens passed with the FLAG DELETED from either
+        `os.open` call. Measured: dropping O_NONBLOCK from the twin left the
+        whole suite green.
+        """
+        import ast
+
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                body = node.body
+                if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+                    if isinstance(body[0].value.value, str):
+                        node.body = body[1:] or [ast.Pass()]
+        return ast.unparse(tree)
+
+    def test_the_reader_matches_its_reviewed_twin(self):
+        """The property litclock-dev#766 item 2 is actually about: one reviewed
+        primitive, two copies, and behaviour that cannot tell them apart.
+
+        Asserted on EXECUTED source (docstrings and comments stripped) and on
+        the whole flag EXPRESSION rather than bare tokens, because both copies
+        name those tokens in prose. Order matters too — the regular-file check
+        has to precede the read, or a directory reaches `os.read` and raises
+        instead of being rejected — and a token sweep cannot see position.
+        """
+        import ast
+
+        helper = self._executed_python(self._helper_py(self._content()))
+
+        twin_src = (Path(REPO_ROOT) / "src" / "setup_server.py").read_text(encoding="utf-8")
+        fn = next(
+            n
+            for n in ast.walk(ast.parse(twin_src))
+            if isinstance(n, ast.FunctionDef) and n.name == "_read_marker_code"
+        )
+        twin = self._executed_python(ast.unparse(fn))
+
+        flags = "os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK"
+        for label, body in (("first-boot.sh's inline copy", helper), ("setup_server._read_marker_code", twin)):
+            assert flags in body, (
+                f"{label} no longer opens the marker with {flags!r}. The two copies of this "
+                "reviewed primitive must not drift — the next reader of either compares them "
+                "(litclock-dev#766)"
+            )
+            assert "S_ISREG(os.fstat(fd).st_mode)" in body, (
+                f"{label} lost its regular-file check. O_NONBLOCK does not substitute: a FIFO "
+                "with no writer opens fine and reads zero bytes"
+            )
+            assert body.index("S_ISREG") < body.index("os.read(fd"), (
+                f"{label} checks S_ISREG AFTER reading. A directory then reaches os.read and "
+                "raises EISDIR instead of being rejected, which is the wrong mechanism for the "
+                "right answer"
+            )
 
     # ── executed branch binding (a window grep passes with the branch
     #    bodies swapped — run the real glue with the path rewired) ──
@@ -1291,3 +1388,208 @@ class TestLeadingDashTitleRender:
         )
         assert r.returncode == 0, r.stderr
         assert out.exists()
+
+
+# --- litclock-dev#783: every env.sh seed must match env.sh.sample -------------
+
+# ANCHORED. An unanchored search was the /review's CRITICAL finding: env.sh.sample
+# carries ~11 lines of prose about LITCLOCK_RENDER_LEAD_S, and a comment merely
+# MENTIONING `export LITCLOCK_RENDER_LEAD_S=6` made the sample parse that key as
+# ACTIVE — after which this guard failed telling the maintainer to uncomment it in
+# every seeder, i.e. instructing the exact litclock-dev#762 field-pin its own docstring says
+# must never happen. A guard whose failure message prescribes the regression is
+# worse than no guard.
+_ENV_KEY_LINE_RE = re.compile(r"^(?P<hash>\s*#?\s*)export\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)=")
+# The FIRST key of an assignment-style block shares its line with the assignment
+# (`_defaults='# export FOO=`). Strip that prefix, then use the anchored rule.
+_ASSIGN_PREFIX_RE = re.compile(r"^\s*(?:local\s+)?[A-Za-z_][A-Za-z0-9_]*=['\"]")
+
+# Discovery is anchored on the WRITE, not on a run-length heuristic. A
+# `>= 5 consecutive exports` rule both MISSED a 4-key seeder and false-fired on an
+# ordinary `export LC_ALL=C / LANG=C / TERM=dumb ...` prologue (/review).
+_WRITE_CALL_RE = re.compile(r'atomic_write_env_sh\s+"[^"]*"\s+"\$(?P<var>[A-Za-z_][A-Za-z0-9_]*)"')
+_WRITE_HEREDOC_RE = re.compile(
+    r'cat\s*>\s*"[^"]*(?:ENV_FILE|env\.sh)[^"]*"\s*<<\s*[\'"]?(?P<delim>[A-Za-z_]+)[\'"]?\s*\n'
+)
+
+
+def _sample_keys():
+    out = {}
+    for line in Path(REPO_ROOT, "env.sh.sample").read_text().split("\n"):
+        m = _ENV_KEY_LINE_RE.match(line)
+        if m:
+            out[m.group("name")] = "#" in m.group("hash")
+    return out
+
+
+def _block_keys(body):
+    """{name: is_commented} for a seed-block body (a list of lines)."""
+    out = {}
+    for line in body:
+        stripped = _ASSIGN_PREFIX_RE.sub("", line, count=1)
+        m = _ENV_KEY_LINE_RE.match(stripped)
+        if m:
+            out[m.group("name")] = "#" in m.group("hash")
+    return out
+
+
+def _discover_env_writes():
+    """Every construct in scripts/ that writes a WHOLE env.sh, found by the write.
+
+    Two forms exist: `atomic_write_env_sh "$ENV_FILE" "$VAR"` (resolve VAR's
+    assignment) and `cat > "$ENV_FILE" << 'EOF'` (take the heredoc body).
+    Anchoring on the write is what makes an UNDER-populated seeder a failure —
+    a run-length heuristic simply would not recognise a 4-key block as a seeder
+    at all, which is the very defect class this guard exists for.
+    """
+    found = []
+    # Repo-wide, not scripts/ only (/review F4): the `== 4` count catches a
+    # writer that DISAPPEARS, but a new one born outside the scan root would be
+    # invisible with no signal at all. pi-gen/ creates no env.sh today, so this
+    # currently finds the same four — the point is that it still would if that
+    # changed. Vendored trees are skipped; they are not ours to seed from.
+    _SKIP = {"node_modules", ".git", "venv", ".venv", "images"}
+    for path in sorted(Path(REPO_ROOT).resolve().rglob("*.sh")):
+        if any(part in _SKIP for part in path.parts):
+            continue
+        text = path.read_text()
+        lines = text.split("\n")
+        rel = path.relative_to(Path(REPO_ROOT).resolve())
+        for m in _WRITE_CALL_RE.finditer(text):
+            var = m.group("var")
+            assign = re.search(
+                rf"^\s*(?:local\s+)?{re.escape(var)}=(?P<q>['\"])(?P<body>.*?)(?P=q)",
+                text,
+                re.S | re.M,
+            )
+            assert assign, f"{rel}: {var} is written to env.sh but never assigned a quoted block"
+            line_no = text[: assign.start()].count("\n") + 1
+            found.append((f"{rel}:{line_no} (${var})", assign.group("body").split("\n")))
+        for m in _WRITE_HEREDOC_RE.finditer(text):
+            delim = m.group("delim")
+            start_line = text[: m.end()].count("\n")
+            body = []
+            for line in lines[start_line:]:
+                if line.strip() == delim:
+                    break
+                body.append(line)
+            else:
+                raise AssertionError(f"{rel}: heredoc terminator {delim} not found")
+            found.append((f"{rel}:{start_line + 1} (heredoc {delim})", body))
+    return found
+
+
+def test_every_env_write_matches_env_sample():
+    """litclock-dev#783 — env.sh must be the knob surface the docs claim.
+
+    `update.sh` Phase 3 merges missing `env.sh.sample` keys into an EXISTING
+    `env.sh`, but that only runs on an OTA. A device is BORN from one of these
+    writes, so any key they omit is simply absent on a freshly flashed device.
+    Measured before the fix: first-boot's flock writer seeded 9 of 18, its
+    `lib/state.sh`-missing fallback 9, reset-setup 10, prepare-for-cloning 8.
+
+    prepare-for-cloning was the worst and the highest-fanout: it feeds the
+    "SD Cards for Friends & Family" flow, so every card cut from it produced
+    devices with no `LITCLOCK_LANGUAGE` line at all — the knob litclock-dev#532's
+    multi-language work is built on.
+
+    Comment status is asserted, not just membership, because it is
+    load-bearing in BOTH directions. An ACTIVE `LITCLOCK_RENDER_LEAD_S` would
+    hard-pin 4 into the field and make a later retune leave every upgraded
+    device rendering the wrong minute (litclock-dev#762); an active-but-EMPTY value is
+    parsed at import above the litclock-dev#531 `except BaseException` guard and would
+    kill the painter every minute.
+
+    VALUES are deliberately NOT asserted. `env.sh.sample` documents
+    `WEATHER_LATITUDE/LONGITUDE` with real Austin coordinates as an example,
+    while every writer must leave them empty: with `WEATHER_LOCATION_MODE=auto`
+    the IP-geo resolver fills them on a good boot, but on the ip-api.com-blocked
+    path a seeded coordinate renders Austin weather on a device that is not in
+    Austin — worse than the honest empty state.
+    """
+    sample = _sample_keys()
+    # 19 since litclock-dev#791 added WEATHER_LAST_IP_GEO_AT (was 18).
+    assert len(sample) == 19, f"env.sh.sample parsed as {len(sample)} keys, expected 19 — parser drift?"
+
+    writes = _discover_env_writes()
+    # first-boot x2 (flock writer + state.sh-missing fallback), reset-setup,
+    # prepare-for-cloning. A NEW writer must be listed here deliberately.
+    assert len(writes) == 4, (
+        f"expected 4 whole-env writes in scripts/, found {len(writes)}: "
+        f"{[loc for loc, _ in writes]}. A NEW env.sh writer must satisfy this guard too; a "
+        "VANISHED one means the guard now watches less than it was written to watch."
+    )
+
+    for loc, body in writes:
+        keys = _block_keys(body)
+        missing = sorted(set(sample) - set(keys))
+        extra = sorted(set(keys) - set(sample))
+        assert not missing, (
+            f"the env.sh write at {loc} omits {missing}. A device born from this path lacks "
+            "them until its first OTA runs update.sh Phase 3, so env.sh is not the knob "
+            "surface env.sh.sample documents (litclock-dev#783). Add them, copying comment "
+            "status from the sample."
+        )
+        assert not extra, (
+            f"the env.sh write at {loc} sets {extra}, which env.sh.sample does not document. "
+            "Either add them to the sample or drop them — a key only one writer knows about "
+            "is the drift this guard exists to stop."
+        )
+        mismatched = sorted(k for k in sample if sample[k] != keys[k])
+        assert not mismatched, (
+            f"the env.sh write at {loc} disagrees with env.sh.sample on whether {mismatched} "
+            "are COMMENTED. Comment status is load-bearing: an active LITCLOCK_RENDER_LEAD_S "
+            "hard-pins the render lead into the field (litclock-dev#762), and an active-but-empty "
+            "value is parsed at import above the litclock-dev#531 BaseException guard, killing the "
+            "painter. Match the sample; do NOT uncomment to satisfy this message."
+        )
+
+
+def _run_first_boot_default_env(tmp_path, with_state_lib):
+    """EXECUTE first-boot's default-env creation and return the env.sh it wrote.
+
+    The source-text guard above is blind to the one thing that actually matters:
+    a perfect 18-key literal that is never passed to the writer. /review's mutant
+    was `atomic_write_env_sh "$ENV_FILE" "export WEATHER_UNITS=imperial\\n"` --
+    the block still parsed as all 18 keys and every test passed while a flashed
+    device would be born with ONE. So run the real span and read the real file.
+
+    ``with_state_lib`` picks the arm: defining the helper takes the flock path,
+    omitting it takes the `lib/state.sh`-missing heredoc fallback.
+    """
+    text = Path(FIRST_BOOT_SH).read_text()
+    start = text.index("        local _defaults")
+    end = text.index("ENVEOF\n        fi\n", start) + len("ENVEOF\n        fi\n")
+    span = text[start:end]
+    assert "atomic_write_env_sh" in span and "ENVEOF" in span, "span missed one of the two arms"
+
+    env_file = tmp_path / "env.sh"
+    stub = 'atomic_write_env_sh() { printf "%s" "$2" > "$1"; }\n' if with_state_lib else ""
+    harness = (
+        "log() { :; }\n"
+        f"{stub}"
+        f'ENV_FILE="{env_file}"\n'
+        "seed() {\n"
+        f"{span}\n"
+        "}\n"
+        "seed\n"
+    )
+    subprocess.run(["bash", "-c", harness], check=True, timeout=10, capture_output=True)
+    return env_file.read_text()
+
+
+@pytest.mark.parametrize("with_state_lib", [True, False], ids=["flock-writer", "heredoc-fallback"])
+def test_first_boot_actually_writes_every_env_sample_key(tmp_path, with_state_lib):
+    """Both first-boot arms must WRITE all 18 keys, not merely contain them."""
+    written = _run_first_boot_default_env(tmp_path, with_state_lib)
+    sample = _sample_keys()
+    keys = _block_keys(written.split("\n"))
+    arm = "flock writer" if with_state_lib else "state.sh-missing heredoc fallback"
+    missing = sorted(set(sample) - set(keys))
+    assert not missing, (
+        f"first-boot's {arm} WROTE an env.sh missing {missing}. The source block may look "
+        "complete while the value handed to the writer is not — assert on the file, not the "
+        "literal (litclock-dev#783)."
+    )
+    mismatched = sorted(k for k in sample if k in keys and sample[k] != keys[k])
+    assert not mismatched, f"first-boot's {arm} wrote {mismatched} with the wrong comment status"

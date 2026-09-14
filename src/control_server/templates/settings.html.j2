@@ -309,8 +309,8 @@
              id="weather_enabled"
              name="WEATHER_ENABLED"
              role="switch"
-             aria-checked="{{ 'true' if s.get('WEATHER_ENABLED', 'true') == 'true' else 'false' }}"
-             {% if s.get('WEATHER_ENABLED', 'true') == 'true' %}checked{% endif %}>
+             aria-checked="{{ 'true' if weather_enabled(s) else 'false' }}"
+             {% if weather_enabled(s) %}checked{% endif %}>
     </div>
 
     {# No Save button — the toggle auto-saves via the litclock-dev#346 settings.js pattern

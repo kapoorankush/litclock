@@ -564,6 +564,22 @@ class TestPowerOffMode:
         assert "DO_POWEROFF" not in block
 
 
+# litclock-dev#764: reset-setup.sh calls disable_ssh_for_handoff from both
+# terminal branches. Every harness below that splices in _terminal_branch must
+# define it, or the run emits "command not found" on stderr and CONTINUES —
+# swallowed, because these harnesses deliberately omit `set -e` (mirroring the
+# script). That elided the SSH-off security gate from every behavioural test of
+# both handoff arms while they all stayed green.
+#
+# One definition, three call sites: the rationale drifting between verbatim
+# copies 470 lines apart is how the next reader concludes the stub is decorative.
+# The stub alone proves nothing either way — what makes it load-bearing is the
+# assertion at each site: positive (the gate ran, before poweroff) on the two
+# handoff arms, negative (it did NOT run) on every path that leaves the device
+# with its current owner.
+_SSH_GATE_STUB = 'disable_ssh_for_handoff() { echo "STUB_SSH_GATE"; }\n'
+
+
 class TestHotspotPasswordResetSemantics:
     """litclock-dev#620 — the persisted hotspot password survives a plain reset
     and a WiFi reset ON PURPOSE (the owner's phone has the network saved, and a
@@ -698,17 +714,9 @@ class TestHotspotPasswordResetSemantics:
             "set -u  # NOT -e: reset-setup.sh deliberately omits it\n"
             'poweroff() { echo "STUB_POWEROFF"; }\n'
             'systemctl() { echo "STUB_SYSTEMCTL $*"; }\n'
-            # The terminal branch calls disable_ssh_for_handoff. It was authored
-            # here (#52/#53) and back-ported to the development repo by
-            # litclock-dev#657, so BOTH repos have it today — the parity test
-            # below passes against the counterpart, which proves it. What the
-            # development repo never gained is this stub, so its harness has the
-            # same latent gap (filed there). Without the stub every run emitted
-            # "command not found" on stderr — swallowed, because the harness
-            # deliberately omits `set -e` — which elided the security gate from
-            # every behavioural test while they still passed. Re-lost when this
-            # file was taken wholesale in the v0.226.0 port.
-            'disable_ssh_for_handoff() { echo "STUB_SSH_GATE"; }\n'
+            # See _SSH_GATE_STUB. What makes it load-bearing here is the pair of
+            # positive assertions below: the gate ran, and it ran before poweroff.
+            f"{_SSH_GATE_STUB}"
             f"GIFT_MODE={gift_mode}\n"
             f"DO_POWEROFF={do_poweroff}\n"
             f"DO_REBOOT={do_reboot}\n"
@@ -785,6 +793,17 @@ class TestHotspotPasswordResetSemantics:
         pw, result, _ = self._run(reset_sh_content, tmp_path, "false", do_poweroff="true", wipe_wifi="false")
         assert result.returncode == 0, result.stderr
         assert "STUB_POWEROFF" in result.stdout, "the --poweroff arm must still reach poweroff"
+        # The gate is NOT conditioned on WIPE_WIFI — `--keep-wifi --poweroff` takes
+        # the same poweroff arm and disables SSH there too, which the bench QA doc
+        # calls out as the sub-step that ends your session with no hotspot to fall
+        # back on. Without this the arm's SSH-off coverage existed only under
+        # wipe_wifi=true, so gating the call on the wipe would have stayed green.
+        assert "STUB_SSH_GATE" in result.stdout, (
+            "--keep-wifi --poweroff is still a poweroff, and the poweroff arm disables SSH"
+        )
+        assert result.stdout.index("STUB_SSH_GATE") < result.stdout.index("STUB_POWEROFF"), (
+            "the SSH gate must run before poweroff on this arm too"
+        )
         assert pw.exists(), "--keep-wifi --poweroff is the same-owner path and must PRESERVE the key"
         assert pw.read_text(encoding="utf-8").strip() == "clockwis"
 
@@ -816,20 +835,12 @@ class TestHotspotPasswordResetSemantics:
             "set -u\n"
             'poweroff() { echo "STUB_POWEROFF"; }\n'
             'systemctl() { echo "STUB_SYSTEMCTL $*"; }\n'
-            # The terminal branch calls disable_ssh_for_handoff. It was authored
-            # here (#52/#53) and back-ported to the development repo by
-            # litclock-dev#657, so BOTH repos have it today — the parity test
-            # below passes against the counterpart, which proves it. What the
-            # development repo never gained is this stub, so its harness has the
-            # same latent gap (filed there). Without the stub every run emitted
-            # "command not found" on stderr — swallowed, because the harness
-            # deliberately omits `set -e` — which elided the security gate from
-            # every behavioural test while they still passed. Re-lost when this
-            # file was taken wholesale in the v0.226.0 port.
-            # (Defensive here: this arm runs the parser with no flags, so it falls
-            # to the "Reboot to enter setup mode" branch and never reaches the
-            # gate. Kept so the harness stays uniform if that ever changes.)
-            'disable_ssh_for_handoff() { echo "STUB_SSH_GATE"; }\n'
+            # See _SSH_GATE_STUB. This harness runs the parser with NO flags, so it
+            # falls to the "Reboot to enter setup mode" branch. The stub is what lets
+            # the NEGATIVE assertion below observe that the gate stayed away — without
+            # it, a regression that started disabling SSH on the plain same-owner
+            # reset would be invisible rather than red.
+            f"{_SSH_GATE_STUB}"
             "AUTO_YES=false\nDO_REBOOT=false\nDO_POWEROFF=false\n"
             "STRICT_ENV_WIPE=false\nGIFT_MODE=false\nGIFT_MESSAGE_FILE=''\nENV_WIPE_FAILED=false\n"
             f"{default_line}\n"
@@ -848,6 +859,14 @@ class TestHotspotPasswordResetSemantics:
             "a no-argument factory reset did not rotate the setup network's password. "
             "The parser default and the terminal branch each pass in isolation, so only "
             "this end-to-end path catches the two disagreeing."
+        )
+        # The same end-to-end reasoning for the OTHER half of the handoff contract:
+        # the operator-facing help says only --poweroff and --gift-mode disable SSH,
+        # and this is the invocation a person actually types on a clock they are
+        # keeping. Real parser + real terminal branch, so a default flip that routed
+        # the plain reset into the poweroff arm would show up here.
+        assert "STUB_SSH_GATE" not in result.stdout, (
+            "the plain no-flag reset must NOT disable SSH — it is the same-owner path"
         )
 
     def test_gift_mode_also_sweeps_orphaned_staging_files(self, reset_sh_content, tmp_path):
@@ -1078,6 +1097,22 @@ class TestHotspotPasswordResetSemantics:
         assert result.returncode == 0, result.stderr
         if expect_in_stdout:
             assert expect_in_stdout in result.stdout, f"the {label} arm was not reached"
+        # litclock-dev#764 /review: SSH-off is a HANDOFF action, so it must fire on
+        # the poweroff arm and on NEITHER of the others. Only the presence half was
+        # asserted before, and presence-only is one-directional: adding the call to
+        # the reboot arm — a plain reset that leaves the clock with its owner, now
+        # silently stripped of remote access — left the whole suite green. Measured,
+        # both arms.
+        if label == "poweroff":
+            assert "STUB_SSH_GATE" in result.stdout, "the poweroff arm is a handoff and must disable SSH"
+            assert result.stdout.index("STUB_SSH_GATE") < result.stdout.index("STUB_POWEROFF"), (
+                "the SSH gate must run before poweroff"
+            )
+        else:
+            assert "STUB_SSH_GATE" not in result.stdout, (
+                f"the {label} arm is NOT a handoff — the clock stays with its owner, who "
+                "needs SSH. Disabling it here strands them on their own device."
+            )
         assert not pw.exists(), (
             f"the {label} reset did NOT rotate the hotspot key. The WiFi is gone, so the next "
             "boot raises a setup hotspot — with the previous owner's permanent key on it."
@@ -1176,17 +1211,11 @@ class TestHotspotPasswordResetSemantics:
             "set -u\n"
             'poweroff() { echo "STUB_POWEROFF"; }\n'
             'systemctl() { echo "STUB_SYSTEMCTL $*"; }\n'
-            # The terminal branch calls disable_ssh_for_handoff. It was authored
-            # here (#52/#53) and back-ported to the development repo by
-            # litclock-dev#657, so BOTH repos have it today — the parity test
-            # below passes against the counterpart, which proves it. What the
-            # development repo never gained is this stub, so its harness has the
-            # same latent gap (filed there). Without the stub every run emitted
-            # "command not found" on stderr — swallowed, because the harness
-            # deliberately omits `set -e` — which elided the security gate from
-            # every behavioural test while they still passed. Re-lost when this
-            # file was taken wholesale in the v0.226.0 port.
-            'disable_ssh_for_handoff() { echo "STUB_SSH_GATE"; }\n'
+            # See _SSH_GATE_STUB. Load-bearing here for the OPPOSITE reason: this
+            # harness asserts the gate is ABSENT after a failed rotation, and without
+            # the stub a regression that DID call it would emit "command not found"
+            # and the negative assertion would still pass.
+            f"{_SSH_GATE_STUB}"
             f"GIFT_MODE={gift}\nDO_POWEROFF={poweroff}\nDO_REBOOT=false\nWIPE_WIFI={wipe}\n"
             "ENV_WIPE_FAILED=false\n"
             f"CONFIG_DIR={config}\nLITCLOCK_STATE_DIR={state}\n"
@@ -1209,8 +1238,9 @@ class TestHotspotPasswordResetSemantics:
         )
         assert "STUB_SSH_GATE" not in r.stdout, (
             "and it must NOT disable SSH either: the abort leaves the device with its "
-            "CURRENT owner, who needs remote access to diagnose the card. This is the "
-            "behavioural half of the ordering the parametrised structural test pins."
+            "CURRENT owner, who needs remote access to diagnose the card. The structural "
+            "half is test_it_runs_after_the_fail_closed_gates plus the exact call-site "
+            "count — this is the executing half."
         )
         assert "could not be removed from" in r.stdout + r.stderr
 
@@ -1575,55 +1605,99 @@ def test_the_reset_failed_marker_clear_verifies_itself(tmp_path):
 
 
 # litclock-dev#708: one definition, env-overridable for a non-standard clone
-# location. "Counterpart" is whichever repo this one is NOT: in the development
-# repo that is the public checkout, and here it is the development checkout
-# (~/litclock-archive — the naming is inverted, see CLAUDE.md). The default
-# below is the documented maintainer layout FOR THIS REPO; porting this file
-# across without flipping it is what the self-comparison guard catches.
-# `or`, not a get() default: a SET-BUT-EMPTY var (the standard CI-yaml way to
-# "unset") would otherwise yield the relative path scripts/reset-setup.sh —
-# which from the repo root is THIS repo's own copy, turning the cross-repo
-# check into a vacuous self-comparison that passes instead of skipping
-# (/review litclock-dev#711). Non-absolute overrides are rejected for the same
-# reason. LITCLOCK_PUBLIC_CHECKOUT is still read so a shared CI/dev config
-# setting either name keeps working.
-# Deliberately NOT falling back to LITCLOCK_PUBLIC_CHECKOUT: in this repository
-# that variable's documented value is this repository's own path, so honouring it
-# resolves the counterpart to ourselves. The self-comparison guard below would
-# then turn the check into a silent skip on precisely the machine that has both
-# clones — lost coverage in a green suite, which is the failure this guard exists
-# to prevent.
-_COUNTERPART_CHECKOUT = (
-    os.environ.get("LITCLOCK_COUNTERPART_CHECKOUT") or "/home/ankush/litclock-archive"
-)
-if not os.path.isabs(_COUNTERPART_CHECKOUT):
-    raise ValueError(
-        f"LITCLOCK_COUNTERPART_CHECKOUT must be absolute, got {_COUNTERPART_CHECKOUT!r}")
-_COUNTERPART_RESET_SH = Path(_COUNTERPART_CHECKOUT) / "scripts" / "reset-setup.sh"
+# location. "Counterpart" is whichever repo this one is NOT: here that is the
+# development checkout at ~/litclock-dev, and in the development repo it is
+# this public checkout at ~/litclock. The default below is the documented
+# maintainer layout FOR THIS REPO; porting this file across without flipping
+# it is what the guards below catch — and that is not hypothetical, it
+# happened on the v0.226.0 port (litclock-dev#765).
+#
+# The override name is repo-relative, so it must be set PER REPO (a direnv
+# .envrc, not ~/.bashrc and not a shared workflow `env:` block): one exported
+# value cannot mean "the other repo" in two repos. Deliberately NOT reading
+# LITCLOCK_PUBLIC_CHECKOUT here: in this repository that variable's documented
+# value is this repository's own path, so honouring it would resolve the
+# counterpart to ourselves — the development copy reads it as the
+# pre-litclock-dev#765 name, and there it does name the counterpart.
+_COUNTERPART_ENV_KEYS = ("LITCLOCK_COUNTERPART_CHECKOUT",)
+_DEFAULT_COUNTERPART_CHECKOUT = "/home/ankush/litclock-dev"
+
+
+def _resolve_counterpart_checkout(env) -> str:
+    """The counterpart checkout root, or "" for "there is no counterpart".
+
+    Set-but-EMPTY is an explicit opt-out, not a fall-through. That is the
+    standard CI-yaml way to unset a variable, and the previous `or` chain
+    quietly ignored it — on a machine where the default path happens to exist
+    (the maintainer's), asking for no counterpart still ran the check against
+    the real one. Empty now means what it looks like it means.
+
+    A non-absolute override is rejected outright rather than resolved: relative
+    to the repo root, ``scripts/reset-setup.sh`` IS this repo's own copy, which
+    is the vacuous self-comparison all over again (/review litclock-dev#711).
+    """
+    for key in _COUNTERPART_ENV_KEYS:
+        if key not in env:
+            continue
+        value = env[key].strip()
+        if not value:
+            return ""
+        if not os.path.isabs(value):
+            raise ValueError(f"{key} must be absolute, got {value!r}")
+        return value
+    return _DEFAULT_COUNTERPART_CHECKOUT
+
+
+_COUNTERPART_CHECKOUT = _resolve_counterpart_checkout(os.environ)
+_COUNTERPART_RESET_SH = Path(_COUNTERPART_CHECKOUT or "/nonexistent") / "scripts" / "reset-setup.sh"
+
 
 # The guard that makes the vacuous case impossible rather than merely unlikely.
 # A cross-repo check pointed at this repo's OWN file asserts `X == X` and can
-# never go red, so it reports the property as verified while protecting
-# nothing. That is exactly what a port of this file introduces when the
-# default above still names the repo it came from, and it is invisible: the
-# suite stays green. Resolve both sides and compare the real paths — symlinks
-# and `..` segments included — so the check either compares two repos or
-# declares itself unavailable.
-def _is_self_comparison():
+# never go red, so it reports the property as verified while protecting nothing.
+# That is exactly what a port of this file introduces when the default above
+# still names the repo it came from, and it is invisible: the suite stays green
+# and `skipif` never fires, because the path does exist.
+#
+# `samefile`, not a resolved-path comparison: two paths can resolve differently
+# and still be the same inode (a hard-linked clone, a bind mount), which is the
+# self-comparison wearing a different name. Identity is the actual question.
+#
+# Takes the path as an argument rather than reading the module constant: the
+# whole `is_file() and not self` conjunction is the load-bearing part, and a
+# test that can only reach the inner predicate leaves dropping the outer term a
+# silent, green mutation (measured — it was).
+#
+# `is_file`, not `exists`: a directory at that path exists and is not us, so it
+# reported AVAILABLE and the parity test then died on IsADirectoryError instead
+# of skipping with a diagnosis.
+#
+# The except clause is wider than OSError on purpose. Path.resolve raises
+# RuntimeError on a symlink loop and ValueError on an embedded NUL — neither an
+# OSError — and both are unreachable today only because is_file() short-circuits
+# first. That ordering is not something the next refactor should have to know:
+# a raise here is a COLLECTION error that takes the whole file down, every
+# CI-side gate in it included.
+def _counterpart_available(counterpart: Path, ours: Path = RESET_SH) -> bool:
+    # `ours` is injectable only so the tests can build both sides inside tmp_path
+    # — a hard-linked pair cannot be constructed against the real repo without
+    # writing into it, and the hardlink case is the one `samefile` exists for.
     try:
-        return _COUNTERPART_RESET_SH.resolve() == RESET_SH.resolve()
-    except OSError:
+        if not counterpart.is_file():
+            return False
+        return not counterpart.samefile(ours)
+    except (OSError, ValueError, RuntimeError):
         return False
 
 
-_COUNTERPART_AVAILABLE = _COUNTERPART_RESET_SH.exists() and not _is_self_comparison()
+_COUNTERPART_AVAILABLE = _counterpart_available(_COUNTERPART_RESET_SH)
 
 
 class TestSshHandoffGate:
     """litclock-dev#528, back-ported to dev by litclock-dev#657.
 
-    The function and its header comment are BYTE-IDENTICAL to public's — the
-    file is checked for that below, so the two repos cannot drift on the one
+    The function and its header comment are BYTE-IDENTICAL to the counterpart
+    repository's — checked below, so the two cannot drift on the one
     step that decides whether a device is handed on with SSH reachable.
 
     An earlier version of this made the gate inert on dev images via an
@@ -1708,7 +1782,7 @@ class TestSshHandoffGate:
     def test_it_matches_the_vendored_golden_copy(self, reset_sh_content):
         """litclock-dev#708: the parity property, enforced IN CI.
 
-        The maintainer-local test below still compares against the public
+        The maintainer-local test below still compares against the counterpart
         checkout, but it skips wherever that checkout is absent — which is
         every CI run, so the property the litclock-dev#657 back-port exists to
         protect had no CI-side enforcement at all. The golden fixture is the
@@ -1750,11 +1824,21 @@ class TestSshHandoffGate:
         owner asked for when the marker was removed.
 
         Caveats this test carries knowingly (litclock-dev#708): it reads
-        public's WORKING TREE — whatever branch and uncommitted state is
+        the counterpart's WORKING TREE — whatever branch and uncommitted state is
         checked out — and it skips into a green suite wherever the checkout is
         absent. The golden test above is the CI-side floor; this one is the
         maintainer-local cross-check that the OTHER repo still agrees.
         """
+        # The skipif is the only other consumer of the guard, and a decorator
+        # cannot be asserted on. litclock-dev#764 /review measured the gap:
+        # reverting `not _COUNTERPART_AVAILABLE` to a bare `not ....exists()`
+        # alongside a self-naming default reproduces litclock-dev#765 exactly —
+        # this test passes vacuously AND the guard's own test still passes,
+        # because it never touches the wiring. Re-asserting here is what makes
+        # the decorator load-bearing.
+        assert _counterpart_available(self.COUNTERPART_RESET_SH), (
+            "the skipif must gate on the self-comparison guard, not on a bare exists()"
+        )
         counterpart = self.COUNTERPART_RESET_SH.read_text()
         # header+body as ONE span, same unit as the golden (/review litclock-dev#711: the
         # body-only + header-only pair left a gap where a whitespace change
@@ -1766,12 +1850,189 @@ class TestSshHandoffGate:
             "or its header comment) have drifted"
         )
 
+    def test_the_shipped_counterpart_path_does_not_name_this_repo(self):
+        """NEVER skipped — this is the one that goes red on a bad port.
+
+        litclock-dev#765 /review: the self-comparison guard downgrades the
+        defect from a vacuous PASS to a silent SKIP, which is safer but still
+        unsignalled. On a ported copy whose default was not flipped that skip is
+        the permanent steady state: the cross-repo parity check never runs
+        again, on any machine, wearing the CI skip reason, and nothing says so.
+
+        A pure path comparison needs no second checkout, so it runs on CI in
+        BOTH repositories and fails the port that forgot to flip the literal —
+        or an override exported once for both repos, which is the same mistake
+        by another route.
+        """
+        # SKIP, not fail, for the explicit opt-out (/review). A set-but-empty
+        # LITCLOCK_COUNTERPART_CHECKOUT (the only override this repo reads —
+        # see _COUNTERPART_ENV_KEYS) is a DOCUMENTED, supported configuration —
+        # `test_the_counterpart_resolution_rejects_what_it_says_it_rejects`
+        # asserts exactly that behaviour — so exercising it must not turn the
+        # whole suite red. Failing here made pass/fail depend on an ambient
+        # environment variable, which is the test-isolation problem this file
+        # takes trouble to avoid elsewhere.
+        #
+        # The hard assertion below is the one the docstring is about, and it
+        # still never skips: it is the self-naming path that goes red on a bad
+        # port.
+        if _COUNTERPART_CHECKOUT == "":
+            pytest.skip(
+                "counterpart explicitly opted out via "
+                f"{' / '.join(_COUNTERPART_ENV_KEYS)}; unset to run the cross-repo parity check"
+            )
+        assert Path(_COUNTERPART_CHECKOUT).resolve() != REPO_ROOT.resolve(), (
+            f"the counterpart checkout resolves to THIS repository ({REPO_ROOT}). The "
+            "cross-repo parity check would compare the file to itself, or skip forever "
+            "pretending to be CI. Flip the default in _DEFAULT_COUNTERPART_CHECKOUT, or "
+            "set the override per-repo rather than once for both."
+        )
+
+    def test_the_counterpart_resolution_rejects_what_it_says_it_rejects(self):
+        """litclock-dev#764 /review: the resolution block reasons at length about
+        relative paths and set-but-empty vars, and had zero coverage — deleting
+        the `isabs` raise (the /review litclock-dev#711 protection) went unnoticed, and the
+        empty-var behaviour did not match the prose above it.
+        """
+        assert _resolve_counterpart_checkout({}) == _DEFAULT_COUNTERPART_CHECKOUT
+
+        for key in _COUNTERPART_ENV_KEYS:
+            assert _resolve_counterpart_checkout({key: "/some/where"}) == "/some/where"
+            assert _resolve_counterpart_checkout({key: ""}) == "", (
+                f"a set-but-empty {key} is an explicit opt-out, not a fall-through to "
+                "the maintainer's default — that default exists on the one machine "
+                "where opting out matters"
+            )
+            with pytest.raises(ValueError):
+                _resolve_counterpart_checkout({key: "scripts/reset-setup.sh"})
+
+        # The property this repo's header comment calls deliberate, pinned:
+        # LITCLOCK_PUBLIC_CHECKOUT names THIS repository, so honouring it would
+        # resolve the counterpart to ourselves (the litclock-dev#765 self-
+        # comparison). The development copy reads it as the pre-litclock-dev#765 name; a
+        # hand-merge that copies its two-key tuple across is exactly what this
+        # assertion catches — the port review measured that the previous
+        # precedence check stayed green with the key re-added.
+        assert "LITCLOCK_PUBLIC_CHECKOUT" not in _COUNTERPART_ENV_KEYS, (
+            "this repository must not read LITCLOCK_PUBLIC_CHECKOUT (see the header "
+            "comment above _COUNTERPART_ENV_KEYS)"
+        )
+        assert _resolve_counterpart_checkout(
+            {"LITCLOCK_PUBLIC_CHECKOUT": "/b"}
+        ) == _DEFAULT_COUNTERPART_CHECKOUT, (
+            "LITCLOCK_PUBLIC_CHECKOUT is ignored here; only the default may answer"
+        )
+
+    def test_the_self_comparison_guard_is_not_decorative(self, tmp_path):
+        """litclock-dev#765: the parity test above is skipped on CI, so nothing in
+        a normal run exercises the guard that decides WHY it skips. Without this,
+        deleting the self-comparison term leaves the suite green everywhere — and
+        reintroduces the exact defect the port hit: a counterpart path that names
+        this repo makes the assertion `X == X`, which passes vacuously while
+        `skipif` never fires, because the file does exist.
+
+        Driven through the real availability predicate, not a reimplementation of
+        it, and through the whole `is_file() and not self` conjunction rather than
+        the inner comparison alone — dropping the outer term was a mutation that
+        survived a version of this test that only reached the inner half.
+        """
+        assert not _counterpart_available(RESET_SH), (
+            "pointing at our own file must report UNAVAILABLE (skip), never available"
+        )
+
+        indirect = REPO_ROOT / ".." / REPO_ROOT.name / "scripts" / "reset-setup.sh"
+        assert not _counterpart_available(indirect), (
+            "a `..`-laden path that resolves to our own file is the same self-comparison"
+        )
+
+        # ...and the symlink half, which the `..` case does NOT cover: plain string
+        # normalisation handles `..` and would pass the case above while letting a
+        # symlinked checkout run the parity test against itself (measured).
+        link = tmp_path / "linked-repo"
+        link.symlink_to(REPO_ROOT, target_is_directory=True)
+        assert not _counterpart_available(link / "scripts" / "reset-setup.sh"), (
+            "a symlink to this repo is this repo — compare file IDENTITY, not path text"
+        )
+
+        assert not _counterpart_available(Path("/nonexistent/repo/scripts/reset-setup.sh")), (
+            "an absent counterpart is unavailable too (the CI case)"
+        )
+
+        a_directory = tmp_path / "scripts"
+        a_directory.mkdir()
+        assert not _counterpart_available(a_directory), (
+            "a directory is not a readable counterpart — it exists and is not us, so an "
+            "exists()-based guard called it available and the parity test then died on "
+            "IsADirectoryError instead of skipping with a diagnosis"
+        )
+
+        loop = tmp_path / "loop"
+        loop.symlink_to(tmp_path / "loop2")
+        (tmp_path / "loop2").symlink_to(loop)
+        assert not _counterpart_available(loop), "a symlink loop must fail closed, not raise"
+        assert not _counterpart_available(Path("/nul\x00byte")), (
+            "ValueError from an embedded NUL must fail closed too — a raise here is a "
+            "COLLECTION error that takes down every test in this file, CI gates included"
+        )
+
+        # The hardlink case, which is why this is `samefile` and not a resolved-path
+        # comparison: two paths can resolve differently and still be the same inode
+        # (a `cp -al` clone, a bind mount). Measured — swapping samefile back for
+        # resolve()-inequality survives every OTHER case in this test.
+        ours = tmp_path / "ours" / "scripts" / "reset-setup.sh"
+        ours.parent.mkdir(parents=True)
+        ours.write_text(RESET_SH.read_text(), encoding="utf-8")
+        hardlinked = tmp_path / "hardlinked" / "scripts" / "reset-setup.sh"
+        hardlinked.parent.mkdir(parents=True)
+        os.link(ours, hardlinked)
+        assert hardlinked.resolve() != ours.resolve(), "precondition: two distinct paths"
+        assert not _counterpart_available(hardlinked, ours=ours), (
+            "a hard link is the same file under another name — comparing resolved paths "
+            "calls it a different repo and the parity check goes vacuous again"
+        )
+
+        genuine = tmp_path / "counterpart" / "scripts" / "reset-setup.sh"
+        genuine.parent.mkdir(parents=True)
+        genuine.write_text(RESET_SH.read_text(), encoding="utf-8")
+        assert _counterpart_available(genuine), (
+            "a real second checkout MUST be available — a guard that reports "
+            "unavailable for everything would skip the parity check into oblivion"
+        )
+
+    def test_the_guard_fails_closed_on_every_error_class(self, monkeypatch, tmp_path):
+        """The contract is "any failure means unavailable", and the except clause
+        that delivers it is wider than OSError for a measured reason: Path.resolve
+        raises RuntimeError on a symlink loop and ValueError on an embedded NUL,
+        neither of which is an OSError. Today both are unreachable through this
+        entry point because is_file() short-circuits first — which makes the
+        widening look like dead defensiveness and invites the next refactor to
+        narrow it. A raise here is not one red test: it is a COLLECTION error that
+        takes down all of this file, every CI-side gate in it included.
+        """
+        ours = tmp_path / "ours" / "scripts" / "reset-setup.sh"
+        ours.parent.mkdir(parents=True)
+        ours.write_text("#!/bin/bash\n", encoding="utf-8")
+        counterpart = tmp_path / "theirs" / "scripts" / "reset-setup.sh"
+        counterpart.parent.mkdir(parents=True)
+        counterpart.write_text("#!/bin/bash\n", encoding="utf-8")
+        assert _counterpart_available(counterpart, ours=ours), "precondition: available"
+
+        for exc in (OSError, ValueError, RuntimeError):
+
+            def _raise(self, other, _exc=exc):
+                raise _exc("synthetic")
+
+            monkeypatch.setattr(Path, "samefile", _raise)
+            assert not _counterpart_available(counterpart, ours=ours), (
+                f"{exc.__name__} from the identity check must fail closed, not propagate"
+            )
+
     def test_no_dev_image_exception_survives(self, reset_sh_content):
         """The removed exception, pinned as removed — by SHAPE, not by name.
 
         The first version of this listed the three names the PR had just
         deleted, which are exactly the three nobody would reuse. Measured
-        against a CI-like run (public checkout absent, so the parity test
+        against a CI-like run (counterpart checkout absent, so the parity test
         skips), a reintroduced exception under ANY new name survived it: a
         marker at a different path, an env var called something else, even
         `[[ "$(hostname)" == "litclock-dev" ]]`.
@@ -1801,6 +2062,61 @@ class TestSshHandoffGate:
         )
         assert "disable_ssh_for_handoff" in gift, "gift mode must disable SSH before handing the device on"
         assert "disable_ssh_for_handoff" in poweroff, "the poweroff reset is a handoff too (litclock-dev#627)"
+
+    def test_it_is_called_from_exactly_those_two_places(self, reset_sh_content):
+        """The exclusivity property, pinned where the harnesses cannot see it.
+
+        litclock-dev#764 /review, measured: `_terminal_branch` lifts the span
+        starting AT the hoisted non-gift rotation guard, so a
+        `disable_ssh_for_handoff` inserted one line ABOVE that anchor is outside
+        every behavioural harness's field of view. That placement is the worst
+        one there is — SSH off unconditionally, on every reset, BEFORE the
+        rotation's fail-closed `exit 1` — and it left all 135 tests green.
+
+        A whole-file call-site count is what closes it, the same shape the
+        rotation already uses (`len(calls) == 2`). Presence-in-two-spans cannot:
+        it is one-directional and says nothing about a third site anywhere else.
+        """
+        import re as _re
+
+        calls = [
+            (lineno, ln)
+            for lineno, ln in enumerate(reset_sh_content.splitlines(), 1)
+            if not ln.lstrip().startswith("#")
+            and _re.search(r'(?<![A-Za-z0-9_"])disable_ssh_for_handoff(?![A-Za-z0-9_(])', ln)
+        ]
+        assert len(calls) == 2, (
+            "disable_ssh_for_handoff must be called from EXACTLY two places — the gift "
+            "arm and the litclock-dev#627 poweroff arm. Any other site turns a handoff "
+            "action into an unconditional one, and the behavioural harnesses cannot see "
+            f"a call placed above the lifted terminal span; found {len(calls)}: {calls}"
+        )
+
+        # ...and both of them are the terminal arms, not merely two of something.
+        tail_at = reset_sh_content.index("Reset Complete!")
+        reboot_at = reset_sh_content.index('elif [[ "$DO_REBOOT"', tail_at)
+        # Offsets from the ENUMERATED line number, not from searching the text
+        # (/review). Both call sites are the byte-identical line
+        # `    disable_ssh_for_handoff`, so `reset_sh_content.index(ln)` returned
+        # the FIRST site's offset for BOTH iterations and this window was
+        # asserted twice against the same position — the second site was
+        # unchecked. Mutation-verified at the time: moving the poweroff-arm call
+        # into the plain no-poweroff/no-reboot `else` arm, where the device is
+        # NOT being handed on and the owner still needs SSH, kept this green.
+        _line_starts = []
+        _acc = 0
+        for _ln in reset_sh_content.splitlines():
+            _line_starts.append(_acc)
+            _acc += len(_ln) + 1
+
+        for lineno, ln in calls:
+            offset = _line_starts[lineno - 1]
+            assert tail_at < offset < reboot_at, (
+                f"line {lineno} calls the gate outside the gift/poweroff arms: {ln!r}. "
+                "Ahead of the fail-closed gates it strips the CURRENT owner's access on "
+                "the exact path where they still need it; on the reboot or plain arm it "
+                "strips it from a device that is not being handed on at all."
+            )
 
     def test_it_runs_after_the_fail_closed_gates(self, reset_sh_content):
         """On a failed prep the device stays with its CURRENT owner, who may
@@ -2412,7 +2728,16 @@ class TestGiftLanguageFile:
         import re as _re
         import subprocess
 
-        m = _re.search(r'DEFAULTS="export OPENWEATHERMAP_APIKEY=\n.*?\n"\n', reset_sh_content, _re.S)
+        # Anchored on the double-quote flip itself, not on whichever key happens
+        # to come first — litclock-dev#783 commented OPENWEATHERMAP_APIKEY to match
+        # env.sh.sample and broke the old anchor. There is exactly one
+        # double-quoted DEFAULTS assignment in this script, which the count
+        # assertion below pins.
+        assert reset_sh_content.count('DEFAULTS="') == 1, (
+            "expected exactly one double-quoted DEFAULTS assignment; the regex below "
+            "would otherwise execute an unintended span"
+        )
+        m = _re.search(r'DEFAULTS="[^"]*"\n', reset_sh_content, _re.S)
         assert m, "DEFAULTS double-quoted assignment not found"
         span = m.group(0)
         for code, expected in (("es", "export LITCLOCK_LANGUAGE=es\n"), ("", "export LITCLOCK_LANGUAGE=\n")):

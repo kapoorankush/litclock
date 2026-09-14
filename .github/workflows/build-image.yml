@@ -80,8 +80,15 @@ jobs:
       # needs only pytest + PyYAML, no Pillow/hardware deps, so it cannot become
       # a flaky gate on an unrelated test.
       - name: Image-correctness tests
+      #
+      # pytest-timeout is in that minimal set from litclock-dev#769 onward, not
+      # because these tests need a timeout but because pyproject now lists it in
+      # `required_plugins` — pytest REFUSES TO START without it, so omitting it
+      # here fails this job with exit 4 before collecting anything. Verified.
+      # It is 14 kB of pure Python whose only dependency is pytest itself, so
+      # the "no Pillow/hardware deps" property above still holds.
         run: |
-          python3 -m pip install --quiet --upgrade pytest pyyaml
+          python3 -m pip install --quiet --upgrade pytest pytest-timeout pyyaml
           python3 -m pytest tests/test_pi_gen.py tests/test_build_image_workflow.py -q
 
       # litclock-dev#681 — a tagged release must carry release notes.
@@ -376,7 +383,7 @@ jobs:
       # private repos. Will start working automatically when the repo goes public.
       - name: Attest build provenance
         if: ${{ !github.event.repository.private }}
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ steps.compress.outputs.img }}
 

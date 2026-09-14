@@ -2025,3 +2025,132 @@ poweroff() {{ touch {shlex.quote(str(reached))}; }}
         assert reached.exists(), (
             "the REAL poweroff was never invoked after the drop — the block past the redirect died"
         )
+
+# ── litclock-dev#821: the env.sh credential gate ──────────────────────────────
+
+_ENV_GATE_START = "echo -n \"Verifying env.sh carries no owner credentials... \""
+_ENV_GATE_END = "echo -e \"${GREEN}done${NC}\""
+
+
+def _extract_env_gate() -> str:
+    """The shipped gate, span-verified like the hotspot step above."""
+    body = PREPARE_SH.read_text()
+    start = body.index(_ENV_GATE_START)
+    end = body.index(_ENV_GATE_END, start) + len(_ENV_GATE_END)
+    gate = body[start:end]
+    assert "Do NOT clone this card" in gate, "extracted span lost the abort under test"
+    assert "ENV_WIPE_FAILED" in gate, "extracted span lost the write-failure check"
+    assert "OPENWEATHERMAP_APIKEY" in gate, "extracted span lost the secret-key scan"
+    return gate
+
+
+def _run_env_gate(tmp_path, *, wipe_failed: bool, env_sh: str | None):
+    """Execute the REAL gate against a real env.sh, under the real shell opts."""
+    install = tmp_path / "litclock"
+    install.mkdir(exist_ok=True)
+    if env_sh is not None:
+        (install / "env.sh").write_text(env_sh)
+    script = f"""{_script_shell_environment()}
+INSTALL_DIR={shlex.quote(str(install))}
+ENV_WIPE_FAILED={"true" if wipe_failed else "false"}
+{_ERREXIT_PROBE}
+{_extract_env_gate()}
+echo "REACHED_BANNER"
+"""
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+
+
+_CLEAN_ENV = (
+    "# export OPENWEATHERMAP_APIKEY=\n"
+    "export WEATHER_ENABLED=true\n"
+    "export WEATHER_LATITUDE=\n"
+    "export WEATHER_LONGITUDE=\n"
+    "export WEATHER_LOCATION_NAME=\n"
+    "export GIFT_MODE_MESSAGE=\n"
+)
+
+
+class TestEnvCredentialGate:
+    """litclock-dev#821 — a failed env.sh wipe must not reach the success banner.
+
+    Before this, the failure arm was `true  # explicit success for set -e`: one
+    yellow line, then "SD Card Ready for Cloning!", then power off. Every card
+    cut from that master carried the owner's API key and home location, and the
+    operator had no reason to suspect it.
+    """
+
+    def test_a_clean_env_passes_and_reaches_the_banner(self, tmp_path):
+        r = _run_env_gate(tmp_path, wipe_failed=False, env_sh=_CLEAN_ENV)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "REACHED_BANNER" in r.stdout, "a clean card must be allowed through"
+
+    def test_a_failed_write_aborts_before_the_banner(self, tmp_path):
+        """The reported-failure half: flock timeout (rc=75) or a failed write."""
+        r = _run_env_gate(tmp_path, wipe_failed=True, env_sh=_CLEAN_ENV)
+        assert r.returncode == 1, f"expected abort, got {r.returncode}\n{r.stdout}"
+        assert "Do NOT clone this card" in r.stdout
+        assert "REACHED_BANNER" not in r.stdout, "the gate must run BEFORE the banner"
+
+    @pytest.mark.parametrize(
+        "key,value",
+        [
+            ("OPENWEATHERMAP_APIKEY", "deadbeefcafe"),
+            ("WEATHER_LATITUDE", "30.2672"),
+            ("WEATHER_LONGITUDE", "-97.7431"),
+            ("WEATHER_LOCATION_NAME", "Austin, Texas"),
+            ("GIFT_MODE_MESSAGE", "Happy birthday"),
+        ],
+    )
+    def test_a_surviving_secret_aborts_even_when_the_write_reported_success(self, tmp_path, key, value):
+        """The silent half: `atomic_write_env_sh` returned 0 but the file is
+        wrong. A return-code check alone cannot see this, which is why the gate
+        re-reads the file — Step 8's idiom."""
+        # Replace the WHOLE line. OPENWEATHERMAP_APIKEY ships commented out, so a
+        # naive `export KEY=` -> `export KEY=value` substitution matches the tail
+        # of the comment and produces `# export KEY=value`, which is still
+        # commented and correctly does NOT trip the gate — the fixture would then
+        # be testing nothing. Caught by running it.
+        leaked = "".join(
+            f"export {key}={value}\n" if ln.lstrip("# ").startswith(f"export {key}=") or
+            ln.startswith(f"export {key}=") else ln + "\n"
+            for ln in _CLEAN_ENV.splitlines()
+        )
+        assert f"{key}={value}" in leaked, "fixture did not actually inject the secret"
+        r = _run_env_gate(tmp_path, wipe_failed=False, env_sh=leaked)
+        assert r.returncode == 1, f"{key} survived the wipe and the gate let it through\n{r.stdout}"
+        assert key in r.stdout, f"the abort must NAME the surviving key; got {r.stdout!r}"
+        assert "REACHED_BANNER" not in r.stdout
+
+    def test_a_commented_apikey_is_not_a_leak(self, tmp_path):
+        """The shipped defaults comment OPENWEATHERMAP_APIKEY out entirely, so a
+        commented line must not trip the gate — otherwise it fails every run."""
+        r = _run_env_gate(tmp_path, wipe_failed=False, env_sh=_CLEAN_ENV)
+        assert r.returncode == 0, "a commented-out key is the SHIPPED state, not a leak"
+
+    def test_the_gate_precedes_both_the_banner_and_the_poweroff(self):
+        """Position is the whole point: after either one, the operator is gone."""
+        body = PREPARE_SH.read_text()
+        gate_at = body.index(_ENV_GATE_START)
+        # The ECHO, not the first mention: "SD Card Ready for Cloning!" also
+        # appears in two comments near the top of the file, so index() on the
+        # bare phrase returns offset ~1194 and the assertion compares against
+        # the wrong thing. Caught by running it.
+        banner_at = body.index('echo -e "${GREEN}  SD Card Ready for Cloning!${NC}"')
+        assert gate_at < banner_at, "the credential gate must run before the success banner"
+        # The EXECUTED call, searched from the gate on the comment-stripped
+        # text. The first version did `body.find("poweroff", banner_at)`
+        # inside `if != -1`: a search that starts AT the banner can only
+        # find something after it, and a miss passed silently, so the
+        # assertion could not go red (v0.227.0 port review, testing pass).
+        executed = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
+        gate_exec_at = executed.index(_ENV_GATE_START)
+        poweroff_at = executed.index("poweroff || {")
+        assert gate_exec_at < poweroff_at, "the credential gate must run before the power-off"
+
+    def test_the_failure_arm_no_longer_swallows_the_failure(self):
+        """The specific regression: `true  # explicit success for set -e`."""
+        body = PREPARE_SH.read_text()
+        assert "true  # explicit success for `set -e`" not in body, (
+            "the env.sh wipe failure arm is swallowing the failure again (litclock-dev#821)"
+        )
+        assert "ENV_WIPE_FAILED=true" in body, "the failure arm must raise the flag the gate reads"

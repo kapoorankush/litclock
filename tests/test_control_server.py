@@ -1162,7 +1162,7 @@ class TestUpdateProgressSurface:
 
     def test_stale_running_state_returns_nulls(self, status_file, tmp_path):
         """Adversarial-review P1 — `state=running` with started_at_unix
-        older than `UPDATE_RUNNING_TIMEOUT_S` (30min) must be treated as
+        older than `UPDATE_RUNNING_TIMEOUT_S` (45min) must be treated as
         stale and return null so the Settings banner self-clears.
 
         Covers the SIGKILL/OOM/power-loss case where update.sh dies

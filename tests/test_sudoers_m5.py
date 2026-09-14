@@ -8,6 +8,7 @@ hasn't drifted.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -111,14 +112,44 @@ class TestTmpfilesEntry:
 
 
 class TestUpdateServiceTimeoutBumped:
-    def test_timeout_start_sec_is_600(self):
+    def test_timeout_start_sec_is_at_least_1800(self):
         """F1 — TimeoutStartSec was 120; M5 review caught that real
-        Pi-Zero-2W updates can exceed that under CPU pressure. Lock at
-        600 so a regression to a tighter value fails CI."""
+        Pi-Zero-2W updates can exceed that under CPU pressure, so it became
+        600. litclock-dev#835 then found 600 could not hold the litclock-dev#531
+        re-stamp (a `timeout 300` validator, 182s measured on a Zero 2W)
+        on top of pip + smoke, so it is 1800. A floor, not an equality: the
+        composition against the script's inner bounds is pinned in
+        tests/test_runtime_render_autostamp.py; this only stops a regression
+        to a tighter value."""
         path = REPO_ROOT / "systemd" / "litclock-update.service"
         body = path.read_text()
-        assert "TimeoutStartSec=600" in body
+        m = re.search(r"^TimeoutStartSec=(\d+)\s*$", body, re.MULTILINE)
+        assert m, "TimeoutStartSec must be set as a plain integer"
+        assert int(m.group(1)) >= 1800
         assert "TimeoutStartSec=120" not in body
+
+    def test_stop_budget_is_explicit_and_holds_the_trap(self):
+        """litclock-dev#835: the EXIT trap does two bounded things (a
+        `timeout 10` re-arm and the status stamp); the stop window must hold
+        them and must be written down next to the start budget."""
+        path = REPO_ROOT / "systemd" / "litclock-update.service"
+        m = re.search(r"^TimeoutStopSec=(\d+)\s*$", path.read_text(), re.MULTILINE)
+        assert m, "TimeoutStopSec must be explicit"
+        assert 30 <= int(m.group(1)) <= 120
+
+    def test_the_pwa_running_clamp_outlives_the_unit_budget(self):
+        """litclock-dev#835 (maintainability pass): UPDATE_RUNNING_TIMEOUT_S was
+        1800, derived from a 600s unit; with the unit at 1800 it equalled the
+        budget exactly, so a legitimately long run still alive under systemd
+        would have its 'Update in progress' banner cleared as stale."""
+        from control_server.routes.status import UPDATE_RUNNING_TIMEOUT_S
+
+        body = (REPO_ROOT / "systemd" / "litclock-update.service").read_text()
+        start = int(re.search(r"^TimeoutStartSec=(\d+)", body, re.MULTILINE).group(1))
+        stop = int(re.search(r"^TimeoutStopSec=(\d+)", body, re.MULTILINE).group(1))
+        assert UPDATE_RUNNING_TIMEOUT_S > start + stop + 300, (
+            "the clamp must outlive start + stop with headroom, or the banner lies on a slow tick"
+        )
 
 
 class TestWifiResetServiceUnit:

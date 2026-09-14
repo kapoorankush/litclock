@@ -43,6 +43,7 @@ import logging
 import os
 import sys
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 # litclock-dev#414 maintainability item #4: prefer logging over print() so journald can
@@ -91,6 +92,7 @@ def update_env_location(
     timezone: str | None = None,
     mode: str | None = None,
     ip_country: str | None = None,
+    ip_geo_at: str | None = None,
     env_file: str | None = None,
 ) -> bool:
     """Persist a resolved location to env.sh + system timezone.
@@ -109,6 +111,12 @@ def update_env_location(
     New kwargs (litclock-dev#337):
       * ``mode``: writes ``WEATHER_LOCATION_MODE`` when not None.
       * ``ip_country``: writes ``WEATHER_IP_COUNTRY`` (uppercased) when not None.
+      * ``ip_geo_at`` (litclock-dev#791): writes ``WEATHER_LAST_IP_GEO_AT``.
+        Deliberately a kwarg rather than a stamp taken inside this function:
+        this writer also serves the PWA's Specific-mode save, which is not an
+        IP-geo event, and stamping there would make the diagnostics row — and
+        the 7-day staleness anomaly that reads it — lie in the other direction.
+        Only ``resolve_location_from_ip`` passes it.
 
     Caller responsibility: the country-change-only UNITS rule (A6) is
     enforced by ``resolve_location_from_ip``; this function writes
@@ -177,6 +185,8 @@ def update_env_location(
         # value (clearing the field — e.g., when IP-geo failed and we
         # explicitly want to mark "no last-detected country").
         updates["WEATHER_IP_COUNTRY"] = str(ip_country).upper().strip()
+    if ip_geo_at:
+        updates["WEATHER_LAST_IP_GEO_AT"] = str(ip_geo_at)
     if not updates:
         return False
 
@@ -329,6 +339,11 @@ def resolve_location_from_ip(retries: bool = True, env_file: str | None = None) 
         timezone=tz,
         mode="auto",
         ip_country=country,
+        # litclock-dev#791 — stamp the SUCCESSFUL IP-geo. Taken here, not
+        # inside the writer, because the writer also serves the PWA Specific
+        # save. Seconds resolution: this feeds a 7-day staleness threshold and
+        # a support row a human reads, neither of which wants microseconds.
+        ip_geo_at=datetime.now(UTC).isoformat(timespec="seconds"),
         env_file=env_file,
     )
     # The shim returns whatever update_env_location returns (bool after this

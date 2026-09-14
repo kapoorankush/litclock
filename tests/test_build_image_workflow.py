@@ -270,6 +270,12 @@ class TestWorkflowBuildJob:
 class TestBuildIsGatedOnTests:
     """The build workflow must actually run the image-correctness tests.
 
+    See also test_timeout_config_is_not_inert.py, which asserts this step's
+    minimal `pip install` still satisfies pyproject's `required_plugins`. That
+    coupling is not visible from here: this workflow is tag-only, so a PR that
+    adds a required plugin without widening the install list merges green and
+    fails at minute one of the next release build (litclock-dev#769 — it did).
+
     This is a single `build` job with no `needs:`, so for a while it ran no
     tests at all — which meant moving the [Install]-validity check out of
     05-smoke-test and into pytest quietly moved it off the release path

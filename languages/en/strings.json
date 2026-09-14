@@ -396,6 +396,7 @@
   "validator.units_enum": "must be 'imperial' or 'metric'",
   "validator.mode_enum": "must be 'auto' or 'specific'",
   "validator.country_code": "must be a 2-letter UPPERCASE ISO country code (e.g. 'US', 'GB', 'IN')",
+  "validator.iso_timestamp": "must be an ISO 8601 timestamp (e.g. '2026-09-05T14:31:00+00:00')",
   "validator.bool_enum": "must be 'true' or 'false'",
   "validator.language_missing": "must be a language code from languages.json",
   "validator.language_shape": "must be a lowercase language code like 'en' or 'pt-br'",

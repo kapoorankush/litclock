@@ -125,6 +125,17 @@ def create_app(test_config: dict | None = None) -> Flask:
     app.jinja_env.globals["active_language_choices"] = _strings_catalog.active_languages
     app.jinja_env.globals["current_language"] = _strings_catalog.active_language
 
+    # litclock-dev#790 — the no-JS toggle used to answer "is weather on?" with
+    # its OWN inline expression (`s.get('WEATHER_ENABLED', 'true') == 'true'`),
+    # making it the THIRD independent implementation after the renderer and the
+    # diagnostics collector. Its default agreed; its handling of "1"/"yes" did
+    # not, so a hand-edited env.sh could paint weather on the panel and render
+    # the toggle OFF. Registered as the callable itself so the template asks the
+    # same function the panel does.
+    import config as _config  # noqa: PLC0415 — lazy, matches _env.py's pattern
+
+    app.jinja_env.globals["weather_enabled"] = _config.weather_enabled
+
     # litclock-dev#532 slice 6 — rich copy. Catalog values stay PLAIN TEXT;
     # mid-sentence emphasis is expressed with a tiny whitelisted token
     # vocabulary ({b}…{/b}, {em}…{/em}, {code}…{/code}) so translators can

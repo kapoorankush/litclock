@@ -242,6 +242,153 @@ class TestShellSurface:
         assert result.stdout.strip() == "no.such.key"
 
 
+class TestCatalogGetContractHoldsWhenTheModuleItselfIsBroken:
+    """litclock-dev#766 item 3 — `scripts/update.sh` documents "catalog-get
+    always exits 0 by contract", and the class above proves that for a missing
+    KEY. It was false for a missing or broken MODULE: the subcommand's own
+    `import strings_catalog` was unguarded while its twin
+    `_resolve_status_parts` wraps the same import in a broad `except Exception`,
+    with a docstring explaining why (a half-deployed venv can carry a module
+    that IMPORTS but is stale or truncated).
+
+    A device whose checkout lost or truncated `strings_catalog.py` therefore got
+    a traceback, exit 1, and EMPTY stdout — no way for a caller to tell "broken"
+    from "resolved to nothing". No live impact, because the smoke gate compares
+    stdout rather than trusting the exit code, but it is a trap for the next
+    caller that believes the documented contract.
+
+    Scope of the claim, stated honestly: the contract is "exits 0 with a value
+    whenever stdout is writable". A closed pipe or a failing write still exits
+    non-zero, as it did before — the resolution is guarded, the emission is not,
+    and conflating them would mislabel a stdout failure as a catalog failure.
+
+    Driven through a real checkout copy so the failure is the real one:
+    monkeypatching an ImportError would prove the `except` clause catches
+    ImportError, not that a device in this state gets a usable answer.
+    """
+
+    KEY = "status.relative.just_now"
+
+    def _checkout(self, tmp_path, catalog_source: str | None):
+        import shutil
+
+        root = tmp_path / "checkout"
+        (root / "src").mkdir(parents=True)
+        for module in sorted(REPO_ROOT.glob("src/*.py")):
+            shutil.copy2(module, root / "src" / module.name)
+        shutil.copytree(REPO_ROOT / "languages", root / "languages")
+        shutil.copy2(REPO_ROOT / "languages.json", root / "languages.json")
+        target = root / "src" / "strings_catalog.py"
+        if catalog_source is None:
+            target.unlink()
+        else:
+            target.write_text(catalog_source, encoding="utf-8")
+        return root
+
+    def _run(self, root):
+        import os
+        import subprocess
+
+        # PYTHONPATH is dropped along with LITCLOCK_*, and `-E` makes that
+        # stick against any other channel. A CI or dev shell exporting
+        # `PYTHONPATH=<repo>/src` would otherwise resolve the REAL
+        # strings_catalog for the "missing" case and fail this for an
+        # environment reason (measured: 2 failed under that env).
+        #
+        # `-E`, not `-I`: isolated mode also drops the user site directory,
+        # where this box's Pillow lives, so eink_display.py could not import at
+        # all and every case failed on `No module named 'PIL'`.
+        return subprocess.run(
+            [sys.executable, "-E", "src/eink_display.py", "catalog-get", self.KEY],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={k: v for k, v in os.environ.items() if not k.startswith(("LITCLOCK_", "PYTHON"))},
+        )
+
+    def test_a_healthy_checkout_resolves_it(self, tmp_path):
+        """The baseline the cases below are measured against. Without it a
+        harness that silently failed to build a usable checkout would make every
+        assertion pass for the wrong reason."""
+        r = self._run(self._checkout(tmp_path, (REPO_ROOT / "src" / "strings_catalog.py").read_text()))
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "just now"
+
+    @pytest.mark.parametrize(
+        "label,source",
+        [
+            ("missing", None),
+            ("syntactically broken", "def broken(:\n"),
+            # IMPORTS fine, then fails at the call — the case the twin's
+            # docstring singles out, and the one a plain `except ImportError`
+            # would let through.
+            ("truncated to a stub", "# nothing here\n"),
+        ],
+    )
+    def test_the_contract_holds(self, tmp_path, label, source):
+        r = self._run(self._checkout(tmp_path, source))
+        assert r.returncode == 0, (
+            f"catalog-get must exit 0 with a {label} strings_catalog — update.sh "
+            f"documents that as its contract\n{r.stdout}\n{r.stderr}"
+        )
+        assert r.stdout.strip() == self.KEY, (
+            "it must print the KEY, not nothing. An empty stdout gives the caller no "
+            f"way to tell 'broken' from 'resolved to an empty string'\n{r.stderr}"
+        )
+        assert "catalog resolution failed" in r.stderr, (
+            "the degradation must be visible on stderr — silent is how it stays broken"
+        )
+
+    def test_the_smoke_gate_still_catches_it(self, tmp_path):
+        """The contract must not turn the OTA gate off. Printing the key is
+        exactly what that gate compares against, so a broken module still
+        mismatches 'just now' and still reverts."""
+        r = self._run(self._checkout(tmp_path, None))
+        assert r.stdout.strip() != "just now"
+
+    @pytest.mark.parametrize(
+        "subcommand,resolver",
+        [
+            ("catalog-get", "strings_catalog.get"),
+            # litclock-dev#773 item 2 — catalog-count carries the SAME contract
+            # (update.sh compares its stdout too), so it gets the same check
+            # rather than a weaker one of its own.
+            ("catalog-count", "strings_catalog._catalog"),
+        ],
+    )
+    def test_only_resolution_is_guarded_not_emission(self, subcommand, resolver):
+        """The `print` must sit OUTSIDE the try.
+
+        With it inside, a stdout write failure (a closed pipe, an encoding error
+        under a restrictive PYTHONIOENCODING) is caught and mislabelled a
+        catalog failure, and can emit a partial line and then the fallback on
+        top of it. Source-level because the failure needs a hostile stdout that
+        a subprocess test cannot arrange without becoming a test of pipes.
+        """
+        import ast
+
+        src = (REPO_ROOT / "src" / "eink_display.py").read_text(encoding="utf-8")
+        start = src.index(f'elif args.command == "{subcommand}":')
+        # End at whatever the NEXT dispatch arm is, rather than naming one.
+        # Naming "clear" meant inserting an arm between them silently widened
+        # the slice, and the widened text failed to re-indent — which is how
+        # litclock-dev#773's catalog-count arm broke this test.
+        end = src.index("elif args.command ==", start + len("elif args.command =="))
+        block = ast.unparse(ast.parse("if True:\n" + "\n".join(
+            "    " + ln for ln in src[start:end].splitlines()[1:]
+        )))
+        assert resolver in block, f"the {subcommand} block no longer resolves anything"
+        try_at = block.index("try:")
+        except_at = block.index("except Exception")
+        resolve_at = block.index(resolver)
+        assert try_at < resolve_at < except_at, "resolution must be inside the guard"
+        assert block.rindex("print(") > except_at, (
+            "the final print must be OUTSIDE the guard — guarding the emission mislabels a "
+            "stdout failure as a catalog failure and can double-write"
+        )
+
+
 class TestEnvFileChannel:
     """/review litclock-dev#738 F3: litclock-control.service never sources env.sh — the
     loader must read the FILE, and re-read it on mtime change so a PWA

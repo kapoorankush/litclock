@@ -82,6 +82,37 @@ def _is_numeric(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _weather_is_enabled(values: dict[str, Any]) -> bool:
+    """Is weather on, per the collected diagnostics payload?
+
+    litclock-dev#790 made `config.weather_enabled()` the ONE place that resolves
+    the raw env value, and a repo scan guards that. This module was outside the
+    scan's reach: it anchors on the lowercase collected key `weather_enabled`,
+    never the uppercase env key, so its own literal `(True, "true", "1")`
+    could not be seen — and it had already drifted, missing the `"yes"` that
+    `config._WEATHER_ENABLED_TRUTHY` accepts (/review).
+
+    The collector emits a bool today, so the bool arm is the live path. The
+    STRING arm is not dead code — `test_uncollected_accepts_string_truthy_forms`
+    asserts all three forms behave identically, deliberately, for legacy and
+    hand-built payloads. Kept, but routed through config so the two accepted
+    sets cannot disagree again.
+
+    A missing or None value stays FALSY here, which is NOT config's rule (an
+    absent env KEY means enabled). That difference is intentional: an absent
+    env key is a normal pre-litclock-dev#783 device, whereas a payload without the key
+    is malformed, and muting a section on malformed input is the wrong default.
+    """
+    raw = values.get("weather_enabled")
+    if isinstance(raw, bool):
+        return raw
+    if not raw:
+        return False
+    import config as _config  # noqa: PLC0415 — lazy, matches _env.py's pattern
+
+    return _config.weather_enabled({"WEATHER_ENABLED": str(raw)})
+
+
 def _compute_anomalies(values: dict[str, Any]) -> list[str]:
     """Return the list of section IDs whose data tripped an anomaly.
 
@@ -173,7 +204,7 @@ def _compute_anomalies(values: dict[str, Any]) -> list[str]:
         anomalies.append("network")
 
     # Time & location
-    if values.get("weather_enabled") in (True, "true", "1"):
+    if _weather_is_enabled(values):
         tl_anomaly = False
         if not values.get("weather_location_name"):
             tl_anomaly = True
@@ -377,8 +408,7 @@ def _compute_uncollected(values: dict[str, Any]) -> list[str]:
     # When the persistent marker is absent (collected is None), preserve the
     # v0.214.4 env-only behavior (no marker gate); otherwise require the
     # time-location key to be missing too.
-    weather_enabled = values.get("weather_enabled")
-    if weather_enabled in (True, "true", "1"):
+    if _weather_is_enabled(values):
         mode = values.get("weather_location_mode")
         tl_never_collected = True if collected is None else "time-location" not in collected
         if (

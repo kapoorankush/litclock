@@ -423,6 +423,7 @@
   "validator.bool_enum": "",
   "validator.country_code": "",
   "validator.forbidden_char": "",
+  "validator.iso_timestamp": "",
   "validator.language_active": "",
   "validator.language_missing": "",
   "validator.language_shape": "",

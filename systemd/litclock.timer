@@ -4,7 +4,11 @@ Documentation=https://github.com/kapoorankush/litclock
 After=sysinit.target
 
 [Timer]
-OnCalendar=*-*-* *:*:00
+# litclock-dev#762 — fire ~4s EARLY and render the upcoming minute, so the
+# panel's ~2.4s trigger-to-legible blackout falls at the boundary rather than
+# after it. Paired with RENDER_LEAD_S in src/literary_clock.py: this line
+# WITHOUT that offset renders the previous minute's quote permanently.
+OnCalendar=*-*-* *:*:56
 AccuracySec=1s
 
 [Install]

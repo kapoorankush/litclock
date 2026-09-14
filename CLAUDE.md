@@ -12,6 +12,14 @@ Before every commit, run these in order:
    (`tools/render_invariants.py` E501). Full rule set, not just `--select F`.
 2. **Shell lint** (when the commit touches any `.sh`): `find scripts pi-gen docs/manual -name '*.sh' -type f -print0 | xargs -0 shellcheck --severity=warning` — the exact CI invocation. CI runs this on every push; a local green that skipped it shipped six red Lint runs on 2026-08-21 (orphaned SC2034 constants from litclock-dev#647's branch cleanup).
 3. **Tests**: `python3 -m pytest tests/ --ignore=tests/test_eink_display.py -q`
+   — needs `requirements-dev.txt` installed. Since litclock-dev#769 pytest
+   REFUSES to start without `pytest-timeout` (`required_plugins` in
+   `pyproject.toml`) rather than silently running with no per-test timeout,
+   which is what it did for months. If you see
+   `ERROR: Missing required plugins`, that is this: install with
+   `pip install --user --break-system-packages -r requirements-dev.txt` on a
+   PEP 668 box (Debian/Ubuntu mark the system Python externally-managed;
+   `--user` writes to `~/.local`, where the other dev tools already live).
 4. **JS tests** (when `node_modules/` is present): `npm run test:js` — covers `src/control_server/static/js/*.js` via vitest + jsdom (litclock-dev#338). Dev/CI only; skip if you haven't run `npm install`. Never required on the Pi.
 
 The eink_display tests require hardware-specific dependencies (Pillow + waveshare display drivers) that aren't available on dev machines. Weather tests now run in CI (astral is lazy-imported inside `is_daytime()`). All non-hardware tests must pass.
@@ -87,6 +95,125 @@ The first-boot flow (`scripts/first-boot.sh`) provisions WiFi via a web UI; ever
 - **Clock starts after setup**: After completing setup + handoff, confirm the e-ink display shows a literary quote within ~2 minutes (assuming tz resolved).
 - **Pre-connected WiFi path (litclock-dev#647)**: Boot with WiFi already configured — via `reset-setup.sh --keep-wifi`, the marker-deletion quick re-test below, or a wpa_supplicant-preseeded card. (A plain `--poweroff` reset wipes WiFi by default since litclock-dev#666 and lands on the hotspot path; and `is_wifi_connected()` checks `wlan0` only, so ethernet does NOT reach this branch.) NO setup page is served and no QR to `https://<IP>:8443` appears — the e-ink shows "Setting Up / Detecting your location...", the IP-geo resolver runs inline, and the flow lands directly on the "Ready to read." handoff splash (PWA QR + Done / 120s fallback). A Specific location saved in the PWA must survive this path untouched (the resolver gates on `WEATHER_LOCATION_MODE=auto`). With `ip-api.com` blocked, the handoff splash must show "Almost ready." and the PWA the browser-tz fallback — same degraded path as the hotspot flow.
 - **Post-setup PWA Settings overrides**: After first-boot, open the Control PWA → Settings → Weather and verify auto-populated values are editable. If a city is set, a "Clear" link appears next to the "Currently: …" hint. Tap Clear → city, latitude, longitude all clear together. Weather should stop rendering on the e-ink within ~1 min. Toggling `WEATHER_ENABLED` off WITHOUT tapping Clear must preserve the saved city (regression test for the toggle-only flow). **litclock-dev#337 supersedes this — see the litclock-dev#337 IA section below.**
+
+### Render timing — the minute lead (litclock-dev#762)
+
+Added because the first-boot checklist above covers provisioning and says
+nothing about the painted frame's TIMING, which is what litclock-dev#762 changed. The
+timer now fires at `:56` (`systemd/litclock.timer` → `OnCalendar=*-*-* *:*:56`)
+and the painter renders the **upcoming** minute, `RENDER_LEAD_DEFAULT_S = 4.0`
+seconds ahead. **The two halves are one change**: the timer at `:56` without
+the offset renders the previous minute's quote permanently, and the offset
+without the timer renders 4s into the future. `tests/test_timer_lead.py` pins
+them together, but the payoff is only observable on hardware.
+
+- **The quote lands ON the minute.** Put a phone stopwatch (or any second-
+  accurate clock) next to the panel and watch one transition. The refresh
+  blackout should START at about `:56` and the new frame should be settled at
+  or just after `:00` — NOT around `:06`, which is what the old `:00` timer
+  produced (p50 refresh 10.45s over 6942 on-device runs). Watch at least three
+  transitions: the panel's own refresh time varies, and one sample cannot tell
+  a fixed offset from a slow refresh.
+- **The timestring matches the wall clock during the blackout window.** The
+  interesting moment is `:56`–`:00`, when the panel is mid-refresh painting a
+  minute that has not arrived yet. Immediately after it settles, the quote's
+  timestring must equal the CURRENT minute, not the next one. If it reads one
+  minute ahead once settled, the lead is too large for this device's refresh.
+- **Runtime-render devices need the override checked separately.** Runtime
+  render costs ~1.3s more prep, so on a device with `LITCLOCK_RUNTIME_RENDER`
+  on, confirm the frame still settles by `:00`. If it does not, raise
+  `LITCLOCK_RENDER_LEAD_S` for that device — do NOT edit the default.
+- **The nightly full clear still fires — this one fails SILENTLY.** `epd.Clear()`
+  is gated on `now.minute == 0 and now.hour == DISPLAY_CLEAR_HOUR` (default 2),
+  and a live clock read is never minute 0 at `:56`. The code reads the OFFSET
+  target for this (at `01:59:56` the target is `02:00:00`), so it works — but
+  if that ever regresses, the clear simply stops happening and ghosting
+  accumulates over WEEKS with nothing in the journal. Verify directly: set
+  `DISPLAY_CLEAR_HOUR` to the next hour, wait for the top of it, and confirm
+  the panel performs a full white flush rather than a normal partial refresh.
+  Do not skip this because the unit tests cover it; the unit tests cover the
+  target arithmetic, not that the panel actually flushed.
+- **Midnight rollover — every downstream site must read the SAME target.** At
+  `23:59:56` the target is tomorrow. Watch that transition (or fake it by
+  setting the clock a minute before midnight with `sudo timedatectl set-ntp
+  false && sudo timedatectl set-time "..."`, then restore NTP). The masthead
+  DATE, the quote's timestring, and the status file must all agree on tomorrow.
+  A split here shows as a panel whose date says yesterday while its quote says
+  tomorrow.
+- **A malformed `LITCLOCK_RENDER_LEAD_S` must not brick the painter.** `export
+  KEY=` is `env.sh.sample`'s own idiom for an unset key and `update.sh` merges
+  sample keys into every device's `env.sh`, so the empty value is not
+  hypothetical. Set `export LITCLOCK_RENDER_LEAD_S=` (empty), then `=abc`, then
+  `=0`, restarting `litclock.timer` each time. Every one must keep painting on
+  the 4.0s default; `=abc` and `=0` must log a warning naming the variable,
+  while the EMPTY value is silent BY DESIGN — it is the sample's own unset
+  idiom and `update.sh` merges it onto every device, so a warning there would
+  fire every minute on every clock and train you to ignore the line that
+  matters (v0.227.0 port review). **`=0` is the dangerous one** — it is what
+  an operator reaching for "turn this off" would set, and it is accepted-looking
+  but produces the previous minute's quote forever, so confirm the journal
+  actually says it fell back. If the guard ever regressed, the frozen panel
+  would look exactly like the litclock-dev#531 lgpio wedge — but the journal would carry
+  a traceback naming the variable (`litclock.service` sets
+  `StandardError=journal`), so the panel is ambiguous and the journal is not.
+  That is why the check is "read the journal", and why it is worth three
+  restarts.
+
+### OTA smoke gate (litclock-dev#763, litclock-dev#773)
+
+Not in the checklist above because it is not a first-boot flow — but it is the
+highest-blast-radius surface in the tree, and **the failure direction is
+asymmetric**. A false GREEN ships a broken update once. A false RED reverts
+every update, on every device, every weekly tick, forever: nothing writes a
+blocked-sha on the smoke-revert path, so the next tick resolves the same target
+and reverts again. Test on a device you can re-flash.
+
+Force a run rather than waiting for the Sunday timer:
+
+```bash
+sudo systemctl start litclock-update.service && journalctl -fu litclock-update
+```
+
+- **The happy path keeps the update.** A normal run must log `Smoke test
+  passed`, `Catalog smoke passed`, `Splash-triplet smoke passed` and
+  `Catalog size smoke passed (NNN keys)`, and must NOT log `[revert]`. Confirm
+  the PWA's System tab shows the new version afterwards.
+- **A non-English device still takes the update (litclock-dev#763).** This is the one
+  that reverted forever. Set a non-English `LITCLOCK_LANGUAGE` in `env.sh` and
+  run an update. The catalog probes are pinned to English (`LITCLOCK_LANGUAGE=en`
+  as a command prefix), so they must still pass. Before the pin they resolved
+  in the owner's language and compared against English literals. **Latent while
+  the registry lists one active language** — it only bites once a release
+  activates a second and an owner selects it, so this needs a fleet with a
+  second active language to be a real test rather than a shape check.
+- **A missing venv interpreter FAILS the gate, it does not skip it (litclock-dev#773
+  item 1).** `sudo mv /home/pi/litclock/venv/bin/python3{,.bak}` then run an
+  update. Expect `Smoke test SKIPPED: ... is missing or not executable` followed
+  by `Nothing was verified — treating this as a smoke FAILURE`, and a revert.
+  Before this, the whole gate was skipped and Phase 5/7 reported SUCCESS.
+  Restore the interpreter afterwards.
+- **A truncated catalog FAILS the gate (litclock-dev#773 item 2).** Truncate
+  `languages/en/strings.json` to a handful of keys — keeping
+  `status.relative.just_now`, `boot.splash.starting.title` and
+  `firstboot.splash.setup_incomplete.title`, which are the three the VALUE
+  probes check — then run an update. The value probes will pass and the COUNT
+  probe must fail with `Catalog smoke failed: catalog-count returned 'N'
+  (want >= 400)`. That
+  combination is the whole point: before the count probe, exactly this bundle
+  passed green with 435 strings gone.
+- **A revert leaves a working clock, not a brick.** After any of the failing
+  cases above, confirm the panel is still painting quotes on the old SHA and
+  the PWA Updates view shows the terminal banner **"Update failed verification —
+  rolled back. Your clock is running normally."** (state `failed_reverted`).
+  Also note the device
+  re-runs the full pip install on the next tick (the revert deletes
+  `HASH_FILE`, which sets `NEED_PIP`); that is expected, not a second fault.
+- **`catalog-count` is stdout-compared, so check its contract directly.** On the
+  device: `sudo -u pi /home/pi/litclock/venv/bin/python3 src/eink_display.py
+  catalog-count` must print an integer and **exit 0**. Break the bundle
+  (`echo '{' > languages/en/strings.json`) and it must print `0` and STILL exit
+  0 — a non-zero exit with empty stdout is indistinguishable from a dead
+  interpreter, and the gate would have to guess. Restore the bundle afterwards.
 
 ### litclock-dev#337 — Location/Weather/Temperature IA (post-design-review, A9-A18)
 

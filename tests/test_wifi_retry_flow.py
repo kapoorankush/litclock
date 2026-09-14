@@ -721,7 +721,12 @@ class TestResetState:
         assert elapsed < 1.0, f"reset_state should time out the join, took {elapsed:.2f}s"
         assert t.is_alive(), "the slow thread should NOT have finished within the budget"
         with setup_server._BG_THREADS_LOCK:
-            assert t in setup_server._BG_THREADS, "still-live thread was forgotten, not retained"
+            if t not in setup_server._BG_THREADS:
+                # pytest.fail, not assert: with `PYTHONOPTIMIZE=1` AND
+                # `--assert=plain` a bare assert is stripped, and this plus its
+                # sibling in test_sigterm_absorber.py are the ONLY kills for the
+                # is_alive() retention-filter mutant (litclock-dev#781 /review).
+                pytest.fail("still-live thread was forgotten, not retained")
 
         release.set()  # let it finish; a budgeted reset now reaps it
         setup_server.reset_state(wait_for_inflight=2.0)
