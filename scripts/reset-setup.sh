@@ -29,6 +29,10 @@ CONFIG_DIR="/etc/litclock"
 # Same override convention as the other scripts (wifi-watchdog, bootcheck,
 # lkg-record, update) and as src/wifi_provision.py's STATE_DIR.
 STATE_DIR="${LITCLOCK_STATE_DIR:-/var/lib/litclock}"
+# Bound on each `systemctl start litclock-shutdown.service` re-arm (litclock-dev#727,
+# litclock-dev#833). Must stay well inside litclock-reset.service's TimeoutStartSec=60:
+# on the PWA arm this script runs INSIDE that unit.
+SHUTDOWN_REARM_TIMEOUT_S=10
 
 # Source shared state-file helpers for atomic_write_env_sh (litclock-dev#274) — the
 # env.sh writer-lock that interoperates with src/config.py's fcntl.flock
@@ -39,6 +43,30 @@ STATE_DIR="${LITCLOCK_STATE_DIR:-/var/lib/litclock}"
 _THIS_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=/dev/null
 . "$_THIS_SCRIPT_DIR/lib/state.sh"
+#
+# litclock-dev#840 — VERIFY the helpers this script calls are actually defined,
+# not merely that state.sh was sourced. `update.sh` installs the root-owned
+# copy of this script in its privilege-helper loop and the root-owned
+# lib/state.sh AFTERWARDS, so an interrupted or half-failed update leaves a NEW
+# script beside an OLD state.sh: sourcing succeeds, `atomic_write_env_sh`
+# exists, and `env_sh_defaults` does not.
+#
+# This script has NO `set -u` and NO `set -e`, so an undefined `env_sh_defaults`
+# is not an error here — it prints "command not found" to stderr, the command
+# substitution yields the EMPTY STRING, `atomic_write_env_sh` writes that
+# successfully, and Step 3 prints a green "done" over a ONE-BYTE env.sh. Every
+# knob and the gift language would be gone with nothing saying so, on a device
+# that is usually about to be shipped to someone. Fail loudly instead: nothing
+# destructive has run at this point, so exiting here is free.
+for _fn in atomic_write_env_sh env_sh_defaults; do
+    if ! declare -F "$_fn" >/dev/null 2>&1; then
+        echo -e "${RED}ERROR: $_fn is not defined after sourcing lib/state.sh.${NC}" >&2
+        echo "  $_THIS_SCRIPT_DIR/lib/state.sh is missing or too old for this script." >&2
+        echo "  Refusing to reset: a partial reset would leave env.sh empty." >&2
+        echo "  Re-run the updater, or reinstall from a matching release." >&2
+        exit 1
+    fi
+done
 
 # ── Function definitions — ALL of them, hoisted above every caller ──────────
 # litclock-dev#719: bash resolves function names at execution time, and the
@@ -198,6 +226,31 @@ rotate_hotspot_password_for_handoff() {
         exit 1
     fi
     echo -e "${GREEN}done${NC}"
+}
+
+# Re-arm litclock-shutdown.service so its next STOP edge paints a splash.
+# The unit is a RemainAfterExit=yes oneshot whose ExecStop is the splash:
+# `start` on the inactive unit runs ExecStart (/bin/true) and marks it
+# active again; on an already-active unit it is a no-op. Two callers:
+# Step 1 (litclock-dev#727, before its own stop so a same-boot retry paints)
+# and the plain-arm re-arm right after that stop (litclock-dev#833, so the
+# operator's reboot paints). DELIBERATELY BLOCKING — the usual "--no-block
+# from inside a service" rule does not apply and would break both callers:
+# a queued (unstarted) start job is simply REPLACED by the next stop, or
+# never runs before the script exits. There is no job cycle to deadlock on
+# (litclock-shutdown orders only against shutdown targets, litclock.service
+# and — since litclock-dev#856 — litclock-splash.service; every one of those
+# edges makes IT the predecessor, so this blocking `start` never waits on
+# them, and a single-unit transaction ignores ordering deps to units with no
+# job in it); the timeout is the belt if that analysis is ever wrong. A swallowed failure would recreate the no-paint outcome each caller
+# exists to fix, so it WARNS instead of hiding — and systemctl's own stderr
+# is left alone: it is the only diagnostic the WARNING can carry, and it
+# lands on the console or in the journal, both fine.
+#
+#   $1  the consequence, finishing the WARNING sentence for this caller.
+rearm_shutdown_splash() {
+    timeout "$SHUTDOWN_REARM_TIMEOUT_S" systemctl start litclock-shutdown.service \
+        || echo "WARNING: could not re-arm the shutdown splash; $1"
 }
 
 AUTO_YES=false
@@ -531,8 +584,19 @@ echo ""
 # are catalog-routed, the ExecStop splash consults the marker — a plain
 # reset's splash must not paint in the abandoned gift's language). Gift
 # resets manage the marker in their own arm above (overwrite-or-remove).
+#
+# litclock-dev#833 (/review F2): the same for .welcome-mode. Gift mode
+# touches it and only first-boot.sh clears it, so a gift prep that aborted
+# at the litclock-dev#393 env-wipe gate leaves it behind — and shutdown-splash.sh's
+# ladder ranks it ABOVE reboot detection. Before litclock-dev#833 a later non-gift
+# run's stop edge was either suppressed (plain) or the box was leaving its
+# owner anyway (poweroff); now the plain arm leaves a live edge for the
+# operator's reboot, which would paint "Welcome to LitClock" on a device
+# nobody is gifting. (.welcome-message is inert without the mode marker;
+# the gift arm manages it.)
 if [[ "$GIFT_MODE" != "true" ]]; then
     rm -f "$CONFIG_DIR/.gift-language"
+    rm -f "$CONFIG_DIR/.welcome-mode"
 fi
 
 # Issue litclock-dev#282: tell shutdown-splash.sh we're rebooting, not powering off.
@@ -609,6 +673,13 @@ fi
 # the retry would keep warning its owner not to pass it on, forever. The
 # OnFailure unit writes it again if THIS attempt fails.
 rm -f "$STATE_DIR/reset-failed" 2>/dev/null || true
+# litclock-dev#847 item 1 (litclock-dev#854 review): the runtime-render validation memo is
+# per-DEVICE state — "this freetype could not reproduce that measurement" — so
+# it must not survive a reset into the next owner's hands, where it would have
+# the PWA report a failure that was never theirs. Best-effort, like the marker
+# above: a surviving memo is cosmetic, and aborting a reset over it would be
+# the wrong trade.
+rm -f "$STATE_DIR/runtime-render-validation.json" 2>/dev/null || true
 # Verify, don't assume (litclock-dev#673's lesson). A directory, a symlink, or a
 # read-only remount leaves the marker in place and `rm -f` still returns 0. This
 # WARNS rather than aborting: a stale warning marker is the fail-safe direction
@@ -636,25 +707,38 @@ systemctl stop litclock-reset-failed.service 2>/dev/null || true
 # earlier failed reset already spent it, so a same-boot retry painted
 # nothing and e-ink persistence carried the failure splash ("Do NOT pass
 # it on") through a SUCCESSFUL reset's poweroff — the gift-retry case
-# ships the box with its scariest message. Re-arm before stopping:
-# `start` on the inactive unit runs ExecStart (/bin/true) and marks it
-# active again; on an already-active unit it is a no-op, so the first run
-# is unchanged. DELIBERATELY BLOCKING — the usual "--no-block from inside
-# a service" rule does not apply and would break the fix: a queued
-# (unstarted) start job is simply REPLACED by the stop on the next line,
-# so the unit never goes active and the retry paints nothing again.
-# There is no job cycle to deadlock on (litclock-shutdown orders only
-# against shutdown targets and litclock.service); `timeout 10` is the
-# belt if that analysis is ever wrong, and a swallowed failure would
-# recreate the no-paint retry — so it WARNS instead of hiding.
-timeout 10 systemctl start litclock-shutdown.service 2>/dev/null \
-    || echo "WARNING: could not re-arm the shutdown splash; this run may not paint its final screen."
+# ships the box with its scariest message. Re-arm before stopping
+# (rearm_shutdown_splash above says why it is blocking and bounded): on
+# the first run of a boot the start is a no-op, so that run is unchanged.
+rearm_shutdown_splash "this run may not paint its final screen."
 systemctl stop litclock-shutdown.service 2>/dev/null || true
 # The stop edge above has consumed the suppress decision — clear the
 # marker NOW so it cannot mute anything else this boot (/review litclock-dev#731;
 # the first-boot.sh principle: the marker protects the ONE stop just
 # requested, never the rest of the boot). No-op on arms that never wrote it.
 rm -f /run/litclock-splash-suppress 2>/dev/null || true
+# litclock-dev#833: the stop edge above CONSUMED the unit's once-per-boot
+# stop edge, and on the plain arm nothing else this run will start it. The
+# three terminal arms are fine — the script's own reboot/poweroff is the
+# next thing to happen, and their edge already painted the right screen
+# under the right marker (gift: the welcome splash; a second armed edge
+# there would paint "Powered Off" OVER it). The plain arm exits and hands
+# the box to an operator whose `sudo reboot` — the very thing the closing
+# banner asks for — is the next stop edge: with the unit inactive,
+# shutdown-splash.sh never runs and e-ink persistence carries the stale
+# quote across the power-off. Re-arm HERE, not at the end of the script:
+# every abort past this point (the fail-closed rotation `exit 1`s, the
+# survivor check, a Step 7 WiFi wipe that drops the SSH session and SIGHUPs
+# the script — the common bare-reset-over-WiFi case) would otherwise leave
+# the unit consumed and the operator's reboot silent, the same symptom
+# through the abort door. From here the only unarmed window is the gap
+# between the stop above and this start. The marker is already gone, so
+# this edge paints normally; the gate matches the one that wrote it
+# (default finish and --keep-wifi alike). Ordering pinned by
+# tests/test_reset_setup_sh.py.
+if [[ "$DO_REBOOT" != "true" && "$DO_POWEROFF" != "true" && "$GIFT_MODE" != "true" ]]; then
+    rearm_shutdown_splash "the reboot this run asks for may not paint one."
+fi
 # litclock-dev#676 made the handoff fallback RECURRING, so it is now a live
 # writer of .handoff-complete rather than a one-shot that fired long ago.
 # The marker removal order below (.setup-complete first) already closes the
@@ -703,35 +787,22 @@ if [[ -f "$INSTALL_DIR/env.sh" ]]; then
         echo -e "${YELLOW}gift language code failed the final shape check; seeding empty${NC}"
         GIFT_LANGUAGE_CODE=""
     fi
-    # In --gift-mode the validated language
-    # code (shape-gated [a-z0-9-] in the gift arm above — safe to
-    # interpolate) seeds LITCLOCK_LANGUAGE so EVERY env-reading surface on
-    # the recipient's device boots in the gifter's chosen language. Plain
-    # resets leave it empty, which keeps Accept-Language negotiation alive
-    # on the next first-boot (the litclock-dev#743 empty-seed contract).
-    # litclock-dev#783 — must cover EVERY env.sh.sample key; comment status is
-    # copied from the sample and is load-bearing (litclock-dev#762). LITCLOCK_LANGUAGE
-    # keeps its gift-mode interpolation.
-    DEFAULTS="# export OPENWEATHERMAP_APIKEY=
-export WEATHER_ENABLED=true
-export WEATHER_LATITUDE=
-export WEATHER_LONGITUDE=
-export WEATHER_LOCATION_NAME=
-export WEATHER_UNITS=imperial
-export WEATHER_LOCATION_MODE=auto
-export WEATHER_IP_COUNTRY=
-export WEATHER_LAST_IP_GEO_AT=
-export WEATHER_TTL=3600
-export ALLOW_NSFW_QUOTES=false
-export LITCLOCK_LANGUAGE=$GIFT_LANGUAGE_CODE
-export SHOW_DIAGNOSTICS_SHORTCUT=false
-export GIFT_MODE_MESSAGE=
-export LITCLOCK_RUNTIME_RENDER=false
-# export DISPLAY_CLEAR_HOUR=2
-# export LITCLOCK_RENDER_LEAD_S=4
-# export WEATHER_API_TIMEOUT=15
-# export LOG_LEVEL=WARNING
-"
+    # litclock-dev#840 — the body comes from env_sh_defaults() in lib/state.sh,
+    # the single source shared with first-boot.sh and prepare-for-cloning.sh.
+    # The key set, the comment status and the litclock-dev#337 A3 MODE=auto default all
+    # live there; see its contract comment before changing this line.
+    #
+    # In --gift-mode the validated language code (shape-gated above, and gated
+    # AGAIN inside the helper at the interpolation point) seeds
+    # LITCLOCK_LANGUAGE so EVERY env-reading surface on the recipient's device
+    # boots in the gifter's chosen language. Plain resets pass it empty, which
+    # keeps Accept-Language negotiation alive on the next first-boot (the litclock-dev#743
+    # empty-seed contract).
+    #
+    # The `$'\n'` is REQUIRED, not decoration: command substitution strips
+    # trailing newlines, and update.sh Phase 3 appends missing sample keys with
+    # `>>`, which would otherwise splice the first one onto the last line.
+    DEFAULTS=$(env_sh_defaults "$GIFT_LANGUAGE_CODE")$'\n'
     if atomic_write_env_sh "$INSTALL_DIR/env.sh" "$DEFAULTS"; then
         echo -e "${GREEN}done${NC}"
     else
@@ -907,6 +978,20 @@ echo ""
 
 if [[ "$GIFT_MODE" == "true" ]]; then
     if [[ "$ENV_WIPE_FAILED" == "true" ]]; then
+        # litclock-dev#839 removed exactly this shape — a flag raised at the
+        # env.sh wipe and read after the WiFi wipe and the hotspot-password
+        # removal — from prepare-for-cloning.sh, so the divergence is recorded
+        # here rather than left to be rediscovered as an inconsistency. It is
+        # acceptable HERE and was not there, for two reasons. (1) Nothing
+        # downstream of the wipe is undone by reaching this late: gift mode's
+        # terminal act is the POWER-OFF, which this arm refuses, whereas the
+        # cloning script's late gate fired only after it had already deleted
+        # the very things a failed wipe means you must keep (litclock-dev#839). (2) The
+        # operator is present and reading: this arm leaves the device ON with
+        # the banner on screen, while the cloning script powers off under an
+        # operator who has walked away. A re-run is also cheap here — the gift
+        # unit re-reads the staged files — and the failure is not silent.
+        #
         # litclock-dev#393: the env.sh wipe is the load-bearing privacy step for a gift —
         # it clears the gifter's WEATHER_LATITUDE/LONGITUDE/LOCATION_NAME. It
         # failed (lock timeout rc=75 or a write error), so stale coordinates may
@@ -989,6 +1074,8 @@ elif [[ "$DO_REBOOT" == "true" ]]; then
     # on Bookworm anyway). Cleaner systemd integration; not a race fix.
     systemctl reboot
 else
+    # litclock-dev#833: litclock-shutdown.service was re-armed in Step 1,
+    # right after its stop edge was consumed, so the reboot below paints.
     echo "Reboot to enter setup mode:"
     echo "  sudo reboot"
 fi

@@ -8,6 +8,20 @@
 #
 # Usage: sudo ./scripts/prepare-for-cloning.sh
 #
+# Run it as the ONLY open session, from the local console, and log out of
+# every other shell first (SSH sessions, tmux panes, a `sudo -i` root shell).
+# Step 6 clears the bash history, but `history -c` reaches only this script's
+# own non-interactive shell: any interactive shell still holding history when
+# the Pi powers off writes it back to disk on exit -- `nmcli ... password ...`
+# lines included -- and that is what gets imaged (litclock-dev#834).
+#
+# Logging out of the OTHER shells is not the whole answer, and the rule should
+# not be read as if it were: the shell you launch this from cannot be one of
+# them. It is alive for the whole run and writes its own history as it exits,
+# during the power-off. That one is covered by Step 6 locking both history
+# paths against write-back -- which is why the lock exists and why Step 6 now
+# refuses to continue if it cannot apply it.
+#
 
 set -e
 
@@ -80,6 +94,12 @@ _NM_PROFILE_DIR="/etc/NetworkManager/system-connections"
 # branch, and a hardcoded /etc path inside an executed span would overwrite the
 # host's real wpa_supplicant.conf when the suite runs as root (/review litclock-dev#710).
 _WPA_SUPPLICANT_CONF="/etc/wpa_supplicant/wpa_supplicant.conf"
+# litclock-dev#834 — same convention as the two above: fixed paths, not
+# env-overridable, injected into the lifted span by the tests. Step 6 replaces
+# each with an empty DIRECTORY (see there for why a directory), and
+# scripts/first-boot.sh removes that directory on the clone's first boot.
+_PI_BASH_HISTORY="/home/pi/.bash_history"
+_ROOT_BASH_HISTORY="/root/.bash_history"
 
 # Source shared state-file helpers for atomic_write_env_sh (litclock-dev#274) — the
 # env.sh writer-lock that interoperates with src/config.py's fcntl.flock
@@ -89,6 +109,29 @@ _WPA_SUPPLICANT_CONF="/etc/wpa_supplicant/wpa_supplicant.conf"
 _THIS_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=/dev/null
 . "$_THIS_SCRIPT_DIR/lib/state.sh"
+#
+# litclock-dev#840 — VERIFY the helpers this script calls are actually defined,
+# not merely that state.sh was sourced. `update.sh` installs the root-owned
+# copy of this script in its privilege-helper loop and the root-owned
+# lib/state.sh AFTERWARDS, so an interrupted or half-failed update leaves a NEW
+# script beside an OLD state.sh: sourcing succeeds, `atomic_write_env_sh`
+# exists, and `env_sh_defaults` does not.
+#
+# `set -e` (line 26) would abort this script on the resulting "command not
+# found" anyway, so the gate is not what makes it safe — but an abrupt abort
+# mid-Step-2 is the wrong report for a card-prep tool whose whole contract is
+# "say DO NOT CLONE loudly". Check explicitly, before any step has run, so the
+# operator gets a reason instead of a bash error. Same check as
+# reset-setup.sh's, which needs it for correctness rather than for the message.
+for _fn in atomic_write_env_sh env_sh_defaults; do
+    if ! declare -F "$_fn" >/dev/null 2>&1; then
+        echo -e "${RED}ERROR: $_fn is not defined after sourcing lib/state.sh.${NC}" >&2
+        echo "  $_THIS_SCRIPT_DIR/lib/state.sh is missing or too old for this script." >&2
+        echo -e "${RED}  Do NOT clone this card — nothing has been wiped.${NC}" >&2
+        echo "  Re-run the updater, or reinstall from a matching release." >&2
+        exit 1
+    fi
+done
 
 # litclock-dev#701 — the opt-in WiFi wipe in Step 3 deletes EVERY NetworkManager
 # connection, wired included, so an operator running this over any NM-managed
@@ -270,17 +313,78 @@ if ! mkdir -p "$STATE_DIR" 2>/dev/null || ! touch "$_UNFINISHED_MARKER" 2>/dev/n
 fi
 
 
-# litclock-dev#821 — Step 2's env.sh wipe used to be best-effort with no abort:
-# a flock timeout or a failed write printed one YELLOW line and the script ran
-# on to "SD Card Ready for Cloning!" and powered off, so every card cut from the
-# master carried the owner's API key and home location. Declared HERE rather
-# than at Step 2 because the gate that reads it runs ~230 lines later and this
-# script has no `set -u`.
-ENV_WIPE_FAILED=false
+# The shared "this card must not be cloned" abort. Every step that can leave
+# owner data on the card routes through it, so the operator sees the same
+# shape — FAILED on the step's own line, what is wrong, what a clone would
+# carry, then what state the card is in — wherever the run stops.
+#   $1  what is wrong (ends with a full stop)
+#   $2  what a clone would therefore carry (completes "Do NOT clone this card — ")
+#   $3… extra RED lines, normally the state the card is left in
+_abort_do_not_clone() {
+    local _what="$1" _carries="$2"
+    shift 2
+    echo -e "${RED}FAILED${NC}"
+    echo -e "${RED}${_what}${NC}"
+    echo -e "${RED}Do NOT clone this card — ${_carries}${NC}"
+    local _line
+    for _line in "$@"; do
+        echo -e "${RED}${_line}${NC}"
+    done
+    exit 1
+}
 
-# Step 1: Stop the setup-state writers, then remove the setup-state markers.
+# litclock-dev#821 / litclock-dev#839 — the env.sh arm of the above, shared by
+# Step 2 (a rewrite that REPORTED failure) and the end-of-run gate (a rewrite
+# that returned 0 and left a bad file). litclock-dev#821 caught the failure with a flag
+# the gate read after Step 8; litclock-dev#839 found that between the two the script
+# still deleted every WiFi profile, stopped the clock, vacuumed the journal and
+# removed the setup-WiFi key — on a card it then refused to clone — so the flag
+# is gone and Step 2 aborts on the spot. $1 is the reason; any further
+# arguments are extra RED lines (Step 2 uses them to say what state the card is
+# in; the gate, running after every step, does not).
+_abort_env_credentials() {
+    local _reason="$1"
+    shift
+    _abort_do_not_clone "env.sh still holds this device's owner data: ${_reason}." \
+        "every copy would carry the API key and home location." "$@"
+}
+
+# The env.sh Step 2 writes. Declared HERE, not at Step 2, because the gate
+# ~350 lines below derives its key list from it and this script has no `set -u`.
 #
-# The markers below are RE-CREATABLE, so they must be removed with their
+# litclock-dev#840 — the body comes from env_sh_defaults() in lib/state.sh,
+# the single source shared with first-boot.sh and reset-setup.sh. This copy
+# was hand-maintained and was the SHORTEST of the four (litclock-dev#783): it missed
+# WEATHER_LOCATION_NAME and LITCLOCK_LANGUAGE, so every SD card cut from this
+# flow — the highest-fanout distribution path there is — produced devices
+# lacking the language knob litclock-dev#532 depends on. The key set, the comment
+# status and the litclock-dev#337 A3 MODE=auto default all live in that helper now; see
+# its contract comment before changing anything about this line.
+#
+# NO language argument: a clone must not inherit the cloner's LITCLOCK_LANGUAGE
+# (empty keeps Accept-Language negotiation alive on the recipient's first boot).
+#
+# The `$'\n'` is REQUIRED, not decoration: command substitution strips trailing
+# newlines, and update.sh Phase 3 appends missing sample keys with `>>`, which
+# would otherwise splice the first one onto `# export LOG_LEVEL=WARNING`.
+DEFAULTS=$(env_sh_defaults)$'\n'
+# litclock-dev#839 — the keys the gate re-reads are DERIVED from the wipe, not
+# listed a second time: litclock-dev#821's hand-written list (five keys) was narrower
+# than the wipe (eight), so WEATHER_IP_COUNTRY, WEATHER_LAST_IP_GEO_AT and
+# LITCLOCK_LANGUAGE would have survived the "returned 0, bad file" path
+# unflagged. Every key DEFAULTS writes EMPTY — live or commented out — is
+# owner data (API key, coordinates, place name, IP country, geo stamp,
+# language, gift message); a key the wipe gives a VALUE is a preference.
+# One name per line.
+_ENV_OWNER_KEYS=$(printf '%s\n' "$DEFAULTS" \
+    | sed -nE 's/^#?[[:space:]]*export[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)=[[:space:]]*$/\1/p')
+
+# Step 1: Stop the setup-state writers. The markers they can re-create are
+# removed in Step 2b, once the env.sh wipe has succeeded (litclock-dev#855
+# review: removing them before an abortable step left a device that booted
+# into neither setup nor the clock).
+#
+# The markers are RE-CREATABLE, so they must be removed with their
 # writers already down. reset-setup.sh has always done it in this order (it
 # stops six units before its own marker removal); this script did not, and
 # litclock-dev#673 /review found two live paths that put .handoff-complete
@@ -301,7 +405,7 @@ ENV_WIPE_FAILED=false
 #
 # litclock-dev#274: stopping litclock-control.service also keeps the PWA from landing a
 # Settings save concurrent with the env.sh overwrite in Step 2. Best-effort
-# (`|| true`) under the `set -e` at line 12 — a missing or already-stopped unit
+# (`|| true`) under the `set -e` at the top of the file — a missing or already-stopped unit
 # must not abort the prep flow. litclock.timer is stopped in Step 4, which is
 # late but harmless: litclock.service only READS these markers.
 echo -n "Stopping setup-state writers... "
@@ -314,6 +418,73 @@ systemctl stop litclock-handoff-fallback.timer 2>/dev/null || true
 systemctl stop litclock-handoff-fallback.service 2>/dev/null || true
 echo -e "${GREEN}done${NC}"
 
+# Step 2: Clear env.sh credentials.
+#
+# The PWA writer was stopped in Step 1 (litclock-dev#274). Write $DEFAULTS (declared above)
+# via atomic_write_env_sh, which holds the shared sidecar flock against the
+# Python writer. An ABSENT env.sh is left absent, not created: first-boot.sh
+# seeds one on the clone, and a card with no env.sh carries no owner data.
+#
+# litclock-dev#839 — a rewrite that REPORTS failure aborts HERE, before the
+# Step 3 WiFi prompt. The realistic causes are a flock timeout (rc=75: the PWA
+# still holding env.sh.lock) and a failed mktemp/printf/mv (a card gone
+# read-only); on every one of them env.sh is untouched and still holds the
+# owner's API key and location. litclock-dev#821 aborted at the gate after Step 8, which
+# meant the script first deleted every WiFi profile, stopped the clock,
+# vacuumed the journal and removed the setup-WiFi key — on a card it then
+# refused to clone; over SSH-on-WiFi with `y` the session dropped at Step 3 and
+# the red banner never printed at all. The gate after Step 8 stays, for the
+# other failure: a write that returned 0 and left a bad file.
+echo -n "Clearing configuration (env.sh)... "
+if [[ -f "$INSTALL_DIR/env.sh" ]]; then
+    if atomic_write_env_sh "$INSTALL_DIR/env.sh" "$DEFAULTS"; then
+        echo -e "${GREEN}done${NC}"
+    else
+        _rc=$?
+        if [[ "$_rc" == "75" ]]; then
+            _ENV_WHY="the env.sh rewrite did not run — env.sh is locked by another writer (rc=75)"
+        else
+            _ENV_WHY="the env.sh rewrite failed (rc=$_rc) and env.sh is untouched"
+        fi
+        # litclock-dev#855 review F1 — retire the unfinished-run marker on THIS
+        # abort only. It means "a run died half-way and the card may carry the
+        # setup-WiFi key"; here nothing was mutated, so leaving it would open
+        # the re-run this banner prescribes with a warning that contradicts the
+        # state list below. The gate after Step 8 shares this abort and must
+        # NOT do this — by then the card really is part-way prepared — so it
+        # lives at the call site, not in the helper.
+        rm -f "$_UNFINISHED_MARKER" 2>/dev/null || true
+        _abort_env_credentials "$_ENV_WHY" \
+            "Stopped before the WiFi prompt. Nothing on this card has been changed: the" \
+            "setup-state markers, env.sh, the saved WiFi and the setup-WiFi key are all" \
+            "intact, so this device still boots into its normal clock (the services this" \
+            "script stopped come back on the next boot). Fix the cause — a stuck env.sh.lock" \
+            "usually means litclock-control.service is still writing — then run again. The" \
+            "PWA and the updater stay stopped until the next boot; the clock keeps painting." \
+            "This run retired its own unfinished-run marker, so if the next run still warns" \
+            "that a previous one did not finish, that warning is about an EARLIER run."
+    fi
+else
+    echo -e "${GREEN}done${NC}"
+fi
+
+# Step 2b (was the second half of Step 1 until the litclock-dev#855 review):
+# remove the setup-state markers, AFTER the env.sh wipe has succeeded.
+#
+# The order is a recovery property, not tidiness. `litclock-firstboot.service`
+# is DISABLED on a provisioned clock (first-boot.sh disables it once setup
+# completes) and is only re-enabled at Step 4 — while litclock.service and
+# litclock-control.service are ConditionPathExists-gated on the two markers
+# below. So a run that removed the markers and then aborted at Step 2 left a
+# device that boots into NOTHING: no setup, no clock, no PWA, which is the
+# state litclock-dev#659 documents as indistinguishable from a brick, now
+# reachable from an ordinary flock timeout. With the removal here, the Step 2
+# abort leaves a working, fully provisioned clock.
+#
+# Nothing is lost by the move: the writers were stopped in Step 1 (that is the
+# primary defence and it has not moved), and DELAYING the removal can only
+# SHRINK the window in which a concurrent updater could re-touch a marker we
+# have already deleted.
 # litclock-dev#673: clear the handoff marker too, exactly as reset-setup.sh
 # does. Both scripts return the device to a fresh-setup state, so both must
 # clear every marker a systemd unit gates on. (Non-gate markers such as
@@ -329,7 +500,7 @@ echo -e "${GREEN}done${NC}"
 # thing standing between a clone and a literary quote painted over the WiFi
 # setup instructions the recipient is trying to read.
 echo -n "Removing setup-state markers... "
-# `|| true` under the `set -e` at line 12, with the existence check below as the
+# `|| true` under the `set -e` at the top of the file, with the existence check below as the
 # real gate -- the same shape as Step 8 (litclock-dev#649), which this step lacked.
 # Without it a failing `rm` terminates the script ON THIS LINE: `done` is never
 # printed (the terminal is left mid-line), no diagnostic appears, and the run
@@ -352,6 +523,11 @@ _SURVIVORS=()
 # litclock-dev#665: a clone must not ship carrying the master's reset-failure
 # marker — the recipient would be told not to pass on a card that is fine.
 rm -f "$STATE_DIR/reset-failed" 2>/dev/null || true
+# litclock-dev#847 item 1 (litclock-dev#854 review): same argument for the runtime-render
+# validation memo. It records that THIS device's freetype could not reproduce
+# the expected measurement (or that a tick never had the budget to try); every
+# clone would inherit the master's verdict about hardware it has never run on.
+rm -f "$STATE_DIR/runtime-render-validation.json" 2>/dev/null || true
 
 for _m in .setup-complete .handoff-complete; do
     # `-L` alongside `-e` because `-e` follows symlinks and is false for a
@@ -372,69 +548,6 @@ if (( ${#_SURVIVORS[@]} )); then
 fi
 unset _MARKER_ERR _SURVIVORS _m
 echo -e "${GREEN}done${NC}"
-
-# Step 2: Clear env.sh credentials.
-#
-# The PWA writer was stopped in Step 1 (litclock-dev#274). Write defaults via
-# atomic_write_env_sh, which holds the shared sidecar flock against the Python
-# writer; the explicit `|| true` on the helper call is required because `set -e`
-# would otherwise treat a lock timeout (rc=75) as fatal and kill the whole prep
-# flow halfway through.
-
-echo -n "Clearing configuration (env.sh)... "
-if [[ -f "$INSTALL_DIR/env.sh" ]]; then
-    # litclock-dev#337 A3: defensive MODE + IP_COUNTRY defaults so a cloned image's
-    # first boot lands on MODE=auto (on-boot reresolve will populate the
-    # rest). Without these, a cloned env.sh would inherit whatever MODE
-    # the cloner had — could be "specific" with stale coords for a
-    # location 1000 miles from the cloned device's actual WiFi.
-    # litclock-dev#783 — must cover EVERY env.sh.sample key; comment status is
-    # copied from the sample and is load-bearing (an active
-    # LITCLOCK_RENDER_LEAD_S would hard-pin 4 into the field, litclock-dev#762). This
-    # list was the SHORTEST of the four and was missing WEATHER_LOCATION_NAME
-    # and LITCLOCK_LANGUAGE, so every SD card cut from this flow produced
-    # devices lacking the language knob litclock-dev#532 depends on.
-    DEFAULTS='# export OPENWEATHERMAP_APIKEY=
-export WEATHER_ENABLED=true
-export WEATHER_LATITUDE=
-export WEATHER_LONGITUDE=
-export WEATHER_LOCATION_NAME=
-export WEATHER_UNITS=imperial
-export WEATHER_LOCATION_MODE=auto
-export WEATHER_IP_COUNTRY=
-export WEATHER_LAST_IP_GEO_AT=
-export WEATHER_TTL=3600
-export ALLOW_NSFW_QUOTES=false
-export LITCLOCK_LANGUAGE=
-export SHOW_DIAGNOSTICS_SHORTCUT=false
-export GIFT_MODE_MESSAGE=
-export LITCLOCK_RUNTIME_RENDER=false
-# export DISPLAY_CLEAR_HOUR=2
-# export LITCLOCK_RENDER_LEAD_S=4
-# export WEATHER_API_TIMEOUT=15
-# export LOG_LEVEL=WARNING
-'
-    # `|| true` not needed: every code path inside the if/else below
-    # ends with a 0-exit statement, so `set -e` won't trip.
-    if atomic_write_env_sh "$INSTALL_DIR/env.sh" "$DEFAULTS"; then
-        echo -e "${GREEN}done${NC}"
-    else
-        _rc=$?
-        if [[ "$_rc" == "75" ]]; then
-            echo -e "${YELLOW}skipped (env.sh locked by another writer)${NC}"
-        else
-            echo -e "${YELLOW}failed (rc=$_rc) — env.sh untouched${NC}"
-        fi
-        unset _rc
-        # litclock-dev#821 — was `true  # explicit success for set -e`, which is
-        # what let a failed wipe reach the success banner. The gate before the
-        # banner reads this; `set -e` is still satisfied because assigning to a
-        # variable exits 0.
-        ENV_WIPE_FAILED=true
-    fi
-else
-    echo -e "${GREEN}done${NC}"
-fi
 
 # Step 3: Clear WiFi credentials (optional - ask user)
 echo ""
@@ -551,11 +664,95 @@ journalctl --rotate 2>/dev/null || true
 journalctl --vacuum-time=1s 2>/dev/null || true
 echo -e "${GREEN}done${NC}"
 
-# Step 6: Clear bash history
+# Step 6: Clear bash history — and lock it against write-back (litclock-dev#834).
+#
+# `history -c` clears only THIS script's non-interactive shell. Any interactive
+# shell still open when the Pi powers off (the console login the operator ran
+# this from, an SSH session, a `sudo -i` root shell) writes its in-memory
+# history back on exit — bash's save_history() APPENDS the session's lines,
+# then truncates to HISTFILESIZE — so on the bench the file `rm` had removed was
+# back eight seconds later holding the operator's last commands, and the card
+# was imaged with them. On a master for strangers that can include
+# `nmcli ... password ...` lines.
+#
+# The lock is an empty DIRECTORY at each history path. The shape is deliberate,
+# measured against bash 5.2 / readline 8.2:
+#   - an empty mode-0 root-owned FILE blocks the exit-time append for `pi`
+#     (EACCES) but not for a root shell (DAC override), and not `history -w`,
+#     which readline writes to a sibling temp file and rename()s over the
+#     target — a rename needs only the parent directory;
+#   - a `/dev/null` symlink loses to the same rename;
+#   - `chattr +i` blocks everything but needs ext4 and root to undo, and a
+#     failed restore leaves the recipient an unremovable file;
+#   - a directory fails open(O_WRONLY|O_APPEND), rename() over it and the
+#     truncate's read with EISDIR, which no capability bypasses, and one
+#     `rmdir` removes it.
+# scripts/first-boot.sh removes both directories on the clone's first boot
+# (restore_bash_history_after_clone_prep), so the recipient gets an ordinary
+# history. A HISTFILE drop-in under /etc/profile.d was rejected: it reaches
+# only shells started AFTER it, never the open one doing the write-back.
+#
+# FATAL if either path cannot be emptied or locked (litclock-dev#855 review).
+# A YELLOW note was the first cut and is not enough here: this script's whole
+# contract is that the card carries nothing about this device, and the two
+# realistic failures both leave real credentials on it — a history file that
+# will not unlink (immutable, or a read-only parent) and a NON-EMPTY directory
+# left by an earlier aborted run. The `-d` check alone read the second as
+# "locked" and printed green over the contents, which first-boot's rmdir then
+# leaves in place on every clone.
 echo -n "Clearing bash history... "
-rm -f /home/pi/.bash_history 2>/dev/null || true
-rm -f /root/.bash_history 2>/dev/null || true
 history -c 2>/dev/null || true
+_HIST_DIRTY=()
+_HIST_UNLOCKED=()
+for _h in "$_PI_BASH_HISTORY" "$_ROOT_BASH_HISTORY"; do
+    # Empty the path whatever shape it has: rmdir takes the lock a previous run
+    # left (and refuses a non-empty one), rm -f takes a real history file. An
+    # absent path satisfies both harmlessly.
+    #
+    # The rmdir is NOT redundant with the mkdir below (litclock-dev#855 review
+    # G): it was, while a surviving entry only warned, but now a surviving
+    # entry ABORTS — so without it a second run over the lock this script
+    # itself left would meet a directory `rm -f` cannot remove and refuse the
+    # card. Pinned by test_a_second_run_over_the_lock_is_a_noop.
+    rmdir "$_h" 2>/dev/null || rm -f "$_h" 2>/dev/null || true
+    if [[ -e "$_h" || -L "$_h" ]]; then
+        # Something we could not remove survives — and on this path that means
+        # its CONTENTS survive too. `-L` as well as `-e`, which follows
+        # symlinks and is false for a dangling one.
+        _HIST_DIRTY+=("$_h")
+        continue
+    fi
+    mkdir "$_h" 2>/dev/null || true
+    # Just "is it a directory". Emptiness and non-symlink-ness need no test
+    # HERE and deliberately have none (litclock-dev#855 review E3, and a mutant
+    # that proved the point): nothing reaches this line unless the path was
+    # verified gone two lines up, so what `mkdir` leaves is a real, empty
+    # directory or nothing at all. A non-empty directory or a symlink — the
+    # shapes that matter — survive removal and are caught by the DIRTY arm
+    # above, which is where `-L` earns its place, because `-e` follows symlinks
+    # and is blind to a dangling one. An arm no case can reach is an arm no
+    # mutant can kill, so it is better not written.
+    if [[ ! -d "$_h" ]]; then
+        _HIST_UNLOCKED+=("$_h")
+    fi
+done
+if (( ${#_HIST_DIRTY[@]} )); then
+    _abort_do_not_clone "Could not clear the shell history at ${_HIST_DIRTY[*]}." \
+        "every copy would carry the commands typed on this device, WiFi passwords included." \
+        "A file that will not unlink (chattr +i, a read-only card) or a non-empty directory" \
+        "left by an earlier aborted run. This card is already part-way prepared: markers" \
+        "cleared, env.sh scrubbed, setup-WiFi key NOT yet removed. Fix the cause, then run" \
+        "this script again from the start."
+fi
+if (( ${#_HIST_UNLOCKED[@]} )); then
+    _abort_do_not_clone "Could not lock ${_HIST_UNLOCKED[*]} against write-back." \
+        "any shell still open at power-off would write its history onto the card." \
+        "The history itself is cleared, but nothing stops the shell you are typing in from" \
+        "writing it back as it exits — which is litclock-dev#834, the reason this lock" \
+        "exists. This card is already part-way prepared: markers cleared, env.sh scrubbed," \
+        "setup-WiFi key NOT yet removed. Fix the cause, then run this script again."
+fi
+unset _HIST_DIRTY _HIST_UNLOCKED _h
 echo -e "${GREEN}done${NC}"
 
 # Step 7: Clear legacy SSL certificates (nothing regenerates these since litclock-dev#715)
@@ -578,7 +775,7 @@ echo -e "${GREEN}done${NC}"
 # the image. The glob catches staging files orphaned by a power cut between
 # mkstemp and os.replace, each holding a real past password.
 echo -n "Clearing setup-hotspot password... "
-# `|| true` under the `set -e` at line 12 (litclock-dev#649). Without it, a genuinely
+# `|| true` under the `set -e` at the top of the file (litclock-dev#649). Without it, a genuinely
 # failing `rm` terminates the script ON THIS LINE, so the `if` below never
 # runs and none of its three RED lines ever print — the warning written
 # specifically to stop someone cloning a compromised card was unreachable in
@@ -657,32 +854,34 @@ echo -e "${GREEN}done${NC}"
 # wipe invisible: the operator is not watching a scrolled-past yellow line on a
 # Pi that then shuts itself down.
 #
-# TWO checks, because they fail differently. The flag catches a write that
-# REPORTED failure (flock timeout rc=75, or a failed mktemp/printf/mv). The
-# re-read catches a write that returned 0 and produced a bad file anyway —
-# Step 8's idiom, and the reason this is a verify rather than a trusted return
-# code. Either one is disqualifying.
+# This is the RE-READ half. Step 2 already aborts on a write that REPORTED
+# failure (litclock-dev#839), so what is left to catch is a write that returned
+# 0 and produced a bad file anyway — Step 8's idiom, and the reason this is a
+# verify rather than a trusted return code. An ABSENT env.sh passes: Step 2
+# leaves an absent file absent, nothing between the two touches it, so absent
+# means no owner data, and first-boot.sh seeds a fresh one on the clone.
 echo -n "Verifying env.sh carries no owner credentials... "
 _ENV_LEAKS=""
-if [[ "$ENV_WIPE_FAILED" == "true" ]]; then
-    _ENV_LEAKS="the env.sh rewrite did not complete"
-elif [[ -f "$INSTALL_DIR/env.sh" ]]; then
-    # Non-empty value on any secret-bearing key. A commented line is fine (the
-    # defaults comment OPENWEATHERMAP_APIKEY out entirely), so anchor on a live
+if [[ -f "$INSTALL_DIR/env.sh" ]]; then
+    # Fail CLOSED on an empty key list — litclock-dev#773's rule: nothing verified is a
+    # failure, not a pass. The list is derived from $DEFAULTS at the top; if
+    # that derivation ever broke, this loop would check nothing and print `done`.
+    if [[ -z "$_ENV_OWNER_KEYS" ]]; then
+        _abort_env_credentials "no keys were verified (the owner-key list derived from the defaults is empty)"
+    fi
+    # Non-empty value on any owner-data key. A commented line is fine (the
+    # defaults comment the API key out entirely), so anchor on a live
     # `export KEY=<something>`.
-    for _k in OPENWEATHERMAP_APIKEY WEATHER_LATITUDE WEATHER_LONGITUDE \
-        WEATHER_LOCATION_NAME GIFT_MODE_MESSAGE; do
+    while read -r _k; do
+        [[ -n "$_k" ]] || continue
         if grep -qE "^[[:space:]]*export[[:space:]]+${_k}=[^[:space:]]" "$INSTALL_DIR/env.sh" 2>/dev/null; then
             _ENV_LEAKS="${_ENV_LEAKS}${_ENV_LEAKS:+, }${_k}"
         fi
-    done
+    done <<< "$_ENV_OWNER_KEYS"
     unset _k
 fi
 if [[ -n "$_ENV_LEAKS" ]]; then
-    echo -e "${RED}FAILED${NC}"
-    echo -e "${RED}env.sh still holds this device's owner data: ${_ENV_LEAKS}.${NC}"
-    echo -e "${RED}Do NOT clone this card — every copy would carry the API key and home location.${NC}"
-    exit 1
+    _abort_env_credentials "$_ENV_LEAKS"
 fi
 unset _ENV_LEAKS
 echo -e "${GREEN}done${NC}"

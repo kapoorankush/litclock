@@ -148,13 +148,14 @@ def _render_lead_seconds() -> float:
 
 
 RENDER_LEAD_DEFAULT_S = 4.0
-# 4.0, matching the SHIPPED timer, not a permissive band (/review).
+
+# The FLOOR is 4.0, matching the SHIPPED timer, not a permissive band (/review).
 #
-# It was 3.0, which this function's own docstring calls broken: "any value below
-# ~4 lands in the minute that is ENDING and the clock renders the previous
-# minute's quote permanently". With `OnCalendar=*-*-* *:*:56`, a lead of 3.0-3.9
-# targets :59 of the minute that is ending — verified — so the validator
-# ACCEPTED the exact failure it exists to reject, and
+# It was 3.0, which `_render_lead_seconds`' docstring calls broken: "any value
+# below ~4 lands in the minute that is ENDING and the clock renders the
+# previous minute's quote permanently". With `OnCalendar=*-*-* *:*:56`, a lead
+# of 3.0-3.9 targets :59 of the minute that is ending — verified — so the
+# validator ACCEPTED the exact failure it exists to reject, and
 # tests/test_timer_lead.py asserted 3.0 was honoured, locking it in.
 #
 # The real invariant is `lead >= 60 - timer_second`, and this module cannot read
@@ -164,6 +165,63 @@ RENDER_LEAD_DEFAULT_S = 4.0
 RENDER_LEAD_MIN_S = 4.0
 RENDER_LEAD_MAX_S = 30.0
 RENDER_LEAD_S = _render_lead_seconds()
+
+# litclock-dev#838 — the hour of the nightly full `epd.Clear()`, parsed the
+# same way as the lead above and for the same reason. It used to be a bare
+# `int(os.getenv("DISPLAY_CLEAR_HOUR", 2))` INSIDE the paint try, after
+# `epd.init()` and before `epd.display()`: an empty or malformed value raised
+# there every minute, the paint's `except Exception` swallowed it, and the
+# panel froze on the last quote with the process exiting 0 — the litclock-dev#531
+# lookalike signature, and one the Phase 4.5 dry-run cannot see because it
+# never sources env.sh. Empty is one uncomment away: since litclock-dev#783
+# all four env.sh writers seed the key, commented, in the sample's
+# `export KEY=` unset idiom.
+DISPLAY_CLEAR_HOUR_DEFAULT = 2
+
+
+def _warn_never_raises(fmt: str, *args) -> None:
+    """`logging.warning`, guaranteed not to raise.
+
+    PR litclock-dev#851 review (Codex 2, downgraded by the Claude pass): `logging.warning`
+    does NOT raise on a broken pipe or a closed fd — `Handler.handleError`
+    swallows OSError — only on a Python-level closed TextIOWrapper, which
+    nothing in this tree does. The guard exists so `_display_clear_hour`'s
+    "never raises" is literally true rather than true-by-current-handlers.
+    Design note: `_render_lead_seconds` above has the same bare-warning shape
+    at IMPORT and is deliberately left as is — a raising warning there is a
+    raising import, which the litclock-dev#762 tests already cover for the value path,
+    and refactoring it was out of scope for the review that added this.
+    """
+    try:
+        logging.warning(fmt, *args)
+    except BaseException:
+        pass
+
+
+def _display_clear_hour() -> int:
+    """`DISPLAY_CLEAR_HOUR`, parsed defensively and bounded to a clock hour.
+
+    Unset, empty or whitespace is the default, SILENTLY — that is the sample's
+    own unset idiom, merged onto every device by update.sh, and a warning there
+    would fire every minute on every clock. Anything else that is not an
+    integer in 0..23 falls back to the default LOUDLY, naming the variable and
+    the raw value, because the journal is the only thing that separates a
+    rejected knob from a wedged panel. Never raises.
+    """
+    raw = os.getenv("DISPLAY_CLEAR_HOUR")
+    if raw is None or not raw.strip():
+        return DISPLAY_CLEAR_HOUR_DEFAULT
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        _warn_never_raises("DISPLAY_CLEAR_HOUR=%r is not an integer; using %s", raw, DISPLAY_CLEAR_HOUR_DEFAULT)
+        return DISPLAY_CLEAR_HOUR_DEFAULT
+    if not 0 <= value <= 23:
+        _warn_never_raises(
+            "DISPLAY_CLEAR_HOUR=%r is not an hour in 0..23; using %s", raw, DISPLAY_CLEAR_HOUR_DEFAULT
+        )
+        return DISPLAY_CLEAR_HOUR_DEFAULT
+    return value
 
 # Persistent QR code on the e-ink top strip (litclock-dev#245 A6). 75x75 px at x=713,y=0,
 # encodes the PWA URL so non-tech users can scan-to-open instead of typing.
@@ -1032,22 +1090,30 @@ if __name__ == "__main__":
 
     epd = None
 
-    # These two run BEFORE the paint's try/except, and both sit downstream of
-    # `import lgpio` — the display_driver import is what constructs the gpiozero
-    # objects and spawns Thread-1. So an exception here used to propagate out of
-    # __main__ entirely, skipping the os._exit below and running the very
-    # finalization this fix exists to avoid. Worse, the most likely failure here
-    # is a GPIO-busy import error from the previous minute's process, i.e. litclock-dev#531
-    # firing on precisely the path the fix targets.
+    # These run BEFORE the paint's try/except, and the first two sit downstream
+    # of `import lgpio` — the display_driver import is what constructs the
+    # gpiozero objects and spawns Thread-1. So an exception here used to
+    # propagate out of __main__ entirely, skipping the os._exit below and
+    # running the very finalization this fix exists to avoid. Worse, the most
+    # likely failure here is a GPIO-busy import error from the previous
+    # minute's process, i.e. litclock-dev#531 firing on precisely the path the fix
+    # targets.
     #
     # Exits 1, matching the previous behaviour of letting the exception escape.
     # BaseException, not Exception: a SystemExit or KeyboardInterrupt raised in
     # here must not slip past to normal finalization either.
+    #
+    # The DISPLAY_CLEAR_HOUR parse is here too (litclock-dev#838). It never
+    # raises by design, and it is read BEFORE the panel is touched so that if
+    # it ever did, the run would exit 1 with a traceback in the journal rather
+    # than freeze the panel from inside the paint try with the process
+    # reporting success — which is what the bare int() it replaces did.
     try:
         # Hardware import is lazy — deferred until we actually need to talk to the display.
         from display_driver import epd7in5  # noqa: E402
 
         image, quote_meta, now = main()
+        display_clear_hour = _display_clear_hour()
     except BaseException:
         # traceback.print_exc() as well as logging: logging.exception is
         # level-gated, and this guard exists to instrument the one failure most
@@ -1085,7 +1151,6 @@ if __name__ == "__main__":
         epd.init()
         logging.info("EPD initialized.")
 
-        display_clear_hour = int(os.getenv("DISPLAY_CLEAR_HOUR", 2))
         # litclock-dev#762 Trap 2: this MUST read the offset target, not
         # datetime.now(). With the timer at :56 a live now().minute is never 0,
         # so the hourly full clear would simply stop firing and ghosting would

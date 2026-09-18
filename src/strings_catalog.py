@@ -201,6 +201,23 @@ def _catalog(code: str) -> dict[str, str]:
         return {}
 
 
+def catalog_size(code: str) -> int:
+    """How many strings the loader serves for ``code`` — the app's view, not the file's.
+
+    Public because ``scripts/update.sh``'s OTA smoke gate depends on it
+    (through ``eink_display.py catalog-count``, litclock-dev#773 item 2): the
+    count used to reach into ``_catalog()`` directly, and a rename of that
+    private name would have printed ``0`` and failed every update closed
+    (litclock-dev#840). Measured AFTER ``_catalog``'s filters — ``_``-prefixed
+    keys and non-string values are dropped — so it counts what ``get()`` can
+    actually resolve. ``0`` for a code the registry does not list, or whose
+    bundle is missing or unparseable; never raises for those.
+    Callers wanting the device's language resolve it with
+    :func:`active_language` first, which is what ``catalog-count`` does.
+    """
+    return len(_catalog(code))
+
+
 def _fill(template: str, slots: dict[str, Any]) -> str:
     for name, value in slots.items():
         template = template.replace("{" + name + "}", str(value))

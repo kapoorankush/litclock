@@ -501,6 +501,47 @@ disable_first_boot() {
     fi
 }
 
+# litclock-dev#834 — prepare-for-cloning.sh Step 6 replaces each bash history
+# path with an empty DIRECTORY, so that shells still open when the master
+# powers off cannot write their history back (bash's exit-time append, an
+# explicit `history -w` and the HISTFILESIZE truncate all fail with EISDIR,
+# root included). That directory rides every clone; this puts the paths back
+# to "absent" so bash creates a normal file on the recipient's first login.
+#
+# `rmdir`, unconditionally, through sudo: it removes an EMPTY DIRECTORY and
+# nothing else, so a real history file (ENOTDIR) or an absent path (ENOENT) is
+# a no-op, and sudo is needed for /root, which pi cannot even stat into (/root
+# is 0700). Like the `sudo tee`/`sudo cp`/`sudo systemctl` calls around it,
+# this rides the `010_pi-nopasswd` grant rather than `020_litclock-control`,
+# which covers only the PWA's own command list — consistent with its
+# neighbours, not a new privilege.
+#
+# A directory that survives is reported, not fatal — shell history not being
+# saved is an annoyance, not a setup failure.
+#
+# The verdict is a PRINTED TOKEN, not `sudo test -d`'s exit status
+# (litclock-dev#855 review). sudo returns 1 both for "the command said no" and
+# for its own configuration/authorization failures, so `if sudo test -d`
+# reads a refused sudo as "the directory is gone" — and then reports success
+# while the lock, and a permanently disabled history, ride on. An unusable
+# probe must say "could not look", never "confirmed absent".
+restore_bash_history_after_clone_prep() {
+    local _p _verdict
+    for _p in "$@"; do
+        sudo rmdir "$_p" 2>/dev/null || true
+        _verdict=$(sudo sh -c 'if [ -d "$1" ]; then echo LOCKED; else echo CLEAR; fi' sh "$_p" 2>/dev/null) || _verdict=""
+        case "$_verdict" in
+            CLEAR) ;;
+            LOCKED)
+                log "WARN clone-prep history lock at $_p could not be removed; shell history will not be saved there (litclock-dev#834)"
+                ;;
+            *)
+                log "WARN could not check the clone-prep history lock at $_p (the privileged probe did not run); if shell history is not saved there, remove it with: sudo rmdir $_p (litclock-dev#834)"
+                ;;
+        esac
+    done
+}
+
 # Main orchestration flow
 main() {
     log "======================================"
@@ -515,6 +556,11 @@ main() {
         start_clock_service
         exit 0
     fi
+
+    # litclock-dev#834 — undo prepare-for-cloning.sh's history lock before
+    # anything else on the not-yet-set-up path, which is the only path a
+    # cloned card takes, so the recipient's first login gets a normal history.
+    restore_bash_history_after_clone_prep /home/pi/.bash_history /root/.bash_history
 
     # Stop the clock timer — if re-running first-boot (e.g. after removing
     # .setup-complete for testing), the timer may still be enabled from a
@@ -534,54 +580,31 @@ main() {
     # where setup-complete didn't land before reboot.
     if [[ ! -f "$ENV_FILE" ]]; then
         log "Creating default env.sh..."
-        # litclock-dev#337 A3: WEATHER_LOCATION_MODE + WEATHER_IP_COUNTRY shipped from
-        # the very first boot. MODE=auto means the on-boot reresolve service
-        # will populate the rest once WiFi connects + IP-geo succeeds.
-        # litclock-dev#783 — this list must cover EVERY key in env.sh.sample.
-        # update.sh Phase 3 merges missing sample keys into env.sh, but that
-        # only runs on an OTA: a freshly flashed device that never updates was
-        # born missing nine documented knobs, so env.sh was not the knob
-        # surface the docs describe. Pinned by
-        # tests/test_first_boot_flow.py::test_every_env_write_matches_env_sample, and
-        # ::test_first_boot_actually_writes_every_env_sample_key which EXECUTES
-        # both arms and asserts on the env.sh actually written.
+        # litclock-dev#840 — the body comes from env_sh_defaults() in
+        # lib/state.sh, the single source shared with reset-setup.sh and
+        # prepare-for-cloning.sh. The key set, the litclock-dev#337 A3 MODE=auto default,
+        # the deliberately-empty coordinates and the load-bearing comment
+        # status all live there; read its contract before changing this.
         #
-        # VALUES may differ from the sample and two deliberately do: the sample
-        # documents WEATHER_LATITUDE/LONGITUDE with real Austin coordinates as
-        # an example, while first boot must leave them EMPTY. With
-        # WEATHER_LOCATION_MODE=auto the IP-geo resolver fills them on a good
-        # boot, but on the ip-api.com-blocked path (a QA scenario we test) a
-        # seeded coordinate would render Austin weather on a device that is not
-        # in Austin — worse than the honest empty state. So this seeds NAMES
-        # from the sample, not values, and the guard checks names only.
+        # The GATE tests BOTH helpers, not just the writer: the fallback below
+        # is the arm for "lib/state.sh is not usable", and a state.sh present
+        # but too old to define env_sh_defaults is exactly that case. Gating on
+        # the writer alone would call an undefined function and seed an EMPTY
+        # env.sh instead of taking the fallback.
         #
-        # COMMENT STATUS is copied from the sample and matters: an ACTIVE
-        # LITCLOCK_RENDER_LEAD_S would hard-pin 4 into the field and make a
-        # later retune leave every device rendering the wrong minute (litclock-dev#762),
-        # and an empty active value is parsed at import above the litclock-dev#531
-        # BaseException guard, killing the painter every minute.
-        local _defaults
-        _defaults='# export OPENWEATHERMAP_APIKEY=
-export WEATHER_ENABLED=true
-export WEATHER_LATITUDE=
-export WEATHER_LONGITUDE=
-export WEATHER_LOCATION_NAME=
-export WEATHER_UNITS=imperial
-export WEATHER_LOCATION_MODE=auto
-export WEATHER_IP_COUNTRY=
-export WEATHER_LAST_IP_GEO_AT=
-export WEATHER_TTL=3600
-export ALLOW_NSFW_QUOTES=false
-export LITCLOCK_LANGUAGE=
-export SHOW_DIAGNOSTICS_SHORTCUT=false
-export GIFT_MODE_MESSAGE=
-export LITCLOCK_RUNTIME_RENDER=false
-# export DISPLAY_CLEAR_HOUR=2
-# export LITCLOCK_RENDER_LEAD_S=4
-# export WEATHER_API_TIMEOUT=15
-# export LOG_LEVEL=WARNING
-'
-        if declare -F atomic_write_env_sh >/dev/null 2>&1; then
+        # The `$'\n'` is REQUIRED: command substitution strips trailing
+        # newlines, and update.sh Phase 3 appends missing sample keys with `>>`.
+        #
+        # Pinned by tests/test_first_boot_flow.py —
+        # ::test_env_sh_defaults_helper_matches_sample (the single source vs
+        # the sample) and ::test_first_boot_actually_writes_every_env_sample_key,
+        # which EXECUTES both arms and asserts on the env.sh actually written.
+        if declare -F atomic_write_env_sh >/dev/null 2>&1 \
+            && declare -F env_sh_defaults >/dev/null 2>&1; then
+            local _defaults
+            # NO language argument — a fresh device keeps Accept-Language
+            # negotiation alive on this boot (the litclock-dev#743 empty-seed contract).
+            _defaults=$(env_sh_defaults)$'\n'
             if ! atomic_write_env_sh "$ENV_FILE" "$_defaults"; then
                 local _rc=$?
                 if [[ "$_rc" == "75" ]]; then
@@ -595,11 +618,16 @@ export LITCLOCK_RUNTIME_RENDER=false
             # to the legacy heredoc; production Pis always have state.sh
             # because it ships in the same release as first-boot.sh.
             log "WARN scripts/lib/state.sh missing — falling back to unlocked default-env write"
-            # litclock-dev#783 — kept in step with the _defaults block above and
-            # with env.sh.sample. This degraded path was MISSED by the first
-            # version of that fix (found by /review): it is a second seeder in
-            # the same file, and a guard that named `_defaults=` could not see
-            # it. The guard now DISCOVERS seed blocks by shape instead.
+            # litclock-dev#840 — this heredoc STAYS INLINE, deliberately. It is
+            # the arm for "lib/state.sh could not be sourced", so it is the one
+            # copy that CANNOT call env_sh_defaults without reintroducing the
+            # dependency it exists to survive. That makes it the only remaining
+            # duplicate of the block, and
+            # tests/test_first_boot_flow.py::test_first_boot_fallback_heredoc_matches_the_helper
+            # pins it byte-for-byte against env_sh_defaults so it cannot drift.
+            # (litclock-dev#783 found this arm MISSED by the first version of that guard:
+            # a guard that named `_defaults=` could not see a second seeder in
+            # the same file.)
             cat > "$ENV_FILE" << 'ENVEOF'
 # export OPENWEATHERMAP_APIKEY=
 export WEATHER_ENABLED=true
@@ -861,23 +889,23 @@ ENVEOF
         #
         # NOTE the asymmetry, and it is not an oversight: `systemctl poweroff`
         # IS in the scoped 020 allowlist, this `touch` is NOT (020 grants
-        # `touch` for /etc/litclock/.handoff-complete only), so today this line
-        # works solely via the broad 010 passwordless grant. If 010 is ever
-        # dropped the touch fails silently and the shutdown splash repaints
-        # over the recovery copy — the device still powers off, it just loses
-        # the message. Granting it in 020 is NOT the fix: shutdown-splash.sh
-        # justifies the root-owned path on the opposite ground (a pi-level
-        # process must not be able to plant it and mute the gift welcome), so
-        # closing this needs a root-owned wrapper like
-        # /usr/local/lib/litclock/litclock-set-timezone, not a wider allowlist.
-        # tests/test_sudoers_install.py pins both halves of that statement.
+        # `touch` for /etc/litclock/.handoff-complete only), so this line rides
+        # the broad 010 grant — kept deliberately, the litclock-dev#387/litclock-dev#82 drop having been
+        # reversed 2026-07-12 (see sudoers/020's header). Without it the touch
+        # fails silently and the splash repaints over the recovery copy; the
+        # device still powers off, it just loses the message. Granting it in 020
+        # is NOT the fix: shutdown-splash.sh justifies the root-owned path on
+        # the opposite ground (a pi-level process must not be able to plant it
+        # and mute the gift welcome), so closing that needs a root-owned wrapper
+        # like /usr/local/lib/litclock/litclock-set-timezone, not a wider
+        # allowlist. tests/test_sudoers_install.py pins both halves.
         if [[ "$_incomplete_painted" == true ]]; then
             sudo touch /run/litclock-splash-suppress 2>/dev/null || true
         fi
         # `sudo systemctl poweroff` (not bare `sudo poweroff`) — matches the
         # sudo-systemctl form used everywhere else in this script and the
-        # scoped 020 sudoers allowlist, so it survives a future drop of the 010
-        # passwordless-sudo grant. If the marker touch above failed, we still
+        # scoped 020 sudoers allowlist, so unlike the touch above it does not
+        # depend on the blanket 010 grant. If the marker touch above failed, we still
         # power off (a device stranded ON is worse than the splash getting
         # repainted) — the poweroff is deliberately not gated on it.
         # Not in #22: dev already decided at the sibling call site

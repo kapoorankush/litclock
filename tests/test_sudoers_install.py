@@ -70,7 +70,7 @@ class TestSudoersFile:
             "/usr/bin/systemctl start --no-block litclock.service",
             # litclock-dev#387: root-owned tz-wrapper for the arbitrary-tz sudo path.
             "/usr/local/lib/litclock/litclock-set-timezone",
-            # litclock-dev#387: first-boot NTP enable (latent-010-break without this).
+            # litclock-dev#387: first-boot NTP enable — scoped rather than riding 010.
             "/usr/bin/timedatectl set-ntp true",
         ],
     )
@@ -96,8 +96,11 @@ class TestFirstBootSetupIncompleteSudo:
     _FIRST_BOOT = REPO_ROOT / "scripts" / "first-boot.sh"
 
     def test_the_poweroff_is_in_the_scoped_allowlist(self):
-        """So it survives a future drop of the broad 010 grant, which is
-        exactly what the code comment claims about this line."""
+        """This call site is scoped rather than riding the broad 010 grant,
+        which is exactly what the code comment claims about this line. (010
+        itself is kept — the litclock-dev#387/litclock-dev#82 drop was reversed 2026-07-12 — so the
+        point is that the poweroff does not DEPEND on it, not that 010 is
+        going away.)"""
         assert "sudo systemctl poweroff" in self._FIRST_BOOT.read_text()
         # The BARE form, bounded. A plain substring check is satisfied by the
         # `--no-block` grant that follows it in the same line, so deleting the
@@ -114,14 +117,16 @@ class TestFirstBootSetupIncompleteSudo:
         Granting pi `touch /run/litclock-splash-suppress` would let a pi-level
         process mute the shutdown splash — including the gift welcome — which
         is the precise thing shutdown-splash.sh's root-owned path exists to
-        prevent. So this must stay OUT, and the consequence (the marker stops
-        working if 010 is dropped) is recorded rather than silently traded
-        away. If someone adds it, this test says why not to.
+        prevent. So this must stay OUT, and the consequence (the marker only
+        works because the image carries the blanket 010 grant) is recorded
+        rather than silently traded away. If someone adds it, this test says
+        why not to.
         """
         assert "/run/litclock-splash-suppress" not in SUDOERS_FILE.read_text(), (
             "granting pi this touch reinstates the gift-welcome suppression the root-owned path "
-            "prevents (litclock-dev#657 /review). Closing the 010 gap needs a root-owned wrapper, "
-            "like /usr/local/lib/litclock/litclock-set-timezone, not a wider allowlist."
+            "prevents (litclock-dev#657 /review). Making the marker work without the blanket 010 "
+            "grant needs a root-owned wrapper, like /usr/local/lib/litclock/litclock-set-timezone, "
+            "not a wider allowlist."
         )
 
 

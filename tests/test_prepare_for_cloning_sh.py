@@ -10,6 +10,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PREPARE_SH = REPO_ROOT / "scripts" / "prepare-for-cloning.sh"
+STATE_SH = REPO_ROOT / "scripts" / "lib" / "state.sh"
 
 
 @pytest.fixture(scope="module")
@@ -23,9 +24,12 @@ class TestPrepareForCloningStructure:
 
     def test_uses_set_e(self, prepare_sh_content):
         """Unlike update.sh, this is a fresh-card prep script — bail on any
-        failure rather than leaving the card half-wiped."""
-        preamble = prepare_sh_content[:500]
-        assert "\nset -e\n" in preamble or preamble.startswith("set -e\n")
+        failure rather than leaving the card half-wiped. Pinned as "the FIRST
+        executed statement", not "within the first N bytes": the header grew
+        past a byte window in litclock-dev#834 while `set -e` stayed exactly
+        where it must be."""
+        executed = [ln for ln in prepare_sh_content.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+        assert executed[0] == "set -e", f"the first executed statement is {executed[0]!r}, not `set -e`"
 
     def test_removes_setup_complete_flag(self, prepare_sh_content):
         """Without this, cloned cards would think setup is already done."""
@@ -34,9 +38,12 @@ class TestPrepareForCloningStructure:
     def test_regenerates_env_sh_with_defaults(self, prepare_sh_content):
         """env.sh credentials must be scrubbed before cloning. Cloner should
         overwrite the file with defaults, not delete it. Post-litclock-dev#274 the
-        write goes through atomic_write_env_sh (sidecar-flocked)."""
+        write goes through atomic_write_env_sh (sidecar-flocked); since
+        litclock-dev#840 the body comes from `env_sh_defaults()` in
+        lib/state.sh, so the key is asserted on the EVALUATED body rather than
+        grepped out of this script."""
         assert 'atomic_write_env_sh "$INSTALL_DIR/env.sh"' in prepare_sh_content
-        assert "OPENWEATHERMAP_APIKEY=" in prepare_sh_content
+        assert "# export OPENWEATHERMAP_APIKEY=\n" in _shipped_defaults()
         # Must not leave the real key
         assert 'rm -f "$INSTALL_DIR/env.sh"' not in prepare_sh_content
 
@@ -49,8 +56,13 @@ class TestPrepareForCloningStructure:
         assert 'rm -f "$INSTALL_DIR"/weather-cache*.json' in prepare_sh_content
 
     def test_clears_bash_history(self, prepare_sh_content):
-        """Opsec: strip the cloner's shell history before distribution."""
-        assert "rm -f /home/pi/.bash_history" in prepare_sh_content
+        """Opsec: strip the cloner's shell history before distribution. Since
+        litclock-dev#834 the paths are fixed variables (same convention as
+        _NM_PROFILE_DIR: not env-overridable, injected by the executed tests
+        below) and the step both removes and LOCKS them."""
+        assert '_PI_BASH_HISTORY="/home/pi/.bash_history"' in prepare_sh_content
+        assert '_ROOT_BASH_HISTORY="/root/.bash_history"' in prepare_sh_content
+        assert 'for _h in "$_PI_BASH_HISTORY" "$_ROOT_BASH_HISTORY"; do' in prepare_sh_content
 
     def test_clears_ssl_certs(self, prepare_sh_content):
         """SSL cert contains litclock.local — fine to share, but regenerating
@@ -66,20 +78,92 @@ class TestPrepareForCloningStructure:
         assert "(y/N)" in prepare_sh_content
 
 
-def test_defaults_include_weather_location_mode_and_ip_country():
-    """litclock-dev#337 A3 + /review testing-gap: prepare-for-cloning.sh must include
-    the new MODE + IP_COUNTRY defaults. Without these, a cloned image's
-    first boot would inherit cloner's MODE=specific (if set) with stale
-    coords for a location 1000 miles away from the cloned device's WiFi."""
-    from pathlib import Path
+class TestTooOldStateSh:
+    """PR litclock-dev#858 review item A — the same gate reset-setup.sh needs, here for the
+    MESSAGE rather than for correctness.
 
-    content = (Path(__file__).parent.parent / "scripts/prepare-for-cloning.sh").read_text()
-    assert "export WEATHER_LOCATION_MODE=auto" in content, (
-        "litclock-dev#337 A3: prepare-for-cloning.sh DEFAULTS must include MODE=auto"
+    `set -e` (line 26) would abort this script on the "command not found"
+    anyway, so it is not silently wrong the way reset-setup.sh is. But an
+    abrupt bash error mid-Step-2 is the wrong report from a card-prep tool
+    whose entire contract is saying DO NOT CLONE loudly, and relying on a
+    `set -e` two hundred lines away is luck rather than design.
+    """
+
+    def _gate(self, prepare_sh_content):
+        # Anchored on `for _fn in` ALONE — see the note on the reset-setup
+        # analogue: a mutant that narrows the checked list must fail on
+        # BEHAVIOUR, not on the harness failing to find its span.
+        start = prepare_sh_content.index("for _fn in ")
+        end = prepare_sh_content.index("\ndone\n", start) + len("\ndone\n")
+        span = prepare_sh_content[start:end]
+        assert "exit 1" in span, "span lost the abort under test"
+        return span
+
+    def test_an_old_state_sh_aborts_with_the_do_not_clone_banner(self, prepare_sh_content, tmp_path):
+        harness = f"""
+set -e
+RED=""; GREEN=""; YELLOW=""; NC=""
+_THIS_SCRIPT_DIR={shlex.quote(str(tmp_path))}
+# An OLD lib/state.sh: the writer exists, the defaults helper does not.
+atomic_write_env_sh() {{ printf "%s" "$2" > "$1"; return 0; }}
+{self._gate(prepare_sh_content)}
+echo REACHED_STEP_1
+"""
+        r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=10)
+        assert r.returncode == 1, f"expected the gate to abort, got rc={r.returncode}\n{r.stdout}{r.stderr}"
+        assert "REACHED_STEP_1" not in r.stdout, "the gate must abort BEFORE any step runs"
+        assert "env_sh_defaults is not defined" in r.stderr, r.stderr
+        assert "Do NOT clone this card" in r.stderr, (
+            f"a card-prep abort must carry the do-not-clone banner, not a bare error: {r.stderr!r}"
+        )
+        assert "nothing has been wiped" in r.stderr, (
+            "the operator must be told the card is untouched — otherwise the safe response to this "
+            "message is indistinguishable from the response to a mid-run failure"
+        )
+
+    def test_a_current_state_sh_passes_the_gate(self, prepare_sh_content, tmp_path):
+        """The inverse, so the gate cannot pass by refusing everything."""
+        harness = f"""
+set -e
+RED=""; NC=""
+_THIS_SCRIPT_DIR={shlex.quote(str(tmp_path))}
+. "{STATE_SH}"
+{self._gate(prepare_sh_content)}
+echo REACHED_STEP_1
+"""
+        r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=10)
+        assert r.returncode == 0, f"{r.stdout}{r.stderr}"
+        assert "REACHED_STEP_1" in r.stdout
+
+
+def test_the_clone_seed_carries_no_language(prepare_sh_content):
+    """litclock-dev#840 — a clone must NOT inherit the cloner's language.
+
+    `env_sh_defaults` takes an optional language argument (reset-setup passes
+    the gift language); this caller must pass NONE, so the recipient's first
+    boot keeps Accept-Language negotiation alive — the litclock-dev#743 empty-seed
+    contract. EXECUTED: a grep for `env_sh_defaults` alone cannot tell a bare
+    call from one that forwards a variable.
+    """
+    assert "export LITCLOCK_LANGUAGE=\n" in _shipped_defaults(), (
+        "a prepared card seeds a non-empty LITCLOCK_LANGUAGE — every clone would boot in the "
+        "cloner's language instead of negotiating (litclock-dev#840 / litclock-dev#743)"
     )
-    assert "export WEATHER_IP_COUNTRY=" in content, (
-        "litclock-dev#337 A3: prepare-for-cloning.sh DEFAULTS must include WEATHER_IP_COUNTRY= (empty)"
-    )
+
+
+def test_defaults_include_weather_location_mode_and_ip_country():
+    """litclock-dev#337 A3 + /review testing-gap: a prepared card must seed the MODE +
+    IP_COUNTRY defaults. Without these, a cloned image's first boot would
+    inherit the cloner's MODE=specific (if set) with stale coords for a
+    location 1000 miles away from the cloned device's WiFi.
+
+    EXECUTED since litclock-dev#840: the body comes from `env_sh_defaults()`
+    in lib/state.sh, so a grep of prepare-for-cloning.sh sees no such literal.
+    `_shipped_defaults()` runs the script's own assignment."""
+    shipped = _shipped_defaults()
+    assert "export WEATHER_LOCATION_MODE=auto\n" in shipped, "litclock-dev#337 A3: the wipe must seed MODE=auto"
+    assert "export WEATHER_IP_COUNTRY=\n" in shipped, (
+        "litclock-dev#337 A3: the wipe must seed WEATHER_IP_COUNTRY= (empty)")
 
 
 # ─── The hotspot-password step, EXECUTED (litclock-dev#649) ───────────────────────────
@@ -1502,7 +1586,11 @@ def _extract_marker_write() -> str:
 
 def _extract_marker_removal() -> str:
     body = PREPARE_SH.read_text()
-    start = body.index('rm -f "$_UNFINISHED_MARKER"')
+    # rindex: since litclock-dev#855 F1 the Step 2 abort also retires the
+    # marker (it changed nothing, so its re-run must not be warned about). The
+    # TAIL retirement — the one with the false-warning caveat — is this one.
+    assert body.count('rm -f "$_UNFINISHED_MARKER"') == 2, "expected exactly the Step 2 and tail retirements"
+    start = body.rindex('rm -f "$_UNFINISHED_MARKER"')
     end = body.index("\nfi\n", start) + len("\nfi")
     span = body[start:end]
     assert "falsely" in span, "span lost the false-warning caveat"
@@ -1569,8 +1657,15 @@ class TestUnfinishedRunMarker:
         executed = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
         write_at = executed.index('touch "$_UNFINISHED_MARKER"')
         step1_at = executed.index("Stopping setup-state writers")
-        removal_at = executed.index('rm -f "$_UNFINISHED_MARKER"')
+        removal_at = executed.rindex('rm -f "$_UNFINISHED_MARKER"')
         banner_at = executed.index("SD Card Ready for Cloning!")
+        # The other retirement is the Step 2 abort's (litclock-dev#855 F1). It
+        # is INSIDE the abort arm, so it can only run on a path that changed
+        # nothing — never on the way to the banner.
+        step2_retire_at = executed.index('rm -f "$_UNFINISHED_MARKER"')
+        assert step2_retire_at < executed.index("_abort_env_credentials \"$_ENV_WHY\"") < banner_at, (
+            "the early marker retirement is no longer inside the Step 2 abort arm"
+        )
         # Anchor on the END of Step 8 — its survivor check — not its opening
         # echo: anchored on the opening, moving the removal to before the
         # rm/verify left every test green while a death during Step 8 (the one
@@ -2026,10 +2121,68 @@ poweroff() {{ touch {shlex.quote(str(reached))}; }}
             "the REAL poweroff was never invoked after the drop — the block past the redirect died"
         )
 
-# ── litclock-dev#821: the env.sh credential gate ──────────────────────────────
+# ── litclock-dev#821 / litclock-dev#839: the env.sh credential gate ───────────
 
-_ENV_GATE_START = "echo -n \"Verifying env.sh carries no owner credentials... \""
-_ENV_GATE_END = "echo -e \"${GREEN}done${NC}\""
+_ENV_GATE_START = 'echo -n "Verifying env.sh carries no owner credentials... "'
+_ENV_GATE_END = 'echo -e "${GREEN}done${NC}"'
+
+# Every key the Step 2 wipe writes EMPTY. litclock-dev#821's gate listed the first five
+# by hand and missed the last three (litclock-dev#839); the script now DERIVES the list
+# from $DEFAULTS, and this is the independent statement of what that
+# derivation must produce.
+_OWNER_KEYS = frozenset(
+    {
+        "OPENWEATHERMAP_APIKEY",
+        "WEATHER_LATITUDE",
+        "WEATHER_LONGITUDE",
+        "WEATHER_LOCATION_NAME",
+        "WEATHER_IP_COUNTRY",
+        "WEATHER_LAST_IP_GEO_AT",
+        "LITCLOCK_LANGUAGE",
+        "GIFT_MODE_MESSAGE",
+    }
+)
+
+
+def _extract_env_abort_fn() -> str:
+    """Both shared aborts, verbatim: the generic `_abort_do_not_clone` and the
+    env.sh arm that delegates to it. Lifted as one span because they are
+    adjacent and the delegating one cannot run alone."""
+    body = PREPARE_SH.read_text()
+    start = body.index("_abort_do_not_clone() {")
+    end = body.index("\n}", body.index("_abort_env_credentials() {")) + len("\n}")
+    fn = body[start:end]
+    assert "Do NOT clone this card" in fn and "exit 1" in fn, "the shared abort lost its banner or its exit"
+    assert body.count("_abort_env_credentials() {") == 1, "the env abort is defined more than once"
+    assert body.count("_abort_do_not_clone() {") == 1, "the generic abort is defined more than once"
+    assert start < body.index("_abort_env_credentials() {") < end, "the two aborts are no longer one span"
+    return fn
+
+
+def _extract_defaults_and_owner_keys() -> str:
+    """`DEFAULTS=...` plus the `_ENV_OWNER_KEYS=$(...)` derivation, verbatim,
+    prefixed with a source of the real lib/state.sh.
+
+    NOT comment-stripped: the defaults body holds `# export ...` lines, and
+    stripping them would test a wipe that ships a different file.
+
+    litclock-dev#840 — the body itself now comes from `env_sh_defaults()` in
+    lib/state.sh, so the lifted span is one line plus the sed. Sourcing the
+    REAL helper (rather than pasting a copy here) is deliberate: it is what
+    makes `_ENV_OWNER_KEYS` a live derivation from the shipped block, which is
+    the litclock-dev#839 property this whole section exists to protect.
+    """
+    body = PREPARE_SH.read_text()
+    assert len(re.findall(r"^DEFAULTS=", body, re.M)) == 1, (
+        "DEFAULTS is assigned more than once; the harness may lift the wrong one"
+    )
+    start = re.search(r"^DEFAULTS=", body, re.M).start()
+    derive_at = body.index("_ENV_OWNER_KEYS=$(", start)
+    end = body.index("/p')\n", derive_at) + len("/p')")
+    span = body[start:end]
+    assert "sed -nE" in span, "span lost the derivation"
+    assert "env_sh_defaults" in span, "span lost the call to the shared defaults helper (litclock-dev#840)"
+    return f'. "{STATE_SH}"\n{span}'
 
 
 def _extract_env_gate() -> str:
@@ -2038,58 +2191,97 @@ def _extract_env_gate() -> str:
     start = body.index(_ENV_GATE_START)
     end = body.index(_ENV_GATE_END, start) + len(_ENV_GATE_END)
     gate = body[start:end]
-    assert "Do NOT clone this card" in gate, "extracted span lost the abort under test"
-    assert "ENV_WIPE_FAILED" in gate, "extracted span lost the write-failure check"
-    assert "OPENWEATHERMAP_APIKEY" in gate, "extracted span lost the secret-key scan"
+    assert "_abort_env_credentials" in gate, "extracted span lost the abort under test"
+    assert "_ENV_OWNER_KEYS" in gate, "extracted span lost the derived key list"
+    assert "grep -qE" in gate, "extracted span lost the re-read"
     return gate
 
 
-def _run_env_gate(tmp_path, *, wipe_failed: bool, env_sh: str | None):
-    """Execute the REAL gate against a real env.sh, under the real shell opts."""
+def _shipped_defaults() -> str:
+    """The env.sh Step 2 actually writes, obtained by RUNNING the assignment."""
+    r = subprocess.run(
+        ["bash", "-c", _extract_defaults_and_owner_keys() + '\nprintf "%s" "$DEFAULTS"'],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert "export WEATHER_LATITUDE=\n" in r.stdout, "the lifted DEFAULTS did not evaluate to the shipped file"
+
+    # FULL EQUALITY, not "it mentions env_sh_defaults" (PR litclock-dev#858 review, item B).
+    # This is the highest-fanout seed path there is — every SD card cut for
+    # "Friends & Family" is born from it — and a substring check on the
+    # assignment is satisfied by `$(env_sh_defaults | grep -v RENDER_LEAD)`,
+    # which ships every clone an env.sh missing a documented knob. Equality
+    # against the helper subsumes key set, comment status, order and the
+    # trailing newline.
+    from tests.test_first_boot_flow import env_sh_defaults
+
+    expected = env_sh_defaults()
+    assert r.stdout == expected, (
+        "prepare-for-cloning.sh's DEFAULTS is not env_sh_defaults() output. It must be the "
+        "helper's body verbatim — a filter, a re-ordering or an appended line is the "
+        f"hand-maintained drift litclock-dev#840 removed.\n--- got ---\n{r.stdout!r}\n"
+        f"--- want ---\n{expected!r}"
+    )
+    return r.stdout
+
+
+def _leaked(key: str, value: str) -> str:
+    """The shipped defaults with ONE key's whole line replaced by a live value.
+
+    Replace the WHOLE line: OPENWEATHERMAP_APIKEY ships commented out, so a
+    naive `export KEY=` -> `export KEY=value` substitution matches the tail of
+    the comment and produces `# export KEY=value`, still commented, which
+    correctly does NOT trip the gate — a fixture testing nothing.
+    """
+    out, hit = [], False
+    for ln in _shipped_defaults().splitlines():
+        if ln.lstrip("# ").startswith(f"export {key}="):
+            out.append(f"export {key}={value}")
+            hit = True
+        else:
+            out.append(ln)
+    assert hit, f"fixture did not find {key} in the shipped defaults"
+    return "\n".join(out) + "\n"
+
+
+def _run_env_gate(tmp_path, *, env_sh: str | None, owner_keys: str | None = None):
+    """Execute the REAL gate against a real env.sh, under the real shell opts.
+
+    ``env_sh=None`` leaves NO env.sh on the card. ``owner_keys`` overrides the
+    derived list AFTER the real derivation ran — the fail-closed test needs it
+    empty, which the shipped DEFAULTS can never produce.
+    """
     install = tmp_path / "litclock"
     install.mkdir(exist_ok=True)
     if env_sh is not None:
         (install / "env.sh").write_text(env_sh)
+    override = f"_ENV_OWNER_KEYS={shlex.quote(owner_keys)}\n" if owner_keys is not None else ""
     script = f"""{_script_shell_environment()}
 INSTALL_DIR={shlex.quote(str(install))}
-ENV_WIPE_FAILED={"true" if wipe_failed else "false"}
-{_ERREXIT_PROBE}
+{_extract_env_abort_fn()}
+{_extract_defaults_and_owner_keys()}
+{override}{_ERREXIT_PROBE}
 {_extract_env_gate()}
 echo "REACHED_BANNER"
 """
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
 
 
-_CLEAN_ENV = (
-    "# export OPENWEATHERMAP_APIKEY=\n"
-    "export WEATHER_ENABLED=true\n"
-    "export WEATHER_LATITUDE=\n"
-    "export WEATHER_LONGITUDE=\n"
-    "export WEATHER_LOCATION_NAME=\n"
-    "export GIFT_MODE_MESSAGE=\n"
-)
-
-
 class TestEnvCredentialGate:
-    """litclock-dev#821 — a failed env.sh wipe must not reach the success banner.
+    """litclock-dev#821 — a bad env.sh must not reach the success banner.
 
-    Before this, the failure arm was `true  # explicit success for set -e`: one
-    yellow line, then "SD Card Ready for Cloning!", then power off. Every card
-    cut from that master carried the owner's API key and home location, and the
-    operator had no reason to suspect it.
+    Since litclock-dev#839 this gate is the RE-READ half only: a write that
+    REPORTS failure aborts at Step 2 (TestStepTwoAbortsBeforeTheWifiPrompt
+    below). What is left for the gate is a write that returned 0 and produced
+    a bad file anyway.
     """
 
     def test_a_clean_env_passes_and_reaches_the_banner(self, tmp_path):
-        r = _run_env_gate(tmp_path, wipe_failed=False, env_sh=_CLEAN_ENV)
+        r = _run_env_gate(tmp_path, env_sh=_shipped_defaults())
         assert r.returncode == 0, r.stdout + r.stderr
         assert "REACHED_BANNER" in r.stdout, "a clean card must be allowed through"
-
-    def test_a_failed_write_aborts_before_the_banner(self, tmp_path):
-        """The reported-failure half: flock timeout (rc=75) or a failed write."""
-        r = _run_env_gate(tmp_path, wipe_failed=True, env_sh=_CLEAN_ENV)
-        assert r.returncode == 1, f"expected abort, got {r.returncode}\n{r.stdout}"
-        assert "Do NOT clone this card" in r.stdout
-        assert "REACHED_BANNER" not in r.stdout, "the gate must run BEFORE the banner"
 
     @pytest.mark.parametrize(
         "key,value",
@@ -2099,33 +2291,78 @@ class TestEnvCredentialGate:
             ("WEATHER_LONGITUDE", "-97.7431"),
             ("WEATHER_LOCATION_NAME", "Austin, Texas"),
             ("GIFT_MODE_MESSAGE", "Happy birthday"),
+            # The three litclock-dev#821's hand-written list missed (litclock-dev#839).
+            ("WEATHER_IP_COUNTRY", "US"),
+            ("WEATHER_LAST_IP_GEO_AT", "2026-09-13T11:32:05Z"),
+            ("LITCLOCK_LANGUAGE", "de"),
         ],
     )
     def test_a_surviving_secret_aborts_even_when_the_write_reported_success(self, tmp_path, key, value):
         """The silent half: `atomic_write_env_sh` returned 0 but the file is
         wrong. A return-code check alone cannot see this, which is why the gate
         re-reads the file — Step 8's idiom."""
-        # Replace the WHOLE line. OPENWEATHERMAP_APIKEY ships commented out, so a
-        # naive `export KEY=` -> `export KEY=value` substitution matches the tail
-        # of the comment and produces `# export KEY=value`, which is still
-        # commented and correctly does NOT trip the gate — the fixture would then
-        # be testing nothing. Caught by running it.
-        leaked = "".join(
-            f"export {key}={value}\n" if ln.lstrip("# ").startswith(f"export {key}=") or
-            ln.startswith(f"export {key}=") else ln + "\n"
-            for ln in _CLEAN_ENV.splitlines()
-        )
-        assert f"{key}={value}" in leaked, "fixture did not actually inject the secret"
-        r = _run_env_gate(tmp_path, wipe_failed=False, env_sh=leaked)
+        leaked = _leaked(key, value)
+        assert f"\nexport {key}={value}\n" in "\n" + leaked, "fixture did not actually inject the secret"
+        r = _run_env_gate(tmp_path, env_sh=leaked)
         assert r.returncode == 1, f"{key} survived the wipe and the gate let it through\n{r.stdout}"
         assert key in r.stdout, f"the abort must NAME the surviving key; got {r.stdout!r}"
+        assert "Do NOT clone this card" in r.stdout
         assert "REACHED_BANNER" not in r.stdout
 
     def test_a_commented_apikey_is_not_a_leak(self, tmp_path):
         """The shipped defaults comment OPENWEATHERMAP_APIKEY out entirely, so a
         commented line must not trip the gate — otherwise it fails every run."""
-        r = _run_env_gate(tmp_path, wipe_failed=False, env_sh=_CLEAN_ENV)
+        shipped = _shipped_defaults()
+        assert "# export OPENWEATHERMAP_APIKEY=" in shipped, "the shipped defaults no longer comment the key out"
+        r = _run_env_gate(tmp_path, env_sh=shipped)
         assert r.returncode == 0, "a commented-out key is the SHIPPED state, not a leak"
+
+    def test_an_absent_env_sh_passes_the_gate(self, tmp_path):
+        """litclock-dev#844 item 4 — the branch an operator least expects.
+
+        An absent env.sh at the gate is NOT a wiped-away file: Step 2 leaves an
+        absent env.sh absent (its `if [[ -f ]]` guards the write, it never
+        creates one), nothing between Step 2 and the gate touches env.sh (Step 5
+        removes `*.log` and `weather-cache*.json` only), and first-boot.sh
+        seeds a fresh env.sh on the clone. So absent means "no owner data", and
+        aborting on it would refuse a card that is safe.
+        """
+        r = _run_env_gate(tmp_path, env_sh=None)
+        assert not (tmp_path / "litclock" / "env.sh").exists(), "fixture left an env.sh behind"
+        assert r.returncode == 0, f"an absent env.sh must pass the gate\n{r.stdout}{r.stderr}"
+        assert "REACHED_BANNER" in r.stdout
+        assert "FAILED" not in r.stdout
+
+    def test_an_empty_key_list_fails_closed(self, tmp_path):
+        """litclock-dev#773's rule, applied here: nothing verified is a failure. With the
+        derived list empty the loop would check nothing and print `done` over a
+        file full of owner data."""
+        r = _run_env_gate(tmp_path, env_sh=_leaked("OPENWEATHERMAP_APIKEY", "deadbeef"), owner_keys="")
+        assert r.returncode == 1, f"an empty key list let a leaking env.sh through\n{r.stdout}"
+        assert "no keys were verified" in r.stdout
+        assert "REACHED_BANNER" not in r.stdout
+
+    def test_the_gate_keys_are_derived_from_the_wipe(self):
+        """The list is computed from $DEFAULTS by the shipped sed, so it cannot
+        drift from the wipe the way litclock-dev#821's hand-written list did. Two
+        checks: the derivation yields exactly the eight owner keys, AND those
+        are exactly the keys DEFAULTS writes empty (computed here independently
+        of the sed), so a DEFAULTS edit that adds an owner key is picked up and
+        a sed regression that drops one is caught."""
+        r = subprocess.run(
+            ["bash", "-c", _extract_defaults_and_owner_keys() + '\nprintf "%s\\n" "$_ENV_OWNER_KEYS"'],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        derived = frozenset(ln for ln in r.stdout.split("\n") if ln)
+        assert derived == _OWNER_KEYS, f"derived {sorted(derived)}"
+        empties = frozenset(
+            m.group(1)
+            for m in re.finditer(r"^#?\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=\s*$", _shipped_defaults(), re.M)
+        )
+        assert derived == empties, f"the sed and an independent scan of DEFAULTS disagree: {sorted(derived ^ empties)}"
 
     def test_the_gate_precedes_both_the_banner_and_the_poweroff(self):
         """Position is the whole point: after either one, the operator is gone."""
@@ -2147,10 +2384,473 @@ class TestEnvCredentialGate:
         poweroff_at = executed.index("poweroff || {")
         assert gate_exec_at < poweroff_at, "the credential gate must run before the power-off"
 
-    def test_the_failure_arm_no_longer_swallows_the_failure(self):
-        """The specific regression: `true  # explicit success for set -e`."""
+    def test_the_failure_arm_aborts_instead_of_raising_a_flag(self):
+        """The two regressions, in order: litclock-dev#821's `true  # explicit success`
+        (a swallowed failure) and litclock-dev#821's own fix, a flag read after Step 8
+        (a failure acted on too late, litclock-dev#839). Executed lines only — the
+        comments still tell both stories."""
         body = PREPARE_SH.read_text()
         assert "true  # explicit success for `set -e`" not in body, (
             "the env.sh wipe failure arm is swallowing the failure again (litclock-dev#821)"
         )
-        assert "ENV_WIPE_FAILED=true" in body, "the failure arm must raise the flag the gate reads"
+        executed = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
+        assert "ENV_WIPE_FAILED" not in executed, (
+            "the failure arm is raising a flag for a later gate again instead of aborting at Step 2 (litclock-dev#839)"
+        )
+        # The WiFi prompt is the first executed line of Step 3 (the `# Step 3`
+        # heading is a comment and is gone from `executed`).
+        step2_at = executed.index(_STEP2_START)
+        step2 = executed[step2_at : executed.index('read -p "Clear saved WiFi networks?', step2_at)]
+        assert "_abort_env_credentials" in step2, "Step 2's failure arm does not call the shared abort"
+
+
+# ── litclock-dev#839: Step 2 aborts BEFORE the WiFi prompt, Steps 2-8 executed ─
+#
+# The defect was ORDER: the abort existed but ran after Step 8, so on a failed
+# wipe the script still deleted every WiFi profile, stopped the clock, wiped
+# the logs and removed the setup-WiFi key — on a card it then refused to clone.
+# A test of Step 2 alone cannot see order, so this harness lifts Steps 2
+# through the gate and runs them for real against a tmp card: every mutation
+# site is parameterised (INSTALL_DIR, STATE_DIR, _NM_PROFILE_DIR,
+# _WPA_SUPPLICANT_CONF, the two history paths) and the system commands are
+# recorded stubs. The one literal host path in the span, Step 5's
+# `rm -f /tmp/litclock-*`, is stripped — and the strip is asserted exact.
+
+_STEP2_START = 'echo -n "Clearing configuration (env.sh)... "'
+_TMP_LITTER_LINE = "rm -f /tmp/litclock-* 2>/dev/null || true"
+
+
+def _extract_steps_2_through_gate() -> str:
+    body = PREPARE_SH.read_text()
+    assert body.count(_STEP2_START) == 1, "Step 2 anchor is no longer unique"
+    start = body.index(_STEP2_START)
+    gate_at = body.index(_ENV_GATE_START, start)
+    end = body.index(_ENV_GATE_END, gate_at) + len(_ENV_GATE_END)
+    span = body[start:end]
+    for needle in (
+        "Removing setup-state markers",
+        "Clear saved WiFi networks?",
+        "Clearing setup-hotspot password",
+        "nmcli connection delete",
+        "Clearing bash history",
+    ):
+        assert needle in span, f"span cut short of {needle!r}"
+    lines = span.splitlines()
+    kept = [ln for ln in lines if ln.strip() != _TMP_LITTER_LINE]
+    assert len(lines) - len(kept) == 1, "expected to strip exactly one /tmp litter line from the span"
+    return "\n".join(kept)
+
+
+_ENV_SH_BEFORE = "export OPENWEATHERMAP_APIKEY=deadbeefcafe\nexport WEATHER_LOCATION_NAME=Austin\n"
+
+
+def _run_steps_2_through_gate(tmp_path, *, write_rc: int, with_env_sh: bool = True):
+    """Run Steps 2..gate. ``write_rc`` is what the stubbed atomic_write_env_sh
+    returns; 0 makes it write its argument, the way the real helper does.
+    ``with_env_sh=False`` stages a card with no env.sh at all."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_ps(bin_dir, _CONSOLE_CHAIN)  # a console login, so the y-wipe is not refused
+    install = tmp_path / "litclock"
+    install.mkdir()
+    if with_env_sh:
+        (install / "env.sh").write_text(_ENV_SH_BEFORE)
+    (install / "first-boot.log").write_text("x\n")
+    (install / ".certs").mkdir()
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "hotspot-password").write_text("setup-key\n")
+    # litclock-dev#855 review item A: the setup-state markers are removed in
+    # Step 2b, INSIDE this span, so an aborted run can be checked for them.
+    config = tmp_path / "etc-litclock"
+    config.mkdir()
+    (config / ".setup-complete").write_text("")
+    (config / ".handoff-complete").write_text("")
+    profiles = tmp_path / "system-connections"
+    profiles.mkdir()
+    (profiles / "home-wifi.nmconnection").write_text("psk=secret\n")
+    (profiles / "litclock-hotspot.nmconnection").write_text("psk=setup-key\n")
+    wpa = tmp_path / "wpa_supplicant.conf"
+    wpa.write_text("network={ psk=old }\n")
+    home = tmp_path / "home"
+    home.mkdir()
+    pi_hist = home / "pi.bash_history"
+    root_hist = home / "root.bash_history"
+    pi_hist.write_text("nmcli dev wifi connect x password y\n")
+    root_hist.write_text("sudo -i\n")
+    prompts = tmp_path / "prompts.rec"
+    nm_rec = tmp_path / "nmcli.rec"
+    if write_rc == 0:
+        writer = 'atomic_write_env_sh() { printf "%s" "$2" > "$1"; }'
+    else:
+        writer = f"atomic_write_env_sh() {{ return {write_rc}; }}"
+    script = f"""{_script_shell_environment()}
+{_YELLOW_DECL}
+unset SSH_CONNECTION SSH_TTY
+PATH={shlex.quote(str(bin_dir))}:$PATH
+INSTALL_DIR={shlex.quote(str(install))}
+STATE_DIR={shlex.quote(str(state))}
+CONFIG_DIR={shlex.quote(str(config))}
+_NM_PROFILE_DIR={shlex.quote(str(profiles))}
+_WPA_SUPPLICANT_CONF={shlex.quote(str(wpa))}
+_PI_BASH_HISTORY={shlex.quote(str(pi_hist))}
+_ROOT_BASH_HISTORY={shlex.quote(str(root_hist))}
+read() {{
+    # Only the y/N PROMPT is answered; Step 3's `while read -r _con` loop must
+    # still reach the builtin, or it spins forever on the stub's constant.
+    if [[ "$1" == "-p" ]]; then REPLY=y; printf '%s\\n' "$*" >> {shlex.quote(str(prompts))}; else builtin read "$@"; fi
+}}
+nmcli() {{ printf 'nmcli %s\\n' "$*" >> {shlex.quote(str(nm_rec))}; [[ "$1" == "-t" ]] && echo home-wifi; return 0; }}
+systemctl() {{ :; }}
+journalctl() {{ :; }}
+{_extract_is_network_session()}
+{_extract_env_abort_fn()}
+{_extract_defaults_and_owner_keys()}
+# AFTER the span above, which sources the real lib/state.sh (litclock-dev#840)
+# and would otherwise replace this stub with the real flocked writer.
+{writer}
+{_ERREXIT_PROBE}
+{_extract_steps_2_through_gate()}
+echo REACHED_GATE_DONE
+"""
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+    assert not (result.returncode == 99 and _ERREXIT_PROBE_MARKER in result.stderr), result.stderr
+    return result, {
+        "env_sh": install / "env.sh",
+        "hotspot_password": state / "hotspot-password",
+        "home_wifi": profiles / "home-wifi.nmconnection",
+        "pi_hist": pi_hist,
+        "prompts": prompts,
+        "nm_rec": nm_rec,
+        "setup_complete": config / ".setup-complete",
+        "handoff_complete": config / ".handoff-complete",
+    }
+
+
+class TestStepTwoAbortsBeforeTheWifiPrompt:
+    @pytest.mark.parametrize("write_rc", [75, 1], ids=["flock-timeout", "failed-write"])
+    def test_a_failed_wipe_stops_before_anything_else_is_touched(self, tmp_path, write_rc):
+        r, card = _run_steps_2_through_gate(tmp_path, write_rc=write_rc)
+        assert r.returncode == 1, f"expected the Step 2 abort, got {r.returncode}\n{r.stdout}{r.stderr}"
+        assert "Do NOT clone this card" in r.stdout, "the abort must carry the same banner as the gate"
+        assert "REACHED_GATE_DONE" not in r.stdout
+        # BEFORE the WiFi prompt: the prompt was never asked...
+        assert not card["prompts"].exists(), f"the WiFi prompt ran after a failed wipe: {card['prompts'].read_text()}"
+        # ...so no NM profile was deleted, on the card or in the daemon...
+        assert card["home_wifi"].exists(), "the saved WiFi profile was deleted after a failed wipe"
+        assert not card["nm_rec"].exists(), f"nmcli was called after a failed wipe: {card['nm_rec'].read_text()}"
+        # ...the setup-WiFi key is still there (the litclock-dev#839 bench observation
+        # was "password... done" printed BEFORE the env.sh failure)...
+        assert card["hotspot_password"].exists(), "Step 8 ran after a failed wipe"
+        # ...and env.sh is exactly as it was, owner data included, which is why
+        # the operator is told not to clone.
+        # BYTE-FOR-BYTE (litclock-dev#855 review E1). A substring check on the
+        # API key passes a partial rewrite that dropped WEATHER_LOCATION_NAME —
+        # and "env.sh is untouched" is exactly what the banner claims.
+        assert card["env_sh"].read_text() == _ENV_SH_BEFORE, "env.sh was modified by the aborted run"
+        assert card["pi_hist"].is_file(), "Step 6 ran after a failed wipe"
+        # litclock-dev#855 review item A — the abort must leave a BOOTABLE
+        # device. litclock-firstboot.service is disabled on a provisioned clock
+        # and is only re-enabled at Step 4, while litclock.service and
+        # litclock-control.service are ConditionPathExists-gated on these two
+        # markers: removing them before an abortable step meant an aborted run
+        # left a device that booted into neither setup nor the clock — the
+        # litclock-dev#659 looks-bricked state, reachable from a flock timeout.
+        assert card["setup_complete"].exists() and card["handoff_complete"].exists(), (
+            "the Step 2 abort removed the setup-state markers, so this device boots into nothing"
+        )
+        assert "Nothing on this card has been changed" in r.stdout, (
+            "the banner must tell the operator the card is untouched and still boots normally"
+        )
+        assert "boots into its normal clock" in r.stdout
+        if write_rc == 75:
+            assert "locked by another writer" in r.stdout
+        else:
+            assert f"rc={write_rc}" in r.stdout
+
+    def test_a_card_with_no_env_sh_reaches_the_gate_with_none(self, tmp_path):
+        """litclock-dev#855 review E2 — the half of test_an_absent_env_sh_passes
+        _the_gate that was argued in a docstring while the gate ran in
+        isolation. Run Steps 2 through the gate on a card with NO env.sh: Step
+        2's `-f` guard must not create one, nothing in Steps 2b-8 may create or
+        remove one, and the gate must still pass it."""
+        r, card = _run_steps_2_through_gate(tmp_path, write_rc=0, with_env_sh=False)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "REACHED_GATE_DONE" in r.stdout
+        assert not card["env_sh"].exists(), "something between Step 2 and the gate created an env.sh"
+        assert "Do NOT clone this card" not in r.stdout
+
+    def test_a_successful_wipe_runs_through_to_the_gate(self, tmp_path):
+        """Positive control for the harness: with the write succeeding, every
+        step it claims to guard actually runs in it, so the negative assertions
+        above are about ORDER, not about a span that never reaches Step 3."""
+        r, card = _run_steps_2_through_gate(tmp_path, write_rc=0)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "REACHED_GATE_DONE" in r.stdout
+        assert "Do NOT clone this card" not in r.stdout
+        assert card["prompts"].exists() and "Clear saved WiFi networks?" in card["prompts"].read_text()
+        # ...and the markers ARE removed once the wipe succeeded, so the move in
+        # item A delayed the removal rather than dropping it.
+        assert not card["setup_complete"].exists() and not card["handoff_complete"].exists(), (
+            "Step 2b did not remove the setup-state markers on a successful run"
+        )
+        nm = card["nm_rec"].read_text()
+        assert "nmcli connection delete home-wifi" in nm, nm
+        assert "nmcli connection delete litclock-hotspot" in nm, nm
+        assert not card["home_wifi"].exists()
+        assert not card["hotspot_password"].exists()
+        env = card["env_sh"].read_text()
+        assert "deadbeefcafe" not in env and "export WEATHER_LOCATION_MODE=auto" in env
+        assert card["pi_hist"].is_dir(), "Step 6 did not lock the history"
+
+
+# ── litclock-dev#834: the bash history lock ──────────────────────────────────
+#
+# `history -c` reaches only the script's own shell; the interactive shell the
+# operator ran it from writes its history back on exit, during the power-off.
+# Bench, 2026-09-13: "Clearing bash history... done" at 11:32:05, and the file
+# was back at 11:32:13 with the operator's last command in it. The lock is an
+# empty DIRECTORY at each path, and the test that matters is the last one: a
+# real interactive bash, holding history, exiting against the locked path.
+
+_HIST_START = 'echo -n "Clearing bash history... "'
+_HIST_END = "unset _HIST_DIRTY _HIST_UNLOCKED _h"
+
+
+def _extract_history_step() -> str:
+    body = PREPARE_SH.read_text()
+    assert body.count(_HIST_START) == 1, "history step anchor is no longer unique"
+    start = body.index(_HIST_START)
+    # Through the `done` that CLOSES the step, not just the unset: the green
+    # line is the thing the failure cases must not reach.
+    end = body.index('echo -e "${GREEN}done${NC}"', body.index(_HIST_END, start))
+    end += len('echo -e "${GREEN}done${NC}"')
+    span = body[start:end]
+    assert "mkdir" in span and "history -c" in span, "span lost the lock or the clear"
+    assert span.count("_abort_do_not_clone") == 2, "span lost one of the two aborts"
+    return span
+
+
+def _run_history_step(tmp_path, pi_path: Path, root_path: Path):
+    script = f"""{_script_shell_environment()}
+{_YELLOW_DECL}
+_PI_BASH_HISTORY={shlex.quote(str(pi_path))}
+_ROOT_BASH_HISTORY={shlex.quote(str(root_path))}
+{_extract_env_abort_fn()}
+{_ERREXIT_PROBE}
+{_extract_history_step()}
+echo REACHED-NEXT-STEP
+"""
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+    assert not (r.returncode == 99 and _ERREXIT_PROBE_MARKER in r.stderr), r.stderr
+    return r
+
+
+def _interactive_shell_exits_with_history(histfile: Path) -> None:
+    """A real `bash -i` that records a line, forces a `history -w` and then
+    exits — the exit-time save is the bench mechanism, the explicit -w is the
+    rename() path an empty mode-0 file does NOT stop."""
+    subprocess.run(
+        ["bash", "--norc", "-i"],
+        input="echo nmcli-password-line\nhistory -w\nexit\n",
+        env={**os.environ, "HISTFILE": str(histfile), "HISTSIZE": "500", "HISTFILESIZE": "500"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+class TestBashHistoryLock:
+    @staticmethod
+    def _paths(tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        pi, root = home / "pi.bash_history", home / "root.bash_history"
+        pi.write_text("nmcli dev wifi connect x password y\n")
+        root.write_text("sudo -i\n")
+        return home, pi, root
+
+    def test_both_histories_become_empty_directories(self, tmp_path):
+        home, pi, root = self._paths(tmp_path)
+        r = _run_history_step(tmp_path, pi, root)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "done" in r.stdout and "FAILED" not in r.stdout
+        assert "REACHED-NEXT-STEP" in r.stdout
+        for p in (pi, root):
+            assert p.is_dir() and not p.is_symlink(), f"{p} is not the lock directory"
+            assert not any(p.iterdir()), f"{p} is not empty"
+        assert sorted(q.name for q in home.iterdir()) == ["pi.bash_history", "root.bash_history"], (
+            "the step left something else in the home directory"
+        )
+
+    def test_a_second_run_over_the_lock_is_a_noop(self, tmp_path):
+        """A re-run after an earlier abort meets the directory, not a file."""
+        _, pi, root = self._paths(tmp_path)
+        assert _run_history_step(tmp_path, pi, root).returncode == 0
+        r = _run_history_step(tmp_path, pi, root)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "FAILED" not in r.stdout
+        assert pi.is_dir() and root.is_dir()
+
+    def test_the_harness_shell_really_writes_history(self, tmp_path):
+        """Control for the test below: WITHOUT the lock the same shell writes
+        the line back, so a passing lock test is not a shell that never saved."""
+        hist = tmp_path / ".bash_history"
+        _interactive_shell_exits_with_history(hist)
+        assert hist.is_file(), "the harness shell did not save history at all; the lock test would be vacuous"
+        assert "nmcli-password-line" in hist.read_text()
+
+    def test_the_lock_survives_an_interactive_shell_exiting(self, tmp_path):
+        """The bench mechanism, reproduced: lock, then let a real interactive
+        shell holding a password-bearing line exit against the locked path."""
+        home, pi, root = self._paths(tmp_path)
+        assert _run_history_step(tmp_path, pi, root).returncode == 0
+        _interactive_shell_exits_with_history(pi)
+        assert pi.is_dir(), "the departing shell replaced the lock with a history file"
+        assert not any(pi.iterdir())
+        assert sorted(q.name for q in home.iterdir()) == ["pi.bash_history", "root.bash_history"], (
+            "the departing shell left its history somewhere next to the lock"
+        )
+        for q in home.rglob("*"):
+            if q.is_file():
+                assert "nmcli-password-line" not in q.read_text(), f"the line was written back to {q}"
+
+    def test_a_pre_existing_non_empty_lock_directory_aborts(self, tmp_path):
+        """litclock-dev#855 review item B, the shape that printed GREEN. An
+        aborted earlier run leaves the lock directory; anything dropped inside
+        it defeats `rmdir`, defeats `rm -f`, defeats `mkdir` — and a bare
+        `[[ -d ]]` then reads "locked". first-boot's rmdir leaves the contents
+        too, so they reach every clone."""
+        home, pi, root = self._paths(tmp_path)
+        pi.unlink()
+        pi.mkdir()
+        (pi / "history.bak").write_text("nmcli dev wifi connect x password y\n")
+        r = _run_history_step(tmp_path, pi, root)
+        assert r.returncode == 1, f"a non-empty lock directory was accepted\n{r.stdout}"
+        assert "FAILED" in r.stdout and "Do NOT clone this card" in r.stdout
+        assert "Could not clear the shell history" in r.stdout and str(pi) in r.stdout
+        assert "setup-WiFi key NOT yet removed" in r.stdout, "the abort must say what state the card is in"
+        assert "REACHED-NEXT-STEP" not in r.stdout
+        assert (pi / "history.bak").exists(), "the contents are still there — which is why this is fatal"
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions; the failure cannot be staged")
+    def test_a_history_file_that_cannot_be_removed_aborts(self, tmp_path):
+        """The chattr +i / dying-card shape, staged with a read-only parent.
+        The credentials are still on disk, so a cloning master must stop."""
+        home, pi, root = self._paths(tmp_path)
+        home.chmod(0o555)
+        try:
+            r = _run_history_step(tmp_path, pi, root)
+        finally:
+            home.chmod(0o755)
+        assert r.returncode == 1, f"an unremovable history file was accepted\n{r.stdout}"
+        assert "Could not clear the shell history" in r.stdout
+        assert str(pi) in r.stdout and str(root) in r.stdout
+        assert "REACHED-NEXT-STEP" not in r.stdout
+        assert pi.is_file() and "password" in pi.read_text(), "the history really did survive"
+
+    def test_a_path_that_is_cleared_but_cannot_be_locked_aborts(self, tmp_path):
+        """The other half of B: nothing survives at the path, but the lock
+        cannot be applied either (here: the parent directory does not exist, so
+        `rm -f` succeeds vacuously and `mkdir` fails). The history is gone, yet
+        the shell running this script will still write its own back on exit —
+        litclock-dev#834 itself — so green would be a lie."""
+        _, _, root = self._paths(tmp_path)
+        pi = tmp_path / "no-such-dir" / ".bash_history"
+        r = _run_history_step(tmp_path, pi, root)
+        assert r.returncode == 1, f"an unlockable path was accepted\n{r.stdout}"
+        assert "Could not lock" in r.stdout and str(pi) in r.stdout
+        assert "litclock-dev#834" in r.stdout, "the abort must point at the issue it enforces"
+        assert "REACHED-NEXT-STEP" not in r.stdout
+        assert not pi.exists()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions; the failure cannot be staged")
+    def test_a_symlinked_history_that_cannot_be_removed_aborts(self, tmp_path):
+        """A symlink to a directory is the one shape where `-d` and `-L` are
+        both true. With the parent read-only it cannot be unlinked either, so
+        whatever it points at rides the card."""
+        home, pi, root = self._paths(tmp_path)
+        pi.unlink()
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        (target / "history").write_text("nmcli dev wifi connect x password y\n")
+        pi.symlink_to(target)
+        home.chmod(0o555)
+        try:
+            r = _run_history_step(tmp_path, pi, root)
+        finally:
+            home.chmod(0o755)
+        assert r.returncode == 1, f"a symlinked history survived and was accepted\n{r.stdout}"
+        assert "Could not clear the shell history" in r.stdout and str(pi) in r.stdout
+        assert "REACHED-NEXT-STEP" not in r.stdout
+        assert pi.is_symlink() and (target / "history").exists()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions; the failure cannot be staged")
+    def test_a_dangling_symlink_that_cannot_be_removed_aborts(self, tmp_path):
+        """The `-L` arm's own case (litclock-dev#855 review E3). `-e` FOLLOWS
+        symlinks and is false for a dangling one, so without `|| -L` an entry
+        that survived at the history path reads as "removed" — and the next
+        shell to exit writes its history straight through it."""
+        home, pi, root = self._paths(tmp_path)
+        pi.unlink()
+        pi.symlink_to(tmp_path / "gone")
+        home.chmod(0o555)
+        try:
+            r = _run_history_step(tmp_path, pi, root)
+        finally:
+            home.chmod(0o755)
+        assert r.returncode == 1, f"a dangling symlink at the history path was accepted\n{r.stdout}"
+        assert "Could not clear the shell history" in r.stdout and str(pi) in r.stdout
+        assert "REACHED-NEXT-STEP" not in r.stdout
+        assert pi.is_symlink(), "the symlink really did survive"
+
+    def test_the_operator_rule_is_in_the_header_and_the_doc(self):
+        """The cheap half of litclock-dev#834: run it as the only open session."""
+        raw = PREPARE_SH.read_text().split("\nset -e\n", 1)[0]
+        # Unwrapped: the header is comment-wrapped at ~76 columns, so a phrase
+        # test on the raw text fails on where the wrap happens to fall.
+        header = " ".join(ln.lstrip("#").strip() for ln in raw.splitlines())
+        assert "ONLY open session" in header and "history -c" in header, "the header no longer states the rule"
+        # litclock-dev#855 review item D: the rule cannot cover the shell the
+        # operator is typing in, and the header must not imply that it does.
+        assert "cannot be one of them" in header, "the header no longer says the initiating shell is not covered"
+        doc_text = (REPO_ROOT / "docs" / "sd-card-cloning.md").read_text().lower()
+        assert "the shell you run it from" in doc_text, "the doc no longer says the initiating shell is not covered"
+        doc = (REPO_ROOT / "docs" / "sd-card-cloning.md").read_text()
+        assert "only open session" in doc.lower() and "log out" in doc.lower(), (
+            "the cloning doc no longer states the rule"
+        )
+        assert "history" in doc.lower()
+
+class TestTheRuntimeValidationMemoIsCleared:
+    """litclock-dev#847 item 1 (litclock-dev#854 review) — the runtime-render validation
+    memo records that THIS device's freetype could not reproduce the expected
+    measurement (or that no tick ever had the budget to try). It is per-device
+    state: a reset must not hand it to the next owner, and a clone master must not
+    ship it to every recipient, where it would report a verdict about hardware
+    they have never run on.
+
+    Asserted on the EXECUTED lines. The comment beside the removal names the
+    file, so a raw substring is satisfied by prose with the `rm` gone — the
+    trap this repo has measured on nine separate guards.
+    """
+
+    def test_the_memo_is_removed(self, prepare_sh_content):
+        executed = "\n".join(
+            ln for ln in prepare_sh_content.splitlines() if not ln.lstrip().startswith("#")
+        )
+        assert 'rm -f "$STATE_DIR/runtime-render-validation.json"' in executed, (
+            "the runtime-render validation memo survives clone preparation; the next owner (or "
+            "every clone) inherits a failure verdict about someone else's device"
+        )
+
+    def test_it_sits_with_the_other_state_removals(self, prepare_sh_content):
+        """Next to the reset-failed marker, which is the same class of
+        per-device bookkeeping and the same best-effort treatment — so the two
+        cannot drift apart into different failure policies."""
+        executed = "\n".join(
+            ln for ln in prepare_sh_content.splitlines() if not ln.lstrip().startswith("#")
+        )
+        a = executed.index('rm -f "$STATE_DIR/reset-failed"')
+        b = executed.index('rm -f "$STATE_DIR/runtime-render-validation.json"')
+        assert abs(a - b) < 200, executed[min(a, b): max(a, b) + 80]

@@ -12,9 +12,139 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RESET_SH = REPO_ROOT / "scripts" / "reset-setup.sh"
 
 
+STATE_SH = REPO_ROOT / "scripts" / "lib" / "state.sh"
+
+
 @pytest.fixture(scope="module")
 def reset_sh_content():
     return RESET_SH.read_text()
+
+
+def _run_defaults_assignment(reset_sh_content, gift_language_code):
+    """EXECUTE reset-setup.sh's own `DEFAULTS=...` line and return the body.
+
+    litclock-dev#840 moved the env.sh block into `env_sh_defaults()` in
+    lib/state.sh, so reset-setup.sh no longer contains any of the keys these
+    tests are about — a source grep would observe nothing. Lift the assignment
+    VERBATIM, source the real helper, and read what the script would hand to
+    `atomic_write_env_sh`.
+
+    Lifting by text (not re-typing the call) is what keeps this honest: a
+    substring check for `env_sh_defaults "$GIFT_LANGUAGE_CODE"` passes just as
+    well when the quotes are single, and the single-quoted form would seed the
+    literal string `$GIFT_LANGUAGE_CODE` on every gifted device.
+    """
+    m = re.search(r"^\s*DEFAULTS=.*$", reset_sh_content, re.M)
+    assert m, "reset-setup.sh has no DEFAULTS assignment"
+    assert len(re.findall(r"^\s*DEFAULTS=", reset_sh_content, re.M)) == 1, (
+        "expected exactly one DEFAULTS assignment; the lift below would otherwise be ambiguous"
+    )
+    harness = (
+        f'. "{STATE_SH}"\n'
+        f'GIFT_LANGUAGE_CODE="{gift_language_code}"\n'
+        f"{m.group(0)}\n"
+        'printf %s "$DEFAULTS"'
+    )
+    proc = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=10)
+    assert proc.returncode == 0, f"DEFAULTS assignment failed: {proc.stderr}"
+
+    # FULL EQUALITY, not "it mentions env_sh_defaults" (PR litclock-dev#858 review, item B).
+    # litclock-dev#783's guard compared every discovered write's key set AND comment
+    # status against the sample, per caller. Checking only that the right-hand
+    # side names the helper is satisfied by `$(env_sh_defaults | grep -v
+    # RENDER_LEAD)` — a pipeline that ships a body missing a documented knob,
+    # which is exactly the drift class litclock-dev#840 exists to end. Equality against
+    # the helper's own output subsumes the key set, the comment status, the key
+    # ORDER and the trailing newline in one assertion.
+    from tests.test_first_boot_flow import env_sh_defaults
+
+    expected = env_sh_defaults(gift_language_code)
+    assert proc.stdout == expected, (
+        "reset-setup.sh's DEFAULTS is not env_sh_defaults() output. It must be the helper's body "
+        "verbatim — a filter, a re-ordering or an appended line is the hand-maintained drift "
+        f"litclock-dev#840 removed.\n--- got ---\n{proc.stdout!r}\n--- want ---\n{expected!r}"
+    )
+    return proc.stdout
+
+
+def _extract_state_helper_gate(reset_sh_content):
+    """The `for _fn in ...` state.sh-helper guard, verbatim.
+
+    Anchored on `for _fn in` ALONE, deliberately. Anchoring on the full
+    `for _fn in atomic_write_env_sh env_sh_defaults; do` would make a mutant
+    that NARROWS the list (dropping env_sh_defaults — the precise regression
+    these tests exist for) fail on a missing span instead of on behaviour,
+    which reports a broken test rather than a broken guard.
+    """
+    start = reset_sh_content.index("for _fn in ")
+    end = reset_sh_content.index("\ndone\n", start) + len("\ndone\n")
+    span = reset_sh_content[start:end]
+    assert "exit 1" in span, "span lost the abort under test"
+    return span
+
+
+class TestTooOldStateSh:
+    """litclock-dev#840 / PR litclock-dev#858 review item A — a state.sh that defines the
+    writer but not `env_sh_defaults` must stop this script DEAD.
+
+    Reachable, not hypothetical: `update.sh` installs the root-owned copy of
+    reset-setup.sh in its privilege-helper loop and the root-owned
+    lib/state.sh AFTERWARDS, so an interrupted or half-failed update leaves a
+    NEW script beside an OLD state.sh.
+
+    Why it is this script that needs the guard for CORRECTNESS: reset-setup.sh
+    has no `set -e`. Without the gate, `env_sh_defaults` prints "command not
+    found", the command substitution yields the empty string,
+    `atomic_write_env_sh` writes it SUCCESSFULLY, and Step 3 reports a green
+    "done" over a one-byte env.sh — every knob and the gift language gone, on a
+    device usually about to be shipped to someone.
+    """
+
+    def _run(self, reset_sh_content, tmp_path, *, define_defaults):
+        install = tmp_path / "install"
+        install.mkdir()
+        defaults_fn = f'. "{STATE_SH}"\n' if define_defaults else ""
+        m = re.search(r"^\s*DEFAULTS=.*$", reset_sh_content, re.M)
+        harness = f"""
+RED=""; GREEN=""; YELLOW=""; NC=""
+_THIS_SCRIPT_DIR={shlex.quote(str(tmp_path))}
+INSTALL_DIR={shlex.quote(str(install))}
+GIFT_LANGUAGE_CODE=""
+# An OLD lib/state.sh: the writer exists, the defaults helper does not.
+atomic_write_env_sh() {{ printf "%s" "$2" > "$1"; return 0; }}
+{defaults_fn}
+{_extract_state_helper_gate(reset_sh_content)}
+echo -n "Resetting configuration... "
+{m.group(0)}
+if atomic_write_env_sh "$INSTALL_DIR/env.sh" "$DEFAULTS"; then
+    echo "done"
+else
+    echo "FAILED"
+fi
+"""
+        r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=10)
+        return r, install / "env.sh"
+
+    def test_an_old_state_sh_aborts_before_writing_anything(self, reset_sh_content, tmp_path):
+        r, env_sh = self._run(reset_sh_content, tmp_path, define_defaults=False)
+        assert r.returncode == 1, f"expected the gate to abort, got rc={r.returncode}\n{r.stdout}{r.stderr}"
+        assert not env_sh.exists(), (
+            f"an env.sh was written with a too-old state.sh: {env_sh.read_text()!r}. Without the "
+            "gate this file is ONE BYTE and the banner still says done."
+        )
+        assert "done" not in r.stdout, f"the green success banner printed on a failed reset: {r.stdout!r}"
+        assert "env_sh_defaults is not defined" in r.stderr, (
+            f"the abort must name the missing helper, not just die: {r.stderr!r}"
+        )
+        assert "too old" in r.stderr, "the abort must say what is wrong with state.sh"
+
+    def test_a_current_state_sh_still_writes_the_full_body(self, reset_sh_content, tmp_path):
+        """The inverse, so the gate cannot pass by refusing everything."""
+        r, env_sh = self._run(reset_sh_content, tmp_path, define_defaults=True)
+        assert r.returncode == 0, f"{r.stdout}{r.stderr}"
+        from tests.test_first_boot_flow import env_sh_defaults
+
+        assert env_sh.read_text() == env_sh_defaults("")
 
 
 class TestResetSetupStructure:
@@ -79,12 +209,14 @@ class TestResetSetupStructure:
 
     def test_clears_weather_location_name(self, reset_sh_content):
         """litclock-dev#389/litclock-dev#380: WEATHER_LOCATION_NAME (added as an env key in PR1) must be
-        in the defaults block so a reset clears the prior city — otherwise a
-        reset device's Status/splash would show the previous owner's location."""
-        defaults_idx = reset_sh_content.find("DEFAULTS=")
-        assert defaults_idx != -1
-        block = reset_sh_content[defaults_idx : defaults_idx + 400]
-        assert "export WEATHER_LOCATION_NAME=" in block
+        seeded EMPTY so a reset clears the prior city — otherwise a reset
+        device's Status/splash would show the previous owner's location.
+
+        EXECUTED since litclock-dev#840 (the body lives in lib/state.sh now);
+        the old version sliced 400 characters after `DEFAULTS=` out of the
+        source, which today contains no keys at all."""
+        body = _run_defaults_assignment(reset_sh_content, "")
+        assert "export WEATHER_LOCATION_NAME=\n" in body
 
 
 class TestGiftMode:
@@ -384,20 +516,20 @@ def test_clears_handoff_complete_marker():
     assert 'rm -f "$CONFIG_DIR/.handoff-complete"' in src
 
 
-def test_defaults_include_weather_location_mode_and_ip_country():
-    """litclock-dev#337 A3 + /review testing-gap: gift-mode reset must include the new
-    MODE + IP_COUNTRY defaults. Without these, a gift-recipient whose
-    first-boot IP-geo fails would inherit the gifter's stale MODE=specific
-    AND no IP_COUNTRY baseline — on-boot reresolve would never fire."""
-    from pathlib import Path
+def test_defaults_include_weather_location_mode_and_ip_country(reset_sh_content):
+    """litclock-dev#337 A3 + /review testing-gap: a gift-mode reset must seed the MODE +
+    IP_COUNTRY defaults. Without these, a gift-recipient whose first-boot
+    IP-geo fails would inherit the gifter's stale MODE=specific AND no
+    IP_COUNTRY baseline — on-boot reresolve would never fire.
 
-    content = (Path(__file__).parent.parent / "scripts/reset-setup.sh").read_text()
-    assert "export WEATHER_LOCATION_MODE=auto" in content, (
-        "litclock-dev#337 A3: reset-setup.sh DEFAULTS must include "
-        "MODE=auto")
-    assert "export WEATHER_IP_COUNTRY=" in content, (
-        "litclock-dev#337 A3: reset-setup.sh DEFAULTS must include WEATHER_IP_COUNTRY= (empty)"
-    )
+    EXECUTED since litclock-dev#840: the body now comes from
+    `env_sh_defaults()` in lib/state.sh, so a grep of reset-setup.sh sees no
+    such literal. Run the script's own DEFAULTS assignment and read the body
+    it actually produces."""
+    body = _run_defaults_assignment(reset_sh_content, "")
+    assert "export WEATHER_LOCATION_MODE=auto\n" in body, "litclock-dev#337 A3: the reset body must seed MODE=auto"
+    assert "export WEATHER_IP_COUNTRY=\n" in body, (
+        "litclock-dev#337 A3: the reset body must seed WEATHER_IP_COUNTRY= (empty)")
 
 
 # ── litclock-dev#387: prepare-for-gift pi->root hardening ────────────────────────────────
@@ -579,6 +711,15 @@ class TestPowerOffMode:
 # with its current owner.
 _SSH_GATE_STUB = 'disable_ssh_for_handoff() { echo "STUB_SSH_GATE"; }\n'
 
+# litclock-dev#833: both re-arms of litclock-shutdown.service (Step 1's litclock-dev#727
+# one and the plain-arm one) go through `timeout N systemctl start ...`. An
+# external `timeout` binary cannot see a shell function, so any harness that
+# executes Step 1 or rearm_shutdown_splash with `systemctl` shadowed MUST also
+# shadow `timeout`, or the re-arm reaches the REAL systemctl. Kept in every
+# harness that executes lifted script code, even where the lifted span holds
+# no `timeout` today — the cost is one line, the failure mode is silent.
+_TIMEOUT_STUB = 'timeout() { shift; "$@"; }\n'
+
 
 class TestHotspotPasswordResetSemantics:
     """litclock-dev#620 — the persisted hotspot password survives a plain reset
@@ -714,6 +855,7 @@ class TestHotspotPasswordResetSemantics:
             "set -u  # NOT -e: reset-setup.sh deliberately omits it\n"
             'poweroff() { echo "STUB_POWEROFF"; }\n'
             'systemctl() { echo "STUB_SYSTEMCTL $*"; }\n'
+            f"{_TIMEOUT_STUB}"
             # See _SSH_GATE_STUB. What makes it load-bearing here is the pair of
             # positive assertions below: the gate ran, and it ran before poweroff.
             f"{_SSH_GATE_STUB}"
@@ -732,6 +874,9 @@ class TestHotspotPasswordResetSemantics:
             f"{self._terminal_branch(content)}"
         )
         result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        # litclock-dev#833: if a re-arm ever reaches the real systemctl (the
+        # `timeout` stub gone missing) it fails as non-root and prints this.
+        assert "WARNING: could not re-arm" not in result.stdout, result.stdout
         return pw, result, state
 
     def test_gift_mode_rotates_the_password(self, reset_sh_content, tmp_path):
@@ -835,6 +980,7 @@ class TestHotspotPasswordResetSemantics:
             "set -u\n"
             'poweroff() { echo "STUB_POWEROFF"; }\n'
             'systemctl() { echo "STUB_SYSTEMCTL $*"; }\n'
+            f"{_TIMEOUT_STUB}"
             # See _SSH_GATE_STUB. This harness runs the parser with NO flags, so it
             # falls to the "Reboot to enter setup mode" branch. The stub is what lets
             # the NEGATIVE assertion below observe that the gate stayed away — without
@@ -855,6 +1001,7 @@ class TestHotspotPasswordResetSemantics:
         # No arguments: the plain `sudo reset-setup.sh` a person actually types.
         result = subprocess.run(["bash", "-c", program, "bash"], capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, result.stderr
+        assert "WARNING: could not re-arm" not in result.stdout, result.stdout  # litclock-dev#833: see _run
         assert not pw.exists(), (
             "a no-argument factory reset did not rotate the setup network's password. "
             "The parser default and the terminal branch each pass in isolation, so only "
@@ -1211,6 +1358,7 @@ class TestHotspotPasswordResetSemantics:
             "set -u\n"
             'poweroff() { echo "STUB_POWEROFF"; }\n'
             'systemctl() { echo "STUB_SYSTEMCTL $*"; }\n'
+            f"{_TIMEOUT_STUB}"
             # See _SSH_GATE_STUB. Load-bearing here for the OPPOSITE reason: this
             # harness asserts the gate is ABSENT after a failed rotation, and without
             # the stub a regression that DID call it would emit "command not found"
@@ -1263,6 +1411,13 @@ class TestHotspotPasswordResetSemantics:
             # marker means "the most recent attempt failed" rather than "one
             # failed once, ever". Not a credential.
             "reset-failed",
+            # litclock-dev#847 item 1 (litclock-dev#854 review) — the runtime-render
+            # validation memo: a result token, an rc, a reason and a SHA,
+            # describing THIS device's freetype. Not a credential, and
+            # per-device state the next owner must not inherit. Listed here
+            # deliberately rather than loosening the scan (this guard caught
+            # the addition, which is what it is for).
+            "runtime-render-validation.json",
         )
 
         fn = self._rotation_fn(reset_sh_content)
@@ -2318,6 +2473,48 @@ def _noncomment(text: str) -> str:
     return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
 
 
+REARM_FN = "rearm_shutdown_splash"
+REARM_CALL_RE = re.compile(rf'^[ \t]*{REARM_FN}[ \t]+"', re.M)  # a CALL line, never the `name() {{` definition
+
+
+def _rearm_helper(body: str) -> str:
+    """Lift the litclock-dev#833 helper WITH its timeout constant, verifying
+    the load-bearing parts the way _rotation_fn does (the litclock-dev#662 rule)."""
+    const = next((ln for ln in body.splitlines() if ln.startswith("SHUTDOWN_REARM_TIMEOUT_S=")), None)
+    assert const, "SHUTDOWN_REARM_TIMEOUT_S must be defined with the other top-of-file constants"
+    start = body.find(f"{REARM_FN}() {{")
+    assert start != -1, f"{REARM_FN}() is missing"
+    end = body.index("\n}\n", start) + 3
+    fn = body[start:end]
+    assert "systemctl start litclock-shutdown.service" in fn, "helper lost the start"
+    assert "WARNING: could not re-arm the shutdown splash" in fn, "helper lost the warning"
+    return const + "\n" + fn
+
+
+def _rearm_calls(code: str) -> list[int]:
+    """Offsets of every CALL of the helper in (comment-stripped) code."""
+    return [m.start() for m in REARM_CALL_RE.finditer(code)]
+
+
+def _lift_services_stop_span(body: str) -> str:
+    """Lift Step 1's services-stop block — the litclock-dev#727 re-arm + stop
+    edge, and since litclock-dev#833 the plain-arm re-arm right after it —
+    and nothing past it. Callers must prepend _rearm_helper() to execute it."""
+    anchor = 'echo -n "Stopping litclock services... "'
+    assert body.count(anchor) == 1, "stop-block anchor must be unique"
+    start = body.index(anchor)
+    end_anchor = "systemctl stop litclock-handoff-fallback.service"
+    # End at the anchor line's own newline (/review litclock-dev#731: a longer
+    # overshoot leaned on a comment's length and could swallow a real,
+    # unstubbed pkill into the executed span).
+    end = body.index(end_anchor, start) + len(end_anchor)
+    span = body[start : body.index("\n", end) + 1]
+    assert len(_rearm_calls(_noncomment(span))) == 2, "span lost a re-arm call — extraction drifted"
+    assert "systemctl stop litclock-shutdown.service" in span, "span lost the stop edge — extraction drifted"
+    assert "pkill" not in span, "span overgrew into unstubbed host commands"
+    return span
+
+
 class TestSplashStopEdgeRearm:
     """litclock-dev#727: the shutdown/welcome splash is the ExecStop of a
     RemainAfterExit oneshot — a stop edge that exists once per boot. An
@@ -2328,9 +2525,10 @@ class TestSplashStopEdgeRearm:
 
     def test_start_precedes_stop_in_executable_lines(self, reset_sh_content):
         code = _noncomment(reset_sh_content)
-        start_idx = code.find("systemctl start litclock-shutdown.service")
+        calls = _rearm_calls(code)
+        assert calls, "the re-arm call vanished (litclock-dev#727)"
+        start_idx = calls[0]
         stop_idx = code.find("systemctl stop litclock-shutdown.service")
-        assert start_idx != -1, "the re-arm start vanished (litclock-dev#727)"
         assert stop_idx != -1, "the shutdown-service stop vanished"
         assert start_idx < stop_idx, (
             "the re-arm must come BEFORE the stop — a start after the stop "
@@ -2343,8 +2541,8 @@ class TestSplashStopEdgeRearm:
         # ordering is part of the contract, not an accident).
         code = _noncomment(reset_sh_content)
         decision_idx = code.find("touch /run/litclock-splash-suppress")
-        rearm_idx = code.find("systemctl start litclock-shutdown.service")
-        assert decision_idx != -1 and rearm_idx != -1
+        rearm_idx = _rearm_calls(code)[0]
+        assert decision_idx != -1
         assert decision_idx < rearm_idx, (
             "splash-suppress decision must precede the re-armed stop edge"
         )
@@ -2355,10 +2553,11 @@ class TestSplashStopEdgeRearm:
         # HERE a queued (unstarted) start job is simply REPLACED by the stop
         # on the next line, so --no-block would silently recreate the
         # no-paint retry while every ordering test stays green. The re-arm
-        # must stay blocking.
-        code = _noncomment(reset_sh_content)
+        # must stay blocking. Since litclock-dev#833 the start lives in the
+        # shared helper, so the helper body is what to check.
         line = next(
-            ln for ln in code.splitlines() if "systemctl start litclock-shutdown.service" in ln
+            ln for ln in _noncomment(_rearm_helper(reset_sh_content)).splitlines()
+            if "systemctl start litclock-shutdown.service" in ln
         )
         assert "--no-block" not in line, (
             "the re-arm went --no-block — the immediate stop replaces the queued "
@@ -2371,7 +2570,7 @@ class TestSplashStopEdgeRearm:
         # race keeps "Do NOT pass it on" on a successfully reset device.
         code = _noncomment(reset_sh_content)
         failed_stop = code.find("systemctl stop litclock-reset-failed.service")
-        rearm = code.find("systemctl start litclock-shutdown.service")
+        rearm = _rearm_calls(code)[0]
         assert failed_stop != -1, "failure-painter stop missing from Step 1"
         assert failed_stop < rearm, "failure painter must be stopped before the re-armed edge"
 
@@ -2389,15 +2588,18 @@ class TestSplashStopEdgeRearm:
         # On the PWA arm this script runs INSIDE litclock-reset.service;
         # an unbounded systemctl start that waits on a job would hang the
         # reset past its TimeoutStartSec=60.
-        code = _noncomment(reset_sh_content)
+        helper = _rearm_helper(reset_sh_content)
         line = next(
-            (ln for ln in code.splitlines() if "systemctl start litclock-shutdown.service" in ln),
+            (ln for ln in _noncomment(helper).splitlines() if "systemctl start litclock-shutdown.service" in ln),
             "",
         )
-        assert line.strip().startswith("timeout "), (
-            "the re-arm start must be wrapped in `timeout` — it runs inside "
-            "litclock-reset.service on the PWA arm"
+        assert line.strip().startswith('timeout "$SHUTDOWN_REARM_TIMEOUT_S"'), (
+            "the re-arm start must be wrapped in `timeout` on the named constant — it runs "
+            "inside litclock-reset.service on the PWA arm"
         )
+        const = helper.splitlines()[0]
+        seconds = int(const.split("=", 1)[1])
+        assert 1 <= seconds <= 30, f"{const}: must be well inside litclock-reset.service's TimeoutStartSec=60"
 
     def test_shutdown_unit_shape_supports_the_rearm(self):
         # The re-arm depends on all three: oneshot + RemainAfterExit=yes
@@ -2414,34 +2616,257 @@ class TestSplashStopEdgeRearm:
         the call sequence must contain start(litclock-shutdown) then
         stop(litclock-shutdown)."""
         body = RESET_SH.read_text()
-        anchor = 'echo -n "Stopping litclock services... "'
-        assert body.count(anchor) == 1, "stop-block anchor must be unique"
-        start = body.index(anchor)
-        end_anchor = "systemctl stop litclock-handoff-fallback.service"
-        # End at the anchor line's own newline (/review litclock-dev#731: a longer
-        # overshoot leaned on a comment's length and could swallow a real,
-        # unstubbed pkill into the executed span).
-        end = body.index(end_anchor, start) + len(end_anchor)
-        span = body[start : body.index("\n", end) + 1]
-        assert "systemctl start litclock-shutdown.service" in span, (
-            "span lost the re-arm — extraction drifted"
-        )
-        assert "pkill" not in span, "span overgrew into unstubbed host commands"
+        span = _lift_services_stop_span(body)
         rec = tmp_path / "rec"
         script = (
             f"REC={shlex.quote(str(rec))}\n"
             'systemctl() { echo "$@" >> "$REC"; }\n'
-            'timeout() { shift; "$@"; }\n'
-            + span
+            f"{_TIMEOUT_STUB}"
+            # Not the plain arm: this test is about Step 1's own start→stop.
+            "DO_REBOOT=true\nDO_POWEROFF=false\nGIFT_MODE=false\n"
+            f"{_rearm_helper(body)}\n" + span
         )
         result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, result.stderr
+        assert "WARNING: could not re-arm" not in result.stdout, result.stdout  # litclock-dev#833
         calls = rec.read_text().splitlines()
         start_pos = calls.index("start litclock-shutdown.service")
         stop_pos = calls.index("stop litclock-shutdown.service")
         assert start_pos < stop_pos, f"re-arm ordering broken at runtime: {calls}"
         failed_pos = calls.index("stop litclock-reset-failed.service")
         assert failed_pos < start_pos, f"failure painter must stop before the re-arm: {calls}"
+
+
+class TestPlainArmRearmsShutdownSplash:
+    """litclock-dev#833: Step 1's re-arm-then-stop (litclock-dev#727, under the litclock-dev#718
+    suppress marker) CONSUMES litclock-shutdown.service's once-per-boot stop
+    edge. The three terminal arms are fine — the script itself is the next
+    thing to happen. The plain arm exits and tells the operator to reboot,
+    and that reboot found the unit inactive: no shutdown-splash.sh, and the
+    stale quote rode e-ink persistence across the power-off (bench,
+    2026-09-13). The plain arm must leave the unit ARMED — and the re-arm
+    sits in Step 1, right after the stop, NOT at the end of the script:
+    every fail-closed `exit 1` and the Step 7 SIGHUP (WiFi wipe over SSH)
+    would otherwise skip a tail re-arm and reproduce the symptom through
+    the abort door (/review of the first cut)."""
+
+    UNIT = "litclock-shutdown.service"
+    PLAIN_GATE = 'if [[ "$DO_REBOOT" != "true" && "$DO_POWEROFF" != "true" && "$GIFT_MODE" != "true" ]]; then'
+
+    # ── source order ──
+
+    def test_plain_rearm_follows_the_marker_clear_inside_step_1(self, reset_sh_content):
+        code = _noncomment(reset_sh_content)
+        calls = _rearm_calls(code)
+        assert len(calls) == 2, (
+            f"expected Step 1's litclock-dev#727 re-arm and the litclock-dev#833 "
+            f"plain-arm re-arm, found {len(calls)}")
+        stop_idx = code.index(f"systemctl stop {self.UNIT}")
+        clear_idx = code.index("rm -f /run/litclock-splash-suppress", stop_idx)
+        assert calls[0] < stop_idx < clear_idx < calls[1], (
+            "litclock-dev#833: the plain-arm re-arm must come AFTER Step 1's stop edge and "
+            "AFTER the suppress-marker clear (or the re-armed edge would be muted)"
+        )
+        gate_idx = code.rfind(self.PLAIN_GATE, 0, calls[1])
+        assert gate_idx != -1 and "\n" not in code[gate_idx + len(self.PLAIN_GATE) : calls[1]].strip("\n"), (
+            "the plain-arm re-arm must be gated exactly like the marker touch: not reboot, "
+            "not poweroff, not gift"
+        )
+
+    def test_plain_rearm_precedes_every_abort_path(self, reset_sh_content):
+        """The placement argument: rotation's fail-closed exits and the Step 7
+        WiFi wipe (whose SSH drop SIGHUPs the script) all come later, so
+        every one of them leaves the unit armed."""
+        code = _noncomment(reset_sh_content)
+        rearm = _rearm_calls(code)[1]
+        rotation_guard = code.index('if [[ "$GIFT_MODE" != "true" && "$WIPE_WIFI" == "true" ]]; then')
+        wifi_wipe = code.index("Wiping saved WiFi networks")
+        assert rearm < rotation_guard < wifi_wipe, "the re-arm must precede the rotation and the WiFi wipe"
+        assert f"systemctl stop {self.UNIT}" not in code[rearm:], "a later stop would consume the edge again"
+        terminal = TestHotspotPasswordResetSemantics._terminal_branch(reset_sh_content)
+        assert not _rearm_calls(_noncomment(terminal)), "no re-arm belongs in the terminal chain any more"
+
+    def test_helper_shape(self, reset_sh_content):
+        """Blocking, bounded on the named constant, stderr NOT discarded (it is
+        the only diagnostic the WARNING can carry), and the WARNING tail is
+        the caller's argument."""
+        body = _noncomment(_rearm_helper(reset_sh_content))
+        start = next(ln for ln in body.splitlines() if f"systemctl start {self.UNIT}" in ln)
+        assert "--no-block" not in start
+        assert start.strip().startswith('timeout "$SHUTDOWN_REARM_TIMEOUT_S"')
+        assert "2>/dev/null" not in start, "/review F4: do not hide systemctl's stderr"
+        assert re.search(r'WARNING: could not re-arm the shutdown splash; \$1"', body), body
+        assert "$SHUTDOWN_REARM_TIMEOUT_S" in start
+
+    # ── executed ──
+
+    def _run(
+        self,
+        tmp_path,
+        *,
+        gift="false",
+        poweroff="false",
+        reboot="false",
+        wipe_wifi="true",
+        unremovable_password=False,
+        fail_second_start=False,
+    ):
+        """EXECUTE Step 1's real stop block (with the real helper) and then
+        the real hoisted rotation + terminal if/elif/else chain in one bash
+        program, recording every systemctl and rm call in order."""
+        content = RESET_SH.read_text()
+        state = tmp_path / "state"
+        state.mkdir()
+        if unremovable_password:
+            (state / "hotspot-password").mkdir()
+            (state / "hotspot-password" / "occupant").write_text("blocks rmdir\n", encoding="utf-8")
+        else:
+            (state / "hotspot-password").write_text("clockwis\n", encoding="utf-8")
+        config = tmp_path / "config"
+        config.mkdir()
+        rec = tmp_path / "rec"
+        semantics = TestHotspotPasswordResetSemantics
+        # C1: a systemctl that fails ONLY the second `start` of the unit — the
+        # plain-arm re-arm — so the WARN path executes for real.
+        fail_arm = (
+            f'    if [[ "$1 $2" == "start {self.UNIT}" ]]; then STARTS=$((STARTS + 1)); '
+            "if [[ $STARTS -eq 2 ]]; then return 1; fi; fi\n"
+            if fail_second_start
+            else ""
+        )
+        program = (
+            "set -u  # NOT -e: reset-setup.sh deliberately omits it\n"
+            f"REC={shlex.quote(str(rec))}\nSTARTS=0\n"
+            'systemctl() { echo "$@" >> "$REC"\n' + fail_arm + "    return 0\n}\n"
+            f"{_TIMEOUT_STUB}"
+            # C3: record rm, and never touch the host's /run; forward everything
+            # else so the rotation's real rm still runs against tmp_path.
+            'rm() { echo "rm $*" >> "$REC"; case " $* " in *" /run/"*) return 0 ;; esac; command rm "$@"; }\n'
+            'poweroff() { echo "STUB_POWEROFF"; }\n'
+            f"{_SSH_GATE_STUB}"
+            f"GIFT_MODE={gift}\nDO_POWEROFF={poweroff}\nDO_REBOOT={reboot}\nWIPE_WIFI={wipe_wifi}\n"
+            "ENV_WIPE_FAILED=false\nSTRICT_ENV_WIPE=false\n"
+            f"CONFIG_DIR={config}\nLITCLOCK_STATE_DIR={state}\n"
+            f"{semantics._state_dir_line(content)}\n"
+            'RED=""\nGREEN=""\nYELLOW=""\nNC=""\n'
+            f"{_rearm_helper(content)}\n"
+            f"{_lift_services_stop_span(content)}\n"
+            f"{semantics._rotation_fn(content)}\n"
+            f"{semantics._terminal_branch(content)}"
+        )
+        result = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        calls = rec.read_text().splitlines() if rec.exists() else []
+        # Step 1 ran for real: the litclock-dev#727 re-arm and its stop edge are both in the log.
+        assert f"start {self.UNIT}" in calls and f"stop {self.UNIT}" in calls, calls
+        if not fail_second_start:
+            # The `timeout` stub gone missing would send the re-arm to the real
+            # binary, which fails as non-root and prints exactly this.
+            assert "WARNING: could not re-arm" not in result.stdout, result.stdout
+        return calls, result
+
+    def _unit_calls(self, calls):
+        return [c for c in calls if c.endswith(f" {self.UNIT}")]
+
+    @pytest.mark.parametrize("wipe_wifi", ["true", "false"], ids=["default", "keep-wifi"])
+    def test_plain_run_leaves_the_unit_armed(self, tmp_path, wipe_wifi):
+        """The default finish AND `--keep-wifi` (which only flips WIPE_WIFI and
+        still takes the plain arm) both end with the unit STARTED and nothing
+        stopping it afterwards."""
+        calls, result = self._run(tmp_path, wipe_wifi=wipe_wifi)
+        assert result.returncode == 0, f"{result.stdout}{result.stderr}"
+        assert "Reboot to enter setup mode" in result.stdout
+        start, stop = f"start {self.UNIT}", f"stop {self.UNIT}"
+        assert self._unit_calls(calls) == [start, stop, start], calls
+        # C3: the suppress marker is cleared BEFORE the re-arm — the whole
+        # correctness argument for the placement. Nothing else may stop the
+        # unit after the re-arm, either.
+        clear = calls.index("rm -f /run/litclock-splash-suppress")
+        rearm = len(calls) - 1 - calls[::-1].index(start)
+        assert calls.index(stop) < clear < rearm, calls
+        assert stop not in calls[rearm:], calls
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"reboot": "true"}, {"poweroff": "true"}, {"gift": "true"}],
+        ids=["reboot", "poweroff", "gift"],
+    )
+    def test_terminal_arms_do_not_re_arm(self, tmp_path, kwargs):
+        """The re-arm is confined to the plain arm. On the terminal arms Step
+        1's stop edge already painted the right screen under the right marker
+        (the welcome splash on gift), and a second armed edge at the script's
+        own poweroff would paint "Powered Off" OVER it."""
+        calls, result = self._run(tmp_path, **kwargs)
+        assert result.returncode == 0, f"{result.stdout}{result.stderr}"
+        assert self._unit_calls(calls) == [f"start {self.UNIT}", f"stop {self.UNIT}"], calls
+
+    def test_an_aborted_plain_run_still_leaves_the_unit_armed(self, tmp_path):
+        """Placement A, executed: the rotation fails closed (`exit 1`) AFTER
+        Step 1, so the script never reaches its closing banner — and the unit
+        is armed anyway, because the re-arm already happened."""
+        calls, result = self._run(tmp_path, unremovable_password=True)
+        assert result.returncode != 0, "the rotation must fail closed"
+        assert "Reboot to enter setup mode" not in result.stdout, "the abort must not reach the banner"
+        start, stop = f"start {self.UNIT}", f"stop {self.UNIT}"
+        assert self._unit_calls(calls) == [start, stop, start], (
+            f"litclock-dev#833: an abort after Step 1 must find the unit already re-armed: {calls}"
+        )
+
+    def test_a_failed_rearm_warns_and_the_run_continues(self, tmp_path):
+        """C1: the WARN path, executed. A failed re-arm must not abort the
+        reset (fail-open — the reset itself is more important than its
+        splash) but must say so with THIS caller's consequence."""
+        calls, result = self._run(tmp_path, fail_second_start=True)
+        assert result.returncode == 0, f"{result.stdout}{result.stderr}"
+        assert self._unit_calls(calls)[-1] == f"start {self.UNIT}", calls
+        warn = [ln for ln in result.stdout.splitlines() if "WARNING: could not re-arm" in ln]
+        # Exactly one warning, carrying THIS caller's tail. (It lands after
+        # Step 1's `echo -n "Stopping litclock services... "` on the same
+        # line, in production too — hence endswith, not equality.)
+        assert len(warn) == 1, result.stdout
+        assert warn[0].endswith(
+            "WARNING: could not re-arm the shutdown splash; the reboot this run asks for may not paint one."
+        ), result.stdout
+        assert "this run may not paint its final screen" not in result.stdout, "Step 1's re-arm must not have warned"
+        assert "Reboot to enter setup mode" in result.stdout, "the closing banner must still print"
+
+
+class TestNonGiftResetClearsWelcomeMode:
+    """litclock-dev#833 /review F2: .welcome-mode is written by gift mode and
+    consumed only by first-boot.sh, so a gift prep that aborted at the litclock-dev#393
+    env-wipe gate leaves it. shutdown-splash.sh ranks it ABOVE reboot
+    detection — and the plain arm now leaves a live stop edge for the
+    operator's reboot, which would paint "Welcome to LitClock" on a device
+    nobody is gifting. Every non-gift run clears it, before Step 1's stop."""
+
+    GUARDED = (
+        'if [[ "$GIFT_MODE" != "true" ]]; then\n'
+        '    rm -f "$CONFIG_DIR/.gift-language"\n'
+        '    rm -f "$CONFIG_DIR/.welcome-mode"\n'
+        "fi\n"
+    )
+
+    def test_cleared_before_the_stop_edge(self, reset_sh_content):
+        code = _noncomment(reset_sh_content)
+        idx = code.find(self.GUARDED)
+        assert idx != -1, "the non-gift .gift-language/.welcome-mode clear block is missing or reshaped"
+        assert idx < code.index("systemctl stop litclock-shutdown.service"), "must precede Step 1's stop edge"
+        ladder = (REPO_ROOT / "scripts" / "shutdown-splash.sh").read_text()
+        assert "/etc/litclock/.welcome-mode" in _noncomment(ladder), "the ladder no longer reads the marker?"
+
+    @pytest.mark.parametrize("gift", ["false", "true"])
+    def test_executed(self, tmp_path, gift):
+        config = tmp_path / "config"
+        config.mkdir()
+        (config / ".welcome-mode").write_text("")
+        (config / ".gift-language").write_text("de\n")
+        code = _noncomment(RESET_SH.read_text())
+        idx = code.index(self.GUARDED)
+        program = f"set -u\nGIFT_MODE={gift}\nCONFIG_DIR={config}\n" + code[idx : idx + len(self.GUARDED)]
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr
+        expect_present = gift == "true"
+        assert (config / ".welcome-mode").exists() is expect_present
+        assert (config / ".gift-language").exists() is expect_present
 
 
 class TestPlainArmSplashSuppress:
@@ -2559,7 +2984,16 @@ class TestGiftLanguageFile:
         assert 'rm -f "$CONFIG_DIR/.gift-language"' in block
 
     def test_env_defaults_seed_language_from_validated_code(self, reset_sh_content):
-        assert "export LITCLOCK_LANGUAGE=$GIFT_LANGUAGE_CODE" in reset_sh_content
+        """The validated gift code must reach LITCLOCK_LANGUAGE in the written body.
+
+        EXECUTED since litclock-dev#840. This was a substring grep for
+        `export LITCLOCK_LANGUAGE=$GIFT_LANGUAGE_CODE`, which the refactor
+        deletes outright — the variable is now an ARGUMENT to env_sh_defaults.
+        A grep for the new shape would be just as weak: it is satisfied whether
+        the call is `env_sh_defaults "$GIFT_LANGUAGE_CODE"` or
+        `env_sh_defaults '$GIFT_LANGUAGE_CODE'`, and the single-quoted form
+        would ship the literal text to every gifted device."""
+        assert "export LITCLOCK_LANGUAGE=es\n" in _run_defaults_assignment(reset_sh_content, "es")
 
     def test_plain_reset_clears_stale_marker(self, reset_sh_content):
         """Trap (c): a NON-gift reset must remove an abandoned gift's
@@ -2568,6 +3002,7 @@ class TestGiftLanguageFile:
         guarded = (
             'if [[ "$GIFT_MODE" != "true" ]]; then\n'
             '    rm -f "$CONFIG_DIR/.gift-language"\n'
+            '    rm -f "$CONFIG_DIR/.welcome-mode"\n'  # litclock-dev#833
             "fi"
         )
         assert guarded in reset_sh_content, (
@@ -2722,33 +3157,17 @@ class TestGiftLanguageFile:
         assert not (tmp_path / ".gift-language").exists()
 
     def test_defaults_interpolates_validated_code(self, reset_sh_content):
-        """The seeding mechanism IS the DEFAULTS quote flip (single→double);
-        a substring grep is satisfied either way, so EXECUTE the assignment
-        and assert the expansion (guard-observation-window class)."""
-        import re as _re
-        import subprocess
-
-        # Anchored on the double-quote flip itself, not on whichever key happens
-        # to come first — litclock-dev#783 commented OPENWEATHERMAP_APIKEY to match
-        # env.sh.sample and broke the old anchor. There is exactly one
-        # double-quoted DEFAULTS assignment in this script, which the count
-        # assertion below pins.
-        assert reset_sh_content.count('DEFAULTS="') == 1, (
-            "expected exactly one double-quoted DEFAULTS assignment; the regex below "
-            "would otherwise execute an unintended span"
-        )
-        m = _re.search(r'DEFAULTS="[^"]*"\n', reset_sh_content, _re.S)
-        assert m, "DEFAULTS double-quoted assignment not found"
-        span = m.group(0)
+        """The seeding mechanism is now the ARGUMENT passed to env_sh_defaults
+        (litclock-dev#840); before it was the DEFAULTS quote flip
+        (single->double). Either way a substring grep is satisfied by the
+        broken form too — `env_sh_defaults '$GIFT_LANGUAGE_CODE'` greps the
+        same as the working double-quoted call and seeds the literal string
+        `$GIFT_LANGUAGE_CODE` onto every gifted device. So EXECUTE the
+        assignment and assert the expansion (guard-observation-window class)."""
         for code, expected in (("es", "export LITCLOCK_LANGUAGE=es\n"), ("", "export LITCLOCK_LANGUAGE=\n")):
-            proc = subprocess.run(
-                ["bash", "-c", f'GIFT_LANGUAGE_CODE="{code}"\n{span}\nprintf %s "$DEFAULTS"'],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            assert expected in proc.stdout, (code, proc.stdout, proc.stderr)
-            assert "$GIFT_LANGUAGE_CODE" not in proc.stdout
+            body = _run_defaults_assignment(reset_sh_content, code)
+            assert expected in body, (code, body)
+            assert "$GIFT_LANGUAGE_CODE" not in body
 
     def test_symlinked_destination_rejected(self, reset_sh_content, tmp_path):
         """Write-side O_NOFOLLOW, EXECUTED: a planted symlink at the marker
@@ -2772,3 +3191,37 @@ class TestGiftLanguageFile:
         )
         assert proc.returncode != 0
         assert victim.read_text(encoding="utf-8") == "untouched"
+
+
+class TestTheRuntimeValidationMemoIsCleared:
+    """litclock-dev#847 item 1 (litclock-dev#854 review) — the runtime-render validation
+    memo records that THIS device's freetype could not reproduce the expected
+    measurement (or that no tick ever had the budget to try). It is per-device
+    state: a reset must not hand it to the next owner, and a clone master must not
+    ship it to every recipient, where it would report a verdict about hardware
+    they have never run on.
+
+    Asserted on the EXECUTED lines. The comment beside the removal names the
+    file, so a raw substring is satisfied by prose with the `rm` gone — the
+    trap this repo has measured on nine separate guards.
+    """
+
+    def test_the_memo_is_removed(self, reset_sh_content):
+        executed = "\n".join(
+            ln for ln in reset_sh_content.splitlines() if not ln.lstrip().startswith("#")
+        )
+        assert 'rm -f "$STATE_DIR/runtime-render-validation.json"' in executed, (
+            "the runtime-render validation memo survives a factory reset; the next owner (or "
+            "every clone) inherits a failure verdict about someone else's device"
+        )
+
+    def test_it_sits_with_the_other_state_removals(self, reset_sh_content):
+        """Next to the reset-failed marker, which is the same class of
+        per-device bookkeeping and the same best-effort treatment — so the two
+        cannot drift apart into different failure policies."""
+        executed = "\n".join(
+            ln for ln in reset_sh_content.splitlines() if not ln.lstrip().startswith("#")
+        )
+        a = executed.index('rm -f "$STATE_DIR/reset-failed"')
+        b = executed.index('rm -f "$STATE_DIR/runtime-render-validation.json"')
+        assert abs(a - b) < 200, executed[min(a, b): max(a, b) + 80]

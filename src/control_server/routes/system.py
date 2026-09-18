@@ -57,10 +57,11 @@ SYSTEMCTL_TIMEOUT_S: Final[int] = 5
 
 # litclock-dev#396 — gift-flow system-timezone reset. Absolute path so the scoped
 # sudoers entry (sudoers/020_litclock-control: `timedatectl set-timezone UTC`)
-# matches verbatim. Today the call also works via the broad 010_pi-nopasswd
-# grant; the scoped entry becomes load-bearing once that grant is dropped
-# (litclock-dev#387, not yet shipped). UTC is the neutral default; the recipient's
-# first-boot IP-geo overwrites it.
+# matches verbatim. The call also works via the broad 010_pi-nopasswd grant,
+# which the image keeps (the litclock-dev#387/litclock-dev#82 drop was reversed 2026-07-12); the scoped
+# entry is kept anyway because a fixed-argv grant is the right default for a
+# call site that needs exactly one command. UTC is the neutral default; the
+# recipient's first-boot IP-geo overwrites it.
 TIMEDATECTL: Final[str] = "/usr/bin/timedatectl"
 # Own timeout (not SYSTEMCTL_TIMEOUT_S): `timedatectl set-timezone` talks to
 # systemd-timedated over D-Bus, a different call shape than systemctl. 5s is

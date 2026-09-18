@@ -13,6 +13,27 @@ Documentation=https://github.com/kapoorankush/litclock
 # handoff flow — update.sh touches this marker for them (Option A) so quotes
 # never stop on upgrade. New fresh-flash installs get it from the handoff flow.
 ConditionPathExists=/etc/litclock/.handoff-complete
+# litclock-dev#832: ORDER (never pull in) this unit after the boot splash.
+# Three things start us at boot — litclock.timer at :56, the litclock-dev#309 IP-change
+# dispatcher when wlan0 gets its lease, and litclock-splash.service's own
+# ExecStartPost hand-off (litclock-dev#269). Only the last was serialised against the
+# splash; the other two could land while boot-splash.sh still held GPIO17
+# and failed with `KeyError: PinInfo(... 'GPIO17' ...)` from lgpio — two
+# tracebacks and two `Failed to start` lines on 3 of 3 bench boots. A start
+# job queued while the splash's start job is still running now waits for
+# it, which is exactly the mechanism the ExecStartPost hand-off relies on.
+#
+# After= only, deliberately: ordering never pulls a unit in, so a disabled
+# splash simply drops out and we start unordered, while Wants=/Requires=
+# would make every minute tick and every dispatcher fire try to start the
+# boot splash again. This is the mirror image of litclock-shutdown.service's
+# Before=litclock.service (litclock-dev#271) and the same shape as
+# litclock-firstboot.service's After=litclock-splash.service. The splash's
+# ExecStartPost `systemctl start --no-block litclock.service` is NOT a
+# cycle: the queued job simply waits until the splash's start job (which
+# includes ExecStartPost) completes. It IS why that hand-off must stay
+# --no-block — a blocking start there would now wait on itself.
+After=litclock-splash.service
 
 [Service]
 Type=oneshot
@@ -23,9 +44,21 @@ StandardOutput=journal
 StandardError=journal
 # Cap stop time so a wedged render (e.g. GPIO contention from a previous
 # unclean exit holding the SPI bus) gets SIGKILL'd quickly during reboot.
-# The default DefaultTimeoutStopSec on Bookworm systemd 252 is 90s, which
-# would outlast litclock-shutdown.service's own 30s TimeoutStopSec — that
-# would mean shutdown-splash's ExecStop gets SIGKILLed before it can paint
-# the "Powered Off" splash. 10s leaves plenty of slack for a healthy
-# render (~9s) and keeps a stuck one inside the 30s shutdown budget.
+# The default DefaultTimeoutStopSec on Bookworm systemd 252 is 90s, charged
+# twice because systemd re-arms the same budget for the SIGKILL phase.
+#
+# CORRECTED REASON (litclock-dev#856 review; the old text here was wrong and
+# litclock-dev#856 propagated it before this was caught). It used to say 90s "would
+# outlast litclock-shutdown.service's own 30s TimeoutStopSec — that would
+# mean shutdown-splash's ExecStop gets SIGKILLed before it can paint". It
+# cannot. TimeoutStopSec is armed when a unit's stop BEGINS — for the
+# shutdown unit, when ExecStop is spawned — and a stop job blocked on
+# ordered predecessors has no timer running at all; that unit is still
+# plain `active`. A slow predecessor can never cut the paint short. What it
+# does instead is add reboot LATENCY in front of the paint, and the real
+# failure is a reboot that stalls for minutes until an impatient owner pulls
+# the power, painting nothing. 10s leaves plenty of slack for a healthy
+# render (~9s) and keeps the waiting this unit contributes a minority of the
+# shutdown unit's 30s paint budget. Pinned by
+# tests/test_systemd_units.py::test_stop_chain_predecessors_are_bounded_and_exact_case.
 TimeoutStopSec=10s

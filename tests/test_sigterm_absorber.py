@@ -249,10 +249,22 @@ class _JoinRecordingThread(threading.Thread):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.join_timeouts: list[float | None] = []
+        # monotonic() at each join CALL. The first one marks the end of the
+        # drain loop, which is otherwise unobservable from outside reset_state.
+        self.join_called_at: list[float] = []
 
     def join(self, timeout=None):
         self.join_timeouts.append(timeout)
+        self.join_called_at.append(time.monotonic())
         return super().join(timeout)
+
+
+# Wall-clock slack for the drain-loop ceiling in the test below, as a FRACTION
+# of the budget. Strictly under 1.0 so a drain given 2x its budget (the
+# smallest plausible wrong multiplier) is red with the flag stuck whatever the
+# budget is set to -- an absolute slack could be silently outgrown by lowering
+# `budget`. At budget=1.0 that is 0.9s, ~90x the loop's natural overshoot.
+_DRAIN_OVERRUN_SLACK = 0.9
 
 
 def test_reset_state_gives_every_tracked_thread_a_share_of_its_own_budget():
@@ -288,6 +300,10 @@ def test_reset_state_gives_every_tracked_thread_a_share_of_its_own_budget():
 
     budget = 1.0
     n_probes = 2
+    # The drain ceiling below is budget + slack; a 2x drain lands at 2*budget,
+    # so the slack must stay under one budget or that mutant goes green.
+    drain_slack = budget * _DRAIN_OVERRUN_SLACK
+    assert drain_slack < budget, "the drain slack must be strictly under one budget"
     share = budget / n_probes
     release = threading.Event()
     started = [threading.Event() for _ in range(n_probes)]
@@ -386,10 +402,36 @@ def test_reset_state_gives_every_tracked_thread_a_share_of_its_own_budget():
                 "drain did not spend its own budget, so the join values above prove "
                 "nothing about the two being separate"
             )
-        if elapsed > budget * 3:
+
+        # "Bounded" is asserted on what reset_state HANDED OUT, not on the clock
+        # (litclock-dev#840: the old ceiling was `elapsed > 3 * budget` around an expected
+        # 2.0s, ~1s of slack for a loaded runner). The join half is fully
+        # observable: the timeouts it gave the probes must sum to at most one
+        # budget, whatever n_probes is. A join budget minted per thread, or
+        # doubled, shows up here deterministically; load cannot move a recorded
+        # value.
+        total_join = sum(t.join_timeouts[0] or 0.0 for t in threads)
+        if total_join > budget * 1.01:
             pytest.fail(
-                f"reset_state took {elapsed:.2f}s against a {budget}s budget — two bounded "
-                "waits should cap near 2x; it is no longer bounded"
+                f"reset_state handed out {total_join:.2f}s of join timeouts against a "
+                f"{budget}s budget ({[t.join_timeouts[0] for t in threads]}). The join half "
+                "is no longer bounded by one shared budget"
+            )
+        # The drain half has no recorded value, so it IS a clock measurement --
+        # but of the drain alone, ended by the first join call, not of the whole
+        # reset with two join returns on top. The flag is stuck, so the drain
+        # cannot finish EARLY: the smallest wrong multiplier, 2x, lands at >= 2.0s
+        # and stays red for any slack under 1.0s. The slack is for scheduling
+        # latency only; the loop's own overshoot is one 10ms sleep. This IS
+        # still a wall-clock ceiling, by design: the drain has no recorded
+        # value to assert on short of giving reset_state a controlled clock,
+        # which is a src/ change and out of scope here.
+        drain_elapsed = threads[0].join_called_at[0] - started_at
+        if drain_elapsed > budget + drain_slack:
+            pytest.fail(
+                f"the drain ran {drain_elapsed:.2f}s against a {budget}s budget "
+                f"(> budget + {drain_slack:.2f}s slack) — it is no longer bounded by "
+                "wait_for_inflight"
             )
 
         for probe in threads:
@@ -618,11 +660,16 @@ def test_escaped_threads_summary_line_names_the_leaking_test():
 
 
 def test_escaped_threads_summary_line_truncates_a_flood():
+    from tests.conftest import _ESCAPE_REPORT_LIMIT
+
+    hidden = 4
+    total = _ESCAPE_REPORT_LIMIT + hidden
     state = _EscapedThreadState()
-    for i in range(9):
+    for i in range(total):
         state.escapes.append((f"tests/t.py::test_{i}", ("setup-wifi-connect",)))
     line = escaped_threads_summary_line(state)
     assert line is not None
-    assert "9 test(s)" in line
-    assert "(+4 more)" in line
-    assert "test_8" not in line
+    assert f"{total} test(s)" in line
+    assert f"(+{hidden} more)" in line
+    assert f"test_{_ESCAPE_REPORT_LIMIT - 1} " in line, "the last name inside the limit must be shown"
+    assert f"test_{_ESCAPE_REPORT_LIMIT} " not in line, "the first name past the limit must be folded"

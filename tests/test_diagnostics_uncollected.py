@@ -252,6 +252,32 @@ class TestComputeUncollectedNetwork:
         with app_with_marker.app_context():
             assert _anomalies._compute_uncollected(v) == ["time-location"]
 
+    @pytest.mark.parametrize("mode", [" auto ", "auto "], ids=["padded", "trailing-space"])
+    def test_whitespace_mode_is_auto_for_grey_tier(self, app_with_marker, mode):
+        # litclock-dev#836: the grey tier asks the SAME normaliser as the age check
+        # (config.weather_location_mode, which strips). The old inline
+        # `mode in ("auto", None, "")` rejected these, and no test drove the
+        # grey tier with them — the review's testing pass found reverting
+        # this call site alone left every test green.
+        v = _clean_values()
+        v["weather_enabled"] = True
+        v["weather_location_mode"] = mode
+        v["weather_location_name"] = ""
+        v["last_ip_geo_at"] = ""
+        with app_with_marker.app_context():
+            assert _anomalies._compute_uncollected(v) == ["time-location"]
+
+    def test_invalid_mode_is_not_grey(self, app_with_marker):
+        # An invalid value is not "auto": it stays the orange anomaly, as it
+        # did before litclock-dev#836 (the resolver will never refresh it).
+        v = _clean_values()
+        v["weather_enabled"] = True
+        v["weather_location_mode"] = "autp"
+        v["weather_location_name"] = ""
+        v["last_ip_geo_at"] = ""
+        with app_with_marker.app_context():
+            assert _anomalies._compute_uncollected(v) == []
+
     def test_weather_enabled_string_forms_still_trip_uncollected(self, app_no_marker):
         # config readers may surface WEATHER_ENABLED as the literal string
         # 'true' or '1' depending on env loader path. The predicate

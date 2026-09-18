@@ -117,9 +117,12 @@ esac
 #
 # litclock-dev#387 C1: this dispatcher runs as ROOT, so it invokes the ROOT-OWNED copy at
 # /usr/local/lib/litclock — NOT /home/pi/litclock/scripts (pi-writable, which
-# would be a pi→root escalation on the next DHCP event once 010_pi-nopasswd is
-# dropped). Deliberately NO fallback to the repo copy: running the pi-writable
-# script as root is the exact escalation this closes. A missing installed copy
+# would be a pi→root escalation on the next DHCP event). The image keeps
+# 010_pi-nopasswd — the drop planned under litclock-dev#387/litclock-dev#82 was reversed 2026-07-12 —
+# so this is defense-in-depth rather than the only thing standing between pi
+# and root; it stays because running a pi-writable script as root is wrong on
+# its own merits. Deliberately NO fallback to the repo copy: running the
+# pi-writable script as root is the exact escalation this closes. A missing installed copy
 # just skips the marker refresh, which the /diagnostics read side tolerates via
 # its legacy tmpfs check.
 if [ -x /usr/local/lib/litclock/litclock-mark-collected.sh ]; then
@@ -167,8 +170,13 @@ MARKER=/run/litclock/last-rendered-ip
 # pi-planted symlink at $MARKER would make the read/write below touch an
 # arbitrary file as root. Refuse to follow a symlink — drop it and treat as
 # "no previous IP" (a fresh regular file is written below). The residual TOCTOU
-# (replant between this drop and the write) needs a pi shell, which post-010 is
-# confined to the scoped sudoers commands.
+# (replant between this drop and the write) needs a pi shell. This comment used
+# to say such a shell was "post-010 confined to the scoped sudoers commands",
+# which is now wrong in the UNSAFE direction: the 010 drop was reversed
+# 2026-07-12 and the image keeps the blanket grant, so a pi shell already has
+# full root and the residual is not bounded by sudoers at all. It is accepted
+# on the honest ground instead — winning this race requires an
+# already-compromised pi, which is game over regardless of what this line does.
 if [ -L "$MARKER" ]; then
     rm -f "$MARKER" 2>/dev/null || true
 fi

@@ -372,24 +372,26 @@ class TestBootSequenceIntegrity:
         )
 
 
-def test_first_boot_default_env_includes_mode_and_ip_country():
-    """litclock-dev#337 A3 + /review testing-gap: first-boot.sh's env.sh template (both
-    the state.sh-flock path AND the legacy heredoc fallback) must include
-    the new MODE + IP_COUNTRY defaults. Without these, a fresh-flash Pi
-    would have no MODE/IP_COUNTRY keys at all — pre-S2 migration semantics
-    would kick in (which work, but are an unnecessary code path for new
-    installs)."""
-    from pathlib import Path
+@pytest.mark.parametrize("with_state_lib", [True, False], ids=["flock-writer", "heredoc-fallback"])
+def test_first_boot_default_env_includes_mode_and_ip_country(tmp_path, with_state_lib):
+    """litclock-dev#337 A3 + /review testing-gap: BOTH first-boot arms (the state.sh-flock
+    path and the legacy heredoc fallback) must seed the MODE + IP_COUNTRY
+    defaults. Without these a fresh-flash Pi would have no MODE/IP_COUNTRY keys
+    at all — pre-S2 migration semantics would kick in (which work, but are an
+    unnecessary code path for new installs).
 
-    content = (Path(__file__).parent.parent / "scripts/first-boot.sh").read_text()
-    # The keys appear in TWO blocks (flock path + heredoc fallback) — count both.
-    assert content.count("export WEATHER_LOCATION_MODE=auto") >= 2, (
-        "litclock-dev#337 A3: first-boot.sh must include MODE=auto in BOTH the atomic-write "
-        "path AND the heredoc-fallback path (so the keys ship regardless of which "
-        "writer fires)."
+    EXECUTED since litclock-dev#840. This used to count literal occurrences in
+    first-boot.sh and require >= 2; the flock arm now calls `env_sh_defaults`
+    and holds no literal, so a source count would be satisfied by the fallback
+    heredoc alone — i.e. it would have gone green while the flock arm, the one
+    every real device takes, seeded nothing at all."""
+    written = _run_first_boot_default_env(tmp_path, with_state_lib)
+    arm = "flock writer" if with_state_lib else "state.sh-missing heredoc fallback"
+    assert "export WEATHER_LOCATION_MODE=auto\n" in written, (
+        f"litclock-dev#337 A3: first-boot's {arm} wrote an env.sh with no MODE=auto"
     )
-    assert content.count("export WEATHER_IP_COUNTRY=") >= 2, (
-        "litclock-dev#337 A3: first-boot.sh must include WEATHER_IP_COUNTRY= in both writer paths"
+    assert "export WEATHER_IP_COUNTRY=\n" in written, (
+        f"litclock-dev#337 A3: first-boot's {arm} wrote an env.sh with no WEATHER_IP_COUNTRY="
     )
 
 
@@ -425,7 +427,13 @@ class TestSetupIncompletePoweroff:
         end = content.find("\n}", idx)
         assert end != -1, "could not find the end of the enclosing function"
         block = content[idx:end]
-        assert len(block) < 4000, f"the Setup-Incomplete block grew to {len(block)} chars — check the span"
+        # 4100, not the development repo's 4000: the block carries four issue
+        # references, and this repo spells each of them `litclock-dev#NNN`
+        # rather than a bare `#NNN`, which is 12 characters longer per
+        # reference. The bound is a "did the span run away" tripwire, not a
+        # size budget, so it is raised by the qualifier cost rather than
+        # letting a mechanical port failure stand in for a real finding.
+        assert len(block) < 4100, f"the Setup-Incomplete block grew to {len(block)} chars — check the span"
         return block
 
     def _commands(self, content):
@@ -1390,27 +1398,32 @@ class TestLeadingDashTitleRender:
         assert out.exists()
 
 
-# --- litclock-dev#783: every env.sh seed must match env.sh.sample -------------
-
-# ANCHORED. An unanchored search was the /review's CRITICAL finding: env.sh.sample
-# carries ~11 lines of prose about LITCLOCK_RENDER_LEAD_S, and a comment merely
-# MENTIONING `export LITCLOCK_RENDER_LEAD_S=6` made the sample parse that key as
-# ACTIVE — after which this guard failed telling the maintainer to uncomment it in
-# every seeder, i.e. instructing the exact litclock-dev#762 field-pin its own docstring says
-# must never happen. A guard whose failure message prescribes the regression is
-# worse than no guard.
+# --- litclock-dev#783 / litclock-dev#840: every env.sh seed comes from ONE source ---------
+#
+# litclock-dev#783 found four hand-copied seed blocks that had drifted to 9, 9, 10 and 8
+# of env.sh.sample's keys, and fixed them by making a guard compare all four.
+# litclock-dev#840 removes the duplication instead: `env_sh_defaults()` in
+# scripts/lib/state.sh is now the single source, and three of the four callers
+# route through it. The fourth — first-boot's `lib/state.sh`-missing fallback
+# heredoc — CANNOT, because it is the arm for "state.sh could not be sourced",
+# so it stays inline and is pinned byte-for-byte against the helper below.
+#
+# So the guards here are:
+#   * the helper matches env.sh.sample                 (the single source)
+#   * the fallback heredoc matches the helper          (the one duplicate)
+#   * every whole-env write routes through the helper  (nobody re-forks it)
+#   * each caller, EXECUTED, writes what the helper says
+#
+# ANCHORED. An unanchored search was the litclock-dev#783 /review's CRITICAL finding:
+# env.sh.sample carries ~11 lines of prose about LITCLOCK_RENDER_LEAD_S, and a
+# comment merely MENTIONING `export LITCLOCK_RENDER_LEAD_S=6` made the sample
+# parse that key as ACTIVE — after which the guard failed telling the maintainer
+# to uncomment it in every seeder, i.e. instructing the exact litclock-dev#762 field-pin
+# its own docstring says must never happen. A guard whose failure message
+# prescribes the regression is worse than no guard.
 _ENV_KEY_LINE_RE = re.compile(r"^(?P<hash>\s*#?\s*)export\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)=")
-# The FIRST key of an assignment-style block shares its line with the assignment
-# (`_defaults='# export FOO=`). Strip that prefix, then use the anchored rule.
-_ASSIGN_PREFIX_RE = re.compile(r"^\s*(?:local\s+)?[A-Za-z_][A-Za-z0-9_]*=['\"]")
 
-# Discovery is anchored on the WRITE, not on a run-length heuristic. A
-# `>= 5 consecutive exports` rule both MISSED a 4-key seeder and false-fired on an
-# ordinary `export LC_ALL=C / LANG=C / TERM=dumb ...` prologue (/review).
-_WRITE_CALL_RE = re.compile(r'atomic_write_env_sh\s+"[^"]*"\s+"\$(?P<var>[A-Za-z_][A-Za-z0-9_]*)"')
-_WRITE_HEREDOC_RE = re.compile(
-    r'cat\s*>\s*"[^"]*(?:ENV_FILE|env\.sh)[^"]*"\s*<<\s*[\'"]?(?P<delim>[A-Za-z_]+)[\'"]?\s*\n'
-)
+STATE_SH = Path(REPO_ROOT, "scripts", "lib", "state.sh").resolve()
 
 
 def _sample_keys():
@@ -1426,72 +1439,38 @@ def _block_keys(body):
     """{name: is_commented} for a seed-block body (a list of lines)."""
     out = {}
     for line in body:
-        stripped = _ASSIGN_PREFIX_RE.sub("", line, count=1)
-        m = _ENV_KEY_LINE_RE.match(stripped)
+        m = _ENV_KEY_LINE_RE.match(line)
         if m:
             out[m.group("name")] = "#" in m.group("hash")
     return out
 
 
-def _discover_env_writes():
-    """Every construct in scripts/ that writes a WHOLE env.sh, found by the write.
+def env_sh_defaults(language=None):
+    """Run the REAL helper out of scripts/lib/state.sh and return its stdout.
 
-    Two forms exist: `atomic_write_env_sh "$ENV_FILE" "$VAR"` (resolve VAR's
-    assignment) and `cat > "$ENV_FILE" << 'EOF'` (take the heredoc body).
-    Anchoring on the write is what makes an UNDER-populated seeder a failure —
-    a run-length heuristic simply would not recognise a 4-key block as a seeder
-    at all, which is the very defect class this guard exists for.
+    Executed, never parsed: the whole point of litclock-dev#840 is that there is one
+    body, so every expectation in this module derives from running it.
     """
-    found = []
-    # Repo-wide, not scripts/ only (/review F4): the `== 4` count catches a
-    # writer that DISAPPEARS, but a new one born outside the scan root would be
-    # invisible with no signal at all. pi-gen/ creates no env.sh today, so this
-    # currently finds the same four — the point is that it still would if that
-    # changed. Vendored trees are skipped; they are not ours to seed from.
-    _SKIP = {"node_modules", ".git", "venv", ".venv", "images"}
-    for path in sorted(Path(REPO_ROOT).resolve().rglob("*.sh")):
-        if any(part in _SKIP for part in path.parts):
-            continue
-        text = path.read_text()
-        lines = text.split("\n")
-        rel = path.relative_to(Path(REPO_ROOT).resolve())
-        for m in _WRITE_CALL_RE.finditer(text):
-            var = m.group("var")
-            assign = re.search(
-                rf"^\s*(?:local\s+)?{re.escape(var)}=(?P<q>['\"])(?P<body>.*?)(?P=q)",
-                text,
-                re.S | re.M,
-            )
-            assert assign, f"{rel}: {var} is written to env.sh but never assigned a quoted block"
-            line_no = text[: assign.start()].count("\n") + 1
-            found.append((f"{rel}:{line_no} (${var})", assign.group("body").split("\n")))
-        for m in _WRITE_HEREDOC_RE.finditer(text):
-            delim = m.group("delim")
-            start_line = text[: m.end()].count("\n")
-            body = []
-            for line in lines[start_line:]:
-                if line.strip() == delim:
-                    break
-                body.append(line)
-            else:
-                raise AssertionError(f"{rel}: heredoc terminator {delim} not found")
-            found.append((f"{rel}:{start_line + 1} (heredoc {delim})", body))
-    return found
+    call = "env_sh_defaults" if language is None else f'env_sh_defaults "{language}"'
+    r = subprocess.run(
+        ["bash", "-c", f'. "{STATE_SH}"\n{call}'],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert r.returncode == 0, f"env_sh_defaults failed: {r.stderr}"
+    return r.stdout
 
 
-def test_every_env_write_matches_env_sample():
-    """litclock-dev#783 — env.sh must be the knob surface the docs claim.
+def test_env_sh_defaults_helper_matches_sample():
+    """litclock-dev#783/litclock-dev#840 — env.sh must be the knob surface the docs claim.
 
     `update.sh` Phase 3 merges missing `env.sh.sample` keys into an EXISTING
-    `env.sh`, but that only runs on an OTA. A device is BORN from one of these
-    writes, so any key they omit is simply absent on a freshly flashed device.
-    Measured before the fix: first-boot's flock writer seeded 9 of 18, its
-    `lib/state.sh`-missing fallback 9, reset-setup 10, prepare-for-cloning 8.
-
-    prepare-for-cloning was the worst and the highest-fanout: it feeds the
-    "SD Cards for Friends & Family" flow, so every card cut from it produced
-    devices with no `LITCLOCK_LANGUAGE` line at all — the knob litclock-dev#532's
-    multi-language work is built on.
+    `env.sh`, but that only runs on an OTA. A device is BORN from one of the
+    seed writes, so any key they omit is simply absent on a freshly flashed
+    device. Measured before litclock-dev#783: first-boot's flock writer seeded 9 of 18,
+    its `lib/state.sh`-missing fallback 9, reset-setup 10, prepare-for-cloning
+    8. Since litclock-dev#840 there is one body to check instead of four.
 
     Comment status is asserted, not just membership, because it is
     load-bearing in BOTH directions. An ACTIVE `LITCLOCK_RENDER_LEAD_S` would
@@ -1511,85 +1490,400 @@ def test_every_env_write_matches_env_sample():
     # 19 since litclock-dev#791 added WEATHER_LAST_IP_GEO_AT (was 18).
     assert len(sample) == 19, f"env.sh.sample parsed as {len(sample)} keys, expected 19 — parser drift?"
 
+    keys = _block_keys(env_sh_defaults().split("\n"))
+    missing = sorted(set(sample) - set(keys))
+    extra = sorted(set(keys) - set(sample))
+    assert not missing, (
+        f"env_sh_defaults() omits {missing}. A device born from ANY seed path lacks them until "
+        "its first OTA runs update.sh Phase 3, so env.sh is not the knob surface env.sh.sample "
+        "documents (litclock-dev#783). Add them, copying comment status from the sample."
+    )
+    assert not extra, (
+        f"env_sh_defaults() sets {extra}, which env.sh.sample does not document. Either add them "
+        "to the sample or drop them — a key only the seeder knows about is the drift this guard "
+        "exists to stop."
+    )
+    mismatched = sorted(k for k in sample if sample[k] != keys[k])
+    assert not mismatched, (
+        f"env_sh_defaults() disagrees with env.sh.sample on whether {mismatched} are COMMENTED. "
+        "Comment status is load-bearing: an active LITCLOCK_RENDER_LEAD_S hard-pins the render "
+        "lead into the field (litclock-dev#762), and an active-but-empty value is parsed at import above "
+        "the litclock-dev#531 BaseException guard, killing the painter. Match the sample; do NOT uncomment "
+        "to satisfy this message."
+    )
+
+
+def test_env_sh_defaults_ends_with_exactly_one_newline():
+    """The trailing newline is load-bearing and invisible.
+
+    `update.sh` Phase 3 APPENDS missing sample keys with `>>`. A body without a
+    final newline would splice the first appended key onto
+    `# export LOG_LEVEL=WARNING`, producing a commented-out line that swallows
+    a real knob — on every device that OTAs after a new sample key lands.
+    Command substitution strips trailing newlines, which is why every caller
+    re-adds one; this pins the helper end of that contract.
+    """
+    body = env_sh_defaults()
+    assert body.endswith("\n"), "env_sh_defaults() must end with a newline (update.sh Phase 3 appends with >>)"
+    assert not body.endswith("\n\n"), "env_sh_defaults() must end with exactly ONE newline"
+
+
+@pytest.mark.parametrize(
+    "language, expected",
+    [
+        (None, "export LITCLOCK_LANGUAGE=\n"),
+        ("", "export LITCLOCK_LANGUAGE=\n"),
+        ("es", "export LITCLOCK_LANGUAGE=es\n"),
+        ("pt-br", "export LITCLOCK_LANGUAGE=pt-br\n"),
+    ],
+)
+def test_env_sh_defaults_language_argument(language, expected):
+    """The optional language argument is reset-setup's gift-mode seed (litclock-dev#532).
+
+    EXECUTED, because the mechanism is an EXPANSION: a substring grep for
+    `LITCLOCK_LANGUAGE=$language` is satisfied whether the surrounding bash
+    string is single- or double-quoted, and single quotes would ship the
+    literal text `$language` to every gifted device.
+    """
+    assert expected in env_sh_defaults(language)
+
+
+def test_env_sh_defaults_rejects_a_malformed_language():
+    """The shape gate travels WITH the interpolation point (Codex 5b /review).
+
+    reset-setup.sh gates and warns before calling, so this never fires in
+    production — it is here so that moving the interpolation into state.sh did
+    not leave the belt behind. The value lands in a root-written env.sh, so an
+    injected newline would append arbitrary exports.
+    """
+    r = subprocess.run(
+        ["bash", "-c", f'. "{STATE_SH}"\nenv_sh_defaults "en\nexport EVIL=1"'],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert r.returncode == 0, r.stderr
+    assert "EVIL" not in r.stdout, f"a malformed language reached env.sh:\n{r.stdout}"
+    assert "export LITCLOCK_LANGUAGE=\n" in r.stdout, "a rejected language must seed EMPTY"
+    assert "shape check" in r.stderr, "a rejected language must say so on stderr"
+
+
+# Discovery is anchored on the WRITE, not on a run-length heuristic. A
+# `>= 5 consecutive exports` rule both MISSED a 4-key seeder and false-fired on
+# an ordinary `export LC_ALL=C / LANG=C / TERM=dumb ...` prologue (/review).
+_WRITE_CALL_RE = re.compile(r'atomic_write_env_sh\s+"[^"]*"\s+"\$(?P<var>[A-Za-z_][A-Za-z0-9_]*)"')
+_WRITE_HEREDOC_RE = re.compile(
+    r'cat\s*>\s*"[^"]*(?:ENV_FILE|env\.sh)[^"]*"\s*<<\s*[\'"]?(?P<delim>[A-Za-z_]+)[\'"]?\s*\n'
+)
+
+
+def _discover_env_writes():
+    """Every construct in the repo that writes a WHOLE env.sh, found by the write.
+
+    Two forms exist: `atomic_write_env_sh "$ENV_FILE" "$VAR"` (resolve VAR's
+    assignment) and `cat > "$ENV_FILE" << 'EOF'` (take the heredoc body).
+    Anchoring on the write is what makes an UNDER-populated seeder a failure —
+    a run-length heuristic simply would not recognise a 4-key block as a seeder
+    at all, which is the very defect class this guard exists for.
+
+    Returns (location, kind, payload) where kind is "call" (payload = the
+    assignment's right-hand side) or "heredoc" (payload = the body lines).
+    """
+    found = []
+    # Repo-wide, not scripts/ only (/review F4): the count assertion catches a
+    # writer that DISAPPEARS, but a new one born outside the scan root would be
+    # invisible with no signal at all. pi-gen/ creates no env.sh today, so this
+    # currently finds the same four — the point is that it still would if that
+    # changed. Vendored trees are skipped; they are not ours to seed from.
+    _SKIP = {"node_modules", ".git", "venv", ".venv", "images"}
+    for path in sorted(Path(REPO_ROOT).resolve().rglob("*.sh")):
+        if any(part in _SKIP for part in path.parts):
+            continue
+        text = path.read_text()
+        lines = text.split("\n")
+        rel = path.relative_to(Path(REPO_ROOT).resolve())
+        for m in _WRITE_CALL_RE.finditer(text):
+            var = m.group("var")
+            assign = re.search(rf"^\s*(?:local\s+)?{re.escape(var)}=(?P<rhs>.*)$", text, re.M)
+            assert assign, f"{rel}: {var} is written to env.sh but never assigned"
+            line_no = text[: assign.start()].count("\n") + 1
+            found.append((f"{rel}:{line_no} (${var})", "call", assign.group("rhs")))
+        for m in _WRITE_HEREDOC_RE.finditer(text):
+            delim = m.group("delim")
+            start_line = text[: m.end()].count("\n")
+            body = []
+            for line in lines[start_line:]:
+                if line.strip() == delim:
+                    break
+                body.append(line)
+            else:
+                raise AssertionError(f"{rel}: heredoc terminator {delim} not found")
+            found.append((f"{rel}:{start_line + 1} (heredoc {delim})", "heredoc", body))
+    return found
+
+
+def test_every_env_write_routes_through_the_helper():
+    """litclock-dev#840 — nobody may re-fork the defaults block.
+
+    Three of the four whole-env writes must be `$(env_sh_defaults ...)`. The
+    fourth is first-boot's `lib/state.sh`-missing fallback heredoc, which
+    cannot call the helper (it is the arm for "state.sh is unusable") and is
+    pinned against it byte-for-byte by the test below.
+    """
     writes = _discover_env_writes()
     # first-boot x2 (flock writer + state.sh-missing fallback), reset-setup,
     # prepare-for-cloning. A NEW writer must be listed here deliberately.
     assert len(writes) == 4, (
-        f"expected 4 whole-env writes in scripts/, found {len(writes)}: "
-        f"{[loc for loc, _ in writes]}. A NEW env.sh writer must satisfy this guard too; a "
-        "VANISHED one means the guard now watches less than it was written to watch."
+        f"expected 4 whole-env writes, found {len(writes)}: {[loc for loc, _, _ in writes]}. "
+        "A NEW env.sh writer must satisfy this guard too; a VANISHED one means the guard now "
+        "watches less than it was written to watch."
     )
 
-    for loc, body in writes:
-        keys = _block_keys(body)
-        missing = sorted(set(sample) - set(keys))
-        extra = sorted(set(keys) - set(sample))
-        assert not missing, (
-            f"the env.sh write at {loc} omits {missing}. A device born from this path lacks "
-            "them until its first OTA runs update.sh Phase 3, so env.sh is not the knob "
-            "surface env.sh.sample documents (litclock-dev#783). Add them, copying comment "
-            "status from the sample."
+    calls = [(loc, rhs) for loc, kind, rhs in writes if kind == "call"]
+    heredocs = [loc for loc, kind, _ in writes if kind == "heredoc"]
+    assert len(calls) == 3, f"expected 3 helper-routed writes, got {[loc for loc, _ in calls]}"
+    assert len(heredocs) == 1 and "first-boot.sh" in heredocs[0], (
+        f"the only inline seed block left must be first-boot's fallback heredoc; got {heredocs}"
+    )
+    for loc, rhs in calls:
+        assert "env_sh_defaults" in rhs, (
+            f"the env.sh write at {loc} builds its body from {rhs!r} instead of env_sh_defaults(). "
+            "The defaults block has ONE source since litclock-dev#840 — a re-forked copy is exactly "
+            "the drift litclock-dev#783 was filed for."
         )
-        assert not extra, (
-            f"the env.sh write at {loc} sets {extra}, which env.sh.sample does not document. "
-            "Either add them to the sample or drop them — a key only one writer knows about "
-            "is the drift this guard exists to stop."
+        assert "$'\\n'" in rhs, (
+            f"the env.sh write at {loc} does not re-add the trailing newline command substitution "
+            "strips. update.sh Phase 3 appends missing sample keys with `>>`, which would splice "
+            "the first one onto the last line."
         )
-        mismatched = sorted(k for k in sample if sample[k] != keys[k])
-        assert not mismatched, (
-            f"the env.sh write at {loc} disagrees with env.sh.sample on whether {mismatched} "
-            "are COMMENTED. Comment status is load-bearing: an active LITCLOCK_RENDER_LEAD_S "
-            "hard-pins the render lead into the field (litclock-dev#762), and an active-but-empty "
-            "value is parsed at import above the litclock-dev#531 BaseException guard, killing the "
-            "painter. Match the sample; do NOT uncomment to satisfy this message."
-        )
+
+
+def test_first_boot_fallback_heredoc_matches_the_helper():
+    """The one remaining duplicate, pinned byte-for-byte (litclock-dev#840).
+
+    first-boot's `lib/state.sh`-missing fallback cannot call `env_sh_defaults`
+    without reintroducing the dependency it exists to survive, so it stays
+    inline. That makes it the only place the block can still drift — and
+    litclock-dev#783 found this exact arm MISSED by the first version of that guard,
+    because a guard that named `_defaults=` could not see a second seeder in
+    the same file. Compare the BYTES, not the key set: comment status, key
+    order and the trailing newline all matter, and a key-level comparison
+    would pass while the two diverged on any of them.
+    """
+    writes = _discover_env_writes()
+    heredoc = next(body for _, kind, body in writes if kind == "heredoc")
+    # The heredoc body is the file's lines up to the terminator; the helper
+    # emits the same lines plus a trailing newline.
+    assert "\n".join(heredoc) + "\n" == env_sh_defaults(), (
+        "first-boot.sh's state.sh-missing fallback heredoc has drifted from env_sh_defaults(). "
+        "It is the one copy that cannot call the helper, so it must be kept in step by hand — "
+        "paste the helper's exact body (litclock-dev#840)."
+    )
 
 
 def _run_first_boot_default_env(tmp_path, with_state_lib):
     """EXECUTE first-boot's default-env creation and return the env.sh it wrote.
 
-    The source-text guard above is blind to the one thing that actually matters:
-    a perfect 18-key literal that is never passed to the writer. /review's mutant
-    was `atomic_write_env_sh "$ENV_FILE" "export WEATHER_UNITS=imperial\\n"` --
-    the block still parsed as all 18 keys and every test passed while a flashed
-    device would be born with ONE. So run the real span and read the real file.
+    The source-text guards above are blind to the one thing that actually
+    matters: a perfect 19-key body that is never passed to the writer.
+    /review's mutant was `atomic_write_env_sh "$ENV_FILE" "export
+    WEATHER_UNITS=imperial\\n"` — the block still parsed as all keys and every
+    test passed while a flashed device would be born with ONE. So run the real
+    span and read the real file.
 
-    ``with_state_lib`` picks the arm: defining the helper takes the flock path,
-    omitting it takes the `lib/state.sh`-missing heredoc fallback.
+    ``with_state_lib`` picks the arm by SOURCING THE REAL scripts/lib/state.sh
+    (litclock-dev#840) rather than stubbing the writer: the arm gate is
+    `declare -F atomic_write_env_sh && declare -F env_sh_defaults`, so sourcing
+    state.sh takes the flock path with the real helper and the real writer,
+    and sourcing nothing takes the heredoc fallback. A stub would have to
+    reimplement `env_sh_defaults`, which is precisely the wiring under test.
     """
     text = Path(FIRST_BOOT_SH).read_text()
-    start = text.index("        local _defaults")
+    start = text.index("        if declare -F atomic_write_env_sh")
     end = text.index("ENVEOF\n        fi\n", start) + len("ENVEOF\n        fi\n")
     span = text[start:end]
-    assert "atomic_write_env_sh" in span and "ENVEOF" in span, "span missed one of the two arms"
+    assert "env_sh_defaults" in span and "ENVEOF" in span, "span missed one of the two arms"
 
     env_file = tmp_path / "env.sh"
-    stub = 'atomic_write_env_sh() { printf "%s" "$2" > "$1"; }\n' if with_state_lib else ""
+    source = f'. "{STATE_SH}"\n' if with_state_lib else ""
     harness = (
         "log() { :; }\n"
-        f"{stub}"
+        f"{source}"
         f'ENV_FILE="{env_file}"\n'
         "seed() {\n"
         f"{span}\n"
         "}\n"
         "seed\n"
     )
-    subprocess.run(["bash", "-c", harness], check=True, timeout=10, capture_output=True)
+    r = subprocess.run(["bash", "-c", harness], timeout=10, capture_output=True, text=True)
+    assert r.returncode == 0, f"first-boot seed span failed: {r.stderr}"
     return env_file.read_text()
+
+
+def test_first_boot_falls_back_when_state_sh_is_too_old(tmp_path):
+    """A state.sh that predates env_sh_defaults must take the FALLBACK arm.
+
+    litclock-dev#840 — the arm gate tests both helpers, not just the writer.
+    first-boot.sh and lib/state.sh ship together, but an LKG rollback or a
+    partial tree can leave an older state.sh on disk: it defines
+    `atomic_write_env_sh` and NOT `env_sh_defaults`. Gating on the writer alone
+    would pass an empty body to the real writer and seed a device with an
+    EMPTY env.sh — silently, since the write itself succeeds. The heredoc
+    fallback exists for exactly this, so the gate must route there.
+    """
+    text = Path(FIRST_BOOT_SH).read_text()
+    start = text.index("        if declare -F atomic_write_env_sh")
+    end = text.index("ENVEOF\n        fi\n", start) + len("ENVEOF\n        fi\n")
+
+    env_file = tmp_path / "env.sh"
+    harness = (
+        "log() { :; }\n"
+        # An OLD lib/state.sh: the writer exists, the defaults helper does not.
+        'atomic_write_env_sh() { printf "%s" "$2" > "$1"; }\n'
+        f'ENV_FILE="{env_file}"\n'
+        "seed() {\n"
+        f"{text[start:end]}\n"
+        "}\n"
+        "seed\n"
+    )
+    r = subprocess.run(["bash", "-c", harness], timeout=10, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    written = env_file.read_text()
+    assert written == env_sh_defaults(), (
+        "with an older lib/state.sh (atomic_write_env_sh but no env_sh_defaults) first-boot did "
+        f"not fall back to the inline heredoc — it seeded:\n{written!r}"
+    )
 
 
 @pytest.mark.parametrize("with_state_lib", [True, False], ids=["flock-writer", "heredoc-fallback"])
 def test_first_boot_actually_writes_every_env_sample_key(tmp_path, with_state_lib):
-    """Both first-boot arms must WRITE all 18 keys, not merely contain them."""
+    """Both first-boot arms must WRITE the full body, not merely contain it."""
     written = _run_first_boot_default_env(tmp_path, with_state_lib)
-    sample = _sample_keys()
-    keys = _block_keys(written.split("\n"))
     arm = "flock writer" if with_state_lib else "state.sh-missing heredoc fallback"
-    missing = sorted(set(sample) - set(keys))
-    assert not missing, (
-        f"first-boot's {arm} WROTE an env.sh missing {missing}. The source block may look "
-        "complete while the value handed to the writer is not — assert on the file, not the "
-        "literal (litclock-dev#783)."
+    assert written == env_sh_defaults(), (
+        f"first-boot's {arm} WROTE an env.sh that is not env_sh_defaults(). The source block may "
+        f"look complete while the value handed to the writer is not — assert on the file, not the "
+        f"literal (litclock-dev#783/litclock-dev#840).\n--- written ---\n{written}"
     )
-    mismatched = sorted(k for k in sample if k in keys and sample[k] != keys[k])
-    assert not mismatched, f"first-boot's {arm} wrote {mismatched} with the wrong comment status"
+
+
+# ── litclock-dev#834: the clone-prep history lock is undone on first boot ─────
+#
+# prepare-for-cloning.sh Step 6 replaces /home/pi/.bash_history and
+# /root/.bash_history with empty DIRECTORIES so that shells still open when
+# the master powers off cannot write their history back. That directory rides
+# every clone; first-boot must remove it so the recipient gets a normal
+# history — and must remove ONLY that shape, never a real history file.
+
+
+def _extract_history_restore_fn() -> str:
+    text = Path(FIRST_BOOT_SH).read_text()
+    assert text.count("restore_bash_history_after_clone_prep() {") == 1
+    start = text.index("restore_bash_history_after_clone_prep() {")
+    end = text.index("\n}", start) + len("\n}")
+    fn = text[start:end]
+    assert "rmdir" in fn, "the restore no longer removes the lock directory"
+    return fn
+
+
+def _run_history_restore(tmp_path, *paths, sudo='sudo() { "$@"; }'):
+    import shlex
+
+    log_file = tmp_path / "restore.log"
+    script = (
+        f"{sudo}\n"
+        f'log() {{ printf "%s\\n" "$*" >> {shlex.quote(str(log_file))}; }}\n'
+        f"{_extract_history_restore_fn()}\n"
+        "restore_bash_history_after_clone_prep " + " ".join(shlex.quote(str(p)) for p in paths) + "\n"
+        'echo "RC=$?"\n'
+    )
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=20)
+    return proc, (log_file.read_text() if log_file.exists() else "")
+
+
+class TestCloneHistoryLockRestore:
+    def test_the_lock_directories_are_removed(self, tmp_path):
+        pi, root = tmp_path / "pi.bash_history", tmp_path / "root.bash_history"
+        pi.mkdir()
+        root.mkdir()
+        proc, log = _run_history_restore(tmp_path, pi, root)
+        assert "RC=0" in proc.stdout, proc.stdout + proc.stderr
+        assert not pi.exists() and not root.exists(), "the lock directories survived first boot"
+        assert "WARN" not in log
+
+    def test_a_real_history_file_is_left_alone(self, tmp_path):
+        """rmdir is the whole safety property: it removes an empty directory and
+        nothing else, so an owner re-running first-boot keeps their history."""
+        hist = tmp_path / ".bash_history"
+        hist.write_text("ls\ncd litclock\n")
+        proc, log = _run_history_restore(tmp_path, hist)
+        assert "RC=0" in proc.stdout
+        assert hist.read_text() == "ls\ncd litclock\n", "a real history file was touched"
+        assert "WARN" not in log
+
+    def test_an_absent_path_is_fine(self, tmp_path):
+        proc, log = _run_history_restore(tmp_path, tmp_path / "missing.bash_history")
+        assert "RC=0" in proc.stdout, proc.stdout + proc.stderr
+        assert "WARN" not in log
+
+    def test_a_directory_that_survives_is_reported_not_fatal(self, tmp_path):
+        """A non-empty directory cannot be rmdir'd. Report it — shell history not
+        saving is an annoyance — but never fail the first boot over it."""
+        lock = tmp_path / ".bash_history"
+        lock.mkdir()
+        (lock / "stray").write_text("x")
+        proc, log = _run_history_restore(tmp_path, lock)
+        assert "RC=0" in proc.stdout, proc.stdout + proc.stderr
+        assert lock.is_dir()
+        assert "WARN" in log and str(lock) in log and "834" in log, log
+
+    def test_a_privileged_probe_that_cannot_run_is_not_read_as_success(self, tmp_path):
+        """litclock-dev#855 review item C. `sudo` returns 1 both for "the
+        command said no" and for its own authorization failures, so the first
+        cut's `if sudo test -d` read a refused sudo as "the lock is gone" and
+        returned success without its promised warning — leaving history
+        disabled forever with nothing in the log. An unusable probe must say
+        "could not look"."""
+        lock = tmp_path / ".bash_history"
+        lock.mkdir()
+        proc, log = _run_history_restore(tmp_path, lock, sudo="sudo() { return 1; }")
+        assert "RC=0" in proc.stdout, proc.stdout + proc.stderr
+        assert "WARN" in log, "a refused sudo was reported as a clean removal"
+        assert "could not check" in log and str(lock) in log, log
+        assert "rmdir" in log, "the warning must tell the owner how to clear it by hand"
+
+    def test_the_two_history_paths_match_the_cloning_script(self):
+        """litclock-dev#855 review E4 — the only cross-file pin. The paths are
+        assigned in prepare-for-cloning.sh and passed as literals here; change
+        one and the lock rides every clone with nothing red."""
+        clone = Path(REPO_ROOT, "scripts", "prepare-for-cloning.sh").read_text()
+        locked = [
+            re.search(rf'^{name}="([^"]+)"$', clone, re.M)
+            for name in ("_PI_BASH_HISTORY", "_ROOT_BASH_HISTORY")
+        ]
+        assert all(locked), "prepare-for-cloning.sh no longer assigns both history paths as plain literals"
+        locked_paths = [m.group(1) for m in locked]
+        first_boot = Path(FIRST_BOOT_SH).read_text()
+        call = re.search(r"^\s*restore_bash_history_after_clone_prep (.+)$", first_boot, re.M)
+        assert call, "first-boot.sh no longer calls the restore with literal arguments"
+        assert call.group(1).split() == locked_paths, (
+            f"first-boot restores {call.group(1).split()} but prepare-for-cloning.sh locks {locked_paths}"
+        )
+
+    def test_main_restores_before_seeding_and_only_on_the_setup_path(self):
+        """Executed lines only. The call sits after the setup-complete early
+        exit (a configured clock never runs it) and before the env.sh seed
+        (the first thing on the clone's path), with the real production paths."""
+        text = Path(FIRST_BOOT_SH).read_text()
+        executed = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+        call = "restore_bash_history_after_clone_prep /home/pi/.bash_history /root/.bash_history"
+        assert executed.count(call) == 1, "the restore is not called exactly once from main"
+        call_at = executed.index(call)
+        setup_check_at = executed.index("if check_setup_complete; then")
+        seed_at = executed.index('log "Creating default env.sh..."')
+        assert setup_check_at < call_at < seed_at, (
+            "the restore must run after the setup-complete exit and before the seed"
+        )
+        assert executed.index("restore_bash_history_after_clone_prep() {") < executed.index("main() {"), (
+            "the function must be defined before main"
+        )

@@ -49,7 +49,7 @@ The first-boot flow (`scripts/first-boot.sh`) provisions WiFi via a web UI; ever
 
 **Critical scenarios to test:**
 
-- **WiFi-only hotspot form**: Verify the setup page shows ONLY the WiFi network picker + password field + Submit button (plus, on a multi-language fleet only, the Language select — dormant while English is the sole active registry language, litclock-dev#532). No Location, Timezone, Temperature, or Mature-content sections — those are PWA-only post-handoff.
+- **WiFi-only hotspot form**: Verify the setup page shows ONLY the WiFi network picker + password field + Submit button (plus, on a multi-language fleet only, the Language select — dormant while English is the sole active registry language, litclock-dev#532). No Location, Timezone, Temperature, or Mature-content sections — those are PWA-only post-handoff. The hidden-network "Network name" box is NOT visible at load: since litclock-dev#848 it appears only after picking "My network isn't listed" in the dropdown (and is focused then — not at load), and picking a real network afterwards hides it again AND blanks anything typed. Two exceptions arrive with the option pre-selected and the box showing: a retry that echoes a hand-typed name, and an empty scan. Also check **Refresh**: with the manual option selected and a name typed, tap Refresh — the option must still be selected and the name still there when the list lands; and separately, tap Refresh from the placeholder and pick "My network isn't listed" DURING the scan (it runs 2-20s) — the box must NOT vanish when the response arrives. With JavaScript OFF the disclosure is present in every state, as it was before — but on a clean render it is CLOSED, so only its summary line shows and the box needs one tap to reveal; the retry-echo and empty-scan renders arrive open. That is the no-JS fallback, and the server's rule (a picked network wins over typed text) is the only guard there.
 - **Hotspot creation**: Power on with no known WiFi networks. Verify the Pi creates a hotspot and displays credentials + QR code on the e-ink screen.
 - **litclock-dev#620 hotspot-password block — RUN IN ORDER, and only on a device you can re-flash.** Checks 1-4 are sequential and destructive: check 2 needs the phone state check 1 leaves behind, check 3 destroys the password both depend on, and check 4 needs its own fresh flash. Out of order they need a re-flash to redo. Check 5 is order-independent — it only reads a support bundle, so run it any time after provisioning. (These steps describe the litclock-dev#620 feature: if that PR has not merged, none of the paths below exist yet.)
   1. **The password is STABLE across cycles** — the core invariant, invisible without hardware. Provision, note the password on the e-ink, then re-enter setup with `sudo systemctl start --no-block litclock-wifi-reset.service`. **Do NOT run `litclock-wifi-reset.sh` foregrounded over SSH**: it deletes every WiFi profile before it clears `.setup-complete`, so your own connection dies mid-script and SIGHUP kills it before it finishes — leaving a device with no WiFi, no hotspot, and the look of a brick. Verify the panel shows **the same password**, then `sudo stat -c '%a %U:%G' /var/lib/litclock/hotspot-password` returns exactly `600 pi:pi`. Ownership matters as much as the mode: `litclock-firstboot.service` is `User=pi`, so a `600 root:root` file (what a maintainer running the CLI under sudo leaves behind) is unreadable to the real writer and silently rotates the password every cycle — the exact bug this feature removes. Both verification commands need a shell, and the reset you just triggered deleted the WiFi profile your SSH session was riding on — **reconnect over the `LitClock-Setup` hotspot and SSH to its gateway IP** (or run this step on an Ethernet-attached rig) before expecting them to work. If cycle 2 differs, get the cause for free with `journalctl -u litclock-firstboot | grep -iE 'hotspot.password'`: the code emits distinguishable lines for unreadable ("minting a REPLACEMENT"), invalid ("regenerating"), unwritable ("this cycle only") and race ("adopting the stored value"). Use that regex, not `'hotspot password'` — the race line is the one message that spells it `hotspot-password` with a hyphen, so a literal-space grep silently hides the single case this list exists to diagnose.
@@ -61,15 +61,36 @@ The first-boot flow (`scripts/first-boot.sh`) provisions WiFi via a web UI; ever
        |---|---|---|---|
        | ~2026-08-10 (litclock-dev#620) | OnePlus 6T | *not recorded* | "No Internet Access"; no password field offered; **a QR scan did not override the saved entry** (the phone did not register an attempt) |
        | 2026-08-15 (bench, `dev-20260815-b0c0590`) | *not recorded* | *not recorded* | "Connection failed — Wrong password for `LitClock-Setup`"; **offered "Change password"**; **a QR scan connected on the first try**, captive portal followed, provisioning completed normally |
+       | 2026-09-18 (bench, `dev-20260918-787d307`) | iPhone | **iOS 27** | **QR scan joined first try** — camera scan raised a "join LitClock-Setup?" prompt, tapped Join, ~10s, captive portal opened by itself. No password prompt, no failure banner. First iOS measurement; the stale credential was two rotations old (a gift-mode prep and a PWA factory reset had each re-minted the key that same afternoon). **Do not record key values in this file** — it is published; the rotation COUNT is the measurement, the keys are a credential |
 
        The 2026-08-15 run was on a device whose hotspot password had just been rotated by `--gift-mode` — functionally the same condition the original describes. All three of the original's Android claims failed to reproduce. That the device and OS columns are half empty is itself the finding: fill them in next time.
+
+       **The 2026-09-18 row is the first with both columns filled, and the first
+       iOS one.** It matters that the platform is recorded: the two Android rows
+       disagree with each other, so a third undated row would have been
+       unattributable to either a platform difference or OS drift. iOS 27 simply
+       joined — no prompt, no banner, no recovery needed. It was a QR scan, so it
+       settles the QR-override sub-check below on iOS. The inverse is now the
+       unrecorded one: whether a plain tap on `LitClock-Setup` (no QR) also joins
+       past a stale credential on iOS.
+
+       **The owner reports iOS has behaved this way on earlier devices too**
+       (2026-09-18, recollection rather than a dated run — deliberately NOT given
+       a table row, since undated claims are the thing this table exists to
+       replace). It does change where re-test effort belongs: the two Android
+       rows contradict each other on whether recovery is discoverable at all,
+       while iOS appears consistent and always has. Treat the uncertainty as
+       **Android-side** — vary the device and the OS version there — and treat
+       iOS as settled unless it starts failing.
      - **Severity, corrected (litclock-dev#648).** The original block argued Android left *"no user-discoverable recovery short of Forget This Network, which the intended recipient will not find."* On the 2026-08-15 device recovery was one tap, and a QR scan bypassed the saved entry entirely. Treat the strong version as unproven rather than as established fact. **This does not weaken litclock-dev#620 itself**, which stays: a stable per-device password means a normal owner never reaches any of these screens, and that is the right outcome however gracefully a given Android build degrades. Only the severity narrative was stale.
-     - **New sub-check: a QR scan overrides a stale saved entry.** Now the interesting case, and previously untested anywhere. Every LitClock broadcasts the same SSID with a per-device password, so a phone that set up clock A meets clock B with the wrong key — the recovery path a real recipient is most likely to stumble into. Scan the panel QR on a phone holding a stale credential for `LitClock-Setup` and confirm it joins. It worked on 2026-08-15; it did not on the original measurement, so this is worth re-running per device rather than assuming.
-  3. **Which resets keep the setup password and which rotate it — since litclock-dev#666 the DEFAULT rotates.** The old rule (wipe AND power-off) is gone; erasing both passwords is now what a bare reset does, and `--keep-wifi` is the only way to preserve either. Run the sub-checks in this order, because each destroys state the next would need. First **`--keep-wifi`** (the "same owner, moved house" case): `sudo cat /var/lib/litclock/hotspot-password`, keep the value, `sudo ./scripts/reset-setup.sh --keep-wifi --poweroff`, power back on, `sudo cat` again and confirm it is **UNCHANGED**. Read it from the file, not the panel — with the WiFi kept, the device boots straight onto its saved network and never raises a setup network, so there is no panel password on that path. Then a **bare `sudo ./scripts/reset-setup.sh --yes`** over SSH: expect the session to DROP when the WiFi goes (that is the documented behaviour, not a fault), power-cycle, and confirm the panel password is **DIFFERENT**. Then the **PWA Factory reset** (`litclock-reset.service` runs `--wipe-wifi --strict-env-wipe --poweroff --yes`): record the password, trigger it from PWA → System, power on, confirm the panel password is **DIFFERENT** — this is the litclock-dev#660 path and the only one that proves it end to end. Also confirm the PWA's confirm modal and the in-progress screen both say the password will be new and that a phone holding the old one must forget the network. Finally `sudo ./scripts/reset-setup.sh --gift-mode`, power on, confirm the panel password is **DIFFERENT**, and that `--gift-mode --keep-wifi` is **REFUSED** in both orderings. Gift prep must abort loudly ("do NOT ship this device") rather than print "done" if the file cannot be removed; an ordinary failing reset must say "Reset FAILED" instead, not tell you to stop passing the device on. After this sub-check the device has no saved WiFi, so check 4 needs a re-provision or a fresh flash regardless. **Every sub-step here now ends your SSH session** (litclock-dev#657): `--keep-wifi --poweroff` is permitted and still takes the poweroff arm, so it disables SSH too — and that sub-step explicitly rules out the panel and requires a shell, with no hotspot to fall back on because the WiFi was kept. Check 6's advice ("run anything needing SSH before a reset check") cannot rescue this one, because the check IS a before/after comparison across a reset. Either run the whole block from the console, or restore access between sub-steps by putting a blank `ssh` file in the SD card's boot partition.
+     - **New sub-check: a QR scan overrides a stale saved entry.** Now the interesting case, and previously untested anywhere. Every LitClock broadcasts the same SSID with a per-device password, so a phone that set up clock A meets clock B with the wrong key — the recovery path a real recipient is most likely to stumble into. Scan the panel QR on a phone holding a stale credential for `LitClock-Setup` and confirm it joins. It worked on 2026-08-15; it did not on the original measurement, so this is worth re-running per device rather than assuming. **iOS 27, 2026-09-18: worked.** Camera scan raised a "join LitClock-Setup?" prompt; Join, ~10s, captive portal auto-opened — against a credential two rotations stale. The sub-check now stands at one PASS on iOS, one PASS and one FAIL on Android — the same Android-side split the rest of this block shows. Incidentally the panel says "wait about 20 seconds"; 10 sufficed, so that copy errs the right way.
+  3. **Which resets keep the setup password and which rotate it — since litclock-dev#666 the DEFAULT rotates.** The old rule (wipe AND power-off) is gone; erasing both passwords is now what a bare reset does, and `--keep-wifi` is the only way to preserve either. Run the sub-checks in this order, because each destroys state the next would need. First **`--keep-wifi`** (the "same owner, moved house" case): `sudo cat /var/lib/litclock/hotspot-password`, keep the value, `sudo ./scripts/reset-setup.sh --keep-wifi --poweroff`, power back on, `sudo cat` again and confirm it is **UNCHANGED**. Read it from the file, not the panel — with the WiFi kept, the device boots straight onto its saved network and never raises a setup network, so there is no panel password on that path. Then a **bare `sudo ./scripts/reset-setup.sh --yes`** over SSH: expect the session to DROP when the WiFi goes (that is the documented behaviour, not a fault), power-cycle, and confirm the panel password is **DIFFERENT**. Since litclock-dev#833 there is a second thing to check on this path, and it needs a console, not a power-cycle: run the same bare reset from the console (or Ethernet), then `sudo reboot` — the panel must paint "Restarting…" (a `sudo poweroff` would paint "Powered Off") instead of carrying the stale quote across. A power-cycle fires no stop edge, so it cannot test this, and the SSH session a WiFi-wipe drops leaves you no shell to type the reboot from. The plain arm re-arms `litclock-shutdown.service` inside Step 1, right after its own stop consumed the edge, so this holds even when the reset aborts later or the WiFi wipe SIGHUPs it. Then the **PWA Factory reset** (`litclock-reset.service` runs `--wipe-wifi --strict-env-wipe --poweroff --yes`): record the password, trigger it from PWA → System, power on, confirm the panel password is **DIFFERENT** — this is the litclock-dev#660 path and the only one that proves it end to end. Also confirm the PWA's confirm modal and the in-progress screen both say the password will be new and that a phone holding the old one must forget the network. Finally `sudo ./scripts/reset-setup.sh --gift-mode`, power on, confirm the panel password is **DIFFERENT**, and that `--gift-mode --keep-wifi` is **REFUSED** in both orderings. Gift prep must abort loudly ("do NOT ship this device") rather than print "done" if the file cannot be removed; an ordinary failing reset must say "Reset FAILED" instead, not tell you to stop passing the device on. After this sub-check the device has no saved WiFi, so check 4 needs a re-provision or a fresh flash regardless. **Every sub-step here now ends your SSH session** (litclock-dev#657): `--keep-wifi --poweroff` is permitted and still takes the poweroff arm, so it disables SSH too — and that sub-step explicitly rules out the panel and requires a shell, with no hotspot to fall back on because the WiFi was kept. Check 6's advice ("run anything needing SSH before a reset check") cannot rescue this one, because the check IS a before/after comparison across a reset. Either run the whole block from the console, or restore access between sub-steps by putting a blank `ssh` file in the SD card's boot partition.
   4. **The SD-cloning path rotates it too** — the highest-fanout distribution channel, and the one gift mode does NOT cover. `docs/sd-card-cloning.md` is the "SD Cards for Friends & Family" flow: without this step every clone broadcasts `LitClock-Setup` with the SAME key, known to whoever made the cards and never rotated on any recipient. On a provisioned clock run `sudo ./scripts/prepare-for-cloning.sh --no-poweroff` — **the `--no-poweroff` matters**: since litclock-dev#660 the script powers the Pi off when it finishes, so without the flag the device is already down before you can inspect anything, and booting it to look is the exact action that re-mints the key. Confirm `/var/lib/litclock/hotspot-password` is gone along with any `.hotspot-password.*` staging files, and that the script aborts rather than reporting success if it cannot remove them. Separately, run it WITHOUT the flag once and confirm the Pi powers itself off.
      - **After the `--no-poweroff` run the clock looks bricked. It is not — do not debug it, and do not try to restart it back to life.** The panel freezes on whatever quote was last painted and port 80 refuses connections, indefinitely, with `/` still `rw`, load idle and nothing failed. The script stops `litclock-control.service` (Step 1) and `litclock.timer` (Step 4), but the stops are the transient half: it also clears `/etc/litclock/.setup-complete` and `.handoff-complete`, and `litclock-control.service` and `litclock.service` are `ConditionPathExists`-gated on those, so `systemctl start` on either exits 0 and changes nothing. Each half of the symptom has a familiar fault behind it — a frozen panel is what the litclock-dev#531 lgpio wedge looks like, a refused `:80` is what a bind failure looks like — so the pair reads as two faults at once rather than one intended state. (The pair is in fact a specific signature: `litclock-control.service` has no dependency on `litclock.service`, so neither lookalike produces both. That precision is no help at 1am.) It cost 20 minutes on 2026-08-15 (`dev-20260815-b0c0590`), hours after the fact, when the terminal holding the closing banner was long gone. **Shut the Pi down** (`sudo shutdown -h now`) — the card is a clone master and there is nothing left to test on it.
      - **The default (no-flag) run reaches the same state only if its power-off fails.** It normally halts, so there is no panel to misread; on the `poweroff || …` recovery path it prints "Power-off FAILED", exits 1, and leaves the identical frozen panel. Both arms of the banner say so.
      - **Answering `y` to the WiFi prompt over SSH-on-WiFi kills the run.** Step 3 deletes the profile you are connected over, the session drops, and `SIGHUP` takes the script with it — before Step 8 removes the hotspot key, so the card is NOT prepared even though nothing said otherwise. Pre-existing, not introduced by any litclock-dev#659 change. The delete loop walks **every** NM connection, wired included, so ethernet is no refuge — run the `y` path from a local console, and if a session ever drops mid-run, re-run the script rather than assuming it finished.
+     - **The bash history is a directory afterwards, and that is the lock, not damage (litclock-dev#834).** `sudo ls -ld /home/pi/.bash_history /root/.bash_history` must show two EMPTY directories after the `--no-poweroff` run. `history -c` reaches only the script's own shell; the console or SSH shell you ran it from writes its history back on exit, during the power-off — on the bench the file was back eight seconds after "Clearing bash history... done", holding the operator's last command. A directory at the path fails that write with EISDIR for root and pi alike (a mode-0 file does not: root bypasses it, and `history -w` renames over it). Exit your shell and confirm both paths are STILL directories, then boot a CLONE (never the master) and confirm `first-boot.sh` removed both (`ls -ld` shows nothing, and the recipient's first `exit` creates a normal file). Run the script as the only open session regardless — but note the rule cannot cover the shell you run it FROM, which is why the lock exists at all. **The lock is now a hard gate**: stage a failure (`sudo mkdir /home/pi/.bash_history && sudo touch /home/pi/.bash_history/x` before a run, which is what an earlier aborted run plus a stray file looks like) and confirm the step prints `FAILED` + `Do NOT clone this card` and exits 1 rather than a yellow note. Remove the stray file and re-run; it must complete.
+     - **A failed env.sh wipe stops BEFORE the WiFi question (litclock-dev#839).** Stage it by holding the sidecar lock from a second shell — `sudo flock /home/pi/litclock/env.sh.lock sleep 120` — then run the script. It must print `Clearing configuration (env.sh)... FAILED` and the `Do NOT clone this card` banner and exit 1 **without** asking `Clear saved WiFi networks?`; afterwards `/var/lib/litclock/hotspot-password` must still exist, `nmcli connection show` must still list your network, and `env.sh` must be byte-identical. Pre-fix the same run printed "Clearing setup-hotspot password... done" BEFORE the red env.sh line, having already wiped everything else. **The device is NOT in the looks-bricked state the `--no-poweroff` bullet below describes**, and that is the point of the fix: the setup-state markers are removed only after the wipe succeeds, so an aborted run leaves a fully provisioned clock that still paints quotes and still boots normally. What IS true until the next boot: Step 1 already stopped `litclock-control.service` (the PWA) and the updater, so port 80 refuses connections in the meantime — reboot, or `sudo systemctl start litclock-control.service`, restores it. Release the lock and re-run; it must complete normally. Also confirm the aborted run did NOT leave `/var/lib/litclock/clone-prep-unfinished` behind: it changed nothing, so the next run must not open with the "previous run did not finish" warning.
      - **Do not reboot it to "check" it — that contaminates the master.** `first-boot.sh` runs again on that card, and whether the boot also re-mints the setup-WiFi key depends on which branch it takes. `is_wifi_connected()` is literally `ip addr show wlan0 | grep -q 'inet '`, and `litclock-firstboot.service` is ordered `After=NetworkManager.service`, **not** `network-online.target` — so the branch turns on whether `wlan0` happens to hold an address at that instant, not on whether a profile is saved. With **no** address it raises the setup hotspot, and `create_hotspot()` mints a fresh permanent key (litclock-dev#660) that every clone taken afterwards would share. With an address it completes setup inline — no page, no hotspot (litclock-dev#647), **no new key** — and runs straight through to the handoff splash. The script's own closing banner states the key hazard unconditionally, which is the safe direction; do not read the second branch as permission to boot the master.
   5. **The support bundle no longer carries the password.** litclock-dev#620 turns a transient leak into a durable one, so the redaction fix ships with it. After provisioning, note the password, then PWA → Diagnostics → copy the support payload (and the deep logs) and grep for that exact string. It must not appear. Pre-fix, a real `sudo` audit line came back from `redact_text()` with the password intact.
   6. **A factory reset now turns SSH OFF on dev images too, and that is new.** litclock-dev#657 removed the
@@ -159,6 +180,191 @@ them together, but the payoff is only observable on hardware.
   That is why the check is "read the journal", and why it is worth three
   restarts.
 
+### Shutdown splash vs. boot splash (litclock-dev#856)
+
+The only part of litclock-dev#856 unit files cannot prove. `litclock-shutdown.service` is
+now `Before=litclock-splash.service`, which in the stop direction means its
+`ExecStop` (`shutdown-splash.sh`) waits for the boot splash's stop job — and
+that stop is what releases GPIO17/SPI, because it SIGTERMs a control group
+rather than running an `ExecStop`. Run on a device you can re-flash.
+
+**VERIFIED END TO END on the bench 2026-09-17 23:43–23:49 CDT**
+(bench device, address and build deliberately not recorded here — this file
+is public), control-fails-then-fixed-passes,
+after this recipe had failed to test anything twice (litclock-dev#860). The numbers below
+are that run; a follow-up pass on 2026-09-18 07:42–07:46 added the panel
+corroboration from the journal and found litclock-dev#862 doing it (last two bullets).
+Three things the earlier versions got wrong are corrected here —
+**read all three before touching the device**, because each one on its own is
+enough to make the check pass on broken code.
+
+**Where the delay has to go: inside the painter, after `epd.init()`.** The
+paint is a synchronous `timeout 20 "$PYTHON" src/eink_display.py status ...` in
+`scripts/boot-splash.sh`. A `sleep` placed *before* that line runs when Python
+has not yet acquired GPIO; placed *after* it, Python has already exited and
+released it. **Neither creates contention, and neither can fail** — a delay
+around the paint tests nothing. GPIO17/SPI is held only between `epd.init()`
+and `epd.sleep()` inside `display_image()` (`src/eink_display.py`, ~line 476).
+
+**Correction 1 — a plain `sleep` hold cannot reproduce the race, in either
+configuration.** Measured: with both directives REVERTED and a 20s
+`time.sleep()` hold, the shutdown splash **painted cleanly**. The splash's
+python dies on SIGTERM in under a second (`time.sleep` is an interruptible
+point, and SIGTERM's default action needs no Python at all), while
+`shutdown-splash.sh` spends ~1.5s in Python startup and image generation before
+it reaches `epd.init()`. It loses the race by default. **The hold must survive
+SIGTERM** — which is also the honest model of the hazard, since litclock-dev#856's own
+unit comment names "a python wedged in uninterruptible kernel I/O on the SPI
+transfer" as the residual. Use this, not the old one-liner:
+
+```python
+# QA HARNESS (litclock-dev#860) — remove after testing.
+import os as _os, time as _t, signal as _sig
+_h = float(_os.environ.get("LITCLOCK_QA_PANEL_HOLD_S") or "0")   # `or`: an EMPTY value is this repo's unset idiom
+if _h:
+    _sig.signal(_sig.SIGTERM, lambda *a: logging.warning("QA hold: SIGTERM ignored, GPIO still held"))
+    logging.warning("QA hold %ss (post-init, SIGTERM-resistant)", _h)
+    _end = _t.monotonic() + _h
+    while _t.monotonic() < _end:
+        _t.sleep(0.2)
+    logging.warning("QA hold over")
+```
+
+Off by default, so a forgotten line does not change a normal boot. Two more
+device edits, all three reverted by the next `update.sh` — undo them yourself
+with `git checkout -- src/eink_display.py scripts/boot-splash.sh
+scripts/shutdown-splash.sh` (the third file only if you also add the
+journal-corroboration probe in the second-to-last bullet):
+
+1. The block above, in `display_image()`, immediately after `epd.init()`.
+2. `sudo systemctl edit litclock-splash.service` → `[Service]` →
+   `Environment=LITCLOCK_QA_PANEL_HOLD_S=20`. Confirm it lands:
+   `systemctl show litclock-splash.service -p Environment`.
+3. In `scripts/boot-splash.sh`, raise the wrapper to `timeout 40` — at
+   `timeout 20` the hold is killed before it does anything.
+
+**Correction 2 — use `systemctl restart litclock-splash.service`, and fire it
+clear of the minute tick.** Do not race a boot window; the unit has no
+`Condition*=` and restarts by hand cleanly into the same start state holding
+GPIO. `restart`, not `start`: it is a `RemainAfterExit=yes` oneshot, so `start`
+on an already-active unit is a silent no-op. **And the painter it spawns loses
+the panel to `litclock.service` if it lands on the `:56` tick** — measured at
+23:46:58, `boot-splash.sh` exited in 1s with `Could not initialize display:
+'GPIO busy'` and the run proved nothing. This is almost certainly what happened
+on 2026-09-17 (litclock-dev#860): an ExecStart that finishes in ~1s with the painter
+already gone is this, not a misplaced hold. Fire between `:10` and `:45` of a
+minute, and **guard the reboot on the hold actually being live**:
+
+```bash
+S=$(date +%S); sleep $(( (75 - 10#$S) % 60 ))      # land at ~:15
+sudo systemctl restart --no-block litclock-splash.service
+sleep 12
+N=$(pgrep -fc "eink_display.py statu[s]")          # bracket: do not self-match
+if [ "$N" -ge 1 ]; then sudo systemctl reboot; else echo "ABORT: hold not live"; fi
+```
+
+(No `exit` in that block on purpose — it is meant to be pasted into an
+interactive SSH session, and an `exit` on the guard path closes the session you
+are about to need.)
+
+**Budget — use 20s, and do NOT exceed it.** The hold is squeezed from both
+ends. Above it: `~7–11s paint + hold` must stay inside `TimeoutStartSec=45`,
+and the paint is 7s warm but **10s cold** (measured on a first boot), so a 30s
+hold leaves only ~4s of margin — trip it and systemd kills `ExecStart`, the unit
+fails, and the harness quietly becomes a start-timeout test instead. That is the
+same "cannot fail" class this whole section exists to prevent, so take the
+margin: **20s**. Below it: the hold must outlast `TimeoutStopSec=10s` measured
+from the reboot at `t+12`, i.e. it must still be running at `t+22`; a 20s hold
+started at `t+7..11` runs to `t+27..31`. 8s would not. Do not raise
+`TimeoutStartSec` to buy room — 45s is the bound the whole thing lives in.
+(The 2026-09-17/18 runs used 30s and did not trip it; 20s is the same test with
+margin.)
+
+- **Run the CONTROL first, on the unfixed units, or you have not tested
+  anything.** Revert both directives on the device — drop
+  `litclock-splash.service` from `Before=` in
+  `/etc/systemd/system/litclock-shutdown.service` and the `TimeoutStopSec=10s`
+  from `/etc/systemd/system/litclock-splash.service` — `daemon-reload`, then run
+  the block above. **Correction 3 — the expected failure string is NOT
+  `KeyError: PinInfo(... 'GPIO17' ...)`.** That shape was inferred in litclock-dev#856
+  ("no hardware reproduction yet") and never observed; `get_display()` catches
+  the lgpio error at `epd7in5.EPD()` construction, so what
+  `journalctl -b -1 -u litclock-shutdown` actually carries is:
+  ```
+  WARNING: Could not initialize display: 'GPIO busy'
+  ERROR: No display available
+  ```
+  A tester grepping for `KeyError` finds nothing and calls the control clean —
+  a third way this check could not fail. **Expected FAILURE, measured:** the
+  shutdown unit's `Stopping` and the splash's stop run CONCURRENTLY
+  (both 23:45:15), `'GPIO busy'` 1.5s later at 23:45:16.7, no shutdown paint,
+  and the panel powers off still showing **"Starting…"**. `shutdown-splash.sh`
+  swallows it on its `|| true` tail, so the journal is the only place it is
+  visible. If the control does not fail, fix the harness before reading
+  anything into the fixed run.
+- **Then the fixed units: the payoff.** Restore both directives,
+  `daemon-reload`, re-run the block. **Measured PASS:** SIGKILL at exactly
+  `TimeoutStopSec` after the reboot (23:48:55.3 → 23:49:05), splash `Stopped`,
+  and only THEN `Stopping litclock-shutdown.service` — the ordering, in
+  reverse, visible as a timestamp gap the control does not have. ExecStop then
+  paints with no error and finishes 23:49:12. The e-ink must end on the
+  **reboot splash** ("To sleep, perchance to dream." and friends) while the Pi
+  is off.
+- **The bound.** Time that same reboot. Measured: **~17s** with
+  `TimeoutStopSec=10s`, versus **26s** in the control (and up to 90s + 90s
+  unbounded, if the hold outlives `DefaultTimeoutStopSec`). A
+  reboot-during-splash that suddenly takes over a minute means the directive is
+  gone — and a minute is long enough that a real owner pulls the power and gets
+  no splash at all, which is the whole reason it is capped.
+- **The start-direction half.** With the hold running, from a second SSH
+  session: `systemctl is-active litclock-shutdown.service` must read `active`
+  while `systemctl is-active litclock-splash.service` still reads `activating`.
+  **PASS 2026-09-17.** If the shutdown unit reads `activating` or `inactive`,
+  the `Before=` edge is not being honoured and a reboot in that window paints
+  **nothing** — a `Type=oneshot` stopped out of its start state never reaches
+  `ExecStop`.
+- **The ordinary case still works.** Undo all three edits and the drop-in,
+  reboot normally, confirm the reboot splash paints as always. This is the
+  boot-direction regression check: a cycle would have had systemd drop an edge
+  at random. `systemd-analyze verify /etc/systemd/system/litclock-*.service` on
+  the device must report no ordering cycle.
+- **What this run did NOT show, and it matters for how you read litclock-dev#856.** The
+  ordinary reboot-during-splash does not race at all (Correction 1): the fix
+  only changes the outcome once the splash needs longer than ~1.5s to die. So
+  the window litclock-dev#856 describes is real but narrower than the issue implies, and
+  the directive's day-to-day value is the 10s bound as much as the ordering.
+  Both are still right; neither is load-bearing on a healthy panel.
+- **The fixed run paints the WRONG splash — litclock-dev#862, found 2026-09-18.** The
+  ordering works, and the paint it enables resolves `action=poweroff` on a
+  `sudo reboot`: the panel gets a final-state farewell ("So we beat on, boats
+  against the current") instead of "Restarting…". `shutdown-splash.sh` tier 3
+  is `systemctl list-jobs | grep -q reboot.target`, and by the time the DELAYED
+  `ExecStop` runs the system bus is gone — captured at resolution time, the
+  command returns `Failed to connect to bus: Connection refused`, so the grep
+  fails and tier 4 falls through to poweroff. Deterministic, n=2; the same
+  reboot with the splash idle resolves `action=reboot` correctly. **Do not read
+  this as a reason to revert litclock-dev#856** — pre-fix, that window painted NOTHING
+  and carried "Starting…" across the power-off. When QAing this section, expect
+  the wrong variant until litclock-dev#862 lands, and judge litclock-dev#856 on the ordering and
+  the 10s bound, which are the two things it claims.
+- **Corroborate the panel from the journal, not the glass.** The variant is not
+  logged today (litclock-dev#861), so the 2026-09-18 pass added two temporary `echo`s to
+  `scripts/shutdown-splash.sh` — one for `$SHUTDOWN_ACTION` before the `case`,
+  one for `${SPLASH_ARGS[*]}` before the paint — and dumped `systemctl
+  list-jobs` to a NON-tmpfs path (`/run/litclock` is tmpfs and does not survive
+  the reboot you are about to take). That turns a 10s eyes-on window into a
+  `journalctl -b -1` grep, and is how litclock-dev#862 was found at all.
+- **Observe, do not fix here (Codex, out of scope for litclock-dev#856).** A SIGTERM
+  landing inside `display_image()` skips `epd.sleep()`, so the panel is left
+  out of its sleep state; whether it recovers cleanly from an interrupted SPI
+  transfer versus an interrupted BUSY waveform is unproven either way. This
+  predates litclock-dev#856 and the control run above deliberately provokes it. Note
+  what the panel does — ghosting, a partial frame, a refusal to take the next
+  paint — rather than treating it as a litclock-dev#856 regression. On the 2026-09-17
+  run the next scheduled paint succeeded normally (`picked_at_age_s` 0.27s
+  after the following tick), so at least one SIGKILL mid-hold left no lasting
+  damage.
+
 ### OTA smoke gate (litclock-dev#763, litclock-dev#773)
 
 Not in the checklist above because it is not a first-boot flow — but it is the
@@ -187,27 +393,56 @@ sudo systemctl start litclock-update.service && journalctl -fu litclock-update
   activates a second and an owner selects it, so this needs a fleet with a
   second active language to be a real test rather than a shape check.
 - **A missing venv interpreter FAILS the gate, it does not skip it (litclock-dev#773
-  item 1).** `sudo mv /home/pi/litclock/venv/bin/python3{,.bak}` then run an
-  update. Expect `Smoke test SKIPPED: ... is missing or not executable` followed
-  by `Nothing was verified — treating this as a smoke FAILURE`, and a revert.
-  Before this, the whole gate was skipped and Phase 5/7 reported SUCCESS.
-  Restore the interpreter afterwards.
-- **A truncated catalog FAILS the gate (litclock-dev#773 item 2).** Truncate
-  `languages/en/strings.json` to a handful of keys — keeping
-  `status.relative.just_now`, `boot.splash.starting.title` and
-  `firstboot.splash.setup_incomplete.title`, which are the three the VALUE
-  probes check — then run an update. The value probes will pass and the COUNT
-  probe must fail with `Catalog smoke failed: catalog-count returned 'N'
-  (want >= 400)`. That
+  item 1) — but do NOT try to stage it with `mv`. That recipe was wrong
+  (litclock-dev#864).** `sudo mv /home/pi/litclock/venv/bin/python3{,.bak}` and
+  run an update and you get **`Update Complete`**, not a revert: the Phase-4
+  venv guard (`update.sh:1325`, `! "$PYTHON" -c "import PIL, requests"`) fails
+  on a *missing* interpreter exactly as on a broken one, rebuilds the venv on
+  the spot, and the gate then runs against a healthy interpreter. Measured
+  2026-09-18. Every other hand-staged variant lands somewhere else too: if you
+  also stop the rebuild from succeeding, `NEED_PIP` is already true and pip —
+  whose shebang points at the interpreter you removed — fails first, so the
+  **pip-failure arm** reverts, not this one. The `update.sh:1636` arm is
+  reachable only when Phase 4 gets far enough to skip or finish pip and still
+  leaves no interpreter (a pip run that breaks its own venv, or an interrupted
+  Phase 4) — which you cannot stage from a shell in one line.
+  **So do not hardware-test this one.** It is covered where it belongs, by
+  `tests/test_update_sh.py` (the executed arm assertion at ~line 2371 pins
+  `smoke_rc=1` AND `smoke_no_interpreter=1` together). Spend the bench time on
+  the catalog case below, which is both reachable and the one that shipped
+  green with 435 strings gone.
+- **A truncated catalog FAILS the gate (litclock-dev#773 item 2) — and the truncation
+  must be in the TARGET tree, not on the device.** Phase 2 does
+  `git reset --hard <target>` before the gate runs, so a file you truncate on
+  the device is restored before anything looks at it; the old wording here said
+  "truncate … then run an update", which tests nothing (litclock-dev#864).
+  Publish a deliberately bad release instead — see the local-remote harness in
+  a local bare remote — with `languages/en/strings.json` cut to a handful
+  of keys, **keeping** `status.relative.just_now`, `boot.splash.starting.title`
+  and `firstboot.splash.setup_incomplete.title`, the three the VALUE probes
+  read. Build it on top of the release the device is already running, because
+  releases are cumulative and the gate that runs is the *target's* gate, not the
+  device's. The value probes must pass and the COUNT probe must fail with
+  `Catalog smoke failed: catalog-count returned 'N' (want >= 400)`. That
   combination is the whole point: before the count probe, exactly this bundle
-  passed green with 435 strings gone.
+  passed green with 435 strings gone. Verified 2026-09-18 (`returned '8'`).
 - **A revert leaves a working clock, not a brick.** After any of the failing
   cases above, confirm the panel is still painting quotes on the old SHA and
   the PWA Updates view shows the terminal banner **"Update failed verification —
   rolled back. Your clock is running normally."** (state `failed_reverted`).
-  Also note the device
-  re-runs the full pip install on the next tick (the revert deletes
-  `HASH_FILE`, which sets `NEED_PIP`); that is expected, not a second fault.
+  **Then run the tick again — this is the half that used to be missing.** Since
+  litclock-dev#865 the revert records the failing SHA in
+  `/var/lib/litclock/blocked-sha`, so the second tick must log
+  `Latest Release SHA … is blocked (a previous run reverted from it) — skipping
+  update`, leave `HEAD` untouched, finish `inactive` rather than `failed`, and
+  report `update_state: complete` (a deliberate no-op is not a failure). Before
+  that fix it re-fetched, re-applied, re-failed and reverted again — every week,
+  forever, with the clock stopped and a full pip install each time. Then publish
+  a NEWER healthy release and confirm it installs and CLEARS the block: a device
+  that can never be updated again would be a worse bug than the loop. All three
+  ticks verified on hardware 2026-09-18. The pip hash stays deleted across the
+  blocked ticks (the revert removes `HASH_FILE`) so the recovering release
+  re-runs pip once; that is expected, not a second fault.
 - **`catalog-count` is stdout-compared, so check its contract directly.** On the
   device: `sudo -u pi /home/pi/litclock/venv/bin/python3 src/eink_display.py
   catalog-count` must print an integer and **exit 0**. Break the bundle

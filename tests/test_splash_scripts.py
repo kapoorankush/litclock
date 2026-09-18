@@ -157,9 +157,16 @@ class TestShutdownSplash:
         welcome_idx = shutdown_content.find("if [[ -f /etc/litclock/.welcome-mode ]]")
         assert welcome_idx != -1
         assert suppress_idx < welcome_idx, "suppress check must precede welcome-mode check"
-        # The branch must exit, not fall through to a paint.
-        block = shutdown_content[suppress_idx : suppress_idx + 200]
-        assert "exit 0" in block
+        # The branch must exit, not fall through to a paint. Search the block
+        # with COMMENTS STRIPPED and bounded by its own `fi`, not by a fixed
+        # character count: a fixed window makes an added comment fail the test
+        # while the code is untouched (hit for real by litclock-dev#861's log
+        # line), and — the direction that actually matters — a comment
+        # mentioning `exit 0` would satisfy it while the statement was gone.
+        block = shutdown_content[suppress_idx:]
+        block = block[: block.index("\nfi\n")]
+        code = "\n".join(ln.split("#", 1)[0] for ln in block.splitlines())
+        assert "exit 0" in code
 
     def test_suppress_marker_is_root_owned_path_not_hint_dir(self, shutdown_content):
         """litclock-dev#529 security: suppression must NOT be plantable by a
@@ -254,6 +261,207 @@ JOB UNIT                         TYPE  STATE
         )
         assert r.returncode != 0
 
+
+
+class TestShutdownActionProbePrivilege:
+    """litclock-dev#862 — the reboot/poweroff probe has to be asked as ROOT.
+
+    Executed end to end against a stubbed PATH, not grepped: every assertion
+    here is on the catalog prefix the painter is actually invoked with, which
+    is the thing the owner sees on the glass. The source-text tests elsewhere
+    in this file cannot see fall-through, and fall-through is the whole bug —
+    a failed probe and a real poweroff produced the identical `poweroff`.
+
+    Ground truth, measured on the bench 2026-09-18 ~10s into a shutdown:
+    `systemctl list-jobs` as `pi` returns `Failed to connect to bus:
+    Connection refused` (dbus.service is gone, and PID 1's private socket is
+    `srwx------ root root`), while `sudo -n systemctl list-jobs` answers and
+    lists `reboot.target start waiting`.
+    """
+
+    REBOOT_JOBS = (
+        "JOB  UNIT                       TYPE  STATE\n"
+        "1337 reboot.target              start waiting\n"
+        "1338 systemd-reboot.service     start waiting\n"
+        "1476 litclock-shutdown.service  stop  running\n"
+        "\n4 jobs listed.\n"
+    )
+    POWEROFF_JOBS = (
+        "JOB  UNIT                       TYPE  STATE\n"
+        "1337 poweroff.target            start waiting\n"
+        "1338 systemd-poweroff.service   start waiting\n"
+        "\n2 jobs listed.\n"
+    )
+
+    @staticmethod
+    def _harness(tmp_path, *, root_jobs="", unpriv_jobs="", sudo_available=True,
+                 hint=None, welcome=False, sudo_sleep=None):
+        """Run the real shutdown-splash.sh with stubbed systemctl/sudo/python.
+
+        Returns (painter_argv, stdout). painter_argv is [] if nothing painted.
+        """
+        import os
+        import stat
+
+        install = tmp_path / "litclock"
+        (install / "src").mkdir(parents=True)
+        (install / "venv" / "bin").mkdir(parents=True)
+        (install / "src" / "eink_display.py").write_text("")
+
+        painter_log = tmp_path / "painter.argv"
+        binv = tmp_path / "bin"
+        binv.mkdir()
+
+        def _exe(path, body):
+            path.write_text(body)
+            path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+        _exe(install / "venv" / "bin" / "python3",
+             f'#!/bin/bash\nprintf "%s\\n" "$@" > {painter_log}\n')
+        # `sudo -n <cmd>`: drop the -n, re-exec with a marker the systemctl
+        # stub reads as "this call reached PID 1's private socket".
+        _exe(binv / "sudo",
+             '#!/bin/bash\n'
+             '[ -n "$FAKE_SUDO_UNAVAILABLE" ] && { echo "sudo: a password is required" >&2; exit 1; }\n'
+             '[ -n "$FAKE_SUDO_SLEEP" ] && sleep "$FAKE_SUDO_SLEEP"\n'
+             '[ "$1" = "-n" ] && shift\n'
+             'FAKE_AS_ROOT=1 exec "$@"\n')
+        _exe(binv / "systemctl",
+             '#!/bin/bash\n'
+             'if [ "$1" = "list-jobs" ]; then\n'
+             '  if [ -n "$FAKE_AS_ROOT" ]; then OUT="$FAKE_ROOT_JOBS"; else OUT="$FAKE_UNPRIV_JOBS"; fi\n'
+             '  if [ -z "$OUT" ]; then echo "Failed to connect to bus: Connection refused" >&2; exit 1; fi\n'
+             '  printf "%s" "$OUT"; exit 0\n'
+             'fi\n'
+             'exit 1\n')
+
+        # Redirect the three hardcoded state paths into the sandbox.
+        src = SHUTDOWN_SH.read_text()
+        hint_path = tmp_path / "shutdown-action"
+        welcome_path = tmp_path / "welcome-mode"
+        src = src.replace("/run/litclock/shutdown-action", str(hint_path))
+        src = src.replace("/etc/litclock/.welcome-mode", str(welcome_path))
+        src = src.replace("/run/litclock-splash-suppress", str(tmp_path / "suppress"))
+        script = tmp_path / "shutdown-splash.sh"
+        script.write_text(src)
+
+        if hint is not None:
+            hint_path.write_text(hint + "\n")
+        if welcome:
+            welcome_path.write_text("")
+
+        env = dict(os.environ)
+        env["PATH"] = f"{binv}:{env['PATH']}"
+        env["LITCLOCK_DIR"] = str(install)
+        env["FAKE_ROOT_JOBS"] = root_jobs
+        env["FAKE_UNPRIV_JOBS"] = unpriv_jobs
+        if not sudo_available:
+            env["FAKE_SUDO_UNAVAILABLE"] = "1"
+        if sudo_sleep is not None:
+            env["FAKE_SUDO_SLEEP"] = str(sudo_sleep)
+
+        import time as _time
+
+        t0 = _time.monotonic()
+        r = subprocess.run(["bash", str(script)], capture_output=True, text=True, env=env, timeout=120)
+        elapsed = _time.monotonic() - t0
+        argv = painter_log.read_text().splitlines() if painter_log.exists() else []
+        return argv, r.stdout, elapsed
+
+    def _prefix(self, argv):
+        assert "--catalog-prefix" in argv, f"painter was never invoked with a prefix: {argv}"
+        return argv[argv.index("--catalog-prefix") + 1]
+
+    def test_reboot_detected_when_only_root_can_reach_pid1(self, tmp_path):
+        """THE litclock-dev#862 REGRESSION TEST. This is the live shutdown state ~10s in:
+        the unprivileged probe is refused, the root one answers. Before the fix
+        the script asked only as `pi`, got nothing, and painted the poweroff
+        farewell on a device that was rebooting."""
+        argv, out, _ = self._harness(tmp_path, root_jobs=self.REBOOT_JOBS, unpriv_jobs="")
+        assert self._prefix(argv) == "shutdown.splash.reboot", (
+            "a reboot must paint the reboot splash even when only root can reach PID 1"
+        )
+        assert "source=list-jobs(root)" in out
+
+    def test_poweroff_when_the_root_probe_shows_no_reboot_job(self, tmp_path):
+        """The other half: asking as root must not turn every shutdown into a
+        reboot. Without this, the fix above passes with a hardcoded answer."""
+        argv, out, _ = self._harness(tmp_path, root_jobs=self.POWEROFF_JOBS, unpriv_jobs="")
+        assert self._prefix(argv) == "shutdown.splash.poweroff"
+        assert "source=list-jobs(root)" in out
+
+    def test_falls_back_to_the_unprivileged_probe_when_sudo_is_unavailable(self, tmp_path):
+        """010_pi-nopasswd is kept deliberately, but the tree must not brick the
+        splash if it is ever withdrawn — the unprivileged call still answers
+        early in a shutdown, which is where this ran before litclock-dev#856."""
+        argv, out, _ = self._harness(
+            tmp_path, root_jobs="", unpriv_jobs=self.REBOOT_JOBS, sudo_available=False
+        )
+        assert self._prefix(argv) == "shutdown.splash.reboot"
+        assert "source=list-jobs(unprivileged)" in out
+
+    def test_an_unanswerable_probe_is_distinguishable_from_a_real_poweroff(self, tmp_path):
+        """litclock-dev#861. Both still PAINT poweroff — "Restarting…" on a
+        device that is really powering off is the worse error, and the PWA
+        factory reset depends on this arm. But the journal must tell them
+        apart, because that silence is precisely why litclock-dev#862 went unnoticed
+        from the day litclock-dev#856 merged."""
+        broken_argv, broken_out, _ = self._harness(tmp_path / "a", root_jobs="", unpriv_jobs="")
+        real_argv, real_out, _ = self._harness(tmp_path / "b", root_jobs=self.POWEROFF_JOBS)
+
+        assert self._prefix(broken_argv) == "shutdown.splash.poweroff"
+        assert self._prefix(real_argv) == "shutdown.splash.poweroff"
+        assert "source=list-jobs(UNAVAILABLE)" in broken_out
+        assert "source=list-jobs(UNAVAILABLE)" not in real_out, (
+            "a genuine poweroff must not be reported as an unanswerable probe"
+        )
+
+    def test_hint_file_still_beats_the_probe(self, tmp_path):
+        """litclock-dev#282's explicit hint is authoritative — reset-setup.sh
+        writes it precisely because the probe is unreliable at its call site.
+        The root probe says reboot; the hint must still win."""
+        argv, out, _ = self._harness(tmp_path, root_jobs=self.REBOOT_JOBS, hint="poweroff")
+        assert self._prefix(argv) == "shutdown.splash.poweroff"
+        assert "source=hint-file" in out
+
+    def test_falls_back_when_the_root_probe_answers_nothing(self, tmp_path):
+        """The fallback's OTHER trigger. `sudo` being unavailable is covered
+        above; this is `sudo` working while the root probe still comes back
+        empty — what a partially torn-down PID 1 looks like. Without it the
+        elif is only half covered."""
+        argv, out, _ = self._harness(
+            tmp_path, root_jobs="", unpriv_jobs=self.REBOOT_JOBS, sudo_available=True
+        )
+        assert self._prefix(argv) == "shutdown.splash.reboot"
+        assert "source=list-jobs(unprivileged)" in out
+
+    def test_a_hung_probe_cannot_eat_the_stop_budget(self, tmp_path):
+        """Both probes are bounded, and the bound is load-bearing.
+
+        This runs inside an ExecStop with TimeoutStopSec=30 that also has to
+        fit a ~7s paint. An unbounded `sudo` that hangs would burn the budget,
+        get SIGKILLed before painting, and leave the boot splash on the glass
+        through the power-off — exactly the failure litclock-dev#856 exists to
+        prevent, reintroduced from inside.
+
+        Executed, not grepped: `sudo` sleeps 30s, and the assertions are that
+        the script still finishes fast AND still paints, having fallen through
+        to the unprivileged probe."""
+        argv, out, elapsed = self._harness(
+            tmp_path, root_jobs=self.REBOOT_JOBS, unpriv_jobs=self.REBOOT_JOBS, sudo_sleep=30
+        )
+        assert elapsed < 20, f"the probe is not bounded: the script took {elapsed:.1f}s"
+        assert self._prefix(argv) == "shutdown.splash.reboot", (
+            "a hung root probe must fall through to the unprivileged one, not skip the paint"
+        )
+        assert "source=list-jobs(unprivileged)" in out
+
+    def test_welcome_marker_still_outranks_everything(self, tmp_path):
+        """Gift mode must survive the new tier — a recipient's first impression
+        is the welcome splash, not a farewell."""
+        argv, out, _ = self._harness(tmp_path, root_jobs=self.REBOOT_JOBS, welcome=True)
+        assert self._prefix(argv) == "shutdown.splash.welcome"
+        assert "source=welcome-marker" in out
 
 class TestShutdownActionHint:
     """Issue litclock-dev#282 — explicit /run/litclock/shutdown-action hint takes

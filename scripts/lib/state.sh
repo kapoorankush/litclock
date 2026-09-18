@@ -108,6 +108,80 @@ atomic_remove_file() {
 
 ENV_FILE_DEFAULT="${LITCLOCK_ENV_FILE:-/home/pi/litclock/env.sh}"
 
+# env_sh_defaults [LANGUAGE] — print the canonical env.sh body every
+# whole-file seeder writes (litclock-dev#840).
+#
+# THE SINGLE SOURCE. This block was hand-copied into first-boot.sh,
+# reset-setup.sh and prepare-for-cloning.sh, and the copies drifted: measured
+# at litclock-dev#783, they seeded 9, 10 and 8 of the sample's keys, so a
+# device was born missing knobs depending on which path created it. The
+# highest-fanout copy (prepare-for-cloning, the "SD Cards for Friends &
+# Family" flow) was the worst. One function means a new env.sh.sample key is
+# added in two places — the sample and here — not five.
+#
+# CONTRACT, all three parts load-bearing:
+#
+#   1. KEY SET. Must cover EVERY key in env.sh.sample.
+#      tests/test_first_boot_flow.py::test_env_sh_defaults_helper_matches_sample
+#      executes this function and compares against the sample.
+#   2. COMMENT STATUS is copied from the sample and is NOT cosmetic. An
+#      ACTIVE `LITCLOCK_RENDER_LEAD_S` hard-pins 4 into the field and makes a
+#      later retune leave every device rendering the wrong minute (litclock-dev#762);
+#      an active-but-EMPTY value is parsed at import above the litclock-dev#531
+#      `except BaseException` guard and kills the painter every minute.
+#   3. TRAILING NEWLINE. The body ends with one. update.sh Phase 3 APPENDS
+#      missing sample keys with `>>`, so a body without it would splice the
+#      first appended key onto `# export LOG_LEVEL=WARNING`. Command
+#      substitution STRIPS trailing newlines, so every caller re-adds one:
+#      `DEFAULTS=$(env_sh_defaults)$'\n'`. Do not "simplify" that away.
+#
+# VALUES may differ from the sample and two deliberately do: the sample
+# documents WEATHER_LATITUDE/LONGITUDE with real Austin coordinates as an
+# example, while a seeded device must leave them EMPTY. With
+# WEATHER_LOCATION_MODE=auto the IP-geo resolver fills them on a good boot;
+# on the ip-api.com-blocked path a seeded coordinate would render Austin
+# weather on a device that is not in Austin — worse than an honest empty.
+#
+# LANGUAGE ($1, optional) seeds LITCLOCK_LANGUAGE. Empty (the default, used by
+# first-boot and prepare-for-cloning) keeps Accept-Language negotiation alive
+# on the next first boot — the litclock-dev#743 empty-seed contract. reset-setup.sh passes
+# the gift language so every env-reading surface on the recipient's device
+# boots in the gifter's chosen language (litclock-dev#532).
+#
+# The shape gate travels WITH the interpolation point (Codex 5b /review): this
+# value is interpolated into a root-written env.sh, so anything outside the
+# language-tag alphabet is dropped rather than shipped. reset-setup.sh gates
+# and WARNS before calling, so in practice this never fires — it is here so
+# that moving the interpolation into this file did not leave the belt behind.
+env_sh_defaults() {
+    local language="${1-}"
+    if [[ -n "$language" && ! "$language" =~ ^[a-z][a-z0-9-]{0,16}$ ]]; then
+        echo "[state] env_sh_defaults: language '$language' failed the shape check; seeding empty" >&2
+        language=""
+    fi
+    cat <<EOF
+# export OPENWEATHERMAP_APIKEY=
+export WEATHER_ENABLED=true
+export WEATHER_LATITUDE=
+export WEATHER_LONGITUDE=
+export WEATHER_LOCATION_NAME=
+export WEATHER_UNITS=imperial
+export WEATHER_LOCATION_MODE=auto
+export WEATHER_IP_COUNTRY=
+export WEATHER_LAST_IP_GEO_AT=
+export WEATHER_TTL=3600
+export ALLOW_NSFW_QUOTES=false
+export LITCLOCK_LANGUAGE=$language
+export SHOW_DIAGNOSTICS_SHORTCUT=false
+export GIFT_MODE_MESSAGE=
+export LITCLOCK_RUNTIME_RENDER=false
+# export DISPLAY_CLEAR_HOUR=2
+# export LITCLOCK_RENDER_LEAD_S=4
+# export WEATHER_API_TIMEOUT=15
+# export LOG_LEVEL=WARNING
+EOF
+}
+
 # atomic_write_env_sh DEST CONTENT — overwrite env.sh atomically under
 # the sidecar flock. CONTENT is the full file body (used by
 # reset-setup.sh + prepare-for-cloning.sh). Preserves ownership + mode

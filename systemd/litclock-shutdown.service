@@ -37,7 +37,89 @@ Conflicts=shutdown.target reboot.target halt.target poweroff.target
 # it *starts* — Conflicts= queues the stop immediately at the beginning of
 # the shutdown transaction either way. litclock-dev#268 needs a proper late-shutdown-hook
 # design, not a one-liner. Tracked separately.
-Before=shutdown.target reboot.target halt.target poweroff.target litclock.service
+#
+# litclock-dev#856: litclock-splash.service joins the same list, for the same
+# reason and with one extra consequence.
+#
+#   STOP DIRECTION (the fix). Before= reverses on shutdown, so our ExecStop
+#   now runs only after the boot splash's stop job has COMPLETED. That
+#   matters because litclock-splash.service is a Type=oneshot whose
+#   ExecStart (boot-splash.sh -> `timeout 20 python src/eink_display.py`)
+#   holds GPIO17/SPI for ~11s of every boot. Stopping a oneshot that is
+#   still in its start state does not run an ExecStop (there is none here)
+#   — it SIGTERMs the whole control group and the stop job finishes when
+#   that cgroup drains, i.e. when the kernel closes the gpiochip handle.
+#   Before this line, a `sudo reboot` inside the splash window left the
+#   splash's stop and our ExecStop unordered siblings — sharing the
+#   successor litclock.service does NOT serialise them — and
+#   shutdown-splash.sh raced the boot splash for the panel, died with the
+#   same `KeyError: PinInfo(... 'GPIO17' ...)` litclock-dev#832 removed from
+#   the boot side, swallowed it on its `|| true` tail, and the boot splash
+#   rode across the power-off. Outside that window the splash has already
+#   exited and its stop job is a no-op, so this edge costs nothing.
+#
+#   NOT A PROOF OF RELEASE, though (litclock-dev#856 review). systemd 252 can finish
+#   a stop in a FAILED state with processes still present once the SIGKILL
+#   timeout expires, so a python wedged in uninterruptible kernel I/O on the
+#   SPI transfer can outlive its own stop job and still hold the panel.
+#   Ordering buys the ordinary case, which is all of them we have seen; it
+#   does not make the race impossible. Residual, not a regression.
+#
+#   PRECONDITION, load-bearing and easy to delete by accident: this edge
+#   only does anything while litclock-splash.service HAS a stop job in the
+#   shutdown transaction, which it has solely because its default
+#   dependencies give it an implicit Conflicts=shutdown.target. Adding
+#   DefaultDependencies=no to the splash — which reads like consistency with
+#   the line four above this one — drops it out of the transaction and
+#   silently turns this Before= into a no-op. Same argument the litclock-dev#271
+#   paragraph makes for litclock.service. Pinned by
+#   test_splash_is_in_the_shutdown_transaction_at_all.
+#
+#   START DIRECTION (a second, smaller hole closed). Before= also means our
+#   /bin/true start job completes before the splash's start job begins.
+#   Both units are WantedBy=multi-user.target and were previously unordered
+#   against each other, so a reboot during the splash window could find US
+#   still activating — and a oneshot stopped out of its start state never
+#   reaches ExecStop, i.e. no shutdown paint at all. Now we are guaranteed
+#   active for the whole splash window. No boot cost: we are
+#   DefaultDependencies=no/After=local-fs.target and the splash carries the
+#   implicit After=basic.target, so we were already ready long before it.
+#
+#   NO CYCLE. Every edge touching these units, start direction:
+#     local-fs.target        -> litclock-shutdown          (After=, ours)
+#     litclock-shutdown      -> litclock-splash            (Before=, litclock-dev#856)
+#     litclock-shutdown      -> litclock.service           (Before=, litclock-dev#271)
+#     litclock-shutdown      -> {shutdown,reboot,halt,poweroff}.target
+#     local-fs -> sysinit.target -> basic.target -> litclock-splash
+#                                                  (splash's After= + implicit)
+#     litclock-splash        -> litclock.service           (After=, litclock-dev#832)
+#     litclock-splash        -> litclock-firstboot.service (firstboot's After=,
+#                               pre-existing; now transitively behind us too)
+#     litclock-splash        -> shutdown.target            (implicit Before=,
+#                               from its default dependencies — the
+#                               PRECONDITION above, and why it has a stop job)
+#   A DAG.
+#   The splash's ExecStartPost hand-off (`systemctl start --no-block
+#   litclock.service`) is not an edge at all — it is a queued job that waits
+#   on the splash's own start job, which is why it must stay --no-block
+#   (litclock-dev#832). Ordering NEVER pulls a unit in, so the splash being
+#   disabled or absent simply drops the edge, and the single-unit
+#   transactions in reset-setup.sh (`systemctl start litclock-shutdown`,
+#   `systemctl stop litclock-splash`) are unaffected: an ordering dep to a
+#   unit with no job in the transaction is ignored.
+#
+#   PAIRED WITH A BOUNDED SPLASH STOP. litclock-splash.service had no
+#   TimeoutStopSec, i.e. DefaultTimeoutStopSec (90s on Bookworm systemd
+#   252) and up to 90s more in the SIGKILL phase, so the splash now carries
+#   TimeoutStopSec=10s. Note what that is NOT for: our 30s below is armed
+#   when ExecStop is SPAWNED, not when this stop job is enqueued, so a slow
+#   predecessor cannot cut the paint short — predecessor budgets are
+#   additive reboot LATENCY in front of it. Unbounded, the one-line ordering
+#   fix would have traded a rare wrong splash for a rare three-minute
+#   reboot, long enough for an impatient owner to pull the power and get no
+#   splash at all. (litclock-dev#271's litclock.service comment stated the containment
+#   backwards; corrected there.)
+Before=shutdown.target reboot.target halt.target poweroff.target litclock.service litclock-splash.service
 After=local-fs.target
 
 [Service]

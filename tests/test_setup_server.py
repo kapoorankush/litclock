@@ -4,6 +4,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -2218,7 +2219,7 @@ class TestWifiPickerPlaceholderAndSort:
         # reject the very path it exists to enable. Asserted against the
         # rendered markup: an earlier version compared the constant to "",
         # which is a tautology that could never fail.
-        assert f'<option value="{setup_server.MANUAL_SSID_VALUE}">' in result
+        assert f'<option value="{setup_server.MANUAL_SSID_VALUE}" data-manual="1">' in result
         rest = result.split("\n", 1)[1]
         assert '<option value="">' not in rest, "only the placeholder may have an empty value"
 
@@ -2359,10 +2360,14 @@ class TestWifiPickerMarkupAndScript:
     def test_refresh_rebuilds_placeholder_and_manual_option(self):
         """Both the success and the failure branch of the Refresh handler."""
         html = setup_server._build_setup_html()
-        script = html[html.index("function refreshNetworks") :]
+        script = html[html.index("<script>") : html.index("</script>")]
         # The manual option is re-appended on every terminal branch, so a
-        # failed scan can't strip the hidden-network path.
-        assert script.count("appendManualOption(select)") >= 2
+        # failed scan can't strip the hidden-network path. Since
+        # litclock-dev#848 every branch reaches it through ONE tail helper,
+        # so the claim is two assertions rather than a count over a region:
+        # the helper re-appends, and every rebuild ends in the helper.
+        assert "appendManualOption(select);" in _js_function(script, "finishRebuild")
+        assert _js_function(script, "refreshNetworks").count("finishRebuild(select,") == 4
         assert "resetSsidOptions" in script
         # No bare `<option value="">…` replacing innerHTML — that was the
         # shape that produced a submittable empty first option.
@@ -2451,23 +2456,36 @@ class TestWifiPickerReviewHardening:
 
     def test_manual_option_survives_even_while_scanning(self):
         """Refresh appends it up front too, so the hidden-network path is
-        never absent from the dropdown at any point in the cycle."""
+        never absent from the dropdown at any point in the cycle. The interim
+        rebuild is the FIRST finishRebuild call in the function, before the
+        fetch is issued."""
         script = self._script()
-        assert script.count("appendManualOption(select)") >= 3
+        body = _js_function(script, "refreshNetworks")
+        assert body.index("finishRebuild(select,") < body.index("fetch(")
 
     def test_ajax_empty_refresh_opens_the_manual_disclosure(self):
         """litclock-dev#615: the server-rendered empty-scan path force-opens the
         manual-SSID <details>, but a Refresh returning [] only swapped the
         placeholder — the hidden-network user who taps Refresh into an empty
         scan was left with the type-it-in field folded away. The empty branch
-        must now open it too. (Reverting the one JS line left the suite green.)"""
+        must now open it too. (Reverting the one JS line left the suite green.)
+
+        Since litclock-dev#848 the mechanism is different but the contract is
+        the same: the branch SELECTS the manual option, and the gate that runs
+        after every rebuild (syncManualSsid) shows and opens the disclosure
+        for exactly that selection. The executed-DOM test in
+        TestManualSsidGate proves the end state; this pins the branch itself.
+        """
         script = self._script()
         empty_branch = script[script.index("networks.length === 0") :]
         empty_branch = empty_branch[
             : empty_branch.index("} else {") if "} else {" in empty_branch else len(empty_branch)
         ]
-        assert "getElementById('manual-ssid')" in empty_branch
-        assert "details.open = true" in empty_branch
+        # `true`, not the recomputed keepManual: an empty scan selects the
+        # manual option whatever the dropdown said before it. The helper both
+        # re-appends the option and runs the gate, which is what opens the
+        # disclosure — selecting it is the whole mechanism since litclock-dev#848.
+        assert "finishRebuild(select, true)" in empty_branch
 
     def test_onssidchange_is_defined_and_wired(self):
         """Deleting the onchange attribute left every test green while
@@ -3241,20 +3259,72 @@ class TestNegotiationReachableFromFreshBoot:
             "concrete code is indistinguishable from a user choice"
         )
 
-    def test_heredocs_seed_the_key_empty(self):
+    # litclock-dev#840 re-pointed these at the single source. The seed line used
+    # to be hand-copied into first-boot.sh and reset-setup.sh, and this guard
+    # walked both as raw text. `env_sh_defaults()` in scripts/lib/state.sh now
+    # emits it, so reset-setup.sh no longer contains the string at all — the
+    # old guard failed on a file that was behaving correctly, which is a guard
+    # pointing at a moved target, not a regression. Kept HERE rather than moved
+    # next to the other helper tests: its siblings above and below are the
+    # behavioural half (`_default_language` with a fresh env vs a persisted
+    # choice), and the /review litclock-dev#742 F1 + litclock-dev#743 reasoning this protects is
+    # written in this class's docstring.
+
+    def test_no_seeder_hardcodes_a_concrete_language(self):
+        """The litclock-dev#742 F1 catch: a seeded concrete code is indistinguishable from
+        a persisted user choice, so it makes Accept-Language negotiation DEAD
+        CODE on every device the seeder provisions.
+
+        Now covers scripts/lib/state.sh too, since that is where the line
+        lives. The regex matches `export LITCLOCK_LANGUAGE=` followed by a
+        LETTER, so the helper's legitimate `=$language` (a `$`) passes while
+        `=en` fails — and so does a hardcoded default smuggled into the
+        parameter expansion, because `${1-en}` would still have to render a
+        concrete code into the emitted line, which the output check below
+        catches directly.
+        """
         from pathlib import Path as _Path
 
         root = _Path(setup_server.__file__).resolve().parents[1]
-        for script in ("scripts/first-boot.sh", "scripts/reset-setup.sh"):
+        concrete = re.compile(r"export LITCLOCK_LANGUAGE=[A-Za-z]")
+        for script in ("scripts/lib/state.sh", "scripts/first-boot.sh", "scripts/reset-setup.sh"):
             body = (root / script).read_text()
-            assert "export LITCLOCK_LANGUAGE=en" not in body, (
-                f"{script} seeds a concrete language — negotiation goes dead "
+            hit = concrete.search(body)
+            assert not hit, (
+                f"{script} seeds a concrete language ({hit.group(0)!r}) — negotiation goes dead "
                 "on every device it provisions (/review litclock-dev#742 follow-up F1)"
             )
-            assert "export LITCLOCK_LANGUAGE=" in body, (
-                f"{script} lost the empty seed — the dormant POST would append "
-                "instead of replacing in place"
-            )
+
+    def test_the_helper_emits_the_key_empty_by_default(self):
+        """The empty-seed half, asserted on the helper's OUTPUT.
+
+        Stronger than the substring this used to be: it catches a hardcoded
+        default in the parameter expansion (`${1-en}`), which no source-text
+        check for the literal `=en` would see. The empty value is what lets the
+        dormant POST replace the line IN PLACE instead of appending a second one.
+        """
+        from tests.test_first_boot_flow import env_sh_defaults
+
+        assert "export LITCLOCK_LANGUAGE=\n" in env_sh_defaults(), (
+            "env_sh_defaults() must seed LITCLOCK_LANGUAGE EMPTY — a concrete default is "
+            "indistinguishable from a user choice and kills negotiation (litclock-dev#742 F1, litclock-dev#743)"
+        )
+        # And the argument still works, so "empty" is not achieved by dropping
+        # the knob: reset-setup.sh's gift-mode seed depends on it (litclock-dev#532).
+        assert "export LITCLOCK_LANGUAGE=de\n" in env_sh_defaults("de")
+
+    def test_first_boot_fallback_heredoc_still_seeds_it_empty(self, tmp_path):
+        """first-boot's lib/state.sh-missing arm does NOT route through the
+        helper (it is the arm for "state.sh is unusable"), so the line is still
+        a literal there and needs its own check. EXECUTED — assert on the
+        env.sh that arm actually writes."""
+        from tests.test_first_boot_flow import _run_first_boot_default_env
+
+        written = _run_first_boot_default_env(tmp_path, with_state_lib=False)
+        assert "export LITCLOCK_LANGUAGE=\n" in written, (
+            "first-boot's state.sh-missing fallback wrote an env.sh without the empty language "
+            "seed — a device born from that arm cannot negotiate (litclock-dev#742 F1)"
+        )
 
     def test_persisted_choice_still_survives_a_server_restart(self, tmp_path, monkeypatch):
         # The env step's real job: first-boot's crash-restart loop loses
@@ -3266,3 +3336,726 @@ class TestNegotiationReachableFromFreshBoot:
         monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(tmp_path / "absent"))
         monkeypatch.setattr(setup_server, "SUBMITTED_LANGUAGE", "")  # fresh process
         assert setup_server._default_language("en-US") == "de"
+
+
+# ── litclock-dev#848 — the manual-SSID field is gated on the manual option ──
+
+
+# Runs the setup page's ONE inline <script> against a minimal DOM stub, drives
+# the manual-SSID gate through a scenario, and prints snapshots. Same shape as
+# the JS-parity harness in test_translator_kit.py: the page's JS is not under
+# vitest (vitest covers src/control_server/static/js only), and a source-text
+# assertion cannot tell "the field ends up hidden" from "a comment mentions
+# hidden". The stub models exactly what the script touches and throws on
+# anything else, so a script that starts using a DOM feature the stub lacks
+# fails loudly rather than silently passing.
+#
+# Two stub behaviours are modelled from the browser rather than invented, and
+# the tests lean on both:
+#   * setting option.selected = true DESELECTS its siblings, as a single
+#     <select> does — otherwise selecting the manual option would leave the
+#     placeholder selected too and .value would keep answering the old one;
+#   * .value returns the SELECTED option's value, or '' when none is selected.
+#     A real single-select never sits in that state — it auto-selects the
+#     first non-disabled option — and the stub agrees with browsers here only
+#     because every rebuild path in the page selects the (disabled)
+#     placeholder first, which suppresses that auto-selection. A future
+#     rebuild that appends options WITHOUT a leading selected placeholder
+#     would diverge: the browser would silently select the first network, the
+#     stub would report ''. Keep the placeholder-first discipline.
+_GATE_HARNESS = r"""
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const [, , scriptPath, scenarioPath] = process.argv;
+const script = fs.readFileSync(scriptPath, 'utf8');
+const scenario = JSON.parse(fs.readFileSync(scenarioPath, 'utf8'));
+
+class Option {
+  constructor() {
+    this.value = ''; this.textContent = ''; this.disabled = false;
+    this.dataset = {}; this._selected = false; this._parent = null;
+  }
+  get selected() { return this._selected; }
+  set selected(v) {
+    this._selected = !!v;
+    if (this._selected && this._parent) {
+      this._parent.children.forEach((o) => { if (o !== this) o._selected = false; });
+    }
+  }
+}
+class Select {
+  constructor(options) {
+    this.children = [];
+    options.forEach((spec) => {
+      const o = new Option();
+      o.value = spec.value; o.disabled = spec.disabled; o._selected = spec.selected;
+      if (spec.manual) o.dataset.manual = '1';
+      o._parent = this;
+      this.children.push(o);
+    });
+  }
+  get options() { return this.children; }
+  get value() { const hit = this.children.find((o) => o._selected); return hit ? hit.value : ''; }
+  set value(v) {
+    let done = false;
+    this.children.forEach((o) => { o._selected = !done && o.value === v; if (o._selected) done = true; });
+  }
+  set innerHTML(v) { if (v !== '') throw new Error("stub supports innerHTML = '' only"); this.children = []; }
+  appendChild(o) { o._parent = this; this.children.push(o); }
+}
+const select = new Select(scenario.options);
+const details = { hidden: false, open: scenario.details_open };
+const input = {
+  value: scenario.input_value, required: scenario.input_required,
+  focusCalls: 0, focus() { this.focusCalls += 1; },
+};
+const byId = { 'wifi-ssid': select, 'manual-ssid': details, 'wifi-ssid-manual': input };
+const document = {
+  getElementById(id) { return Object.prototype.hasOwnProperty.call(byId, id) ? byId[id] : null; },
+  createElement(tag) { if (tag !== 'option') throw new Error('stub: createElement ' + tag); return new Option(); },
+};
+const listeners = {};
+const window = {
+  addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+};
+let fetchCalls = 0;
+function fetch() {
+  fetchCalls += 1;
+  const f = scenario.fetch;
+  if (!f) return Promise.reject(new Error('fetch was not expected in this scenario'));
+  if (f.reject) return Promise.reject(new Error('scan failed'));
+  return Promise.resolve({ json: () => Promise.resolve(f.networks) });
+}
+const ctx = vm.createContext({ document, window, fetch, setTimeout, clearTimeout, AbortController, console });
+vm.runInContext(script, ctx);  // the load-time pass runs here
+
+function selectedOption() { return select.children.find((o) => o._selected) || null; }
+function snapshot(label) {
+  const sel = selectedOption();
+  return {
+    label, select: select.value, options: select.children.map((o) => o.value),
+    manualOptions: select.children.filter((o) => o.dataset.manual).length,
+    selectedIsManual: !!(sel && sel.dataset.manual),
+    hidden: details.hidden, open: details.open, input: input.value,
+    required: input.required, focusCalls: input.focusCalls, fetchCalls,
+    listeners: Object.keys(listeners),
+  };
+}
+(async () => {
+  const out = [];
+  for (const [op, arg] of scenario.steps) {
+    if (op === 'select') select.value = arg;
+    else if (op === 'selectIndex') select.children[arg].selected = true;
+    else if (op === 'change') ctx.onSsidChange();
+    else if (op === 'type') input.value = arg;
+    else if (op === 'refresh') ctx.refreshNetworks();
+    else if (op === 'fire') (listeners[arg] || []).forEach((fn) => fn());
+    else if (op === 'settle') await new Promise((r) => setTimeout(r, 20));
+    else if (op === 'snapshot') out.push(snapshot(arg));
+    else throw new Error('unknown step ' + op);
+  }
+  process.stdout.write(JSON.stringify(out));
+})().catch((e) => { console.error(e.stack); process.exit(1); });
+"""
+
+_DETAILS_SHUT = '<details id="manual-ssid" style="margin-bottom:14px;">'
+_DETAILS_OPEN = '<details id="manual-ssid" style="margin-bottom:14px;" open>'
+
+
+def _js_function(script, name):
+    """The body of one JS function, comments stripped.
+
+    Both halves matter. Slicing to the function's OWN closing brace stops an
+    assertion drifting into the next function; stripping `//` comments stops
+    it being satisfied by prose — this repo has shipped both mistakes, and a
+    gate whose only evidence is a comment describing the gate is precisely
+    the failure these tests exist to rule out.
+    """
+    start = script.index(f"function {name}(")
+    open_brace = script.index("{", start)
+    depth = 0
+    for i in range(open_brace, len(script)):
+        if script[i] == "{":
+            depth += 1
+        elif script[i] == "}":
+            depth -= 1
+            if depth == 0:
+                body = script[open_brace + 1 : i]
+                return "\n".join(re.sub(r"//.*$", "", line) for line in body.split("\n"))
+    raise AssertionError(f"unbalanced braces in function {name}")
+
+
+def _page_state(html):
+    """Lift the rendered picker's initial state out of the HTML, so the
+    executed scenarios start from what the SERVER produced rather than from
+    a hand-written approximation of it."""
+    import html as html_mod
+
+    select = html[html.index('<select id="wifi-ssid"') : html.index("</select>")]
+    options = [
+        {
+            "value": html_mod.unescape(value),
+            "selected": " selected" in attrs,
+            "disabled": " disabled" in attrs,
+            "manual": 'data-manual="1"' in attrs,
+        }
+        for value, attrs in re.findall(r'<option value="([^"]*)"([^>]*)>', select)
+    ]
+    assert _DETAILS_SHUT in html or _DETAILS_OPEN in html, "the <details> tag changed shape"
+    field = re.search(r'<input type="text" id="wifi-ssid-manual".*?value="([^"]*)"', html, re.S)
+    assert field is not None
+    assert html.count("<script>") == 1, "the page grew a second <script>; the harness runs the first"
+    script = html[html.index("<script>") + len("<script>") : html.index("</script>")]
+    return {
+        "options": options,
+        "details_open": _DETAILS_OPEN in html,
+        "input_value": html_mod.unescape(field.group(1)),
+        "input_required": "required" in field.group(0),
+    }, script
+
+
+class TestManualSsidGate:
+    """litclock-dev#848: the "type it myself" text box used to be fillable
+    alongside a dropdown pick, and the two could disagree — the server's
+    precedence rule (a picked network wins; see
+    tests/test_wifi_retry_flow.py::TestManualSsidEntry) resolved it silently,
+    which is the confusion the issue describes. Now the box is only usable
+    while the manual option IS the dropdown's selection.
+
+    Two layers, deliberately: the executed-DOM tests prove the behaviour;
+    the source-text tests are the floor that still runs where node is
+    absent, and pin the no-JS contract, which no script can prove.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub_scan(self, monkeypatch):
+        import sys
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_NETWORKS", None)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_TIME", 0)
+        monkeypatch.setattr(setup_server, "_WIFI_SCAN_SSIDS", frozenset())
+        monkeypatch.setattr(setup_server, "WIFI_LAST_MANUAL_SSID", "")
+        monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", None)
+        monkeypatch.setattr(setup_server, "HOTSPOT_SSID", "LitClock-Setup")
+        self.scan = [{"ssid": "FakeHomeNet", "signal": 75, "security": "WPA2"}]
+        mock_wifi = MagicMock()
+        mock_wifi.scan_wifi_networks = lambda: self.scan
+        monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
+
+    # ── executed against the page's real script ──
+
+    def _run(self, tmp_path, html, steps, fetch=None):
+        import json
+        import os
+        import shutil
+
+        node = shutil.which("node")
+        if node is None:
+            # Skipping locally is a convenience; skipping in CI would mean the
+            # only executed proof of the gate disappears the day the runner
+            # image drops node, silently and with the suite green. The pytest
+            # job does not run actions/setup-node — it relies on the image —
+            # so the guard belongs here.
+            if os.environ.get("CI"):
+                pytest.fail("node is missing in CI — the executed-DOM gate checks cannot be skipped there")
+            pytest.skip("node not installed — the executed-DOM gate check is dev/CI only")
+        state, script = _page_state(html)
+        state["steps"] = steps
+        state["fetch"] = fetch
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "page.js").write_text(script, encoding="utf-8")
+        (tmp_path / "scenario.json").write_text(json.dumps(state), encoding="utf-8")
+        (tmp_path / "harness.js").write_text(_GATE_HARNESS, encoding="utf-8")
+        result = subprocess.run(
+            [node, str(tmp_path / "harness.js"), str(tmp_path / "page.js"), str(tmp_path / "scenario.json")],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, f"node harness failed:\n{result.stderr}"
+        return {snap["label"]: snap for snap in json.loads(result.stdout)}
+
+    def test_clean_load_hides_the_field_and_the_option_reveals_it(self, tmp_path):
+        """The 95% case: a scan with networks. The field is not on offer at
+        load, appears (open, focused, required) the moment the manual option
+        is picked, and the placeholder — the one selection the browser can't
+        submit — never shows it."""
+        manual = setup_server.MANUAL_SSID_VALUE
+        snaps = self._run(
+            tmp_path,
+            setup_server._build_setup_html(),
+            [["snapshot", "load"], ["select", manual], ["change"], ["snapshot", "manual"]],
+        )
+        assert snaps["load"]["select"] == ""
+        assert snaps["load"]["hidden"] is True, "the field must be gated off until the manual option is picked"
+        assert snaps["load"]["required"] is False
+        assert snaps["load"]["focusCalls"] == 0
+        assert snaps["manual"]["hidden"] is False
+        assert snaps["manual"]["open"] is True
+        assert snaps["manual"]["required"] is True
+        assert snaps["manual"]["focusCalls"] == 1, "picking the option must focus the field the user now has to fill"
+
+    def test_picking_a_real_network_hides_and_blanks_the_typed_name(self, tmp_path):
+        """The state the issue is about: text in the box AND a network in the
+        dropdown. A real pick must take the typed name out of play on the
+        client too — a stale entry under a hidden field would POST silently
+        and rely on the server's precedence rule alone."""
+        manual = setup_server.MANUAL_SSID_VALUE
+        snaps = self._run(
+            tmp_path,
+            setup_server._build_setup_html(),
+            [
+                ["select", manual],
+                ["change"],
+                ["type", "MyHiddenNet"],
+                ["select", "FakeHomeNet"],
+                ["change"],
+                ["snapshot", "picked"],
+            ],
+        )
+        assert snaps["picked"]["select"] == "FakeHomeNet"
+        assert snaps["picked"]["hidden"] is True
+        assert snaps["picked"]["input"] == "", "a real pick must blank the typed name, not just hide it"
+        assert snaps["picked"]["required"] is False, "a required field inside a hidden <details> is unsubmittable"
+        assert snaps["picked"]["focusCalls"] == 1, "only the manual pick focuses; a network pick must not"
+
+    def test_retry_echo_arrives_usable_without_a_load_time_focus(self, tmp_path, monkeypatch):
+        """A failed join of a hand-typed name re-renders with the name echoed
+        (litclock-dev#580). The gate must not hide that echo — so the server pre-selects
+        the manual option — and must not focus it at load either, which would
+        open the keyboard over the form (litclock-dev#671)."""
+        monkeypatch.setattr(setup_server, "WIFI_LAST_MANUAL_SSID", "MyHiddenNet")
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", "Incorrect WiFi password")
+        snaps = self._run(tmp_path, setup_server._build_setup_html(), [["snapshot", "load"]])
+        assert snaps["load"]["select"] == setup_server.MANUAL_SSID_VALUE
+        assert snaps["load"]["selectedIsManual"] is True
+        assert snaps["load"]["hidden"] is False
+        assert snaps["load"]["open"] is True
+        assert snaps["load"]["input"] == "MyHiddenNet"
+        assert snaps["load"]["focusCalls"] == 0
+
+    def test_empty_scan_arrives_usable_and_required(self, tmp_path):
+        """No networks: typing the name is the only way forward (litclock-dev#554/litclock-dev#615),
+        so the page must arrive with the manual option selected and the field
+        showing — under the gate, one implies the other. `required` is the
+        other half: on this page Submit with only a password would otherwise
+        POST an empty name and come back as a full-page error that loses the
+        password the user just typed."""
+        self.scan = []
+        snaps = self._run(tmp_path, setup_server._build_setup_html(), [["snapshot", "load"]])
+        assert snaps["load"]["select"] == setup_server.MANUAL_SSID_VALUE
+        assert snaps["load"]["hidden"] is False
+        assert snaps["load"]["open"] is True
+        assert snaps["load"]["required"] is True
+
+    def test_refresh_into_an_empty_scan_selects_the_option_and_shows_the_field(self, tmp_path):
+        """The AJAX twin of the empty-scan render (litclock-dev#615): a Refresh
+        that returns [] must leave the user with the field they need, not a
+        rebuilt dropdown on its placeholder and the field gated away."""
+        snaps = self._run(
+            tmp_path,
+            setup_server._build_setup_html(),
+            [["refresh"], ["settle"], ["snapshot", "after"]],
+            fetch={"networks": []},
+        )
+        assert snaps["after"]["fetchCalls"] == 1
+        assert snaps["after"]["select"] == setup_server.MANUAL_SSID_VALUE
+        assert snaps["after"]["options"] == ["", setup_server.MANUAL_SSID_VALUE]
+        assert snaps["after"]["hidden"] is False
+        assert snaps["after"]["open"] is True
+        assert snaps["after"]["required"] is True
+
+    def test_refresh_keeps_a_selected_manual_option_and_its_typed_name(self, tmp_path):
+        """A hidden-network owner who has already picked the option and typed
+        the name, then taps Refresh to double-check, must not watch the name
+        vanish: the rebuild re-selects the option and the gate keeps the
+        field. The mirror case — Refresh with a real network picked — lands
+        on the placeholder with the field gated off, and the name typed
+        earlier is left alone (a Refresh is not a decision the user made
+        about it)."""
+        manual = setup_server.MANUAL_SSID_VALUE
+        nets = {"networks": [{"ssid": "FakeHomeNet", "signal": 75, "security": "WPA2"}]}
+        kept = self._run(
+            tmp_path,
+            setup_server._build_setup_html(),
+            [
+                ["select", manual],
+                ["change"],
+                ["type", "MyHiddenNet"],
+                ["refresh"],
+                ["snapshot", "scanning"],
+                ["settle"],
+                ["snapshot", "after"],
+            ],
+            fetch=nets,
+        )
+        assert kept["scanning"]["select"] == manual, "the option must stay selected while the scan runs"
+        assert kept["scanning"]["hidden"] is False
+        assert kept["after"]["options"] == ["", "FakeHomeNet", manual]
+        assert kept["after"]["select"] == manual
+        assert kept["after"]["hidden"] is False
+        assert kept["after"]["input"] == "MyHiddenNet"
+
+        dropped = self._run(
+            tmp_path / "mirror",
+            setup_server._build_setup_html(),
+            [["select", "FakeHomeNet"], ["change"], ["refresh"], ["settle"], ["snapshot", "after"]],
+            fetch=nets,
+        )
+        assert dropped["after"]["select"] == ""
+        assert dropped["after"]["hidden"] is True
+
+    def test_picking_manual_DURING_a_scan_survives_the_response(self, tmp_path):
+        """A scan runs 2-20s on real hardware and the dropdown stays live the
+        whole time. Sampling "was the manual option selected?" only at the
+        START loses the user who taps Refresh, sees nothing useful, picks
+        "type it myself" and begins typing — the response then lands, rebuilds
+        the dropdown to its placeholder, and the gate hides the field they are
+        typing into, text intact but invisible. All three review passes found
+        this independently."""
+        manual = setup_server.MANUAL_SSID_VALUE
+        snaps = self._run(
+            tmp_path,
+            setup_server._build_setup_html(),
+            [
+                ["refresh"],
+                ["select", manual],
+                ["change"],
+                ["type", "MyHiddenNet"],
+                ["snapshot", "mid"],
+                ["settle"],
+                ["snapshot", "after"],
+            ],
+            fetch={"networks": [{"ssid": "FakeHomeNet", "signal": 75, "security": "WPA2"}]},
+        )
+        assert snaps["mid"]["hidden"] is False
+        assert snaps["after"]["select"] == manual, "the pick made DURING the scan must survive the rebuild"
+        assert snaps["after"]["hidden"] is False
+        assert snaps["after"]["input"] == "MyHiddenNet"
+        assert snaps["after"]["required"] is True
+
+    def test_a_sentinel_named_ap_never_steals_the_manual_selection(self, tmp_path):
+        """MANUAL_SSID_VALUE's own comment allows that an AP could broadcast
+        the sentinel name. It renders among the scanned networks, AHEAD of the
+        real manual option, so selecting by value would select the neighbour's
+        AP: the submit still reaches the typed name (the server reads the
+        submitted value as the sentinel either way) while the dropdown names a
+        different network — the exact ambiguity litclock-dev#848 removes. Selection goes
+        by the data-manual marker instead."""
+        manual = setup_server.MANUAL_SSID_VALUE
+        snaps = self._run(
+            tmp_path,
+            setup_server._build_setup_html(),
+            [
+                ["select", manual],
+                ["change"],
+                ["type", "MyHiddenNet"],
+                ["refresh"],
+                ["settle"],
+                ["snapshot", "after"],
+            ],
+            fetch={"networks": [{"ssid": manual, "signal": 90, "security": "WPA2"}]},
+        )
+        # Two options now carry the sentinel VALUE; exactly one is the real
+        # manual option, and it is the one that must end up selected.
+        assert snaps["after"]["options"] == ["", manual, manual]
+        assert snaps["after"]["manualOptions"] == 1
+        assert snaps["after"]["selectedIsManual"] is True, "the scanned AP stole the selection"
+        assert snaps["after"]["hidden"] is False
+        assert snaps["after"]["input"] == "MyHiddenNet"
+
+    def test_a_failed_refresh_still_runs_the_gate(self, tmp_path):
+        """The catch branch rebuilds the dropdown too; a rebuild the gate
+        never sees would leave the field's visibility describing the list
+        from before the scan."""
+        manual = setup_server.MANUAL_SSID_VALUE
+        snaps = self._run(
+            tmp_path,
+            setup_server._build_setup_html(),
+            [["select", manual], ["change"], ["refresh"], ["settle"], ["snapshot", "after"]],
+            fetch={"reject": True},
+        )
+        assert snaps["after"]["fetchCalls"] == 1
+        assert snaps["after"]["options"] == ["", manual]
+        assert snaps["after"]["select"] == manual
+        assert snaps["after"]["hidden"] is False
+
+    def test_a_bfcache_restore_reruns_the_gate(self, tmp_path):
+        """iOS Safari restores form state AFTER the load-time pass has run, so
+        a back-navigation onto a page it puts back on the manual option would
+        show the gate's verdict for the other selection: field hidden, name
+        still in it. pageshow fires on both a fresh load and a restore."""
+        manual = setup_server.MANUAL_SSID_VALUE
+        snaps = self._run(
+            tmp_path,
+            setup_server._build_setup_html(),
+            [
+                ["snapshot", "load"],
+                ["select", manual],
+                ["snapshot", "restored"],
+                ["fire", "pageshow"],
+                ["snapshot", "after"],
+            ],
+        )
+        assert snaps["load"]["listeners"] == ["pageshow"]
+        assert snaps["load"]["hidden"] is True
+        # The restore itself changes the selection without firing onchange —
+        # that is the whole problem — so the page is momentarily inconsistent.
+        assert snaps["restored"]["hidden"] is True
+        assert snaps["after"]["hidden"] is False
+        assert snaps["after"]["required"] is True
+        assert snaps["after"]["focusCalls"] == 0, "a restore must not open the keyboard"
+
+    # ── source-text floor, and the no-JS contract ──
+
+    def test_the_server_never_renders_the_disclosure_hidden(self):
+        """THE no-JS invariant. Captive-portal WebViews routinely run with
+        JavaScript off, and the repo's rule is that the form still works
+        there (CLAUDE.md, "No-JS form fallback"). The gate is therefore a
+        load-time SCRIPT decision: the markup must arrive visible in every
+        render state — including the two that PRE-SELECT the manual option,
+        where a hidden disclosure would leave the no-JS user with a selected
+        option and no field to fill.
+
+        `required` is checked here too, and for the opposite reason: with JS
+        off nothing can take it off again, and a required control inside a
+        collapsed <details> makes the whole form silently unsubmittable.
+        """
+        # All four render states, including the two that PRE-SELECT the
+        # manual option — those are the ones a hidden disclosure would strand.
+        # The fixture already monkeypatched these globals, so assigning here
+        # overwrites its value and its undo still restores the real one.
+        states = [
+            ("clean", "", None, self.scan),
+            ("echo", "MyHiddenNet", "Incorrect WiFi password", self.scan),
+            ("error-only", "", "Incorrect WiFi password", self.scan),
+            ("empty-scan", "", None, []),
+        ]
+        for label, last_manual, error, scan in states:
+            setup_server.WIFI_LAST_MANUAL_SSID = last_manual
+            setup_server.WIFI_CONNECT_ERROR = error
+            self.scan = scan
+            # Cold the scan cache per state. Without this the earlier states'
+            # successful scans stay cached for the TTL and the "empty-scan"
+            # state silently renders the POPULATED page — which is how this
+            # very state passed against a server that marked the field
+            # `required` on exactly the empty-scan render (measured).
+            setup_server._WIFI_SCAN_NETWORKS = None
+            setup_server._WIFI_SCAN_TIME = 0
+            html = setup_server._build_setup_html()
+            # Scoped to the <select>: the empty-scan copy also appears in the
+            # script's own Refresh branch, so `in html` is true on every page.
+            picker = html[html.index('<select id="wifi-ssid"') : html.index("</select>")]
+            empty_page = setup_server._wifi_placeholder_empty_text() in picker
+            assert empty_page == (scan == []), f"[{label}] is not the render state it claims to be"
+            tag = html[html.index("<details") : html.index(">", html.index("<details")) + 1]
+            assert not re.search(r"\bhidden\b", tag), f"[{label}] the server must not hide the disclosure: {tag}"
+            assert "display:none" not in tag and "display: none" not in tag
+            assert _DETAILS_SHUT in html or _DETAILS_OPEN in html
+            field = re.search(r'<input type="text" id="wifi-ssid-manual".*?>', html, re.S).group(0)
+            assert not re.search(r"\brequired\b", field), f"[{label}] server-side required bricks the no-JS form"
+        # And the hiding happens at LOAD, from script: the bare call and the
+        # bfcache listener are the script's last two statements, after the
+        # elements exist.
+        self.scan = [{"ssid": "FakeHomeNet", "signal": 75, "security": "WPA2"}]
+        html = setup_server._build_setup_html()
+        script = html[html.index("<script>") : html.index("</script>")]
+        statements = [
+            line.strip()
+            for line in re.sub(r"//.*", "", script).split("\n")
+            if line.strip() and not line.strip().startswith("<")
+        ]
+        assert statements[-2:] == [
+            "syncManualSsid();",
+            "window.addEventListener('pageshow', syncManualSsid);",
+        ], f"the load-time pass and the pageshow listener must close the script, got {statements[-2:]}"
+
+    def test_the_gate_binds_to_the_rendered_ids(self):
+        """A rename of any of the three ids on either side leaves the gate
+        looking up nothing and silently returning — the field would then be
+        visible with JS on, which is the pre-litclock-dev#848 page."""
+        html = setup_server._build_setup_html()
+        script = html[html.index("<script>") : html.index("</script>")]
+        body = _js_function(script, "syncManualSsid")
+        for element_id in ("wifi-ssid", "manual-ssid", "wifi-ssid-manual"):
+            assert f'id="{element_id}"' in html, f"markup lost id={element_id}"
+            assert f"getElementById('{element_id}')" in body, f"syncManualSsid stopped looking up {element_id}"
+        assert "details.hidden = !manual" in body
+        assert "input.required = manual" in body
+        # Every path that changes the dropdown ends in the gate. Asserted
+        # against comment-stripped function BODIES: the same claims made
+        # against the whole page were satisfiable by the comments that
+        # explain them.
+        assert "syncManualSsid();" in _js_function(script, "onSsidChange")
+        assert "syncManualSsid();" in _js_function(script, "finishRebuild")
+        refresh = _js_function(script, "refreshNetworks")
+        assert refresh.count("finishRebuild(select,") == 4, "interim, empty, success and failure rebuilds"
+        assert 'onchange="onSsidChange()"' in html
+
+    def test_the_manual_option_is_selected_by_marker_not_by_value(self):
+        """The source half of the sentinel-named-AP case: both builders mark
+        the option, and the selector reads the marker. A `select.value = ...`
+        here would pick whichever option holds that value first."""
+        html = setup_server._build_setup_html()
+        script = html[html.index("<script>") : html.index("</script>")]
+        assert 'data-manual="1"' in html, "the server-rendered option lost its marker"
+        assert "opt.dataset.manual = '1';" in _js_function(script, "appendManualOption")
+        finder = _js_function(script, "manualOption")
+        assert "dataset.manual" in finder
+        chooser = _js_function(script, "selectManualOption")
+        assert "manualOption(select)" in chooser
+        assert "select.value =" not in chooser
+
+    def test_build_wifi_options_select_manual_moves_the_selection(self):
+        """Exactly one option is ever selected, and select_manual moves that
+        from the placeholder to the manual option — leaving the placeholder
+        disabled, so the retry/empty-scan page still cannot submit it."""
+        nets = [{"ssid": "HomeWiFi", "signal": 80, "security": "WPA2"}]
+        default = setup_server._build_wifi_options(nets)
+        moved = setup_server._build_wifi_options(nets, select_manual=True)
+        assert default.count(" selected") == 1 and moved.count(" selected") == 1
+        assert '<option value="" selected disabled>' in default
+        assert f'<option value="{setup_server.MANUAL_SSID_VALUE}" data-manual="1">' in default
+        assert '<option value="" disabled>' in moved
+        assert f'<option value="{setup_server.MANUAL_SSID_VALUE}" data-manual="1" selected>' in moved
+        assert 'value="HomeWiFi"' in moved
+
+    def test_an_empty_list_selects_the_manual_option_whatever_the_caller_asked(self):
+        """The rule lives at the site that knows: with no networks the manual
+        option is the only one `required` accepts, so a caller that forgot the
+        flag would render a page whose only usable control is gated off."""
+        forced = setup_server._build_wifi_options([], select_manual=False)
+        assert f'<option value="{setup_server.MANUAL_SSID_VALUE}" data-manual="1" selected>' in forced
+        assert " selected disabled>" not in forced
+
+    def test_retry_echo_preselects_the_manual_option_and_a_clean_render_does_not(self, monkeypatch):
+        clean = setup_server._build_setup_html()
+        assert f'<option value="{setup_server.MANUAL_SSID_VALUE}" data-manual="1">' in clean
+        assert '<option value="" selected disabled>' in clean
+        monkeypatch.setattr(setup_server, "WIFI_LAST_MANUAL_SSID", "MyHiddenNet")
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", "Incorrect WiFi password")
+        echoed = setup_server._build_setup_html()
+        assert f'<option value="{setup_server.MANUAL_SSID_VALUE}" data-manual="1" selected>' in echoed
+        assert '<option value="" selected disabled>' not in echoed
+        assert 'value="MyHiddenNet"' in echoed
+
+    def test_the_echo_is_read_once_for_both_the_selection_and_the_value(self):
+        """Two unlocked reads straddled _wifi_network_options, which can sit
+        seconds inside an nmcli rescan: a connect thread storing or clearing
+        the echo in that window rendered a dropdown and a text box that
+        disagreed. One read, into a local."""
+        src = pathlib.Path(setup_server.__file__).read_text()
+        body = src[src.index("def _build_setup_html") : src.index("HTML_SUCCESS =")]
+        assert body.count("WIFI_LAST_MANUAL_SSID") == 1, "the global must be read exactly once per render"
+        assert "last_manual = WIFI_LAST_MANUAL_SSID" in body
+        assert "select_manual=bool(last_manual)" in body
+        assert "html.escape(last_manual)" in body
+
+    def test_empty_scan_preselects_the_manual_option(self):
+        """The cache-miss empty branch is its own return site in
+        _wifi_network_options."""
+        self.scan = []
+        options, was_empty = setup_server._wifi_network_options()
+        assert was_empty is True
+        assert f'<option value="{setup_server.MANUAL_SSID_VALUE}" data-manual="1" selected>' in options
+        assert setup_server._wifi_placeholder_empty_text() in options
+        assert " selected disabled>" not in options
+
+    def test_a_connect_error_alone_does_not_preselect_the_manual_option(self, monkeypatch):
+        """A list-picked join that failed re-renders with the banner and the
+        disclosure force-open (litclock-dev#580, kept for the no-JS page) — but nothing
+        was typed, so the dropdown must NOT arrive on the manual option. With
+        JS on, the gate then hides the field until the user asks for it,
+        which is the litclock-dev#848 contract."""
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", "Incorrect WiFi password")
+        html = setup_server._build_setup_html()
+        assert '<option value="" selected disabled>' in html
+        assert f'<option value="{setup_server.MANUAL_SSID_VALUE}" data-manual="1">' in html
+        assert _DETAILS_OPEN in html
+
+    def test_a_cleared_echo_renders_no_selection_and_no_value(self, monkeypatch):
+        """The render consequence of the do_POST clear (pinned at its source
+        in tests/test_wifi_retry_flow.py). A stale name left in the global
+        would arrive SELECTED since litclock-dev#848, so a password-only resubmit on the
+        retry page would join it — see that test for the full sequence."""
+        monkeypatch.setattr(setup_server, "WIFI_LAST_MANUAL_SSID", "")
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", "Incorrect WiFi password")
+        html = setup_server._build_setup_html()
+        assert '<option value="" selected disabled>' in html
+        assert 'id="wifi-ssid-manual"' in html and 'value=""' in html
+        assert "OldHidden" not in html
+
+
+# ── litclock-dev#844 item 3 — reset_state's re-snapshot loop is CAPPED ──
+
+
+def test_reset_state_reports_a_deep_spawn_chain_instead_of_chasing_it():
+    """``reset_state`` re-snapshots ``_BG_THREADS`` so a thread appended
+    DURING the join is still joined (litclock-dev#786), and caps the passes
+    at ``_RESET_JOIN_MAX_PASSES`` so a spawner that keeps appending cannot
+    make the reset chase it. The sibling test in test_sigterm_absorber.py
+    covers one nesting level; this is the cap: a chain deeper than the cap
+    must be REPORTED in the escape tuple, not followed to its end.
+
+    The chain is deterministic, not raced. Each link is itself tracked, so
+    the reset is blocked joining link N at the moment N spawns N+1 and every
+    link lands in a fresh pass; and the link the cap strands — the one whose
+    name the escape tuple must carry — blocks on an Event instead of
+    sleeping, so it is still alive at prune time no matter how the scheduler
+    behaves. With a sleep there, a 150ms stall between the join loop and the
+    prune let the tail finish and spawn ITS successor, and the reported name
+    became probe-chain-5 (measured).
+
+    ``4`` below is a deliberate literal, not ``_RESET_JOIN_MAX_PASSES``: a
+    mutant that changes the cap changes the constant with it, and a test that
+    derived its expectation from the constant would follow the mutant (``= 1``
+    and ``= 1000`` both stay green that way; measured).
+    """
+    import time
+
+    depth = setup_server._RESET_JOIN_MAX_PASSES + 2
+    link_done = [threading.Event() for _ in range(depth)]
+    release = threading.Event()
+    started = []
+
+    def _link(i):
+        def run():
+            started.append(i)
+            # Links inside the cap hand over to the next one while the reset
+            # is joining them; the first link the cap strands waits instead.
+            if i < setup_server._RESET_JOIN_MAX_PASSES:
+                time.sleep(0.1)
+            else:
+                release.wait(5.0)
+            if i + 1 < depth:
+                setup_server._spawn_bg(_link(i + 1), name=f"probe-chain-{i + 1}")
+            link_done[i].set()
+
+        return run
+
+    previous_in_flight = setup_server.WIFI_CONNECT_IN_FLIGHT
+    try:
+        setup_server.WIFI_CONNECT_IN_FLIGHT = False
+        setup_server._spawn_bg(_link(0), name="probe-chain-0")
+
+        t0 = time.monotonic()
+        escaped = setup_server.reset_state(wait_for_inflight=2.0)
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < 2.0, f"reset_state ran past its own budget ({elapsed:.2f}s)"
+        # Links 0..3 were joined — one per pass — so the injection point was
+        # reached four times; link 4 is the one left running when the cap
+        # stopped the loop, and it is the one the tuple must name.
+        assert [link_done[i].is_set() for i in range(4)] == [True] * 4, started
+        assert escaped == ("probe-chain-4",), f"the tail must be REPORTED, got {escaped!r} (started={started})"
+        assert not link_done[depth - 1].is_set(), "reset_state followed the chain past the cap"
+    finally:
+        release.set()
+        for ev in link_done:
+            ev.wait(2.0)
+        setup_server.WIFI_CONNECT_IN_FLIGHT = previous_in_flight
+        setup_server.reset_state(wait_for_inflight=2.0)

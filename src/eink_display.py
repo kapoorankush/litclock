@@ -10,11 +10,11 @@ import argparse
 import logging
 import os
 import sys
-import traceback
 
 from PIL import Image, ImageDraw, ImageFont
 
 from captive_portal import SETUP_HOSTNAME
+from hard_exit import run_and_exit
 from log import setup_logging
 
 # Try to import qrcode, provide helpful message if not installed
@@ -1481,6 +1481,28 @@ def save_image(image: Image.Image, path: str):
     logging.info(f"Image saved to {path}")
 
 
+def _stderr_note(text):
+    """A best-effort stderr line for the catalog subcommands' fallback arms.
+
+    PR litclock-dev#851 review (Codex 4): the fallback used `print(..., file=sys.stderr)`
+    bare. On a broken stderr that raised BEFORE the fallback value was
+    assigned, so the "always exits 0 with a value" contract failed exactly
+    when it was being exercised — empty stdout, exit 1. And with fd 2 closed
+    at startup Python sets sys.stderr to None, where print(file=None) means
+    STDOUT: the note would land on the very stream scripts/update.sh's smoke
+    gate compares. Neither may happen; the note is diagnostics, the value is
+    the contract.
+    """
+    stream = sys.stderr
+    if stream is None:
+        return
+    try:
+        stream.write(text + "\n")
+        stream.flush()
+    except BaseException:
+        pass
+
+
 def _parse_slots(pairs):
     """--slot NAME=VALUE args → dict. Shared by the status and catalog-get
     subcommands (slice-1 /review: two diverging copies would silently split
@@ -1603,16 +1625,15 @@ def main():
     )
 
     # litclock-dev#773 item 2: the OTA smoke gate probed three catalog VALUES,
-    # so a bundle truncated to just those three passed green with 434 strings
+    # so a bundle truncated to just those three passed green with 435 strings
     # gone. Values cannot detect that; only a count can, and the count has to
     # come from the loader (not from re-reading the JSON) so it measures what
     # the app will actually see after the filters in ``_catalog``.
-    catalog_count_parser = subparsers.add_parser(
-        "catalog-count", help="Print how many strings the active language catalog loaded"
-    )
-    catalog_count_parser.add_argument(
-        "--language", default=None, help="resolve this language code instead of the active one"
-    )
+    # No --language flag (litclock-dev#840): it never had a caller. The gate
+    # pins English through the environment (`LITCLOCK_LANGUAGE=en` as a
+    # command prefix, litclock-dev#763), which is also the only channel the owner's
+    # language arrives by, so one resolution path serves both.
+    subparsers.add_parser("catalog-count", help="Print how many strings the active language catalog loaded")
 
     handoff_parser = subparsers.add_parser("handoff-splash", help="Display the post-WiFi handoff splash")
     handoff_parser.add_argument("qr_url", help="PWA QR URL encoded on the splash")
@@ -1670,7 +1691,7 @@ def main():
 
             resolved = strings_catalog.get(args.key, **slots)
         except Exception as exc:  # noqa: BLE001 — the contract is "always exits 0 with a value"
-            print(f"warning: catalog resolution failed ({exc!r}); printing the key", file=sys.stderr)
+            _stderr_note(f"warning: catalog resolution failed ({exc!r}); printing the key")
             resolved = args.key
         print(resolved)
         return
@@ -1686,10 +1707,12 @@ def main():
         try:
             import strings_catalog  # noqa: PLC0415
 
-            code = args.language or strings_catalog.active_language()
-            count = len(strings_catalog._catalog(code))
+            # catalog_size is PUBLIC for this caller (litclock-dev#840): the
+            # gate used to reach into the private `_catalog`, and a rename
+            # there would have printed 0 and failed every update closed.
+            count = strings_catalog.catalog_size(strings_catalog.active_language())
         except Exception as exc:  # noqa: BLE001 — the contract is "always exits 0 with a value"
-            print(f"warning: catalog count failed ({exc!r}); reporting 0", file=sys.stderr)
+            _stderr_note(f"warning: catalog count failed ({exc!r}); reporting 0")
             count = 0
         print(count)
         return
@@ -1731,33 +1754,12 @@ if __name__ == "__main__":
     # the boot / hotspot / QR / handoff / shutdown / reset-failed splash, so it
     # ran the race on every invocation.
     #
-    # FLUSHING IS LOAD-BEARING, not tidiness. `os._exit` discards buffered
-    # writes, and `catalog-get` / `catalog-count` print to stdout which
-    # scripts/update.sh's OTA smoke gate COMPARES. Python buffers stdout when it
-    # is a pipe — which is exactly how the gate invokes this — so exiting
-    # without an explicit flush would return an empty string to the gate and
-    # fail it on every device, forever. That is the false-RED direction
-    # litclock-dev#773 exists to prevent, and it would have been introduced by
-    # the fix for a different bug.
-    #
-    # Every step is individually guarded: a flush can itself raise
-    # (BrokenPipeError on a closed reader), and litclock-dev#813 is the lesson
-    # that anything unguarded ahead of the exit can cost you the exit.
-    _exit_code = 0
-    try:
-        main()
-    except SystemExit as _e:  # preserve argparse's codes and the explicit sys.exit(1)
-        _exit_code = 0 if _e.code is None else (_e.code if isinstance(_e.code, int) else 1)
-    except BaseException:
-        traceback.print_exc()
-        _exit_code = 1
-    for _stream in (sys.stdout, sys.stderr):
-        try:
-            _stream.flush()
-        except BaseException:
-            pass
-    try:
-        logging.shutdown()
-    except BaseException:
-        pass
-    os._exit(_exit_code)
+    # The shim lives in src/hard_exit.py, shared with src/clear.py
+    # (litclock-dev#837 / litclock-dev#840). What matters HERE: its flush is load-bearing,
+    # not tidiness — `catalog-get` / `catalog-count` print to a stdout that
+    # scripts/update.sh's OTA smoke gate compares through a pipe, and an
+    # unflushed `os._exit` would hand the gate an empty string and revert every
+    # update on every device, forever. And it preserves argparse's exit codes
+    # and the explicit sys.exit(1) on a handoff-splash paint failure, which the
+    # splash scripts branch on.
+    run_and_exit(main)

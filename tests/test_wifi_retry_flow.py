@@ -1474,6 +1474,44 @@ class TestManualSsidEntry(_ManualSsidHarness):
         )
         assert calls == [("HomeWiFi", "secret123", False)]
 
+    def test_a_list_pick_CLEARS_a_stale_echo_from_an_earlier_typed_attempt(self, monkeypatch, tmp_env_file):
+        """The other half of the precedence rule, and a real bug until
+        litclock-dev#848's review (two independent adversarial passes).
+
+        The echo global was only ever WRITTEN, never cleared, so a name from
+        an earlier hand-typed attempt outlived the attempt. Before litclock-dev#848 that
+        was inert — the retry page put the name in the text box but left the
+        dropdown on its disabled placeholder, so a password-only resubmit
+        sent no SSID and `required` stopped it. Since litclock-dev#848 the echo also
+        PRE-SELECTS the manual option, which turns the stale value into a
+        live join target: type "OldHidden", fail, pick "HomeNet" from the
+        list, get the password wrong, and the retry page offers OldHidden —
+        as a hidden network, one tap away, with JavaScript on or off.
+        """
+        calls = []
+        self._post(
+            monkeypatch,
+            tmp_env_file,
+            calls,
+            last_manual="OldHidden",
+            wifi_ssid="HomeNet",
+            **{setup_server.MANUAL_SSID_FIELD: ""},
+        )
+        # hidden=False: a picked network is not a typed one, and must never
+        # inherit the permanent `hidden yes` probe-request leak (litclock-dev#580).
+        assert calls == [("HomeNet", "secret123", False)], "the list pick itself must still be honoured"
+        assert setup_server.WIFI_LAST_MANUAL_SSID == "", (
+            "a list pick must CLEAR the echo, not leave the previous typed name to be re-offered"
+        )
+        # ...so the retry render the echo feeds carries no trace of it. (That
+        # render's dropdown state is asserted in test_setup_server.py's
+        # TestManualSsidGate, which stubs the scan: here the fake
+        # wifi_provision is gone by render time, so the page takes its
+        # empty-scan branch and would pre-select the manual option for a
+        # reason unrelated to the echo.)
+        monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", "Incorrect WiFi password")
+        assert "OldHidden" not in setup_server._build_setup_html()
+
     def test_sentinel_with_empty_field_is_rejected_with_a_specific_message(self, monkeypatch, tmp_env_file):
         """ "Please select a WiFi network" is wrong here — they did select
         one. Tell them the thing they actually have to do."""

@@ -141,6 +141,8 @@ class TestMainBlockActuallyTerminatesViaOsExit:
         main_raises=None,
         traceback_raises=None,
         display_raises=None,
+        logging_shutdown_raises=None,
+        probe=None,
     ):
         """Returns ('os._exit', code) | ('SystemExit', code) | ('fell-through', None).
 
@@ -155,7 +157,14 @@ class TestMainBlockActuallyTerminatesViaOsExit:
           a broken stderr. The real trigger is BrokenPipeError.
         - ``display_raises``  : exception ``epd.display()`` raises, for the
           paint block's arms.
+        - ``logging_shutdown_raises``: exception ``logging.shutdown()`` raises
+          (litclock-dev#844 item 1). logging re-raises non-OSError/ValueError
+          while ``raiseExceptions`` is true, so RuntimeError is the real shape.
+        - ``probe``: a list the injected stubs append to when they are REACHED,
+          so a test can prove its injection ran rather than assume it.
         """
+        import literary_clock as _lc
+
         src = source if source is not None else open(LITERARY_CLOCK).read()
         tree = ast.parse(src)
         main_if = next(
@@ -198,15 +207,17 @@ class TestMainBlockActuallyTerminatesViaOsExit:
 
         fake_os = types.SimpleNamespace(
             _exit=lambda code: (_ for _ in ()).throw(hard(code)),
-            # getenv was MISSING until litclock-dev#814. Without it the block's
-            # `display_clear_hour = int(os.getenv("DISPLAY_CLEAR_HOUR", 2))`
-            # raised AttributeError, the paint try's `except Exception` caught
-            # it, and execution never reached epd.display(). So no test in this
-            # file had ever executed the paint block past its second statement —
-            # including test_shipped_block_terminates_via_os_exit_zero, which
-            # was reaching the terminal exit via the Exception ARM rather than
-            # via the happy path it claims to check. Found by mutation-testing
-            # the litclock-dev#814 handler.
+            # getenv was MISSING until litclock-dev#814. Back then the block
+            # read `int(os.getenv("DISPLAY_CLEAR_HOUR", 2))` inside the paint
+            # try; without getenv that raised AttributeError, the paint try's
+            # `except Exception` caught it, and execution never reached
+            # epd.display() — so no test in this file had executed the paint
+            # block past its second statement, and the "happy path" test was
+            # reaching the terminal exit via the Exception ARM. Found by
+            # mutation-testing the litclock-dev#814 handler. Since litclock-dev#838 the
+            # parse lives in `_display_clear_hour()`, whose globals are the
+            # REAL `os`, so the block makes no os.getenv call of its own; kept
+            # so the fake stays a faithful `os`.
             getenv=os.getenv,
             path=os.path,
             environ=os.environ,
@@ -218,7 +229,15 @@ class TestMainBlockActuallyTerminatesViaOsExit:
         driver = types.ModuleType("display_driver")
         driver.epd7in5 = types.SimpleNamespace(EPD=_EPD)
 
-        ns = {
+        # Seeded from the REAL module globals, then overridden deliberately
+        # (the sibling harness in tests/test_timer_lead.py fixed this class of
+        # vacuity first): a hand-built namespace makes any name the block
+        # references but `ns` lacks raise NameError INTO the block's own
+        # guards — `_display_clear_hour` since litclock-dev#838, for one — and the test
+        # then passes having exercised a failure arm instead of the path it
+        # names.
+        ns = dict(vars(_lc))
+        ns.update({
             "__name__": "__main__",
             "os": fake_os,
             "sys": sys,
@@ -259,10 +278,22 @@ class TestMainBlockActuallyTerminatesViaOsExit:
             ),
             "_write_status_file": lambda *a, **k: None,
             "_write_heartbeat": lambda *a, **k: None,
-            "display_clear_hour": lambda *a, **k: False,
             "datetime": datetime,
             "_epd": None,
-        }
+        })
+        if logging_shutdown_raises is not None:
+            class _Logging:
+                """The real logging module with only shutdown() replaced."""
+
+                def __getattr__(self, name):
+                    return getattr(logging, name)
+
+                def shutdown(self):
+                    if probe is not None:
+                        probe.append("logging.shutdown")
+                    raise logging_shutdown_raises
+
+            ns["logging"] = _Logging()
 
         saved = sys.modules.get("display_driver")
         sys.modules["display_driver"] = driver
@@ -388,6 +419,54 @@ class TestMainBlockActuallyTerminatesViaOsExit:
         a dedicated handler that sleeps the panel."""
         how, code = self._exec_main_block(display_raises=KeyboardInterrupt())
         assert (how, code) == ("os._exit", 0), f"got {(how, code)}"
+
+    # ---- litclock-dev#844 item 1: the logging.shutdown() guards, EXECUTED ----
+    #
+    # Three sites in this file wrap `logging.shutdown()` in `try/except
+    # BaseException` on the litclock-dev#813 argument. Until these, only the pre-paint
+    # handler's guard was ever driven with an injected failure — and with a
+    # broken stderr, not a raising shutdown — so the other two guards could be
+    # deleted without a test going red.
+
+    def test_terminal_exit_is_reached_when_logging_shutdown_raises(self):
+        probe = []
+        how, code = self._exec_main_block(
+            logging_shutdown_raises=RuntimeError("handler flush failed"), probe=probe
+        )
+        assert probe == ["logging.shutdown"], "the raising shutdown was never called — vacuous"
+        assert (how, code) == ("os._exit", 0), (
+            f"got {(how, code)} — a raising logging.shutdown() ahead of the terminal exit "
+            "must not cost the exit"
+        )
+
+    def test_pre_paint_handler_reaches_the_exit_when_logging_shutdown_raises(self):
+        probe = []
+        how, code = self._exec_main_block(
+            main_raises=RuntimeError("GPIO busy from the previous minute"),
+            logging_shutdown_raises=RuntimeError("handler flush failed"),
+            probe=probe,
+        )
+        assert probe == ["logging.shutdown"], "the raising shutdown was never called — vacuous"
+        assert (how, code) == ("os._exit", 1), f"got {(how, code)}"
+
+    def test_signal_handler_reaches_the_exit_when_logging_shutdown_raises(self, monkeypatch):
+        """SIGTERM fires on every reboot and `systemctl stop`; the handler's
+        `logging.shutdown()` guard is the one this path relies on."""
+        import literary_clock as lc
+
+        calls = []
+
+        def _shutdown():
+            calls.append("shutdown")
+            raise RuntimeError("handler flush failed")
+
+        hard = self._HardExit
+        monkeypatch.setattr(lc.logging, "shutdown", _shutdown)
+        monkeypatch.setattr(lc.os, "_exit", lambda code: (_ for _ in ()).throw(hard(code)))
+        with pytest.raises(hard) as caught:
+            lc.signal_handler(15, None)
+        assert calls == ["shutdown"], "the raising shutdown was never called — vacuous"
+        assert caught.value.code == 1
 
     def test_signal_handler_terminates_via_os_exit(self):
         """Exercised, not grepped. The previous test asserted `'os._exit(1)' in

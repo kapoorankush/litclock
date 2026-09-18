@@ -21,6 +21,13 @@ from typing import Any
 
 from flask import current_app
 
+# Module scope, like the sibling _collectors (litclock-dev#840). It used to be a
+# function-local import "matching _env.py's pattern", but that pattern is
+# _env.py's own (it lazy-loads so stubbed callers skip the cost). Here the
+# module-scope `from ._collectors import ...` below loads config at import
+# time regardless, so the old function-local form deferred nothing.
+import config as _config  # src/ on sys.path; same hard dep as _collectors
+
 from ._collectors import (
     DEFAULT_COLLECTED_MARKER_PATH,
     DEFAULT_LAST_RENDERED_IP_PATH,
@@ -108,9 +115,31 @@ def _weather_is_enabled(values: dict[str, Any]) -> bool:
         return raw
     if not raw:
         return False
-    import config as _config  # noqa: PLC0415 — lazy, matches _env.py's pattern
-
     return _config.weather_enabled({"WEATHER_ENABLED": str(raw)})
+
+
+def _location_mode(values: dict[str, Any]) -> str:
+    """The normalised ``WEATHER_LOCATION_MODE`` for this payload.
+
+    One call into :func:`config.weather_location_mode`, the same normaliser
+    ``location_resolver.main()`` and the settings writer use, so the three
+    readers cannot drift (litclock-dev#836; the maintainability pass of its
+    review found this module had grown a THIRD inline copy). Absent, ``None``,
+    empty or whitespace-only is ``"auto"``; anything else comes back stripped.
+
+    The two callers here ask different questions of it, deliberately:
+
+    - the staleness check in :func:`_compute_anomalies` is suppressed only for
+      ``"specific"`` — the one non-auto value the writer accepts. An INVALID
+      value (``"autp"``, ``"AUTO"`` from a hand-edited env.sh) makes the
+      resolver stop refreshing the stamp exactly as ``specific`` does, but
+      that is a broken configuration, not a choice, and this anomaly is the
+      only surface that shows it (Codex, litclock-dev#836 review: the first cut
+      exempted every non-auto value and hid the fault);
+    - the grey tier in :func:`_compute_uncollected` requires ``"auto"``, so an
+      invalid mode stays orange there too, as it did before.
+    """
+    return _config.weather_location_mode(values.get("weather_location_mode"))
 
 
 def _compute_anomalies(values: dict[str, Any]) -> list[str]:
@@ -139,8 +168,17 @@ def _compute_anomalies(values: dict[str, Any]) -> list[str]:
       nothing works" — ``gateway`` is collected but never consulted, and there
       is no reachability probe. Accepted gap: the DHCP heuristic never caught
       that state either.
-    - ``time-location`` — weather enabled AND (city empty OR mode=specific
-      with empty place OR last IP-geo > 7 days).
+    - ``time-location`` — weather enabled AND (city empty OR (mode is not
+      ``specific``, per :func:`_location_mode`, AND last IP-geo > 7 days)).
+      The mode gate is litclock-dev#836: since litclock-dev#791 the resolver writes
+      ``WEATHER_LAST_IP_GEO_AT``, and an owner who then picks a Specific
+      location keeps that stamp while the resolver deliberately stops
+      refreshing it — so after seven days a correctly configured clock
+      showed a permanent "Location stale" that no reboot or save could
+      clear. Only the valid ``specific`` is exempt: an invalid mode also
+      freezes the stamp, but as a fault, and this is where it shows. The
+      stamp is still DISPLAYED in both modes (the ``Last IP-geo`` row);
+      only the age check is gated.
     - ``services`` — ANY non-oneshot unit non-active. ``DIAG_ONESHOT_UNITS``
       is the explicit allowlist of post-boot-inactive-by-design services;
       members also get a pass on the transient ``activating``/``deactivating``
@@ -209,7 +247,10 @@ def _compute_anomalies(values: dict[str, Any]) -> list[str]:
         if not values.get("weather_location_name"):
             tl_anomaly = True
         ipgeo_iso = values.get("last_ip_geo_at")
-        if isinstance(ipgeo_iso, str) and ipgeo_iso:
+        # litclock-dev#836 — in Specific mode the stamp is a frozen record of the last
+        # auto resolve, not a fault, and the resolver will never refresh it.
+        # Only the VALID non-auto value is exempt: see _location_mode.
+        if _location_mode(values) != "specific" and isinstance(ipgeo_iso, str) and ipgeo_iso:
             try:
                 ipgeo_dt = datetime.fromisoformat(ipgeo_iso)
                 if ipgeo_dt.tzinfo is None:
@@ -403,16 +444,17 @@ def _compute_uncollected(values: dict[str, Any]) -> list[str]:
 
     # time-location — gate per D3. Fix C: legacy / pre-litclock-dev#337 env files don't
     # set WEATHER_LOCATION_MODE; the rest of the app treats a missing mode as
-    # `auto`. Accept None alongside "auto" so those Pis get the grey tier
-    # instead of the orange false positive this change was meant to remove.
+    # `auto`. _location_mode normalises None/empty to "auto" (the resolver's
+    # own normalisation, litclock-dev#836) so those Pis get the grey tier instead of
+    # the orange false positive this change was meant to remove. An INVALID
+    # value is not "auto" and stays orange, as it did before.
     # When the persistent marker is absent (collected is None), preserve the
     # v0.214.4 env-only behavior (no marker gate); otherwise require the
     # time-location key to be missing too.
     if _weather_is_enabled(values):
-        mode = values.get("weather_location_mode")
         tl_never_collected = True if collected is None else "time-location" not in collected
         if (
-            mode in ("auto", None, "")
+            _location_mode(values) == "auto"
             and tl_never_collected
             and not values.get("weather_location_name")
             and not values.get("last_ip_geo_at")

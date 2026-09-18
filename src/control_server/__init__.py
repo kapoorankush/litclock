@@ -81,6 +81,8 @@ def create_app(test_config: dict | None = None) -> Flask:
         LAST_UPDATE_FILE=os.environ.get("LITCLOCK_LAST_UPDATE_FILE"),
         LKG_SHA_FILE=os.environ.get("LITCLOCK_LKG_SHA_FILE"),
         PHASE3_SKIPPED_FILE=os.environ.get("LITCLOCK_PHASE3_SKIPPED_FILE"),
+        # litclock-dev#847 item 1 — the runtime-render validation memo.
+        RUNTIME_VALIDATION_MEMO_FILE=os.environ.get("LITCLOCK_RUNTIME_VALIDATION_MEMO_FILE"),
         # EPIC litclock-dev#383 PR2 handoff markers. Same env-override pattern as above so
         # tests point these at a tmp dir (and a direct marker write succeeds
         # there without sudo). See control_server/handoff.py for the lifecycle.
@@ -132,7 +134,12 @@ def create_app(test_config: dict | None = None) -> Flask:
     # not, so a hand-edited env.sh could paint weather on the panel and render
     # the toggle OFF. Registered as the callable itself so the template asks the
     # same function the panel does.
-    import config as _config  # noqa: PLC0415 — lazy, matches _env.py's pattern
+    # Function-local like every other import in create_app (strings_catalog
+    # above, the blueprints below): the module scope holds only Flask, so the
+    # package imports without the src/ chain. NOT _env.py's pattern, which
+    # the old comment cited — that one lazy-loads for its stubbed callers.
+    # (litclock-dev#840; _anomalies.py took the module-scope form instead.)
+    import config as _config  # noqa: PLC0415
 
     app.jinja_env.globals["weather_enabled"] = _config.weather_enabled
 

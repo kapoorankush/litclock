@@ -579,7 +579,18 @@ def _net_signal(net):
         return 0
 
 
-def _build_wifi_options(networks, placeholder=None):
+def _selected_attr(flag):
+    """``" selected"`` when ``flag``, else nothing — the <option> attribute.
+
+    A function rather than a conditional at each site so the two callers in
+    :func:`_build_wifi_options` cannot drift into both selecting, or neither.
+    """
+    if flag:
+        return " selected"
+    return ""
+
+
+def _build_wifi_options(networks, placeholder=None, select_manual=False):
     """Convert a list of network dicts into HTML <option> tags.
 
     Three things beyond the obvious (litclock-dev#554):
@@ -599,9 +610,37 @@ def _build_wifi_options(networks, placeholder=None):
        in a scan, so before this there was no path to join one through setup
        at all. Its non-empty value is what satisfies `required` when the user
        is going to type the name into the paired text input instead.
+
+    ``select_manual`` (litclock-dev#848) pre-selects that manual-entry option
+    INSTEAD of the placeholder. Since litclock-dev#848 the text input is only usable
+    while the manual option is the dropdown's selection, so any render that
+    wants the input usable on arrival — the retry echo of a hand-typed name,
+    and the empty scan where typing is the only way forward — has to select
+    the option too, or the page would show a field the dropdown says is not
+    in play. Exactly one option ever carries ``selected``: the placeholder
+    stays ``disabled`` either way so it can never be re-picked or submitted.
+
+    An EMPTY list forces it on regardless of the argument: with no networks
+    the manual option is the only one ``required`` accepts, so every caller
+    would have to pass the flag and the one that forgot would render a page
+    whose only usable control is gated off. One rule, at the site that knows.
+
+    The option is marked ``data-manual`` as well. The script selects it by
+    that attribute rather than by value, because a scanned AP can broadcast
+    the sentinel name and would sort ahead of it (see MANUAL_SSID_VALUE).
     """
+    select_manual = select_manual or not networks
     placeholder = html.escape(placeholder or _wifi_placeholder_text())
-    options = [f'<option value="" selected disabled>{placeholder}</option>']
+    # Through the helper, not two inline conditionals. The natural shape for
+    # the first of them — an empty-string branch written before the `if` —
+    # is a banned substring in tests/test_cross_file_string_parity.py's
+    # in-code-grammar guard (litclock-dev#532 item 11), which matches raw
+    # text and cannot tell an HTML attribute from a spliced plural suffix.
+    # The helper also states the invariant once: the flag picks exactly one
+    # of the two options to carry `selected`.
+    placeholder_selected = _selected_attr(not select_manual)
+    manual_selected = _selected_attr(select_manual)
+    options = [f'<option value=""{placeholder_selected} disabled>{placeholder}</option>']
     for net in sorted(networks, key=_net_signal, reverse=True):
         ssid = html.escape(net["ssid"])
         signal = _net_signal(net)
@@ -614,7 +653,10 @@ def _build_wifi_options(networks, placeholder=None):
         security = net.get("security", "")
         lock = " [Open]" if not security or security == "--" else ""
         options.append(f'<option value="{ssid}">{ssid} ({bars}{lock})</option>')
-    options.append(f'<option value="{MANUAL_SSID_VALUE}">{html.escape(_manual_ssid_text())}</option>')
+    options.append(
+        f'<option value="{MANUAL_SSID_VALUE}" data-manual="1"{manual_selected}>'
+        f"{html.escape(_manual_ssid_text())}</option>"
+    )
     return "\n                    ".join(options)
 
 
@@ -636,7 +678,7 @@ def _filter_own_hotspot(networks):
     return [n for n in networks if n.get("ssid") != HOTSPOT_SSID]
 
 
-def _wifi_network_options():
+def _wifi_network_options(select_manual=False):
     """Generate <option> tags for scanned WiFi networks, with 30s SCAN caching.
 
     The scan RESULT is cached; the <option> HTML renders per call so the
@@ -646,7 +688,12 @@ def _wifi_network_options():
     because the page build used to infer emptiness by sniffing the
     rendered HTML for the placeholder copy (litclock-dev#605 item 11) —
     a check that breaks silently the day the copy gains an escapable
-    character."""
+    character.
+
+    ``select_manual`` is forwarded to :func:`_build_wifi_options`, which
+    forces it on for an empty scan regardless (litclock-dev#848): on that
+    page the manual option is the only one ``required`` will accept, and the
+    text input is gated on it being selected."""
     global _WIFI_SCAN_NETWORKS, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS
     import time
 
@@ -672,7 +719,7 @@ def _wifi_network_options():
         if _WIFI_SCAN_NETWORKS is not None and (now - _WIFI_SCAN_TIME) < _WIFI_SCAN_TTL:
             # Render fresh from the cached scan — no radio contention, and
             # the picker copy follows a language switched since the scan.
-            return _build_wifi_options(_WIFI_SCAN_NETWORKS), False
+            return _build_wifi_options(_WIFI_SCAN_NETWORKS, select_manual=select_manual), False
 
         try:
             from wifi_provision import scan_wifi_networks
@@ -693,6 +740,8 @@ def _wifi_network_options():
             # writing `hidden yes` into the saved profile — is permanent while
             # the staleness is transient (see the wifi_hidden decision in
             # do_POST; litclock-dev#605 item 7, refined to UNION by litclock-dev#615).
+            # select_manual is not passed: _build_wifi_options forces it on
+            # for an empty list, which is exactly this branch.
             return _build_wifi_options([], placeholder=_wifi_placeholder_empty_text()), True
 
         _WIFI_SCAN_NETWORKS = networks
@@ -711,7 +760,7 @@ def _wifi_network_options():
         # scan near the TTL could yield an already-expired cache that the next
         # caller immediately rescans, defeating the serialization (litclock-dev#615).
         _WIFI_SCAN_TIME = time.monotonic()
-        return _build_wifi_options(networks), False
+        return _build_wifi_options(networks, select_manual=select_manual), False
 
 
 # Path serving the CNA bridge on our own host — the target of the Apple
@@ -880,7 +929,21 @@ def _build_setup_html(accept_language=None):
     language_section = _language_section(accept_language) if PROVISIONING_MODE else ""
     wifi_section = ""
     if PROVISIONING_MODE:
-        network_options, scan_was_empty = _wifi_network_options()
+        # A retry that echoes a hand-typed name also pre-selects the manual
+        # option (litclock-dev#848): the text input is only usable while that
+        # option is the dropdown's selection, so an echoed value under a
+        # dropdown still on its placeholder would be a field the page then
+        # hides — and the no-JS user would be asked to re-pick an option
+        # they had already picked once.
+        # ONE read, into a local. The two reads this replaced straddled
+        # _wifi_network_options — which can spend seconds inside an nmcli
+        # rescan — so a connect thread storing or clearing the echo in that
+        # window produced a page whose dropdown and text box disagreed: the
+        # manual option selected over an empty box, or a filled box under a
+        # placeholder. Same reasoning as the connect_error snapshot above.
+        with _WIFI_CONNECT_LOCK:
+            last_manual = WIFI_LAST_MANUAL_SSID
+        network_options, scan_was_empty = _wifi_network_options(select_manual=bool(last_manual))
         # Source the hotspot SSID from the runtime constant rather than
         # hardcoding "LitClock-Setup" — branded builds set this via the
         # --hotspot-ssid CLI flag, and the disambiguating cue ("Not the
@@ -899,7 +962,7 @@ def _build_setup_html(accept_language=None):
         # or a POST that lost the in-flight race) is deliberately never
         # stored, so those paths re-render blank (litclock-dev#605 item 10 — see the
         # store site in do_POST).
-        manual_value = html.escape(WIFI_LAST_MANUAL_SSID)
+        manual_value = html.escape(last_manual)
         manual_open = " open" if (manual_value or scan_was_empty or WIFI_CONNECT_ERROR) else ""
         manual_summary = html.escape(_manual_ssid_text())
         # Composed rich help lines: {network}/{summary} slots escape-filled.
@@ -930,6 +993,15 @@ def _build_setup_html(accept_language=None):
                 <!-- Hidden-SSID path. A <details> rather than a JS-revealed
                      field so it still opens with JavaScript disabled, which is
                      the norm inside captive-portal WebViews.
+
+                     litclock-dev#848: with JavaScript ON, syncManualSsid()
+                     below hides this whole disclosure unless the dropdown's
+                     selection is the manual option, and blanks the input the
+                     moment a real network is picked — so the two can never be
+                     filled at once. The server NEVER renders it hidden: that
+                     is the no-JS fallback, where the field stays visible as it
+                     always was and the server-side precedence rule in do_POST
+                     (a picked network wins over typed text) is the guard.
 
                      Force-opened when a retry is showing or the scan came back
                      empty: in both states typing the name is the likeliest (in
@@ -1120,22 +1192,84 @@ def _build_setup_html(accept_language=None):
         function appendManualOption(select) {{
             var opt = document.createElement('option');
             opt.value = MANUAL_SSID_VALUE;
+            // Mirrors the server-rendered option's data-manual: the marker is
+            // how selectManualOption finds it, and both builders have to set
+            // it or a Refresh would lose the identity mid-session.
+            opt.dataset.manual = '1';
             opt.textContent = {manual_text_js};
             select.appendChild(opt);
         }}
 
-        // Open the "My network isn't listed" details and focus the input the
-        // moment that option is picked, so the field the user now has to fill
-        // isn't hidden behind a collapsed disclosure they have to find.
-        function onSsidChange() {{
+        // Find the manual option by its MARKER, not by its value. An AP can
+        // broadcast the sentinel name (MANUAL_SSID_VALUE says so), and it
+        // renders among the scanned networks — ahead of the real manual
+        // option — so `select.value = MANUAL_SSID_VALUE` would select the
+        // NEIGHBOUR'S AP. The submit still reaches the typed name, because the
+        // server reads that submitted value as the sentinel either way, so the
+        // damage is a dropdown naming a network other than the one being
+        // joined: the exact "which of these two did I choose?" confusion
+        // litclock-dev#848 exists to remove.
+        function manualOption(select) {{
+            var opts = select.options;
+            for (var i = 0; i < opts.length; i++) {{
+                if (opts[i].dataset && opts[i].dataset.manual) return opts[i];
+            }}
+            return null;
+        }}
+
+        // The manual-SSID field is usable ONLY while the dropdown's selection
+        // is the manual option (litclock-dev#848). Anything else hides the
+        // whole disclosure, and a real network pick also blanks the typed
+        // name — a stale entry under a hidden field is exactly the "both
+        // filled at once" state the issue is about. The server-side rule in
+        // do_POST (a picked network wins over typed text) stays as the
+        // backstop; this makes the page agree with it. Called at load, on
+        // every dropdown change, and after every Refresh rebuild.
+        //
+        // The placeholder case ('' — nothing picked yet) hides without
+        // blanking: a Refresh lands there, and a name typed before the
+        // Refresh is not a decision the user reversed.
+        function syncManualSsid() {{
             var select = document.getElementById('wifi-ssid');
             var details = document.getElementById('manual-ssid');
             var input = document.getElementById('wifi-ssid-manual');
             if (!select || !details) return;
-            if (select.value === MANUAL_SSID_VALUE) {{
-                details.open = true;
-                if (input) input.focus();
+            // VALUE, not the data-manual marker: this asks "will the server
+            // treat this submit as manual entry?", and do_POST keys on the
+            // submitted value. So an AP broadcasting the sentinel name shows
+            // the field too — which is the documented degradation for that
+            // case (one extra step: type the name), not a bug. Selecting an
+            // option is the other question, and manualOption answers it.
+            var manual = select.value === MANUAL_SSID_VALUE;
+            details.hidden = !manual;
+            if (input) {{
+                // `required` only while the field is reachable. Server-side
+                // this attribute would be a brick: a required control inside
+                // a hidden <details> makes the form silently unsubmittable in
+                // every browser, and the no-JS page NEEDS the plain field. On
+                // the empty-scan page — manual pre-selected, nothing else to
+                // pick — it turns a blank submit from a full-page error that
+                // loses the typed password into the browser's own "fill this
+                // in" bubble.
+                input.required = manual;
             }}
+            if (manual) {{
+                details.open = true;
+            }} else if (select.value && input) {{
+                input.value = '';
+            }}
+        }}
+
+        // Focus the input the moment the manual option is picked, so the
+        // field the user now has to fill isn't one they have to find. Focus
+        // lives HERE and not in syncManualSsid on purpose: that runs at load
+        // too, and a load-time focus opens the keyboard over the form
+        // (litclock-dev#671).
+        function onSsidChange() {{
+            syncManualSsid();
+            var select = document.getElementById('wifi-ssid');
+            var input = document.getElementById('wifi-ssid-manual');
+            if (select && input && select.value === MANUAL_SSID_VALUE) input.focus();
         }}
 
         // NEVER set select.disabled here. A disabled control is excluded from
@@ -1150,11 +1284,43 @@ def _build_setup_html(accept_language=None):
         // portal WebView that often has no visible reload control.
         var SCAN_TIMEOUT_MS = 20000;
 
+        // Keep the manual option selected across a Refresh if it was selected
+        // before (litclock-dev#848): the rebuild resets the dropdown to its
+        // placeholder, and without this a hidden-network owner who tapped
+        // Refresh to double-check would watch their typed name vanish.
+        function selectManualOption(select) {{
+            var opt = manualOption(select);
+            if (opt) opt.selected = true;
+        }}
+
+        // The tail every rebuild shares: the manual option goes back on the
+        // end, the selection is restored if it should be, and the gate runs
+        // over the result. Three call sites had this inline and drifted
+        // (the empty branch forgot the re-append once).
+        function finishRebuild(select, selectManual) {{
+            appendManualOption(select);
+            if (selectManual) selectManualOption(select);
+            syncManualSsid();
+        }}
+
+        function isManualSelected(select) {{
+            return select.value === MANUAL_SSID_VALUE;
+        }}
+
         function refreshNetworks() {{
             var select = document.getElementById('wifi-ssid');
             if (!select) return;
+            // Sampled twice on purpose. A scan runs 2-20s, the dropdown stays
+            // live throughout, and a user who taps Refresh from the
+            // placeholder and then picks "type it myself" and starts typing
+            // would — on the start sample alone — have the field vanish under
+            // their fingers when the response landed, text kept but invisible
+            // and the dropdown back on the placeholder. So the rebuild keeps
+            // the manual selection if it held EITHER when the scan started or
+            // when it finished.
+            var wasManual = isManualSelected(select);
             resetSsidOptions(select, 'Scanning...');
-            appendManualOption(select);
+            finishRebuild(select, wasManual);
 
             var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
             var timer = setTimeout(function() {{
@@ -1164,14 +1330,16 @@ def _build_setup_html(accept_language=None):
             fetch('/scan-wifi', ctrl ? {{signal: ctrl.signal}} : undefined)
                 .then(function(r) {{ return r.json(); }})
                 .then(function(networks) {{
+                    var keepManual = wasManual || isManualSelected(select);
                     if (networks.length === 0) {{
                         resetSsidOptions(select, {placeholder_empty_js});
                         // Match the server-rendered empty-scan path, which
-                        // force-opens this disclosure: a hidden-network user who
-                        // taps Refresh into an empty scan needs the "type it in"
-                        // field visible, not folded away (litclock-dev#615).
-                        var details = document.getElementById('manual-ssid');
-                        if (details) details.open = true;
+                        // pre-selects the manual option and so force-opens
+                        // this disclosure: a hidden-network user who taps
+                        // Refresh into an empty scan needs the "type it in"
+                        // field visible, not folded away (litclock-dev#615),
+                        // and since litclock-dev#848 selecting the option IS what shows it.
+                        finishRebuild(select, true);
                     }} else {{
                         resetSsidOptions(select, {placeholder_js});
                         networks.sort(function(a, b) {{
@@ -1185,17 +1353,31 @@ def _build_setup_html(accept_language=None):
                             opt.textContent = net.ssid + ' (' + strength + lock + ')';
                             select.appendChild(opt);
                         }});
+                        finishRebuild(select, keepManual);
                     }}
-                    appendManualOption(select);
                 }})
                 .catch(function() {{
+                    var keepManual = wasManual || isManualSelected(select);
                     resetSsidOptions(select, 'Scan failed - tap Refresh');
-                    appendManualOption(select);
+                    finishRebuild(select, keepManual);
                 }})
                 .then(function() {{
                     clearTimeout(timer);
                 }});
         }}
+
+        // Load-time pass (litclock-dev#848): the server always renders the
+        // disclosure visible so the no-JS page keeps its field; with JS on,
+        // hide it unless the dropdown arrived with the manual option selected
+        // (the retry echo and the empty scan). The script sits after the
+        // form, so the elements exist.
+        syncManualSsid();
+        // ...and again on bfcache restore. iOS Safari restores form state
+        // AFTER the load-time pass has run, so a back-navigation onto a page
+        // whose dropdown it puts back on the manual option would show the
+        // gate's verdict for the OTHER selection. pageshow is the one event
+        // that fires on both a fresh load and a restore.
+        window.addEventListener('pageshow', syncManualSsid);
     </script>
 </body>
 </html>
@@ -1928,8 +2110,21 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                 # become the retry echo) — the global only ever holds the
                 # <=32-byte validated SSID of a join actually launched.
                 # Same lock as reset_state, the other writer.
-                if wifi_typed:
-                    WIFI_LAST_MANUAL_SSID = wifi_ssid
+                #
+                # The else-arm CLEARS it, and that is load-bearing since
+                # litclock-dev#848 (found by two independent adversarial
+                # passes on PR litclock-dev#853). Before litclock-dev#848 a stale echo was inert:
+                # the retry page put it in the text box but left the
+                # dropdown on its disabled placeholder, so a password-only
+                # resubmit sent no SSID and `required` stopped it. Now the
+                # echo PRE-SELECTS the manual option, so a leftover name
+                # from an earlier hand-typed attempt would arrive selected:
+                # type "OldHidden", fail, pick "HomeNet" from the list, get
+                # the password wrong, and the retry page offers to join
+                # OldHidden — as `hidden yes`, with the same one tap it
+                # takes to retry HomeNet. Identical with JavaScript off,
+                # where nothing re-picks for the user.
+                WIFI_LAST_MANUAL_SSID = wifi_ssid if wifi_typed else ""
 
             def _connect_and_teardown():
                 global WIFI_CONNECT_ERROR, WIFI_CONNECT_IN_FLIGHT

@@ -248,6 +248,12 @@ class _EscapedThreadState:
 
 _ESCAPED_THREADS = _EscapedThreadState()
 
+# How many leaking tests the summary line names before it folds the rest into
+# a "(+N more)". One name, so the three places the line depends on it cannot
+# drift apart (litclock-dev#840 — it was the literal 5 written three times in one
+# expression).
+_ESCAPE_REPORT_LIMIT = 5
+
 
 def escaped_threads_summary_line(state: _EscapedThreadState) -> str | None:
     """The reported text for ``state``, or None when nothing escaped.
@@ -258,8 +264,10 @@ def escaped_threads_summary_line(state: _EscapedThreadState) -> str | None:
     """
     if not state.escapes:
         return None
-    detail = "; ".join(f"{nodeid} -> {', '.join(names)}" for nodeid, names in state.escapes[:5])
-    more = "" if len(state.escapes) <= 5 else f" (+{len(state.escapes) - 5} more)"
+    shown = state.escapes[:_ESCAPE_REPORT_LIMIT]
+    hidden = len(state.escapes) - len(shown)
+    detail = "; ".join(f"{nodeid} -> {', '.join(names)}" for nodeid, names in shown)
+    more = f" (+{hidden} more)" if hidden else ""
     return (
         f"[litclock-dev#786] {len(state.escapes)} test(s) left a tracked background thread "
         f"running past reset_state()'s join budget: {detail}{more}. This is the shape that "

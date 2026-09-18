@@ -317,8 +317,17 @@ class TestTheNightlyClearIsDecidedByExecutingTheGate:
         def __init__(self, code):
             self.code = code
 
-    def _run_main_block(self, target: datetime, clear_hour: str = "2") -> list[str]:
-        """Execute the shipped __main__ block; return the panel calls it made."""
+    def _run_main_block(self, monkeypatch, target: datetime, clear_hour: str = "2") -> list[str]:
+        """Execute the shipped __main__ block; return the panel calls it made.
+
+        ``clear_hour`` is the RAW ``DISPLAY_CLEAR_HOUR`` string, set in the
+        real environment: since litclock-dev#838 the block reads it through
+        `_display_clear_hour()`, a module function whose globals are the real
+        `os`, so a `getenv` override on the fake `os` below would no longer
+        reach it and every clear-hour assertion would silently test the
+        default.
+        """
+        monkeypatch.setenv("DISPLAY_CLEAR_HOUR", clear_hour)
         import ast
         import logging as _logging
         import os
@@ -369,11 +378,13 @@ class TestTheNightlyClearIsDecidedByExecutingTheGate:
             path=os.path,
             environ=os.environ,
             replace=os.replace,
-            # The real block reads DISPLAY_CLEAR_HOUR here. Without getenv the
-            # AttributeError is swallowed by the block's own `except Exception`
-            # and the gate is never reached at all — a harness that "passes"
-            # having executed nothing.
-            getenv=lambda k, d=None: clear_hour if k == "DISPLAY_CLEAR_HOUR" else os.getenv(k, d),
+            # This used to be the injection point for DISPLAY_CLEAR_HOUR, when
+            # the block read it with a bare os.getenv inside the paint try.
+            # Since litclock-dev#838 the parse lives in `_display_clear_hour()`, whose
+            # globals are the REAL `os`, so the block makes no os.getenv call
+            # of its own and the injection goes through the environment (see
+            # the docstring). Kept so the fake stays a faithful `os`.
+            getenv=os.getenv,
             abort=lambda: (_ for _ in ()).throw(RuntimeError("os.abort() reached")),
             execv=lambda *a: (_ for _ in ()).throw(RuntimeError("os.execv() reached")),
         )
@@ -409,6 +420,12 @@ class TestTheNightlyClearIsDecidedByExecutingTheGate:
             "_write_heartbeat": lambda *a, **k: None,
             "datetime": datetime,
             "_epd": None,
+            # The REAL parser, RECORDED: its position relative to `init` is
+            # load-bearing (litclock-dev#838 — parse before the panel is
+            # touched), and only an executed order assertion can pin it. PR
+            # litclock-dev#851 review measured the parse moved back inside the paint try
+            # after epd.init() passing 106/106.
+            "_display_clear_hour": lambda: (calls.append("clear-hour"), _lc._display_clear_hour())[1],
         })
 
         saved = sys.modules.get("display_driver")
@@ -441,10 +458,10 @@ class TestTheNightlyClearIsDecidedByExecutingTheGate:
         )
         return calls
 
-    def test_the_clear_fires_on_the_target_hour(self):
+    def test_the_clear_fires_on_the_target_hour(self, monkeypatch):
         """At wall 01:59:56 the TARGET is 02:00:00, so the clear must fire —
         even though a live clock read would say minute 59."""
-        calls = self._run_main_block(datetime(2026, 8, 30, 2, 0, 0))
+        calls = self._run_main_block(monkeypatch, datetime(2026, 8, 30, 2, 0, 0))
         assert "Clear" in calls, (
             f"the nightly full clear did not fire for a 02:00 target. At :56 a live "
             f"datetime.now() is never minute 0, so reading the wall clock here makes the "
@@ -459,15 +476,55 @@ class TestTheNightlyClearIsDecidedByExecutingTheGate:
             datetime(2026, 8, 30, 14, 0, 0),   # target 14:00 — wrong hour
         ],
     )
-    def test_the_clear_does_not_fire_otherwise(self, target):
+    def test_the_clear_does_not_fire_otherwise(self, monkeypatch, target):
         """Once a day, not on every tick — a full clear is ~3s of extra
         waveform the owner sees as a flash."""
-        calls = self._run_main_block(target)
+        calls = self._run_main_block(monkeypatch, target)
         assert "Clear" not in calls, f"the clear fired for target {target:%H:%M}. Calls: {calls}"
 
-    def test_it_honours_a_configured_clear_hour(self):
-        calls = self._run_main_block(datetime(2026, 8, 30, 5, 0, 0), clear_hour="5")
+    def test_it_honours_a_configured_clear_hour(self, monkeypatch):
+        """The nightly clear fires at the PARSED hour — through the lifted
+        block and the real `_display_clear_hour()`, not a unit test of the
+        parser alone (litclock-dev#838)."""
+        calls = self._run_main_block(monkeypatch, datetime(2026, 8, 30, 5, 0, 0), clear_hour="5")
         assert "Clear" in calls, f"DISPLAY_CLEAR_HOUR=5 did not clear at a 05:00 target: {calls}"
+
+    def test_the_clear_hour_is_parsed_before_the_panel_is_touched(self, monkeypatch):
+        """litclock-dev#838's placement, executed. Inside the paint try after
+        `epd.init()` a raising parse leaves the panel initialised and never
+        displayed, swallowed by `except Exception` with exit 0 — the bug. It
+        must run before `EPD()`/`init()`, inside the pre-paint guard."""
+        calls = self._run_main_block(monkeypatch, datetime(2026, 8, 30, 0, 30, 0))
+        assert "clear-hour" in calls, f"the parser was never called: {calls}"
+        assert calls.index("clear-hour") < calls.index("init"), (
+            f"DISPLAY_CLEAR_HOUR is parsed AFTER the panel is initialised again: {calls}"
+        )
+
+    def test_a_configured_clear_hour_replaces_the_default(self, monkeypatch):
+        calls = self._run_main_block(monkeypatch, datetime(2026, 8, 30, 2, 0, 0), clear_hour="5")
+        assert "Clear" not in calls, f"DISPLAY_CLEAR_HOUR=5 still cleared at the default 02:00: {calls}"
+
+    @pytest.mark.parametrize(
+        "raw",
+        ["", "   ", "abc", "24", "-1", "2.5"],
+        ids=["empty", "whitespace", "abc", "24", "-1", "2.5"],
+    )
+    def test_a_bad_clear_hour_still_paints_and_clears_at_the_default(self, monkeypatch, raw):
+        """litclock-dev#838, executed where it bit. The parse used to be a bare
+        `int(os.getenv(...))` INSIDE the paint try, after `epd.init()`: a bad
+        value raised there, the paint's `except Exception` swallowed it, and
+        the panel froze on the last quote with the process exiting 0 — every
+        minute, with only the journal knowing. Empty is the realistic one:
+        `export DISPLAY_CLEAR_HOUR=` is what every env.sh writer seeds.
+
+        The harness asserts `epd.display` was reached — that IS the fix. The
+        Clear assertion pins that the fallback is the default hour rather than
+        "no clear ever", which would be litclock-dev#762 Trap 2 by another road.
+        """
+        calls = self._run_main_block(monkeypatch, datetime(2026, 8, 30, 2, 0, 0), clear_hour=raw)
+        assert "Clear" in calls, (
+            f"DISPLAY_CLEAR_HOUR={raw!r} painted but did not fall back to clearing at 02:00: {calls}"
+        )
 
 
 class TestTheOperatorKnobCannotBrickTheClock:
@@ -591,6 +648,119 @@ class TestTheOperatorKnobCannotBrickTheClock:
             "importing literary_clock with an empty LITCLOCK_RENDER_LEAD_S raised. On a device "
             "that is the painter dying every minute with the panel frozen — indistinguishable "
             f"from the litclock-dev#531 wedge.\n{r.stderr[-1500:]}"
+        )
+
+
+class TestTheClearHourCannotBrickTheClock:
+    """litclock-dev#838 — the same brick class litclock-dev#762 fixed for the render
+    lead, one knob over. `DISPLAY_CLEAR_HOUR` was `int(os.getenv(...))` inside
+    the paint try, so an empty or malformed value raised after `epd.init()` and
+    before `epd.display()`, was swallowed by the paint's `except Exception`,
+    and left the panel frozen on the last quote every minute with the process
+    exiting 0. Phase 4.5's dry-run does not source env.sh, so the OTA smoke
+    gate cannot see it either.
+
+    Empty is one uncomment away: since litclock-dev#783 all four env.sh
+    writers seed the key, commented, in the sample's `export KEY=` idiom.
+
+    Same three-value shape as the render-lead class above, on purpose.
+    """
+
+    @pytest.mark.parametrize(
+        "raw,why",
+        [
+            ("", "env.sh.sample's own idiom for an unset key"),
+            ("   ", "whitespace-only"),
+            ("abc", "not a number at all"),
+            ("2h", "a units typo"),
+            ("2.5", "not an integer — int() rejects it, and there is no half-hour clear"),
+            ("24", "one past the last hour"),
+            ("-1", "negative"),
+            ("99", "way out of range"),
+        ],
+    )
+    def test_a_bad_value_falls_back_instead_of_raising(self, monkeypatch, raw, why):
+        import literary_clock
+
+        monkeypatch.setenv("DISPLAY_CLEAR_HOUR", raw)
+        assert literary_clock._display_clear_hour() == literary_clock.DISPLAY_CLEAR_HOUR_DEFAULT, (
+            f"DISPLAY_CLEAR_HOUR={raw!r} ({why}) did not fall back to the default"
+        )
+
+    @pytest.mark.parametrize("raw", ["abc", "2h", "2.5", "24", "-1", "99"])
+    def test_a_bad_value_is_logged_not_just_swallowed(self, monkeypatch, caplog, raw):
+        """The journal line is the only thing that separates a rejected knob
+        from a wedged panel; the fallback test above is green for a parser
+        that returns the default silently."""
+        import literary_clock
+
+        monkeypatch.setenv("DISPLAY_CLEAR_HOUR", raw)
+        with caplog.at_level(logging.WARNING):
+            assert literary_clock._display_clear_hour() == literary_clock.DISPLAY_CLEAR_HOUR_DEFAULT
+        hits = [
+            r for r in caplog.records
+            if r.levelno >= logging.WARNING and "DISPLAY_CLEAR_HOUR" in r.getMessage()
+        ]
+        assert hits, f"DISPLAY_CLEAR_HOUR={raw!r} fell back silently; the journal must name the variable\n{caplog.text}"
+        assert repr(raw) in hits[0].getMessage(), "the warning must carry the raw value the operator typed"
+
+    @pytest.mark.parametrize("raw", ["", "   ", "2", "5"])
+    def test_a_silent_value_stays_silent(self, monkeypatch, caplog, raw):
+        """Empty/whitespace is the sample's unset idiom — merged onto every
+        device by update.sh — and a good value is good. A warning on every
+        tick for either would train operators to ignore the line that
+        matters."""
+        import literary_clock
+
+        monkeypatch.setenv("DISPLAY_CLEAR_HOUR", raw)
+        with caplog.at_level(logging.WARNING):
+            literary_clock._display_clear_hour()
+        assert not [r for r in caplog.records if "DISPLAY_CLEAR_HOUR" in r.getMessage()], caplog.text
+
+    @pytest.mark.parametrize("raw,expect", [("5", 5), ("0", 0), ("23", 23), (" 7 ", 7), ("02", 2)])
+    def test_a_good_value_is_honoured(self, monkeypatch, raw, expect):
+        """Both inclusive boundaries included — 0 (midnight) and 23 are real
+        hours an owner might pick, and a bound nobody tests at the edge can be
+        narrowed without going red."""
+        import literary_clock
+
+        monkeypatch.setenv("DISPLAY_CLEAR_HOUR", raw)
+        assert literary_clock._display_clear_hour() == expect
+
+    def test_an_unset_variable_is_the_default(self, monkeypatch):
+        import literary_clock
+
+        monkeypatch.delenv("DISPLAY_CLEAR_HOUR", raising=False)
+        assert literary_clock._display_clear_hour() == literary_clock.DISPLAY_CLEAR_HOUR_DEFAULT == 2
+
+    @pytest.mark.parametrize("raw", ["abc", "24"])
+    def test_a_raising_warning_cannot_make_the_parser_raise(self, monkeypatch, raw):
+        """PR litclock-dev#851 review (Codex 2): the docstring says "never raises", so the
+        warning itself must be best-effort — a raising logging.warning must
+        still return the default."""
+        import literary_clock
+
+        calls = []
+
+        def _warning(*a, **k):
+            calls.append(a)
+            raise RuntimeError("closed log stream")
+
+        monkeypatch.setattr(literary_clock.logging, "warning", _warning)
+        monkeypatch.setenv("DISPLAY_CLEAR_HOUR", raw)
+        assert literary_clock._display_clear_hour() == literary_clock.DISPLAY_CLEAR_HOUR_DEFAULT
+        assert calls, "the warning was never attempted — vacuous"
+
+    def test_the_paint_block_no_longer_parses_it_bare(self):
+        """Source-level, comment-stripped, paired with the executed
+        `test_a_bad_clear_hour_still_paints_and_clears_at_the_default` above:
+        a bare int() anywhere in the painter is the bug's exact spelling."""
+        body = _executed(PAINTER)
+        assert 'int(os.getenv("DISPLAY_CLEAR_HOUR"' not in body, (
+            "DISPLAY_CLEAR_HOUR is parsed with a bare int() again (litclock-dev#838)"
+        )
+        assert "display_clear_hour = _display_clear_hour()" in body, (
+            "the __main__ block no longer reads the clear hour through the guarded parser"
         )
 
 
