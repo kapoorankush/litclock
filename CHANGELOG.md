@@ -4,6 +4,8 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+## [v0.228.0] - 2026-09-18
+
 ### Changed
 
 - Two more quotes are classified as mature, so they now appear only on a clock with mature content switched on.
