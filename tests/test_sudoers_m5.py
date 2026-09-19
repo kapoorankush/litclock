@@ -72,8 +72,11 @@ class TestSudoersEntries:
     def test_gift_tz_reset_entry_matches_route_argv(self):
         """litclock-dev#396: the sudoers entry must match the EXACT argv prepare_for_gift
         runs — sudo matches commands verbatim, so a drift (path change, extra
-        flag) would silently no-op the privileged call once 010_pi-nopasswd is
-        dropped (litclock-dev#387). Derive the expected command from _gift_reset_argv()
+        flag) leaves this call site with no scoped grant of its own, silently
+        falling back to the blanket 010_pi-nopasswd file instead of the
+        fixed-argv entry litclock-dev#387 added for it. (010 is kept — that drop was
+        reversed 2026-07-12 — so the failure is a lost audit boundary, not an
+        outage.) Derive the expected command from _gift_reset_argv()
         rather than a duplicated literal so the source of truth is the code, not
         a string that can rot. sudo strips argv[0], so the sudoers Cmnd is the
         argv minus the leading 'sudo'. This is the parity class MEMORY flags as
@@ -88,6 +91,31 @@ class TestSudoersEntries:
         # broader accidental allowance (e.g. trailing args) can't pass.
         cmnds = {c.strip() for c in body.split("NOPASSWD:", 1)[-1].split(",")}
         assert expected_cmnd in cmnds, f"{expected_cmnd!r} not an exact sudoers Cmnd; got {sorted(cmnds)}"
+
+    def test_update_sh_timer_rearms_are_exact_cmnds(self):
+        """litclock-dev#847 item 5: update.sh's re-arms of litclock.timer —
+        Phase 7, both revert arms, and the EXIT/signal trap's
+        `sudo -n systemctl start --no-block litclock.timer` — rode on
+        010_pi-nopasswd's blanket grant. Every one of them degrading is a dark
+        panel until a power-cycle, so 020 grants them itself rather than
+        leaning on the broad file: this pins a scoped grant that must keep
+        working regardless of what 010 does. (The litclock-dev#82/litclock-dev#387 plan to drop 010
+        was reversed 2026-07-12; 010 stays, and these entries stay too.)
+        Derived from update.sh's EXECUTED lines (comments quote
+        the same argv), mapped to the Bookworm binary path, and matched as
+        whole Cmnds, so a loosened or narrowed entry fails here."""
+        update_sh = (REPO_ROOT / "scripts" / "update.sh").read_text()
+        executed = "\n".join(ln for ln in update_sh.splitlines() if not ln.lstrip().startswith("#"))
+        calls = set(re.findall(r"\bsudo(?: -n)? systemctl (start(?: --no-block)? litclock\.timer)\b", executed))
+        assert calls == {"start litclock.timer", "start --no-block litclock.timer"}, (
+            f"update.sh's timer re-arm argv changed: {sorted(calls)} — update this test AND sudoers/020"
+        )
+        cmnds = {c.strip() for c in SUDOERS.read_text().split("NOPASSWD:", 1)[-1].split(",")}
+        for call in sorted(calls):
+            assert f"/usr/bin/systemctl {call}" in cmnds, (
+                f"sudoers/020 lacks `/usr/bin/systemctl {call}`; without it the re-arm falls back to "
+                f"010_pi-nopasswd's blanket grant (litclock-dev#847 item 5). Got {sorted(cmnds)}"
+            )
 
     def test_m4_entries_preserved(self):
         body = SUDOERS.read_text()

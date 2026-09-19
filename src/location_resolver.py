@@ -390,7 +390,7 @@ def main() -> int:
         log.warning("could not load env.sh: %r — exiting cleanly", exc)
         return 0
 
-    mode = (env.get("WEATHER_LOCATION_MODE") or "auto").strip() or "auto"
+    mode = _config.weather_location_mode(env.get("WEATHER_LOCATION_MODE"))
     if mode != "auto":
         # The whole point of this gate: a user in Specific mode picked their
         # location intentionally; the on-boot reresolve must NEVER overwrite it.

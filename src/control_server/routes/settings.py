@@ -804,7 +804,7 @@ def _save_and_apply(
         # since by definition nothing was written (litclock-dev#414 item #2).
         return ({"ok": True, "saved": [], "settings": dict(existing)}, 200)
 
-    previous_mode = (existing.get("WEATHER_LOCATION_MODE") or "auto").strip() or "auto"
+    previous_mode = _config.weather_location_mode(existing.get("WEATHER_LOCATION_MODE"))
     sync_quick_attempted, sync_quick_succeeded = _run_sync_quick_if_needed(
         env_updates,
         resolved_country,

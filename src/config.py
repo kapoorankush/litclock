@@ -136,6 +136,24 @@ def _validate_weather_location_mode(value: str) -> tuple[bool, str | None]:
     return True, None
 
 
+def weather_location_mode(raw: object) -> str:
+    """Normalise a raw ``WEATHER_LOCATION_MODE`` value the way every READER does.
+
+    Absent, ``None``, empty or whitespace-only is ``"auto"`` — legacy / pre-litclock-dev#337
+    env.sh files never set the key, and the collector maps an empty env value
+    to ``None``. Anything else is returned stripped but otherwise verbatim, so
+    a value the writer would have rejected (``"autp"``, ``"AUTO"``) comes back
+    as itself and the caller can decide what an INVALID mode means for it:
+    the resolver skips IP-geo for any non-``auto`` value; the diagnostics
+    staleness check exempts only ``"specific"`` (litclock-dev#836). This is the
+    ONE copy of the expression — ``location_resolver.main()``, the settings
+    writer and the diagnostics anomaly all call it, and
+    ``tests/test_control_server_diagnostics_anomalies.py`` scans ``src/`` for
+    a re-inlined copy.
+    """
+    return (str(raw) if raw else "auto").strip() or "auto"
+
+
 def _validate_weather_ip_country(value: str) -> tuple[bool, str | None]:
     # litclock-dev#337 A6.1: ISO 3166-1 alpha-2 country code (uppercase) OR empty
     # (pre-S2 envs + first-resolve cases where IP-geo hasn't run yet).

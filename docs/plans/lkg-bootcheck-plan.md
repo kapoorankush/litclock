@@ -50,7 +50,7 @@ Per the TODO wording ("reverts … after 3 consecutive failed boots, then reboot
 - When it arms a fresh `lkg-sha` (all gates pass, write succeeds): also clear `rollback-sha` (new code is now the known-good; old rollback target retired).
 
 ### Reboot authorization
-`020_litclock-control` already authorizes `/usr/bin/systemctl reboot`. bootcheck runs as pi and uses the same scoped grant — no new sudoers entry, works after litclock-dev#387 drops `010`. Verify the exact authorized form (`reboot` vs `reboot --no-block`).
+`020_litclock-control` already authorizes `/usr/bin/systemctl reboot`. bootcheck runs as pi and uses the same scoped grant — no new sudoers entry, and no dependence on the blanket `010` grant. (As planned, litclock-dev#387 was going to drop `010`; that was reversed 2026-07-12 and `010` is kept. The scoped-grant property is what matters and is unaffected.) Verify the exact authorized form (`reboot` vs `reboot --no-block`).
 
 ## Reboot-loop bound (safety)
 Worst case: bad update → 3 natural power-cycles → revert + 1 reboot → reverted code also bad → 3 more cycles → give-up splash, no further reboots. Bounded. The give-up splash tells the user to reflash (last resort).

@@ -23,6 +23,7 @@ computed from T0 ± offset so the test math is deterministic.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -234,6 +235,86 @@ class TestIpGeoAgeThreshold:
             timedelta(seconds=_anomalies.ANOMALY_LAST_IPGEO_AGE_S, milliseconds=1),
         )
         assert "time-location" in _anomalies._compute_anomalies(v)
+
+    # litclock-dev#836 — the age check is gated on WEATHER_LOCATION_MODE. Since
+    # litclock-dev#791 the resolver writes the stamp; an owner who then picks a Specific
+    # location keeps it, and location_resolver.main() deliberately stops
+    # refreshing it in that mode. Before the gate, a correctly configured
+    # Specific clock showed a permanent "Location stale" after seven days.
+    # Only the VALID non-auto value is exempt: an invalid mode ("autp",
+    # "AUTO") also freezes the stamp, but that is a broken env.sh and this
+    # anomaly is the only surface that shows it (Codex, litclock-dev#836 review — the
+    # first cut exempted every non-auto value and hid the fault).
+
+    def _stale_payload(self, frozen_now: datetime, mode) -> dict:
+        v = self._payload_with_ipgeo(frozen_now, timedelta(days=8))
+        v["weather_location_mode"] = mode
+        return v
+
+    def test_specific_mode_ignores_stale_stamp(self, frozen_clock):
+        v = self._stale_payload(frozen_clock, "specific")
+        assert "time-location" not in _anomalies._compute_anomalies(v)
+
+    def test_auto_mode_trips_on_stale_stamp(self, frozen_clock):
+        v = self._stale_payload(frozen_clock, "auto")
+        assert "time-location" in _anomalies._compute_anomalies(v)
+
+    @pytest.mark.parametrize("mode", [None, "", "  "], ids=["none", "empty", "whitespace"])
+    def test_unset_mode_is_auto_and_trips(self, frozen_clock, mode):
+        # The collector maps an empty env value to None; a legacy pre-litclock-dev#337
+        # env.sh has no key at all. The resolver runs IP-geo for both, so a
+        # stale stamp is a real fault for both.
+        v = self._stale_payload(frozen_clock, mode)
+        assert "time-location" in _anomalies._compute_anomalies(v)
+
+    @pytest.mark.parametrize("mode", ["autp", "AUTO", "Specific", "manual"])
+    def test_invalid_mode_still_trips(self, frozen_clock, mode):
+        # The writer rejects these (config._validate_weather_location_mode),
+        # so they only reach env.sh by hand. The resolver skips IP-geo for
+        # any non-"auto" value, so the stamp freezes exactly as in Specific
+        # mode — but as a fault, and the age check must keep showing it.
+        v = self._stale_payload(frozen_clock, mode)
+        assert "time-location" in _anomalies._compute_anomalies(v)
+
+    def test_specific_mode_still_trips_on_empty_city(self, frozen_clock):
+        # The gate is on the AGE check only. A Specific-mode clock with no
+        # resolved place is still a real anomaly (D3), stale stamp or not.
+        v = self._stale_payload(frozen_clock, "specific")
+        v["weather_location_name"] = ""
+        assert "time-location" in _anomalies._compute_anomalies(v)
+
+    def test_mode_normalisation_is_the_shared_one(self):
+        # _location_mode must be config.weather_location_mode applied to the
+        # collected key — the resolver and the settings writer call the same
+        # helper, so a drift in the normalisation is a drift for all three.
+        import config
+
+        mode = _anomalies._location_mode
+        for raw, want in [
+            (None, "auto"), ("", "auto"), ("  ", "auto"), (" auto ", "auto"),
+            ("specific", "specific"), (" specific ", "specific"),
+            ("autp", "autp"), ("AUTO", "AUTO"),
+        ]:
+            assert mode({"weather_location_mode": raw}) == want, raw
+            assert config.weather_location_mode(raw) == want, raw
+        assert mode({}) == "auto"
+
+    def test_no_reader_re_inlines_the_normalisation(self):
+        # litclock-dev#836 review (maintainability + adversarial passes): this module
+        # had grown a THIRD inline copy of `(x or "auto").strip() or "auto"`
+        # next to location_resolver.main() and the settings writer. The
+        # expression now lives once, in config.weather_location_mode; a
+        # re-inlined copy anywhere else under src/ is drift. Comments count
+        # too — a comment quoting the idiom is exactly what would tempt a
+        # reader to paste it back.
+        src_root = Path(__file__).resolve().parent.parent / "src"
+        offenders = []
+        for path in src_root.rglob("*.py"):
+            if path.name == "config.py":
+                continue
+            if '.strip() or "auto"' in path.read_text(encoding="utf-8"):
+                offenders.append(str(path.relative_to(src_root)))
+        assert offenders == [], offenders
 
 
 class TestQuoteAgeThreshold:

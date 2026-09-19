@@ -340,6 +340,53 @@ class TestCatalogGetContractHoldsWhenTheModuleItselfIsBroken:
             "the degradation must be visible on stderr — silent is how it stays broken"
         )
 
+    @staticmethod
+    def _fd2_closed():
+        import os
+
+        os.close(2)
+
+    @staticmethod
+    def _fd2_broken_pipe():
+        import os
+
+        r, w = os.pipe()
+        os.close(r)
+        os.dup2(w, 2)
+
+    @pytest.mark.parametrize("stderr_state", ["closed-at-startup", "broken-pipe"])
+    @pytest.mark.parametrize("subcommand,fallback", [("catalog-get", KEY), ("catalog-count", "0")])
+    def test_the_fallback_note_cannot_cost_the_value(self, tmp_path, stderr_state, subcommand, fallback):
+        """PR litclock-dev#851 review (Codex 4): the fallback arm's stderr note was a bare
+        `print(..., file=sys.stderr)`. On a broken stderr it raised BEFORE the
+        fallback value was assigned — empty stdout, exit 1, on the exact path
+        whose contract is "always exits 0 with a value". And with fd 2 closed
+        at startup `sys.stderr` is None, where `print(file=None)` means STDOUT:
+        the note landed on the stream the OTA gate compares.
+
+        Both states, both subcommands, for real: `preexec_fn` rearranges fd 2
+        in the child before the interpreter starts.
+        """
+        import os
+        import subprocess
+
+        root = self._checkout(tmp_path, None)  # strings_catalog.py missing -> the except arm fires
+        argv = [subcommand, self.KEY] if subcommand == "catalog-get" else [subcommand]
+        r = subprocess.run(
+            [sys.executable, "-E", "src/eink_display.py", *argv],
+            cwd=root,
+            stdout=subprocess.PIPE,
+            text=True,
+            timeout=60,
+            env={k: v for k, v in os.environ.items() if not k.startswith(("LITCLOCK_", "PYTHON"))},
+            preexec_fn=self._fd2_closed if stderr_state == "closed-at-startup" else self._fd2_broken_pipe,
+        )
+        assert r.returncode == 0, f"{subcommand} with stderr {stderr_state} exited {r.returncode}"
+        assert r.stdout.strip() == fallback, (
+            f"{subcommand} with stderr {stderr_state} printed {r.stdout!r} — the note leaked onto "
+            "stdout or the value was lost"
+        )
+
     def test_the_smoke_gate_still_catches_it(self, tmp_path):
         """The contract must not turn the OTA gate off. Printing the key is
         exactly what that gate compares against, so a broken module still
@@ -354,7 +401,10 @@ class TestCatalogGetContractHoldsWhenTheModuleItselfIsBroken:
             # litclock-dev#773 item 2 — catalog-count carries the SAME contract
             # (update.sh compares its stdout too), so it gets the same check
             # rather than a weaker one of its own.
-            ("catalog-count", "strings_catalog._catalog"),
+            # litclock-dev#840: through the PUBLIC catalog_size — the gate
+            # used to reach into `_catalog`, and a rename there would have
+            # printed 0 and failed every update closed.
+            ("catalog-count", "strings_catalog.catalog_size"),
         ],
     )
     def test_only_resolution_is_guarded_not_emission(self, subcommand, resolver):
@@ -387,6 +437,61 @@ class TestCatalogGetContractHoldsWhenTheModuleItselfIsBroken:
             "the final print must be OUTSIDE the guard — guarding the emission mislabels a "
             "stdout failure as a catalog failure and can double-write"
         )
+
+
+class TestCatalogSize:
+    """litclock-dev#840 — `catalog_size(code)` is the public face of the count
+    the OTA smoke gate depends on (`eink_display.py catalog-count`,
+    litclock-dev#773 item 2). Its contract: the LOADER's view, never raises,
+    0 for anything that cannot be served."""
+
+    @staticmethod
+    def _loaded_count(entry: dict) -> int:
+        data = json.loads((REPO_ROOT / entry["strings"]).read_text(encoding="utf-8"))
+        return len([k for k, v in data.items() if isinstance(v, str) and not k.startswith("_")])
+
+    def test_english_counts_what_the_loader_serves(self):
+        expected = self._loaded_count(_languages()["en"])
+        assert expected > 0
+        assert strings_catalog.catalog_size("en") == expected
+
+    @pytest.mark.parametrize("code", ["nope", "", "EN"])
+    def test_a_code_the_registry_does_not_list_is_zero_not_an_error(self, code):
+        """0 is the honest answer AND below any sane floor, so a gate reading
+        it fails closed. It must not raise: `catalog-count` guards the call,
+        but the contract belongs to the function, not to one caller."""
+        assert strings_catalog.catalog_size(code) == 0
+
+    def test_it_measures_after_the_loader_filters(self, monkeypatch, tmp_path):
+        """`_catalog` drops `_`-prefixed keys and non-string values. A count
+        off the raw JSON would be wrong by exactly those, and the gate has to
+        measure what `get()` can actually resolve."""
+        bundle = tmp_path / "languages" / "zz" / "strings.json"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text(
+            json.dumps({"_meta": "dropped", "a.one": "1", "a.two": "2", "a.count": 3}),
+            encoding="utf-8",
+        )
+        registry = tmp_path / "languages.json"
+        registry.write_text(
+            json.dumps({"languages": {"zz": {"status": "active", "strings": "languages/zz/strings.json"}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", registry)
+        monkeypatch.setattr(strings_catalog, "_REPO_ROOT", tmp_path)
+        strings_catalog.reset_cache()
+        assert strings_catalog.catalog_size("zz") == 2
+
+    def test_a_registered_language_whose_bundle_is_unloadable_is_zero(self, monkeypatch, tmp_path):
+        registry = tmp_path / "languages.json"
+        registry.write_text(
+            json.dumps({"languages": {"zz": {"status": "active", "strings": "languages/zz/missing.json"}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", registry)
+        monkeypatch.setattr(strings_catalog, "_REPO_ROOT", tmp_path)
+        strings_catalog.reset_cache()
+        assert strings_catalog.catalog_size("zz") == 0
 
 
 class TestEnvFileChannel:

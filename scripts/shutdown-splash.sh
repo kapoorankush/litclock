@@ -32,32 +32,83 @@ PYTHON="$INSTALL_DIR/venv/bin/python3"
 # PERSIST on the bistable e-ink through shutdown — so it touches this marker
 # (via sudo) and we exit without painting anything. The marker lives directly
 # in root-owned /run, NOT in pi-owned /run/litclock/ next to the action hint,
-# so that creating it requires root. Note: on images carrying the 010
-# passwordless-sudo grant (all current images), a pi-level process can still
-# `sudo touch` it — but such a process already has full root, so the marker
-# adds no new exposure there; the root-owned path only becomes a real boundary
-# once 010 is dropped. tmpfs, so it self-clears on the next boot; no stale
+# so that creating it requires root. Note: every shipped image carries the 010
+# passwordless-sudo grant — kept deliberately, since the drop planned under
+# litclock-dev#387/litclock-dev#82 was reversed 2026-07-12 — so a pi-level process can `sudo touch` it
+# today. Such a process already has full root, so the marker adds no new
+# exposure there; the root-owned path is the correct shape regardless (it is
+# what keeps this out of the scoped 020 allowlist, where granting it WOULD hand
+# pi the gift-welcome mute), and it would become a hard boundary if the posture
+# were ever revisited. tmpfs, so it self-clears on the next boot; no stale
 # suppression can survive.
+# litclock-dev#861 — the echo below: without it a suppressed shutdown and a
+# script that died on its first command leave the same (empty) journal.
 if [[ -f /run/litclock-splash-suppress ]] && [[ ! -L /run/litclock-splash-suppress ]]; then
+    echo "shutdown splash: suppressed by /run/litclock-splash-suppress"
     exit 0
 fi
 
 SHUTDOWN_ACTION=""
+ACTION_SOURCE=""
 if [[ -f /etc/litclock/.welcome-mode ]]; then
     SHUTDOWN_ACTION="welcome"
+    ACTION_SOURCE="welcome-marker"
 elif [[ -f /run/litclock/shutdown-action ]] && [[ ! -L /run/litclock/shutdown-action ]]; then
     raw="$(timeout 1 head -c 32 /run/litclock/shutdown-action 2>/dev/null | tr -d '[:space:]')"
     case "$raw" in
-        reboot|poweroff) SHUTDOWN_ACTION="$raw" ;;
+        reboot|poweroff) SHUTDOWN_ACTION="$raw"; ACTION_SOURCE="hint-file" ;;
     esac
 fi
 if [[ -z "$SHUTDOWN_ACTION" ]]; then
-    if systemctl list-jobs 2>/dev/null | grep -q "reboot.target"; then
+    # litclock-dev#862 — ASK AS ROOT, and say so when the question fails.
+    #
+    # `systemctl` talks to PID 1 over the D-Bus system bus, and falls back to
+    # PID 1's private socket when the bus is gone. That socket is
+    # `srwx------ root root`, so the fallback is root-only — and this script
+    # runs `User=pi`. Measured on the bench 2026-09-18: ~10s into a shutdown
+    # `dbus.service` is already stopped, so as `pi` every systemctl call
+    # returns `Failed to connect to bus: Connection refused`, while
+    # `sudo -n systemctl list-jobs` answers correctly and shows
+    # `reboot.target start waiting`.
+    #
+    # That 10s is not hypothetical: litclock-dev#856 made this ExecStop wait
+    # for the boot splash's stop job (up to its TimeoutStopSec=10s), so a
+    # reboot taken during the ~11s boot-splash window landed here EVERY time
+    # with no answer and painted the poweroff splash on a device that was
+    # coming straight back up. Before litclock-dev#856 this ran at T+0 and worked only
+    # because dbus happened to still be alive — a race, not a mechanism.
+    #
+    # Root first, then the unprivileged call (which still answers early in a
+    # shutdown, and is the only one that works if 010_pi-nopasswd is ever
+    # withdrawn), then give up LOUDLY. Both are bounded: sudo and systemctl
+    # each have to be able to fail fast inside a 30s TimeoutStopSec that also
+    # has to fit a ~7s paint.
+    JOBS=""
+    if JOBS=$(timeout 5 sudo -n systemctl list-jobs 2>/dev/null) && [[ -n "$JOBS" ]]; then
+        ACTION_SOURCE="list-jobs(root)"
+    elif JOBS=$(timeout 5 systemctl list-jobs 2>/dev/null) && [[ -n "$JOBS" ]]; then
+        ACTION_SOURCE="list-jobs(unprivileged)"
+    else
+        JOBS=""
+        ACTION_SOURCE="list-jobs(UNAVAILABLE)"
+    fi
+    # litclock-dev#861 — an empty/failed probe and a genuine poweroff used to
+    # be the same `poweroff`, which is exactly why litclock-dev#862 sat unnoticed. The
+    # ANSWER still defaults to poweroff (painting "Restarting…" on a device
+    # that is really powering off is the worse error, and the PWA factory
+    # reset relies on this arm), but the SOURCE now says which one happened.
+    if [[ -n "$JOBS" ]] && grep -q "reboot\.target" <<<"$JOBS"; then
         SHUTDOWN_ACTION="reboot"
     else
         SHUTDOWN_ACTION="poweroff"
     fi
 fi
+
+# litclock-dev#861 — journald is the only diagnostic channel on this device,
+# and the painted variant is otherwise unrecoverable: the next boot repaints
+# over it. Name the tier too, because a wrong answer and an unasked question
+# look identical on the glass.
+echo "shutdown splash: action=${SHUTDOWN_ACTION} source=${ACTION_SOURCE}"
 
 case "$SHUTDOWN_ACTION" in
     welcome)

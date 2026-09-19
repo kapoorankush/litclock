@@ -4,6 +4,24 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- Two more quotes are classified as mature, so they now appear only on a clock with mature content switched on.
+
+### Fixed
+
+- Rebooting while the startup screen is still on the panel now paints the restart farewell. Before, the panel could stay frozen on the startup screen through the power-off, or show the shutdown farewell for a restart.
+- After a settings reset, the reboot it asks you to perform paints the farewell screen again instead of leaving the previous quote on the panel.
+- A quote refresh that lands while the clock is still starting up no longer fails outright — it waits for the startup screen to release the display.
+- A blank or invalid nightly display-cleaning hour no longer freezes the panel; the clock falls back to the default hour and keeps painting.
+- A clock with a location you typed in yourself no longer shows a permanent stale-location warning in Diagnostics.
+- On the setup page, the box for typing a hidden network's name stays out of the way until you pick "My network isn't listed", so the form can no longer show two conflicting answers at once, and a name typed on an earlier attempt can no longer come back already filled in.
+- Preparing an SD card for cloning now stops before it erases anything if your settings could not be wiped, so a refused run leaves the card untouched and the clock still working.
+- Preparing an SD card for cloning now really clears the shell history, instead of having it written back when you close the terminal you ran it from.
+- An update that fails its safety check is now remembered, so the clock stops downloading, failing and rolling back the same broken release every week.
+- A weekly update check that could not reach the internet is no longer reported as a failed update needing manual recovery, and no longer moves the "Last update" date for an update that never happened.
+- A rolled-back update no longer leaves the clock a minute behind, showing the previous minute's quote on every tick until the next update succeeded.
+
 ## [v0.227.0] - 2026-09-13
 
 ### Changed

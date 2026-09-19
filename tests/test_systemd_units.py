@@ -16,13 +16,65 @@ import pytest
 SYSTEMD_DIR = os.path.join(os.path.dirname(__file__), "..", "systemd")
 
 
+def _merge_duplicate_keys(text):
+    """Space-join repeated `Key=` assignments within a section.
+
+    systemd ACCUMULATES repeated list-valued directives (`After=`, `Before=`,
+    `Conflicts=`, `ExecStart=` on a oneshot, `ConditionPathExists=`);
+    configparser has no such concept. See parse_unit for why this matters.
+    """
+    out, section, seen = [], None, {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section, seen = stripped, {}
+            out.append(line)
+            continue
+        if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+            out.append(line)
+            continue
+        key, _, value = stripped.partition("=")
+        # systemd is case-SENSITIVE; the fold here only matches configparser's
+        # own so the merge cannot be dodged by case. Exact-case checking is the
+        # raw assertions' job, never this parser's.
+        slot = (section, key.strip().lower())
+        if slot in seen:
+            idx = seen[slot]
+            out[idx] = f"{out[idx].rstrip()} {value.strip()}".rstrip()
+            continue
+        seen[slot] = len(out)
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
 def parse_unit(filename):
-    """Parse a systemd unit file into a configparser object."""
+    """Parse a systemd unit file into a configparser object.
+
+    TWO deliberate deviations from a plain ConfigParser, both litclock-dev#856:
+
+    1. ``strict=False``. This helper used to claim "systemd allows duplicate
+       keys, but configparser doesn't — for our tests the last value wins".
+       The second half was never true: ConfigParser defaults to strict=True
+       and RAISES DuplicateOptionError. Two shipped units already trip it
+       (``litclock-reset-failed.service`` has two ``ExecStart=``,
+       ``litclock-handoff-fallback.service`` two ``ConditionPathExists=``);
+       nothing was red only because their tests read raw text. Splitting a
+       long ``Before=`` across two lines — semantically identical to systemd,
+       and the natural next edit to litclock-shutdown.service's six-token
+       list — would have turned a dozen tests red with a message naming
+       configparser rather than the unit file.
+    2. Duplicates are MERGED, not last-wins, because that is what systemd does
+       for the list-valued directives these tests assert on.
+
+    CAVEAT, and the reason every numeric budget in this file is read from the
+    raw text instead: for a SCALAR directive systemd takes the LAST value,
+    while the merge above joins them. Never read a scalar through this helper
+    without a raw single-assignment check — see ``_stop_budget_seconds``.
+    """
     path = os.path.join(SYSTEMD_DIR, filename)
-    parser = configparser.ConfigParser(interpolation=None)
-    # systemd allows duplicate keys (e.g., After=), but configparser doesn't.
-    # For our tests, the last value wins — which matches how we write the files.
-    parser.read(path)
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    with open(path) as f:
+        parser.read_string(_merge_duplicate_keys(f.read()), source=path)
     return parser
 
 
@@ -78,6 +130,42 @@ def _parse_systemd_duration_to_seconds(value):
             return None
         total += float(num_str) * _SYSTEMD_DURATION_UNITS[unit]
     return total if total > 0 else None
+
+
+# The stop-ordering chain litclock-dev#271 + litclock-dev#856 build:
+#
+#     litclock.service.stop ──> litclock-splash.stop ──> litclock-shutdown.stop
+#                                                          (ExecStop = the paint)
+#
+# Every budget below is read EXACT-CASE from the raw file, never through
+# parse_unit: configparser lowercases option names, so `timeoutstopsec=10s` —
+# which systemd rejects as an unknown key, silently falling the unit back to
+# DefaultTimeoutStopSec — reads back identically through it. That is the
+# litclock-dev#549 lesson the ordering tests in this file cite by name; the timeout
+# tests did not honour it until litclock-dev#856's review caught the gap.
+_PAINT_UNIT = "litclock-shutdown.service"
+_STOP_PREDECESSORS = ("litclock.service", "litclock-splash.service")
+
+
+def _stop_budget_seconds(filename):
+    """This unit's TimeoutStopSec in seconds, from the raw file.
+
+    Requires EXACTLY ONE assignment. systemd takes the last value for a scalar
+    directive while parse_unit's duplicate merge joins them, so a single
+    assignment is the precondition that makes any reading of it honest.
+    """
+    raw = Path(os.path.join(SYSTEMD_DIR, filename)).read_text()
+    matches = re.findall(r"^TimeoutStopSec=(\S+)[ \t]*$", raw, re.M)
+    assert len(matches) == 1, (
+        f"{filename} must carry exactly one exact-case `TimeoutStopSec=` line in "
+        f"[Service]; found {len(matches)}. systemd ignores `timeoutstopsec=` as an "
+        "unknown key and falls back to DefaultTimeoutStopSec (90s on Bookworm)."
+    )
+    seconds = _parse_systemd_duration_to_seconds(matches[0])
+    assert seconds is not None, (
+        f"{filename}: TimeoutStopSec={matches[0]!r} is not a parseable systemd duration"
+    )
+    return seconds
 
 
 # ── Boot ordering (litclock-dev#111, updated for litclock-dev#128) ──────────────────────────
@@ -288,6 +376,72 @@ class TestServiceProperties:
             "Before=litclock.service required for litclock-dev#271 — orders our ExecStop after mid-render stop"
         )
 
+    def test_clock_service_after_splash(self):
+        """litclock-dev#832: the mirror image of litclock-dev#271. Three things start
+        litclock.service at boot — litclock.timer at :56, the litclock-dev#309 IP-change
+        dispatcher on wlan0's lease, and the splash's own ExecStartPost
+        hand-off (litclock-dev#269). Only the hand-off was serialised against the splash;
+        the other two could land while boot-splash.sh still held GPIO17 and
+        failed with `KeyError: PinInfo(... 'GPIO17' ...)` — two tracebacks on
+        3 of 3 bench boots. After=litclock-splash.service makes a start job
+        queued during the splash's start job wait for it.
+
+        Raw exact-case line, not configparser (the litclock-dev#549 lesson): systemd
+        directives are case-sensitive and `after=` is silently ignored, but
+        configparser lowercases option names and would still find it."""
+        path = os.path.join(SYSTEMD_DIR, "litclock.service")
+        with open(path) as f:
+            raw = f.read()
+        assert re.search(r"^After=(?:.*\s)?litclock-splash\.service(?:\s|$)", raw, re.M), (
+            "litclock-dev#832: litclock.service must carry After=litclock-splash.service "
+            "so timer-fired and dispatcher-fired starts queue behind the boot splash"
+        )
+        # And in [Unit] specifically — the raw regex is section-blind, and the
+        # same line under [Service] is silently ignored by systemd.
+        unit = parse_unit("litclock.service")
+        assert "litclock-splash.service" in set(unit.get("Unit", "After", fallback="").split()), (
+            "After=litclock-splash.service must live in the [Unit] section"
+        )
+
+    def test_clock_service_orders_after_splash_without_pulling_it_in(self):
+        """litclock-dev#832: ORDERING only. The splash is a boot-time oneshot
+        that may be absent from the transaction entirely; any pull-in
+        directive here would make every per-minute timer fire (and every
+        dispatcher fire) try to start the boot splash again."""
+        unit = parse_unit("litclock.service")
+        for directive in ("Wants", "Requires", "Requisite", "BindsTo", "PartOf", "Upholds"):
+            tokens = set(unit.get("Unit", directive, fallback="").split())
+            assert "litclock-splash.service" not in tokens, (
+                f"{directive}=litclock-splash.service would pull the boot splash into every "
+                "minute tick — litclock-dev#832 is After= only"
+            )
+
+    def test_splash_handoff_is_not_an_ordering_cycle(self):
+        """litclock-dev#832: litclock-splash.service starts litclock.service
+        from ExecStartPost. That is fine WITH After= on our side — the queued
+        job waits for the splash's start job, which completes right after
+        ExecStartPost returns — but only while there is no reverse edge. A
+        splash that were After=litclock.service (or a clock that were
+        Before=litclock-splash.service) would give systemd a cycle to break by
+        dropping an edge at random, and the hand-off would then deadlock or
+        race depending on which one it dropped."""
+        splash = parse_unit("litclock-splash.service")
+        clock = parse_unit("litclock.service")
+        assert "litclock.service" not in set(splash.get("Unit", "After", fallback="").split()), (
+            "litclock-splash.service must not be After=litclock.service — reverse edge of litclock-dev#832"
+        )
+        assert "litclock-splash.service" not in set(clock.get("Unit", "Before", fallback="").split()), (
+            "litclock.service must not be Before=litclock-splash.service — reverse edge of litclock-dev#832"
+        )
+        # And the hand-off must stay --no-block: with the ordering in place a
+        # blocking start from inside the splash's own start job waits on itself.
+        # (TestSplashExecStartPost.test_uses_no_block pins the line; this
+        # restates WHY it is now load-bearing rather than merely polite.)
+        raw_path = os.path.join(SYSTEMD_DIR, "litclock-splash.service")
+        with open(raw_path) as f:
+            post = next((ln for ln in f if ln.startswith("ExecStartPost=")), "")
+        assert "--no-block" in post and "litclock.service" in post
+
     def test_shutdown_does_NOT_conflict_with_litclock_timer(self):
         """Codex /review caught: bidirectional Conflicts=litclock.timer
         breaks normal operation. Both this unit (RemainAfterExit=yes) and
@@ -307,29 +461,189 @@ class TestServiceProperties:
             "the units coexist normally. Use Before= alone or a different mechanism."
         )
 
-    def test_litclock_service_has_bounded_stop_timeout(self):
-        """Issue litclock-dev#271 follow-up — wedged-render timeout guard.
+    def test_stop_chain_predecessors_are_bounded_and_exact_case(self):
+        """Issue litclock-dev#271 follow-up + litclock-dev#856, with the budget model
+        CORRECTED by the litclock-dev#856 review.
 
-        litclock.service is Type=oneshot and inherits
-        DefaultTimeoutStopSec (90s on Bookworm systemd 252). If a render
-        is wedged on the SPI bus during reboot (GPIO contention from a
-        previous unclean exit), 90s would outlast
+        Both units ordered ahead of the shutdown paint — litclock.service
+        (litclock-dev#271) and litclock-splash.service (litclock-dev#856) — are Type=oneshot and
+        would otherwise inherit DefaultTimeoutStopSec (90s on Bookworm systemd
+        252), charged TWICE because systemd re-arms the same budget for the
+        SIGKILL phase.
+
+        WHAT THE OLD COMMENT GOT WRONG (pre-existing, propagated by litclock-dev#856
+        before review caught it): it claimed 90s "would outlast
         litclock-shutdown.service's own 30s TimeoutStopSec — meaning the
-        splash ExecStop is SIGKILLed before it can paint "Powered Off".
+        splash ExecStop is SIGKILLed before it can paint". It cannot.
+        TimeoutStopSec is armed when a unit's stop BEGINS — for the paint
+        unit, when ExecStop is spawned — and a stop job blocked on ordered
+        predecessors has no timer running at all; the unit is still `active`.
+        So a slow predecessor can never cut the paint short. Predecessor
+        budgets are additive latency IN FRONT OF the paint, and the real
+        failure is the inverse: a reboot that stalls for minutes, during
+        which an impatient owner pulls the power and NO splash is painted.
 
-        Cap TimeoutStopSec at <= 30s so a wedged render is force-killed
-        within the shutdown-splash budget. Healthy renders are ~9s, so
-        a small cap is fine.
+        The POLICY, therefore, and it is a policy rather than a systemd law:
+        the waiting we put in front of the paint must not exceed the paint's
+        own budget. Derived from the unit files, not hardcoded.
         """
-        unit = parse_unit("litclock.service")
-        timeout = unit.get("Service", "TimeoutStopSec", fallback="")
-        seconds = _parse_systemd_duration_to_seconds(timeout)
-        assert seconds is not None, (
-            f"TimeoutStopSec must be set on litclock.service and parseable as a systemd duration; got {timeout!r}"
+        paint_budget = _stop_budget_seconds(_PAINT_UNIT)
+        total = 0.0
+        for name in _STOP_PREDECESSORS:
+            seconds = _stop_budget_seconds(name)
+            assert seconds >= 1, f"{name}: TimeoutStopSec={seconds}s leaves no room for a clean SIGTERM"
+            # And in [Service] — the raw read above is section-blind, and the
+            # same line under [Unit] is silently ignored by systemd.
+            unit = parse_unit(name)
+            assert unit.get("Service", "TimeoutStopSec", fallback=""), (
+                f"{name}: TimeoutStopSec must live in the [Service] section"
+            )
+            total += seconds
+        assert total <= paint_budget, (
+            f"the stop chain puts {total}s of SIGTERM waiting in front of a {paint_budget}s "
+            f"paint budget ({' + '.join(_STOP_PREDECESSORS)}). Predecessor budgets are "
+            "additive reboot latency, not contained inside the paint — keep them a "
+            "minority of it or a reboot-during-splash stalls long enough to get power-pulled."
         )
-        assert 1 <= seconds <= 30, (
-            f"TimeoutStopSec={timeout!r} (= {seconds}s) must be bounded below "
-            "shutdown-splash's 30s so a wedged render gets SIGKILL'd inside the budget"
+
+    def test_paint_budget_covers_the_paint_it_has_to_run(self):
+        """litclock-dev#856 review item G: the bound above is a RATIO, so it is
+        satisfiable by shrinking the paint budget instead of the predecessors —
+        `TimeoutStopSec=5` on litclock-shutdown.service passes a ratio test and
+        SIGKILLs shutdown-splash.sh mid-paint. Floor it against the script's own
+        inner `timeout N` (read from scripts/shutdown-splash.sh, so the two move
+        together) with slack for interpreter start and the catalog reads."""
+        paint_budget = _stop_budget_seconds(_PAINT_UNIT)
+        script = Path(os.path.join(os.path.dirname(__file__), "..", "scripts", "shutdown-splash.sh"))
+        inner = re.search(r"timeout (\d+) [^\n]*eink_display\.py", script.read_text())
+        assert inner, "scripts/shutdown-splash.sh must bound its paint with `timeout N ... eink_display.py`"
+        inner_seconds = int(inner.group(1))
+        assert paint_budget > inner_seconds, (
+            f"{_PAINT_UNIT} TimeoutStopSec={paint_budget}s must exceed shutdown-splash.sh's own "
+            f"`timeout {inner_seconds}`, or systemd SIGKILLs the paint before the script can"
+        )
+
+    def test_shutdown_before_litclock_splash_service(self):
+        """litclock-dev#856: the third panel holder on the shutdown path.
+
+        litclock.service (litclock-dev#271) was only half the race. litclock-splash.service
+        is a Type=oneshot whose ExecStart (boot-splash.sh -> `timeout 20
+        python src/eink_display.py`) holds GPIO17/SPI for ~11s of every boot.
+        A `sudo reboot` inside that window put the splash's stop and our
+        ExecStop in the transaction as UNORDERED siblings — sharing the
+        successor litclock.service does not serialise them — so
+        shutdown-splash.sh raced the boot splash, died with the same
+        `KeyError: PinInfo(... 'GPIO17' ...)` litclock-dev#832 removed from
+        the boot side, swallowed it on its `|| true` tail, and the boot
+        splash rode across the power-off.
+
+        Before= reverses on shutdown, so this orders our ExecStop AFTER the
+        splash's stop job completes. That completion is load-bearing and is
+        real: stopping a oneshot still in its start state SIGTERMs the whole
+        control group and the job finishes only once the cgroup is empty —
+        i.e. once the kernel has closed the gpiochip handle.
+
+        Raw exact-case line, not configparser (the litclock-dev#549 lesson): systemd
+        directives are case-sensitive and `before=` is silently ignored, but
+        configparser lowercases option names and would still find it."""
+        path = os.path.join(SYSTEMD_DIR, "litclock-shutdown.service")
+        with open(path) as f:
+            raw = f.read()
+        assert re.search(r"^Before=(?:.*\s)?litclock-splash\.service(?:\s|$)", raw, re.M), (
+            "litclock-dev#856: litclock-shutdown.service must carry "
+            "Before=litclock-splash.service so its ExecStop runs after the boot "
+            "splash has released GPIO17/SPI"
+        )
+        # And in [Unit] specifically — the raw regex is section-blind, and the
+        # same line under [Service] is silently ignored by systemd.
+        unit = parse_unit("litclock-shutdown.service")
+        assert "litclock-splash.service" in set(unit.get("Unit", "Before", fallback="").split()), (
+            "Before=litclock-splash.service must live in the [Unit] section"
+        )
+        # The litclock-dev#271 edge is not replaced by it — both panel holders stay listed.
+        assert "litclock.service" in set(unit.get("Unit", "Before", fallback="").split()), (
+            "litclock-dev#856 must not displace litclock-dev#271's Before=litclock.service"
+        )
+
+    def test_shutdown_orders_against_splash_without_pulling_it_in(self):
+        """litclock-dev#856: ORDERING only, the mirror of the litclock-dev#832 guard on
+        litclock.service. Any pull-in directive here would start the BOOT
+        splash whenever this unit is started — and reset-setup.sh starts it
+        deliberately (`rearm_shutdown_splash`, litclock-dev#727/litclock-dev#833) to re-arm
+        the once-per-boot stop edge. A boot splash painted in the middle of a
+        factory reset is the litclock-dev#727 outcome through a new door."""
+        unit = parse_unit("litclock-shutdown.service")
+        for directive in ("Wants", "Requires", "Requisite", "BindsTo", "PartOf", "Upholds"):
+            tokens = set(unit.get("Unit", directive, fallback="").split())
+            assert "litclock-splash.service" not in tokens, (
+                f"{directive}=litclock-splash.service would start the boot splash from "
+                "every re-arm of the shutdown unit — litclock-dev#856 is Before= only"
+            )
+
+    def test_shutdown_does_NOT_conflict_with_litclock_splash(self):
+        """litclock-dev#856, same family as the litclock-dev#271 and timer guards.
+
+        Conflicts= is bidirectional. Because Before= also orders the START
+        direction, litclock-shutdown.service is active before the boot splash
+        begins — so a Conflicts=litclock-splash.service would have the splash's
+        own start stop US, firing shutdown-splash.sh's "Powered Off" paint in
+        the middle of every boot. Ordering is the whole mechanism; do NOT
+        reach for Conflicts= here."""
+        unit = parse_unit("litclock-shutdown.service")
+        conflicts_tokens = set(unit.get("Unit", "Conflicts", fallback="").split())
+        assert "litclock-splash.service" not in conflicts_tokens, (
+            "Conflicts=litclock-splash.service is bidirectional — the splash's start "
+            "would fire our ExecStop mid-boot. Use Before= alone."
+        )
+
+    def test_shutdown_splash_ordering_has_no_reverse_edge(self):
+        """litclock-dev#856: the cycle guard, in the shape litclock-dev#832 established.
+
+        The start-direction edge set must stay a DAG:
+            local-fs.target -> litclock-shutdown -> litclock-splash -> litclock.service
+            local-fs.target -> sysinit.target -> basic.target -> litclock-splash
+        A reverse edge (litclock-shutdown After=litclock-splash.service, or the
+        splash Before=litclock-shutdown.service) would hand systemd a cycle to
+        break by dropping an edge at random — and the edge it dropped might be
+        the shutdown one, silently restoring the race this issue fixed."""
+        shutdown = parse_unit("litclock-shutdown.service")
+        splash = parse_unit("litclock-splash.service")
+        assert "litclock-splash.service" not in set(shutdown.get("Unit", "After", fallback="").split()), (
+            "litclock-shutdown.service must not be After=litclock-splash.service — "
+            "reverse edge of litclock-dev#856"
+        )
+        assert "litclock-shutdown.service" not in set(splash.get("Unit", "Before", fallback="").split()), (
+            "litclock-splash.service must not be Before=litclock-shutdown.service — "
+            "reverse edge of litclock-dev#856"
+        )
+
+    def test_splash_is_in_the_shutdown_transaction_at_all(self):
+        """litclock-dev#856 review item C — the PRECONDITION the whole fix
+        rests on, previously neither stated nor pinned.
+
+        Before= only orders units that BOTH have a job in the transaction.
+        litclock-splash.service has a stop job on reboot solely because it
+        inherits the implicit Conflicts=shutdown.target from default
+        dependencies. Add DefaultDependencies=no to it — an entirely plausible
+        edit, since the sibling litclock-shutdown.service already carries that
+        line and it reads like consistency — and the splash drops out of the
+        shutdown transaction, our Before= silently becomes a no-op, and the
+        GPIO17 race is back with every other test in this file still green.
+
+        This is the same argument the litclock-dev#271 comment already makes for
+        litclock.service ("its own default Conflicts=shutdown.target ensures
+        it IS being stopped in the same shutdown transaction"), applied to the
+        unit litclock-dev#856 added."""
+        raw = Path(os.path.join(SYSTEMD_DIR, "litclock-splash.service")).read_text()
+        assert not re.search(r"^DefaultDependencies=no[ \t]*$", raw, re.M), (
+            "litclock-dev#856: litclock-splash.service must KEEP default dependencies. "
+            "They are what give it a stop job in the shutdown transaction (implicit "
+            "Conflicts=shutdown.target); without one, litclock-shutdown.service's "
+            "Before=litclock-splash.service orders against nothing and the race returns."
+        )
+        unit = parse_unit("litclock-splash.service")
+        assert unit.get("Unit", "DefaultDependencies", fallback="yes").strip().lower() != "no", (
+            "DefaultDependencies=no must not reach litclock-splash.service by any spelling"
         )
 
 

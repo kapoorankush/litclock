@@ -1,25 +1,39 @@
 # LitClock Control PWA — scoped sudo for system actions (issue litclock-dev#245 M4 + M5).
 #
 # This file documents the narrow set of privileged commands the Control PWA
-# needs. /etc/sudoers.d/010_pi-nopasswd grants `pi` NOPASSWD: ALL for
-# compatibility with the legacy install path; that file remains in force.
+# needs. /etc/sudoers.d/010_pi-nopasswd grants `pi` NOPASSWD: ALL, and
+# pi-gen/stage3/02-configure-system/00-run.sh still writes it on every image.
 #
-# SCOPE WARNING — do NOT remove 010_pi-nopasswd on the strength of this file
-# (litclock-dev#548). This allowlist covers ONLY control_server's own sudo call
-# sites (litclock-dev#387 closed those escalation paths). It does NOT cover the rest of the
+# 010 IS KEPT, DELIBERATELY — the drop is not pending work. It was planned
+# under litclock-dev#387 (and bundled into litclock-dev#82) and then formally REVERSED by the owner on
+# 2026-07-12: with a known default password a scoped sudo blocks only
+# accidental escalation, not RCE (`sudo -S`), while the drop is a brick-risky
+# refactor of first-boot/update/LKG. litclock-dev#387 closed 2026-07-12 on that
+# ratification and litclock-dev#82 closed 2026-07-14 with the image-hardening bundle
+# explicitly removed from scope. The question reopens only if a non-default
+# per-device password ever lands (or `pi` leaves the `sudo` group) — at that
+# point the password becomes a real boundary. Nothing in this file is waiting
+# on that.
+#
+# SCOPE — this allowlist covers ONLY control_server's own sudo call sites
+# (litclock-dev#387 closed those escalation paths). It does NOT cover the rest of the
 # `User=pi` runtime: update.sh (~60 sudo calls), first-boot.sh (~26),
 # wifi_provision.py, litclock-bootcheck.sh, and the splash/LKG scripts invoke
 # many commands that are NOT granted here (apt-get, cp, install, mkdir, rm, mv,
 # chown, tee, nft, nmcli, rfkill, sysctl, usermod, visudo, systemctl
 # daemon-reload/enable/disable, systemd-tmpfiles, …).
 #
-# Those scripts run non-interactively (timer- and boot-driven), so a
+# That gap is why the reversal matters operationally, and it is also the
+# standing reason to keep adding scoped entries here rather than leaning on
+# 010: those scripts run non-interactively (timer- and boot-driven), so a
 # password-requiring sudo cannot prompt — it fails at each call site. update.sh
 # deliberately omits `set -e` and several calls end in `2>/dev/null || true`, so
-# with 010 gone an OTA update would no-op every privileged step and still report
-# SUCCESS, fleet-wide, while litclock-bootcheck.sh (the brick-recovery
-# auto-revert) degrades the same way. Removing 010 needs the binary-level
-# coverage gate described on litclock-dev#548 first, not this file's say-so.
+# a pi whose blanket grant went away would no-op every privileged step of an OTA
+# update and still report SUCCESS, fleet-wide, while litclock-bootcheck.sh (the
+# brick-recovery auto-revert) degrades the same way. A scoped 020 grant is the
+# right default for anything that does not genuinely need the blanket one; the
+# binary-level coverage gate sketched on litclock-dev#548 would be the
+# prerequisite if the posture were ever revisited.
 #
 # Commands MUST exactly match what the caller runs (sudoers matches the
 # binary path + arguments verbatim). On Bookworm `which systemctl` is
@@ -66,12 +80,15 @@
 #     route swallows failure (see system.py:_gift_reset_timezone_to_utc), so a
 #     missing entry degrades to the script's Step 3.5 reset, never a hard error.
 #
-# litclock-dev#387 entries (020-completion, makes dropping 010 safe):
+# litclock-dev#387 entries (020-completion). These shipped as defense-in-depth and stay
+# shipped after the 2026-07-12 reversal — they closed real pi->root escalation
+# paths regardless of 010, and they are the scoped default for call sites that
+# do not need the blanket grant:
 #   * `/usr/bin/timedatectl set-ntp true` — first-boot.sh (User=pi in
 #     litclock-firstboot.service) enables NTP during provisioning.
 #     Fixed argv (`set-ntp true` is the only form invoked). Before litclock-dev#387 this
-#     worked ONLY via 010's blanket grant; without it a fresh clock could never
-#     sync time once 010 drops. Surfaced by the litclock-dev#387 security /review.
+#     worked ONLY via 010's blanket grant, so a fresh clock's time sync hung
+#     off the broad file for no reason. Surfaced by the litclock-dev#387 security /review.
 #   * `/usr/local/lib/litclock/litclock-set-timezone` — the ARBITRARY-tz path
 #     (geocoding.set_system_timezone: IP-geo + the A18 browser-tz fallback).
 #     We authorize the root-owned wrapper's FIXED PATH, never `timedatectl
@@ -79,10 +96,25 @@
 #     the resolver). The wrapper re-validates the tz against the kernel zoneinfo
 #     list in root-owned code, so any argument pi passes is safe. Installed
 #     root:root 0755 so pi cannot rewrite it. Before litclock-dev#387 this path worked ONLY
-#     via 010_pi-nopasswd's blanket grant and would have broken when 010 drops.
+#     via 010_pi-nopasswd's blanket grant; the scoped entry is what makes it
+#     auditable, which is worth having whether or not 010 is present.
+#
+# litclock-dev#847 item 5 entries — the ONE deliberate exception to the scope
+# warning above:
+#   * `/usr/bin/systemctl start litclock.timer` — update.sh Phase 7 and both
+#     revert arms re-arm the clock after Phase 1 stopped it.
+#   * `/usr/bin/systemctl start --no-block litclock.timer` — update.sh's
+#     EXIT/signal trap (`timeout -k 5 10 sudo -n systemctl start --no-block
+#     litclock.timer`, litclock-dev#835), the re-arm that runs when the update
+#     is killed mid-way. Every other update.sh sudo call degrades to a
+#     no-op'd step and a loud status; THIS one degrading is a dark panel until
+#     a power-cycle, so it gets its own scoped grant rather than riding
+#     010_pi-nopasswd's blanket one. The bare and
+#     --no-block forms are both listed because sudoers matches argv verbatim.
+#     tests/test_sudoers_m5.py derives both from update.sh's executed lines.
 #
 # Validate any change with:  visudo -c -f sudoers/020_litclock-control
 # Install via: scripts/update.sh or the pi-gen image build
 # (pi-gen/stage3/02-configure-system/00-run.sh).
 
-pi ALL=(ALL) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl reboot --no-block, /usr/bin/systemctl poweroff, /usr/bin/systemctl poweroff --no-block, /usr/bin/systemctl restart litclock.service, /usr/bin/systemctl restart litclock.timer, /usr/bin/systemctl start litclock.service, /usr/bin/systemctl start --no-block litclock.service, /usr/bin/systemctl start --no-block litclock-update.service, /usr/bin/systemctl start --no-block litclock-wifi-reset.service, /usr/bin/systemctl start --no-block litclock-prepare-for-gift.service, /usr/bin/systemctl start --no-block litclock-reset.service, /usr/bin/systemctl stop litclock.timer litclock.service, /usr/bin/touch /etc/litclock/.handoff-complete, /usr/bin/timedatectl set-timezone UTC, /usr/bin/timedatectl set-ntp true, /usr/local/lib/litclock/litclock-set-timezone
+pi ALL=(ALL) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl reboot --no-block, /usr/bin/systemctl poweroff, /usr/bin/systemctl poweroff --no-block, /usr/bin/systemctl restart litclock.service, /usr/bin/systemctl restart litclock.timer, /usr/bin/systemctl start litclock.service, /usr/bin/systemctl start --no-block litclock.service, /usr/bin/systemctl start litclock.timer, /usr/bin/systemctl start --no-block litclock.timer, /usr/bin/systemctl start --no-block litclock-update.service, /usr/bin/systemctl start --no-block litclock-wifi-reset.service, /usr/bin/systemctl start --no-block litclock-prepare-for-gift.service, /usr/bin/systemctl start --no-block litclock-reset.service, /usr/bin/systemctl stop litclock.timer litclock.service, /usr/bin/touch /etc/litclock/.handoff-complete, /usr/bin/timedatectl set-timezone UTC, /usr/bin/timedatectl set-ntp true, /usr/local/lib/litclock/litclock-set-timezone

@@ -568,6 +568,231 @@ def _setup_fake_install(sandbox, on_master: bool = True, dirty: bool = False):
     (scripts / "placeholder.sh").write_text("#!/bin/bash\n")
 
 
+
+class TestBlockedShaOnSmokeRevert:
+    """litclock-dev#865 — a smoke-gate revert must be remembered.
+
+    The suppression already existed (bootcheck writes blocked-sha, Phase 1
+    skips a matching TARGET_SHA, a successful apply clears it). Only the WRITE
+    was missing on the smoke-revert path, so every weekly tick re-fetched the
+    same bad release, re-applied it, failed the same probe and reverted —
+    confirmed on hardware over two consecutive ticks.
+
+    These lift `_block_reverted_release` out of the script and EXECUTE it. The
+    mutation that matters is not "the write disappeared" (a source-text check
+    would see that) but "the wrong SHA is written": blocking REVERT_SHA instead
+    of TARGET_SHA pins the device off the only build known to work on it, and
+    reads identically in the diff.
+    """
+
+    BAD = "c5c4a135064f7f482b43d2e6a9c5d42d1bbfe4c5"   # the release that failed smoke
+    GOOD = "787d3079163aa94a1936e4b57535e87ec34df8cc"  # what we reverted TO
+
+    def _run(self, tmp_path, update_sh_content, *, target, rollback=0, state_writable=True,
+             no_interpreter=0):
+        """Execute the lifted helper with controlled globals; return (blocked, log)."""
+        import subprocess
+
+        start = update_sh_content.index("_block_reverted_release() {")
+        end = update_sh_content.index("\n}\n", start) + len("\n}\n")
+        frag = update_sh_content[start:end]
+
+        state = tmp_path / "state"
+        state.mkdir(exist_ok=True)
+        blocked = state / "blocked-sha"
+        blocked.unlink(missing_ok=True)  # the malformed-input case calls this in a loop
+        if not state_writable:
+            state.chmod(0o555)
+
+        script = f"""
+        log_info()  {{ echo "INFO $*"; }}
+        log_warn()  {{ echo "WARN $*"; }}
+        atomic_write_file() {{ printf '%s\\n' "$2" > "$1" 2>/dev/null; }}
+        BLOCKED_SHA_FILE="{blocked}"
+        ROLLBACK_MODE={rollback}
+        smoke_no_interpreter={no_interpreter}
+        {frag}
+        _block_reverted_release "{target}"
+        """
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        if not state_writable:
+            state.chmod(0o755)
+        return (blocked.read_text().strip() if blocked.exists() else None), r.stdout + r.stderr
+
+    def test_blocks_the_release_that_failed_not_the_one_we_reverted_to(self, tmp_path, update_sh_content):
+        """THE mutation that matters. Writing REVERT_SHA here would block the
+        last build known to work on this device — a permanent pin, from a
+        one-word change that looks right."""
+        got, log = self._run(tmp_path, update_sh_content, target=self.BAD)
+        assert got == self.BAD, f"blocked the wrong SHA: {got}"
+        assert got != self.GOOD
+        assert "blocked" in log
+
+    def test_a_gate_that_could_not_RUN_does_not_blame_the_release(self, tmp_path, update_sh_content):
+        """`smoke_no_interpreter` means $PYTHON was gone after Phase 4 — a fault
+        in THIS DEVICE's venv, not evidence about the release (litclock-dev#773's
+        "nothing was verified"). Blocking there pins the device off a release
+        that is probably fine, and outlives the fault: the Phase-4 guard
+        rebuilds a broken venv next tick, so the device heals and then refuses
+        the release it could now install. Same reasoning as the pip-failure
+        exclusion, one step later."""
+        got, log = self._run(tmp_path, update_sh_content, target=self.BAD, no_interpreter=1)
+        assert got is None, "a device-side venv fault must not block the release"
+        assert "could not run" in log
+
+    def test_rollback_mode_writes_nothing(self, tmp_path, update_sh_content):
+        """In rollback mode TARGET_SHA is the LKG target bootcheck is recovering
+        TO. Blocking it would strand the device off its own last-known-good, and
+        bootcheck owns the file in that mode."""
+        got, log = self._run(tmp_path, update_sh_content, target=self.BAD, rollback=1)
+        assert got is None, "must not touch blocked-sha during a bootcheck rollback"
+        assert "rollback mode" in log
+
+    def test_a_missing_or_malformed_target_is_refused_loudly(self, tmp_path, update_sh_content):
+        """An empty TARGET_SHA must not write a truncated/garbage block that
+        never matches anything (a silent no-op) — and must say so, since the
+        device will retry the bad release next tick."""
+        for bogus in ("", "notasha", self.BAD[:39]):
+            got, log = self._run(tmp_path, update_sh_content, target=bogus)
+            assert got is None, f"wrote a malformed block for {bogus!r}"
+            assert "no usable target SHA" in log
+
+    def test_an_unwritable_state_dir_warns_and_does_not_abort(self, tmp_path, update_sh_content):
+        """A revert that cannot record the block is still a completed revert.
+        The warning has to name the consequence, because the only symptom
+        otherwise is the loop this fix removes."""
+        got, log = self._run(tmp_path, update_sh_content, target=self.BAD, state_writable=False)
+        assert got is None
+        assert "could not write" in log.lower()
+        assert "re-install and re-revert" in log
+
+    def test_the_smoke_revert_arm_calls_it_with_the_failing_sha(self, tmp_path, update_sh_content):
+        """Wiring, judged by EFFECT rather than spelling.
+
+        Lifts the real call line off the smoke-revert arm and runs it with both
+        SHAs in scope. A string compare would pass `${TARGET_SHA}` and fail the
+        equivalent `"$TARGET_SHA"`, and — worse — would not distinguish a call
+        that passes the wrong variable from one that passes the right one if
+        the spelling happened to match. Here the assertion is which SHA lands
+        in the file.
+        """
+        import re
+        import subprocess
+
+        code = "\n".join(ln.split("#", 1)[0] for ln in update_sh_content.splitlines())
+        smoke = code.index("Smoke test failed (exit $smoke_rc)")
+        window = code[smoke:smoke + 3000]
+        m = re.search(r"^\s*_block_reverted_release\s+(.+)$", window, re.M)
+        assert m, "the smoke-revert arm does not call _block_reverted_release"
+        call = m.group(0).strip()
+
+        start = update_sh_content.index("_block_reverted_release() {")
+        end = update_sh_content.index("\n}\n", start) + len("\n}\n")
+        frag = update_sh_content[start:end]
+
+        blocked = tmp_path / "blocked-sha"
+        script = f"""
+        log_info() {{ :; }}
+        log_warn() {{ :; }}
+        atomic_write_file() {{ printf '%s\\n' "$2" > "$1" 2>/dev/null; }}
+        BLOCKED_SHA_FILE="{blocked}"
+        ROLLBACK_MODE=0
+        TARGET_SHA="{self.BAD}"
+        REVERT_SHA="{self.GOOD}"
+        {frag}
+        {call}
+        """
+        subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        got = blocked.read_text().strip() if blocked.exists() else None
+        assert got == self.BAD, (
+            f"the smoke-revert arm blocked {got}; it must block the release that FAILED "
+            f"({self.BAD}), not the one it reverted to ({self.GOOD})"
+        )
+
+    def test_pip_failure_arm_does_not_block(self, update_sh_content):
+        """A failed pip is usually the network. Blocking a good release on a
+        transient wheel fetch would be worse than the bug this fixes."""
+        code = "\n".join(ln.split("#", 1)[0] for ln in update_sh_content.splitlines())
+        pip = code.index("pip install failed")
+        window = code[pip:pip + 2000]
+        assert "_block_reverted_release" not in window
+
+
+class TestBlockedShaSkip:
+    """The consume side of blocked-sha, which now has TWO writers.
+
+    litclock-bootcheck's write is covered in test_bootcheck.py; the SKIP it
+    depends on was covered nowhere. litclock-dev#865 added a second writer, so
+    the contract they both rely on is pinned here: a matching SHA short-circuits
+    the run, anything else falls through to a normal install.
+
+    Executed, not grepped — a fall-through is exactly what source text cannot
+    see, and a fall-through here means the device re-installs the release it
+    just reverted from, which is the loop litclock-dev#865 removed.
+    """
+
+    BLOCKED = "6ab1f3c7c9105f9201a2a73230f203efdf01ba09"
+    OTHER = "316a835a520a5acec9f929b60a43e3061158d1f3"
+
+    def _run(self, tmp_path, update_sh_content, *, target, file_contents):
+        import subprocess
+
+        start = update_sh_content.index('if [[ -n "$TARGET_SHA" && -f "$BLOCKED_SHA_FILE" ]]; then')
+        # End on the 4-space `fi` that closes THIS `if`, not the column-0 one
+        # that closes the enclosing rollback/resolver chain — taking the latter
+        # lifts an extra `fi` and the fragment dies on a syntax error, which
+        # looks exactly like a fall-through and would have made every
+        # falls-through assertion below pass for the wrong reason.
+        end = update_sh_content.index("\n    fi\n", update_sh_content.index("exit 0", start)) + len("\n    fi\n")
+        frag = update_sh_content[start:end]
+
+        blocked = tmp_path / "blocked-sha"
+        if file_contents is not None:
+            blocked.write_text(file_contents)
+
+        script = f"""
+        log_info() {{ echo "[INFO] $*"; }}
+        log_warn() {{ echo "[WARN] $*"; }}
+        sudo() {{ :; }}
+        update_status_complete() {{ echo "STATUS_COMPLETE"; }}
+        read_sha_file() {{
+            [ -s "$1" ] || {{ printf ''; return 0; }}
+            v=$(tr -cd '0-9a-f' < "$1")
+            case "$v" in [0-9a-f]*) [ ${{#v}} -eq 40 ] && printf '%s' "$v" || printf '';; *) printf '';; esac
+        }}
+        BLOCKED_SHA_FILE="{blocked}"
+        TARGET_SHA="{target}"
+        _LITCLOCK_UPDATE_FINALIZED=0
+        {frag}
+        echo "REACHED_INSTALL"
+        """
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        return r.stdout
+
+    def test_a_matching_sha_short_circuits_the_run(self, tmp_path, update_sh_content):
+        out = self._run(tmp_path, update_sh_content, target=self.BLOCKED, file_contents=self.BLOCKED)
+        assert "REACHED_INSTALL" not in out, "a blocked release must not be installed again"
+        assert "is blocked" in out
+        assert "STATUS_COMPLETE" in out, "a deliberate no-op is 'complete', not a failure"
+
+    def test_a_different_sha_falls_through_so_recovery_is_possible(self, tmp_path, update_sh_content):
+        """The half that keeps a blocked device recoverable. If this regressed,
+        the block would be permanent and a newer release could never land."""
+        out = self._run(tmp_path, update_sh_content, target=self.OTHER, file_contents=self.BLOCKED)
+        assert "REACHED_INSTALL" in out
+        assert "is blocked" not in out
+
+    def test_an_empty_or_garbage_block_file_falls_through(self, tmp_path, update_sh_content):
+        """A truncated write must not wedge updates: read_sha_file returns empty
+        for anything that is not a 40-char hex SHA, and empty must not match."""
+        for contents in ("", "   \n", "not-a-sha", self.BLOCKED[:39]):
+            out = self._run(tmp_path, update_sh_content, target=self.BLOCKED, file_contents=contents)
+            assert "REACHED_INSTALL" in out, f"a {contents!r} block file wedged the updater"
+
+    def test_no_block_file_at_all_falls_through(self, tmp_path, update_sh_content):
+        out = self._run(tmp_path, update_sh_content, target=self.BLOCKED, file_contents=None)
+        assert "REACHED_INSTALL" in out
+
 class TestUpdateScriptExecution:
     """Run update.sh in a sandbox and verify subprocess orchestration."""
 
@@ -1434,6 +1659,11 @@ CHMOD_NEEDS_NO_TRACKED_MODE = {
     # target                      why it needs no tracked-mode guard
     "$ROLLBACK_SELF_SNAPSHOT": "a /tmp snapshot of this script, not a repo path",
     "$tmp": "a status tempfile, not a repo path (and 0644, not +x)",
+    # litclock-dev#847 item 1 (litclock-dev#854 review): the runtime-render validation memo
+    # under /var/lib/litclock. Not a repo path, and the chmod is 0644 — it
+    # undoes mktemp's 0600 so the pi-user control_server can read a memo a
+    # root-run update wrote.
+    "$RUNTIME_VALIDATION_MEMO_FILE": "a /var/lib state file, not a repo path (and 0644, not +x)",
 }
 
 # Targets that are a single repo file rather than a glob.
@@ -2510,6 +2740,12 @@ class TestCatalogSmokeGateIsLanguageAgnostic:
             # `set -e`, so the unstubbed call would emit `command not found`
             # to stderr and execution would carry on green.
             'update_status_failed_unrecovered() { echo "STUB_STATUS_UNRECOVERED $1"; }\n'
+            # litclock-dev#845 — both revert arms now re-install the clock units
+            # from the reverted tree before restarting them. Stubbed like every
+            # other side effect; executed on its own in
+            # TestRevertArmsReinstallTheClockUnits below.
+            '_reinstall_clock_units_from_tree() { echo "STUB_REINSTALL_CLOCK_UNITS"; }\n'
+            '_block_reverted_release() { echo "STUB_BLOCK_REVERTED $*"; }\n'
             f"PYTHON={shlex.quote(str(wrapper))}\n"
             "REVERT_SHA=deadbeef\nUPDATE_FAILED_FILE=/dev/null\nHASH_FILE=/dev/null\n"
             # litclock-dev#531 — the KEEP arm now re-stamps the runtime-render
@@ -2524,6 +2760,11 @@ class TestCatalogSmokeGateIsLanguageAgnostic:
             # the block ran anyway, logging '/dev/null' as a fifth probe. Caught
             # by running it.
             f"RUNTIME_MARKER={shlex.quote(str(_harness_marker))}\n"
+            # litclock-dev#847 item 1 — a PRESENT marker clears the validation
+            # memo, so the KEEP arm reads this variable on the path these tests
+            # take. Under `set -u` it must exist; the stubbed atomic_remove_file
+            # keeps it a log line.
+            f"RUNTIME_VALIDATION_MEMO_FILE={shlex.quote(str(root / 'memo.json'))}\n"
             "_LITCLOCK_UPDATE_FINALIZED=0\n"
             f"{span}\n"
             'echo "REACHED_END rc=$smoke_rc"\n'
@@ -2784,6 +3025,85 @@ class TestCatalogTruncationIsCaught:
         )
         assert int(r.stdout.strip()) == loaded_expected, r.stdout
 
+    # ---- litclock-dev#844 item 2: which LANGUAGE the count measures ---------
+    #
+    # Every test above pins `LITCLOCK_LANGUAGE=en`, so a count that ignored
+    # the language entirely — or read a different channel than the gate pins
+    # — stayed green. The `--language` flag the issue named is gone
+    # (litclock-dev#840: it never had a caller); the environment is the only
+    # channel, for the gate and for the owner's language alike.
+
+    def _count(self, root, **env) -> str:
+        r = subprocess.run(
+            [sys.executable, "src/eink_display.py", "catalog-count"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=self._clean_env(**env),
+        )
+        assert r.returncode == 0, f"catalog-count must exit 0 by contract\n{r.stderr}"
+        return r.stdout.strip()
+
+    def _drop_one_zz_key(self, root):
+        bundle = root / "languages" / "zz" / "strings.json"
+        strings = json.loads(bundle.read_text(encoding="utf-8"))
+        assert strings.pop(self.STATUS_KEY, None) is not None
+        bundle.write_text(json.dumps(strings), encoding="utf-8")
+
+    def test_the_count_follows_the_language_the_environment_pins(self, tmp_path):
+        """A zz bundle one key short must count exactly one fewer than en
+        under `LITCLOCK_LANGUAGE=zz` — so the count is measuring the language
+        it was told to, not English regardless."""
+        root = self._fake_checkout(tmp_path)
+        self._drop_one_zz_key(root)
+        en = int(self._count(root, LITCLOCK_LANGUAGE="en"))
+        zz = int(self._count(root, LITCLOCK_LANGUAGE="zz"))
+        assert en > 0
+        assert zz == en - 1, f"en={en} zz={zz}: the count did not follow LITCLOCK_LANGUAGE"
+
+    def test_without_the_pin_the_count_is_the_owners_language(self, tmp_path):
+        """The fixture's env.sh says zz. With nothing in the environment the
+        count resolves the OWNER's language — which is exactly why the gate's
+        `LITCLOCK_LANGUAGE=en` prefix exists (litclock-dev#763), and why dropping it
+        would compare a translated device's bundle against the English floor."""
+        root = self._fake_checkout(tmp_path)
+        self._drop_one_zz_key(root)
+        en = int(self._count(root, LITCLOCK_LANGUAGE="en"))
+        assert int(self._count(root)) == en - 1
+
+    def test_a_registered_language_whose_bundle_is_missing_counts_zero(self, tmp_path):
+        """The 0 arm, through the CLI: an active registry entry whose bundle
+        is gone loads nothing, and 0 is below any floor."""
+        root = self._fake_checkout(tmp_path)
+        (root / "languages" / "zz" / "strings.json").unlink()
+        assert self._count(root, LITCLOCK_LANGUAGE="zz") == "0"
+
+    def test_an_unknown_code_degrades_to_english_not_to_zero(self, tmp_path):
+        """`active_language()` degrades a code the registry does not list to
+        English, so a typo in the pin can never make the gate compare 0
+        against the floor for the wrong reason; 0 is reserved for a bundle
+        that genuinely cannot be served."""
+        root = self._fake_checkout(tmp_path)
+        en = self._count(root, LITCLOCK_LANGUAGE="en")
+        assert int(en) > 0
+        assert self._count(root, LITCLOCK_LANGUAGE="nope") == en
+
+    def test_the_language_flag_is_gone(self, tmp_path):
+        """litclock-dev#840: `--language` had no callers and a second channel
+        is a second thing to keep pinned. argparse must refuse it."""
+        root = self._fake_checkout(tmp_path)
+        r = subprocess.run(
+            [sys.executable, "src/eink_display.py", "catalog-count", "--language", "en"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=self._clean_env(LITCLOCK_LANGUAGE="en"),
+        )
+        assert r.returncode == 2, f"--language is accepted again (exit {r.returncode})\n{r.stderr}"
+        assert "unrecognized arguments" in r.stderr
+
 
 class TestCatalogFloorStaysHonest:
     """The floor in update.sh is a constant, so something has to stop it drifting.
@@ -2970,6 +3290,12 @@ class TestAMissingInterpreterIsAFailureNotASkip:
             # `set -e`, so the unstubbed call would emit `command not found`
             # to stderr and execution would carry on green.
             'update_status_failed_unrecovered() { echo "STUB_STATUS_UNRECOVERED $1"; }\n'
+            # litclock-dev#845 — both revert arms now re-install the clock units
+            # from the reverted tree before restarting them. Stubbed like every
+            # other side effect; executed on its own in
+            # TestRevertArmsReinstallTheClockUnits below.
+            '_reinstall_clock_units_from_tree() { echo "STUB_REINSTALL_CLOCK_UNITS"; }\n'
+            '_block_reverted_release() { echo "STUB_BLOCK_REVERTED $*"; }\n'
             f"PYTHON={_shlex.quote(str(python))}\n"
             "REVERT_SHA=deadbeef\nUPDATE_FAILED_FILE=/dev/null\nHASH_FILE=/dev/null\n"
             # litclock-dev#531 — the KEEP arm now re-stamps the runtime-render
@@ -2984,6 +3310,11 @@ class TestAMissingInterpreterIsAFailureNotASkip:
             # the block ran anyway, logging '/dev/null' as a fifth probe. Caught
             # by running it.
             f"RUNTIME_MARKER={shlex.quote(str(_harness_marker))}\n"
+            # litclock-dev#847 item 1 — a PRESENT marker clears the validation
+            # memo, so the KEEP arm reads this variable on the path these tests
+            # take. Under `set -u` it must exist; the stubbed atomic_remove_file
+            # keeps it a log line.
+            f"RUNTIME_VALIDATION_MEMO_FILE={shlex.quote(str(root / 'memo.json'))}\n"
             "_LITCLOCK_UPDATE_FINALIZED=0\n"
             f"{span}\n"
             'echo "REACHED_END rc=$smoke_rc"\n'
@@ -3332,3 +3663,335 @@ class TestTheExitTrapRearmsTheClock:
             "a trap that can block on a wedged manager or a password prompt holds the stop job "
             "past TimeoutStopSec and loses the status stamp with it"
         )
+
+
+class TestRevertArmsReinstallTheClockUnits:
+    """litclock-dev#845, EXECUTED — both revert arms (Phase 4 pip failure,
+    Phase 4.5 smoke failure) re-install litclock.service and litclock.timer
+    from the tree they just reset to, and reload systemd, BEFORE they restart
+    them. The unit copy loop is Phase 5, after both arms' `exit 1`, so in a
+    bootcheck rollback that failed pip or smoke the :56 timer (litclock-dev#762) was
+    left driving LKG code with no render lead: the previous minute's quote on
+    every tick until a later update succeeded.
+
+    The fake tree starts on the NEW release (installed units match it, as they
+    do after the bricking tick's Phase 5); the git stub's `reset` rewrites the
+    tree to the LKG. The sudo stub really copies, and at the instant it sees
+    `systemctl start litclock.<unit>` it records what is INSTALLED — so the
+    assertion is on the state the clock is restarted against, not on call
+    order alone. Mutants that go red: the helper call dropped from either
+    arm, the `sudo cp` dropped from the helper, the daemon-reload dropped,
+    and the `cmp -s` gate dropped (the already-matching control below)."""
+
+    NEW_TIMER = "[Timer]\nOnCalendar=*-*-* *:*:56\n"
+    LKG_TIMER = "[Timer]\nOnCalendar=*-*-* *:*:00\n"
+    NEW_SERVICE = "[Service]\nExecStart=/home/pi/litclock/scripts/runtheclock.sh\n# v2\n"
+    LKG_SERVICE = "[Service]\nExecStart=/home/pi/litclock/scripts/runtheclock.sh\n"
+
+    @staticmethod
+    def _helper(content: str) -> str:
+        start = content.index("# --- litclock-dev#845 clock-unit reinstall BEGIN ---")
+        end = content.index("# --- litclock-dev#845 clock-unit reinstall END ---", start)
+        helper = content[start:end]
+        assert "_reinstall_clock_units_from_tree()" in _executed_lines(helper)
+        return helper
+
+    @staticmethod
+    def _pip_arm(content: str) -> str:
+        start = content.index('log_error "pip install failed')
+        end = content.index("exit 1", start) + len("exit 1")
+        return content[start:end]
+
+    @staticmethod
+    def _smoke_arm(content: str) -> str:
+        start = content.index('log_error "Smoke test failed (exit $smoke_rc)')
+        end = content.index('update_status_failed_reverted "Smoke test failed', start)
+        end = content.index("exit 1", end) + len("exit 1")
+        return content[start:end]
+
+    def _run(self, update_sh_content, tmp_path, *, arm: str, already_matching: bool = False,
+             cp_fails: bool = False):
+        root = tmp_path / "tree"
+        (root / "systemd").mkdir(parents=True)
+        (root / "lkg").mkdir()
+        units = tmp_path / "units"
+        units.mkdir()
+        lkg_timer = self.NEW_TIMER if already_matching else self.LKG_TIMER
+        lkg_service = self.NEW_SERVICE if already_matching else self.LKG_SERVICE
+        (root / "systemd" / "litclock.timer").write_text(self.NEW_TIMER)
+        (root / "systemd" / "litclock.service").write_text(self.NEW_SERVICE)
+        (units / "litclock.timer").write_text(self.NEW_TIMER)
+        (units / "litclock.service").write_text(self.NEW_SERVICE)
+        (root / "lkg" / "litclock.timer").write_text(lkg_timer)
+        (root / "lkg" / "litclock.service").write_text(lkg_service)
+        (root / "req").write_text("")
+        (root / "hash").write_text("x")
+        arm_text = self._pip_arm(update_sh_content) if arm == "pip" else self._smoke_arm(update_sh_content)
+        q = shlex.quote
+        program = (
+            "set -u\n"
+            'GREEN=""\nRED=""\nYELLOW=""\nNC=""\n'
+            'log_info() { echo "[INFO] $1"; }\n'
+            'log_warn() { echo "[WARN] $1"; }\n'
+            'log_error() { echo "[ERROR] $1"; }\n'
+            f"INSTALL_DIR={q(str(root))}\nSYSTEMD_UNIT_DIR={q(str(units))}\n"
+            # The reset really changes the tree: that is the whole point.
+            'git() { if [ "$1" = reset ]; then cp "$INSTALL_DIR"/lkg/* "$INSTALL_DIR"/systemd/; fi; '
+            'echo "STUB_GIT $*"; }\n'
+            # cp really copies; every systemctl start of a clock unit snapshots
+            # what is installed at that instant.
+            f"CP_FAILS={1 if cp_fails else 0}\n"
+            'sudo() {\n'
+            '  case "$1" in\n'
+            '    cp) [ "$CP_FAILS" = 1 ] && { echo "STUB_SUDO_CP_REFUSED $*"; return 1; };\n'
+            '       cp "$2" "$3" && echo "STUB_SUDO $*";;\n'
+            '    systemctl) echo "STUB_SUDO $*";\n'
+            '      if [ "$2" = start ]; then\n'
+            '        echo "INSTALLED_AT_START $3 $(tr "\\n" "|" < "$SYSTEMD_UNIT_DIR/$3")"; fi;;\n'
+            '    *) echo "STUB_SUDO $*";;\n'
+            '  esac\n'
+            '}\n'
+            'atomic_write_file() { echo "STUB_ATOMIC_WRITE $1"; }\n'
+            'update_status_failed_reverted() { echo "STUB_STATUS_REVERTED $1"; }\n'
+            'update_status_failed_unrecovered() { echo "STUB_STATUS_UNRECOVERED $1"; }\n'
+            # litclock-dev#865 put a call on this arm and the harness asserts
+            # nothing is "command not found". Stubbed, not lifted: this
+            # class is about the litclock-dev#845 reinstall ordering, and
+            # TestBlockedShaOnSmokeRevert executes the real helper.
+            '_block_reverted_release() { echo "STUB_BLOCK_REVERTED $*"; }\n'
+            f"REVERT_SHA=lkg0000\nREQUIREMENTS_FILTERED={q(str(root / 'req'))}\n"
+            f"HASH_FILE={q(str(root / 'hash'))}\nUPDATE_FAILED_FILE=/dev/null\n"
+            "smoke_rc=1\nsmoke_no_interpreter=0\n_LITCLOCK_UPDATE_FINALIZED=0\n"
+            f"{self._helper(update_sh_content)}\n"
+            f"{arm_text}\n"
+            'echo "REACHED_END"\n'
+        )
+        r = subprocess.run(
+            ["bash", "-c", program], cwd=root, capture_output=True, text=True, timeout=60,
+            env={k: v for k, v in os.environ.items() if not k.startswith("LITCLOCK_")},
+        )
+        return r, units
+
+    @staticmethod
+    def _installed_at_start(stdout: str, unit: str) -> str:
+        lines = [ln for ln in stdout.splitlines() if ln.startswith(f"INSTALLED_AT_START {unit} ")]
+        assert len(lines) == 1, f"expected exactly one `systemctl start {unit}` from the arm\n{stdout}"
+        return lines[0].split(" ", 2)[2].replace("|", "\n")
+
+    @pytest.mark.parametrize("arm", ["pip", "smoke"])
+    def test_the_arm_restarts_the_clock_against_the_reverted_units(self, update_sh_content, tmp_path, arm):
+        r, units = self._run(update_sh_content, tmp_path, arm=arm)
+        assert r.returncode == 1 and "REACHED_END" not in r.stdout, (r.returncode, r.stdout, r.stderr)
+        assert "command not found" not in r.stderr, r.stderr
+        assert "STUB_GIT reset --hard lkg0000" in r.stdout, "the arm must reset first"
+        # The clock was restarted against the LKG's units, not the new release's.
+        assert self._installed_at_start(r.stdout, "litclock.timer") == self.LKG_TIMER, (
+            "litclock.timer was started while the installed copy still carried the NEW "
+            f"release's OnCalendar — the :56 timer against un-offset code (litclock-dev#845)\n{r.stdout}"
+        )
+        assert self._installed_at_start(r.stdout, "litclock.service") == self.LKG_SERVICE, r.stdout
+        # And systemd was told, between the copy and the start.
+        reset_at = r.stdout.index("STUB_GIT reset --hard")
+        cp_at = r.stdout.index("STUB_SUDO cp ")
+        reload_at = r.stdout.index("STUB_SUDO systemctl daemon-reload")
+        start_at = r.stdout.index("STUB_SUDO systemctl start litclock.timer")
+        assert reset_at < cp_at < reload_at < start_at, (
+            f"order must be reset -> cp -> daemon-reload -> start; got\n{r.stdout}"
+        )
+        assert (units / "litclock.timer").read_text() == self.LKG_TIMER
+
+    @pytest.mark.parametrize("arm", ["pip", "smoke"])
+    def test_a_normal_failed_update_is_a_no_op_by_construction(self, update_sh_content, tmp_path, arm):
+        """The reason the re-install runs ALWAYS rather than only in
+        ROLLBACK_MODE: on a normal arm the installed units already match the
+        tree being reverted to, and the `cmp -s` gate then copies nothing and
+        reloads nothing. Drop the gate and this goes red."""
+        r, _ = self._run(update_sh_content, tmp_path, arm=arm, already_matching=True)
+        assert r.returncode == 1, (r.stdout, r.stderr)
+        assert "STUB_SUDO cp " not in r.stdout, f"matching units must not be re-copied\n{r.stdout}"
+        assert "daemon-reload" not in r.stdout, f"no copy, no reload\n{r.stdout}"
+        assert self._installed_at_start(r.stdout, "litclock.timer") == self.NEW_TIMER
+
+    @pytest.mark.parametrize("arm", ["pip", "smoke"])
+    def test_each_copy_is_reloaded_before_the_next_one_starts(self, update_sh_content, tmp_path, arm):
+        """litclock-dev#854 review, P1 — the reload used to run once after the loop, so a
+        TERM landing between the timer copy and that reload sent the EXIT
+        trap's re-arm into systemd's PREVIOUSLY loaded definition: the window
+        this helper exists to close, reopened a few lines wide. One reload per
+        successful copy removes it."""
+        r, _ = self._run(update_sh_content, tmp_path, arm=arm)
+        events = [
+            ln for ln in r.stdout.splitlines()
+            if ln.startswith("STUB_SUDO cp ") or ln == "STUB_SUDO systemctl daemon-reload"
+        ]
+        assert len(events) == 4, f"expected copy,reload,copy,reload; got {events}"
+        assert [e.startswith("STUB_SUDO cp ") for e in events] == [True, False, True, False], (
+            f"every copy must be followed by its own daemon-reload before the next copy\n{events}"
+        )
+
+    @pytest.mark.parametrize("arm", ["pip", "smoke"])
+    def test_a_refused_copy_is_loud_and_does_not_change_the_verdict(self, update_sh_content, tmp_path, arm):
+        """litclock-dev#854 review — `sudo cp` into /etc/systemd/system is granted only by
+        010_pi-nopasswd (020 must NOT carry it: pi owns the source tree, so
+        such a grant is root; 010 itself is kept — the litclock-dev#387/litclock-dev#82 drop was
+        reversed 2026-07-12). Where the blanket grant is absent, or /etc is
+        read-only, the re-install fails — and that must be visible rather than
+        silent. The
+        verdict stays what the arm decided: a revert that restored the CODE is
+        still a revert, and escalating it helps nobody."""
+        r, units = self._run(update_sh_content, tmp_path, arm=arm, cp_fails=True)
+        assert "STUB_SUDO_CP_REFUSED" in r.stdout, r.stdout
+        assert "do NOT match the reverted tree" in r.stdout, (
+            f"a failed re-install was silent — the clock is restarted against a mismatched unit\n{r.stdout}"
+        )
+        assert r.returncode == 1
+        expected = "STUB_STATUS_UNRECOVERED" if arm == "pip" else "STUB_STATUS_REVERTED"
+        assert expected in r.stdout, f"the terminal status changed because of the re-install\n{r.stdout}"
+        # And the clock was still restarted — a mismatched unit beats a dark panel.
+        assert self._installed_at_start(r.stdout, "litclock.timer") == self.NEW_TIMER
+        assert (units / "litclock.timer").read_text() == self.NEW_TIMER
+
+    def test_the_helper_states_whose_privilege_it_rides_on(self, update_sh_content):
+        """litclock-dev#854 review — the one thing a reader must not conclude from "this
+        needs sudo cp" is "add it to 020". Pinned on the comment because the
+        comment IS the deliverable here; the behaviour half is the test above."""
+        helper = self._helper(update_sh_content)
+        assert "010_pi-nopasswd" in helper and "020" in helper
+        assert "litclock-set-timezone" in helper, (
+            "the comment must name the root-owned-helper shape that replaces the grant, "
+            "not leave the next reader to invent a sudoers line"
+        )
+
+    def test_both_arms_call_the_one_helper_before_their_starts(self, update_sh_content):
+        """Structural pin on the executed lines: the call sits in each arm,
+        after its reset and before its first `systemctl start`."""
+        for arm in (self._pip_arm(update_sh_content), self._smoke_arm(update_sh_content)):
+            executed = _executed_lines(arm)
+            reset_at = executed.index('git reset --hard "$REVERT_SHA"')
+            call_at = executed.index("_reinstall_clock_units_from_tree")
+            start_at = executed.index("systemctl start litclock.service")
+            assert reset_at < call_at < start_at, executed
+            assert "log_error" in executed[call_at:start_at], (
+                "a failed re-install must be logged loudly at the call site (litclock-dev#854 review)"
+            )
+
+
+class TestAnOfflineTickFinalizesCleanly:
+    """litclock-dev#847 item 4, EXECUTED — the graceful-offline branch (no
+    blessed Release SHA resolvable) exited 0 without finalizing, so the EXIT
+    trap stamped `failed_unrecovered` and the PWA raised "manual recovery
+    needed" for an ordinary offline tick. The branch now finalizes the way
+    the blocked-sha branch always did: `complete`, timer re-armed, exit 0.
+
+    Runs the lifted branch AND the lifted trap block against the REAL
+    scripts/lib/update_status.sh writing to a tmp status file, so the
+    assertion is on the JSON the PWA would read. Mutant: drop the two
+    finalizing lines -> state is failed_unrecovered -> red."""
+
+    @staticmethod
+    def _offline_block(content: str) -> str:
+        start = content.index('if [[ -z "$TARGET_SHA" ]]; then')
+        end = content.index("# Row 2 of the D3 phase reading-list", start)
+        block = content[start:end]
+        assert "Could not resolve a blessed Release SHA" in block
+        return block
+
+    @staticmethod
+    def _trap_block(content: str) -> str:
+        start = content.index("_LITCLOCK_UPDATE_FINALIZED=0\n_LITCLOCK_UPDATE_CLEANED=0")
+        marker = "trap _litclock_update_on_signal TERM INT HUP\n"
+        end = content.index(marker, start) + len(marker)
+        return content[start:end]
+
+    def _run(self, update_sh_content, tmp_path, *, lib_sourced: bool = True, start_fails: bool = False):
+        status = tmp_path / "update.status"
+        lib = Path(__file__).resolve().parents[1] / "scripts" / "lib" / "update_status.sh"
+        # `start_fails` fails ONLY the branch's own blocking re-arm; the trap's
+        # bounded `--no-block` retry still succeeds, so the test can tell the
+        # fallback ran rather than merely that something called sudo.
+        program = (
+            "set -u\n"
+            f"export LITCLOCK_UPDATE_STATUS_FILE={shlex.quote(str(status))}\n"
+            f". {shlex.quote(str(lib))}\n"
+            'GREEN=""\nRED=""\nYELLOW=""\nNC=""\n'
+            'log_info() { echo "[INFO] $1"; }\n'
+            'log_warn() { echo "[WARN] $1"; }\n'
+            'log_error() { echo "[ERROR] $1"; }\n'
+            f"START_FAILS={1 if start_fails else 0}\n"
+            'sudo() { echo "STUB_SUDO $*";\n'
+            '  case "$*" in *"--no-block"*) return 0;; esac\n'
+            '  [ "$START_FAILS" = 1 ] && return 1; return 0; }\n'
+            'timeout() { [ "$1" = -k ] && shift 2; shift; "$@"; }\n'
+            'atomic_write_file() { :; }\n'
+            "_PHASE3_ADDED_FILE=\nPOST_UPDATE_GRACE_FILE=/dev/null\n"
+            + ("github_api_latest_release_tag() { :; }\n" if lib_sourced else "")
+            + "update_status_init abc1234\nupdate_status_set_phase 1\n"
+            f"{self._trap_block(update_sh_content)}"
+            'TARGET_SHA=""\n'
+            f"{self._offline_block(update_sh_content)}\n"
+            'echo "REACHED_END"\n'
+            "exit 0\n"
+        )
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        data = json.loads(status.read_text()) if status.exists() else None
+        return r, data
+
+    def test_an_offline_tick_completes_rather_than_alarming(self, update_sh_content, tmp_path):
+        if shutil.which("jq") is None:
+            pytest.skip("update_status.sh writes through jq")
+        r, data = self._run(update_sh_content, tmp_path)
+        assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+        assert "REACHED_END" not in r.stdout, "the offline branch must exit, not fall through to Phase 2"
+        assert "STUB_SUDO systemctl start litclock.timer" in r.stdout, "the clock must be re-armed"
+        assert data is not None, "the status file was never written"
+        assert data["state"] != "failed_unrecovered", (
+            "an ordinary offline tick was stamped as needing manual recovery — the EXIT trap "
+            f"ran on an unfinalized exit (litclock-dev#847 item 4)\n{data}"
+        )
+        assert data["state"] == "complete", data
+        assert data["to_version"] is None, "nothing was installed; the version must not move"
+
+    def test_the_rearm_precedes_the_finalize(self, update_sh_content):
+        """litclock-dev#854 review, P1 — the ordering, on the executed lines of BOTH no-op
+        early-outs. Finalizing first disarms the EXIT trap while the clock is
+        still stopped: a signal in that window leaves a stopped timer with
+        neither the trap's fallback re-arm nor its stamp, which is strictly
+        worse than the unfinalized behaviour this PR replaced."""
+        executed = _executed_lines(update_sh_content)
+        for anchor in ("Latest Release SHA $TARGET_SHA is blocked", "Could not resolve a blessed Release SHA"):
+            arm_at = executed.index(anchor)
+            end = executed.index("exit 0", arm_at)
+            arm = executed[arm_at:end]
+            start_at = arm.index("systemctl start litclock.timer")
+            finalize_at = arm.index("update_status_complete")
+            flag_at = arm.index("_LITCLOCK_UPDATE_FINALIZED=1")
+            assert start_at < finalize_at < flag_at, (
+                f"the re-arm must precede the finalize in the arm at {anchor!r}\n{arm}"
+            )
+
+    def test_a_failed_rearm_falls_through_to_the_trap(self, update_sh_content, tmp_path):
+        """litclock-dev#854 review, P1 — a `systemctl start` that FAILS must not be
+        finalized as a clean tick. The run stays unfinalized, the EXIT trap
+        retries the re-arm (bounded, non-interactive) and stamps
+        failed_unrecovered, which is the honest state for a clock that is not
+        ticking."""
+        if shutil.which("jq") is None:
+            pytest.skip("update_status.sh writes through jq")
+        r, data = self._run(update_sh_content, tmp_path, start_fails=True)
+        assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+        assert "could not re-arm litclock.timer" in r.stdout, r.stdout
+        assert "systemctl start --no-block litclock.timer" in r.stdout, (
+            f"the EXIT trap's fallback re-arm did not run — the clock stays stopped\n{r.stdout}"
+        )
+        assert data is not None and data["state"] == "failed_unrecovered", (
+            f"a failed re-arm was reported as a clean tick\n{data}"
+        )
+
+    def test_the_legacy_no_lib_path_still_falls_through(self, update_sh_content, tmp_path):
+        """The control: with no resolver sourced the branch is the legacy
+        origin/master fallback and must NOT exit."""
+        if shutil.which("jq") is None:
+            pytest.skip("update_status.sh writes through jq")
+        r, data = self._run(update_sh_content, tmp_path, lib_sourced=False)
+        assert "REACHED_END" in r.stdout, (r.stdout, r.stderr)
+        assert "legacy path" in r.stdout

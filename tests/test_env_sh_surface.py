@@ -29,11 +29,18 @@ import config  # noqa: E402
 
 SYSTEMD = REPO_ROOT / "systemd"
 SAMPLE = REPO_ROOT / "env.sh.sample"
+STATE_SH = REPO_ROOT / "scripts" / "lib" / "state.sh"
 SEEDERS = (
+    STATE_SH,
     REPO_ROOT / "scripts" / "first-boot.sh",
     REPO_ROOT / "scripts" / "reset-setup.sh",
     REPO_ROOT / "scripts" / "prepare-for-cloning.sh",
 )
+# Since litclock-dev#840 the defaults block has ONE source, `env_sh_defaults()`
+# in lib/state.sh, plus first-boot's `lib/state.sh`-missing fallback heredoc —
+# the one copy that cannot call the helper. Those two are where a key has to
+# appear; the other scripts route through the helper and hold no keys at all.
+SEED_SOURCES = (STATE_SH, REPO_ROOT / "scripts" / "first-boot.sh")
 
 
 class TestNoEnvironmentFileOnEnvSh:
@@ -179,6 +186,11 @@ class TestLastIpGeoAtHasAWriter:
         assert not config.load_config(str(env)).get("WEATHER_LAST_IP_GEO_AT")
 
     def test_seeded_everywhere_the_sample_documents_it(self):
+        """A key the sample documents must be seeded by every place a device
+        can be born from. Since litclock-dev#840 that is the shared helper and
+        first-boot's state.sh-missing fallback heredoc — reset-setup.sh and
+        prepare-for-cloning.sh route through the helper, so a per-script grep
+        there would now assert nothing."""
         assert f"export {self.KEY}=" in SAMPLE.read_text()
-        for seeder in SEEDERS:
+        for seeder in SEED_SOURCES:
             assert f"export {self.KEY}=" in seeder.read_text(), f"{seeder.name} must seed {self.KEY}"

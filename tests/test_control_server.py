@@ -21,6 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from control_server import create_app  # noqa: E402
 
+REPO_ROOT_ = Path(__file__).resolve().parents[1]
+
 
 @pytest.fixture
 def app():
@@ -919,6 +921,223 @@ class TestLastUpdateRowResolution:
             "data-status-last-update-relative",
         ):
             assert hook in body, f"child hook missing — post-litclock-dev#333 patch path broken: {hook}"
+
+
+class TestANoOpTickIsNotAnInstall:
+    """litclock-dev#847 item 4 (litclock-dev#854 review) — update.sh's two no-op early-outs
+    (nothing resolvable, and a blocked SHA) stamp `complete` so the PWA stops
+    calling an ordinary offline tick "manual recovery needed". `complete` means
+    the RUN finished cleanly, never that something was installed — Phase 2 is
+    what sets `to_version`, and both arms exit above it. Without this guard an
+    always-offline device reports a fresh "Last update" every week, for an
+    update that never happened, with an em-dash where the version belongs."""
+
+    def _make_app(self, *, status_file, update_status_path, lkg_path=None, last_update_path=None):
+        return create_app({
+            "VERSION_OVERRIDE": "v0.test",
+            "STATUS_FILE": str(status_file),
+            "UPDATE_STATUS_FILE": str(update_status_path),
+            "LAST_UPDATE_FILE": str(last_update_path) if last_update_path else "/nonexistent/last-update.json",
+            "LKG_SHA_FILE": str(lkg_path) if lkg_path else "/nonexistent/lkg-sha",
+            "PHASE3_SKIPPED_FILE": "/nonexistent/phase3-skipped",
+            "RUNTIME_VALIDATION_MEMO_FILE": "/nonexistent/memo.json",
+        }).test_client()
+
+    @staticmethod
+    def _no_op_payload():
+        import time as _time
+
+        # Exactly what update_status_complete writes from a no-op arm: phase 7,
+        # a fresh finish stamp, and to_version still null.
+        return {
+            "state": "complete", "phase_index": 7, "phase_name": "Restarting",
+            "started_at_unix": int(_time.time() - 5), "finished_at_unix": int(_time.time()),
+            "from_version": "116db7d", "to_version": None, "error": None,
+        }
+
+    def test_a_completion_with_no_to_version_does_not_move_the_row(self, status_file, tmp_path):
+        import json
+
+        _write_status_payload(status_file)
+        update_status = tmp_path / "update.status"
+        update_status.write_text(json.dumps(self._no_op_payload()))
+        body = self._make_app(status_file=status_file, update_status_path=update_status).get("/api/status").json
+        assert body["last_update_at"] is None, (
+            "an offline tick that installed nothing presented itself as a fresh update"
+        )
+        assert body["last_update_version"] is None
+        assert body["last_update_at_relative"] == "—"
+
+    def test_it_falls_through_to_the_real_last_update(self, status_file, tmp_path):
+        """The point of the guard: the previous REAL update still shows. Source 2
+        (last-update.json) is written only by Phase 7, so it is never a no-op."""
+        import json
+        import time as _time
+
+        _write_status_payload(status_file)
+        update_status = tmp_path / "update.status"
+        update_status.write_text(json.dumps(self._no_op_payload()))
+        last_update = tmp_path / "last-update.json"
+        finished = _time.time() - 7200
+        last_update.write_text(json.dumps({
+            "state": "complete", "finished_at_unix": int(finished), "to_version": "5f12b8b",
+        }))
+        body = self._make_app(
+            status_file=status_file, update_status_path=update_status, last_update_path=last_update,
+        ).get("/api/status").json
+        assert body["last_update_version"] == "5f12b8b"
+        assert body["last_update_at_relative"] == "2 hours ago"
+
+    def test_the_run_state_itself_is_still_reported(self, status_file, tmp_path):
+        """The guard is scoped to the "Last update" row. The Settings banner
+        reads the same file for `update_state`, and a terminal `complete` there
+        is what clears it — so the no-op tick must still be visible AS a
+        finished run."""
+        import json
+
+        _write_status_payload(status_file)
+        update_status = tmp_path / "update.status"
+        update_status.write_text(json.dumps(self._no_op_payload()))
+        body = self._make_app(status_file=status_file, update_status_path=update_status).get("/api/status").json
+        assert body["update_state"] == "complete"
+        assert body["update_phase_index"] == 7
+
+    def test_a_real_completion_is_unaffected(self, status_file, tmp_path):
+        import json
+        import time as _time
+
+        _write_status_payload(status_file)
+        update_status = tmp_path / "update.status"
+        payload = self._no_op_payload()
+        payload["to_version"] = "5f12b8b"
+        payload["finished_at_unix"] = int(_time.time() - 180)
+        update_status.write_text(json.dumps(payload))
+        body = self._make_app(status_file=status_file, update_status_path=update_status).get("/api/status").json
+        assert body["last_update_version"] == "5f12b8b"
+        assert body["last_update_at_relative"] == "3 minutes ago"
+
+
+class TestRuntimeValidationMemoSurface:
+    """litclock-dev#847 item 1 — /api/status mirrors the negative-result memo
+    update.sh writes when the litclock-dev#531 runtime-render validation is deferred,
+    times out or fails, as `runtime_render_validation`. Null otherwise, and
+    null for anything that is not the writer's shape — the reader never
+    forwards a JSON the PWA has not been told about."""
+
+    def _make_app(self, *, status_file, memo_path=None):
+        config = {
+            "VERSION_OVERRIDE": "v0.test",
+            "STATUS_FILE": str(status_file),
+            "UPDATE_STATUS_FILE": "/nonexistent/update.status",
+            "LAST_UPDATE_FILE": "/nonexistent/last-update.json",
+            "LKG_SHA_FILE": "/nonexistent/lkg-sha",
+            "PHASE3_SKIPPED_FILE": "/nonexistent/phase3-skipped",
+        }
+        config["RUNTIME_VALIDATION_MEMO_FILE"] = str(memo_path) if memo_path else "/nonexistent/memo.json"
+        return create_app(config).test_client()
+
+    def _get(self, status_file, memo_path=None):
+        _write_status_payload(status_file)
+        return self._make_app(status_file=status_file, memo_path=memo_path).get("/api/status").json
+
+    def test_absent_memo_is_null_but_the_key_is_present(self, status_file):
+        body = self._get(status_file)
+        assert "runtime_render_validation" in body, "field must always be present in the API contract"
+        assert body["runtime_render_validation"] is None
+
+    def test_a_memo_surfaces_with_its_fixed_shape(self, status_file, tmp_path):
+        import json as _json
+
+        memo = tmp_path / "memo.json"
+        memo.write_text(_json.dumps({
+            "result": "deferred", "rc": None, "reason": "400s of this run's 600s budget are gone",
+            "sha": "a" * 40, "at_unix": 1_757_800_000, "extra": "dropped",
+        }))
+        got = self._get(status_file, memo)["runtime_render_validation"]
+        assert got == {
+            "result": "deferred", "at_unix": 1_757_800_000.0, "rc": None,
+            "reason": "400s of this run's 600s budget are gone", "sha": "a" * 40,
+        }
+
+    def test_a_failure_memo_carries_its_rc(self, status_file, tmp_path):
+        memo = tmp_path / "memo.json"
+        memo.write_text('{"result": "failed", "rc": 1, "reason": "exited 1", "sha": null, "at_unix": 5}')
+        got = self._get(status_file, memo)["runtime_render_validation"]
+        assert got["result"] == "failed" and got["rc"] == 1 and got["sha"] is None
+
+    @pytest.mark.parametrize("text", [
+        '{"result": "passed", "at_unix": 5}',        # not one of the writer's tokens
+        '{"result": "failed", "at_unix": "5"}',      # at_unix must be numeric
+        '{"result": "failed", "at_unix": true}',     # bool is not a timestamp
+        '{"result": "failed"}',                      # no timestamp
+        '["failed", 5]',                             # not an object
+        "{not json",
+        "",
+        # litclock-dev#854 review (Codex probes) — these three RAISED rather than returning
+        # null, and collect_status calls the reader unconditionally for both
+        # /api/status and the server-rendered `/`, so one malformed file broke
+        # the whole control page until someone deleted it.
+        '{"result": [], "at_unix": 5}',              # unhashable: `in` hashes its operand
+        '{"result": {}, "at_unix": 5}',              # same, other unhashable shape
+        '{"result": "failed", "at_unix": ' + "9" * 400 + "}",   # int too large for float()
+        '{"result": "failed", "at_unix": 1e999}',    # parses as inf; not JSON-serializable back
+        '{"result": "failed", "at_unix": -1e999}',
+    ], ids=["unknown-result", "string-at", "bool-at", "no-at", "array", "garbage", "empty",
+            "unhashable-list-result", "unhashable-dict-result", "overflow-at", "inf-at", "neg-inf-at"])
+    def test_anything_outside_the_writer_shape_is_null(self, status_file, tmp_path, text):
+        memo = tmp_path / "memo.json"
+        memo.write_text(text)
+        assert self._get(status_file, memo)["runtime_render_validation"] is None
+
+    @pytest.mark.parametrize("text", [
+        '{"result": [], "at_unix": 5}',
+        '{"result": "failed", "at_unix": ' + "9" * 400 + "}",
+    ], ids=["unhashable-result", "overflow-at"])
+    def test_a_malformed_memo_does_not_take_the_control_page_down(self, status_file, tmp_path, text):
+        """litclock-dev#854 review — the reader's contract is "every rejection is a return,
+        never an exception". Both surfaces, because collect_status feeds both."""
+        memo = tmp_path / "memo.json"
+        memo.write_text(text)
+        _write_status_payload(status_file)
+        client = self._make_app(status_file=status_file, memo_path=memo)
+        assert client.get("/api/status").status_code == 200
+        assert client.get("/").status_code == 200
+
+    def test_a_symlinked_memo_is_null(self, status_file, tmp_path):
+        target = tmp_path / "elsewhere"
+        target.write_text('{"result": "failed", "at_unix": 5}')
+        memo = tmp_path / "memo.json"
+        memo.symlink_to(target)
+        assert self._get(status_file, memo)["runtime_render_validation"] is None
+
+    def test_the_reader_accepts_what_update_sh_actually_writes(self, status_file, tmp_path):
+        """Writer/reader parity: run update.sh's own _runtime_validation_memo_write
+        (lifted from the budget-helpers block) and read the result through the
+        route. A shape change on either side fails here, not on a device."""
+        import shutil as _shutil
+        import subprocess as _subprocess
+
+        if _shutil.which("jq") is None:
+            pytest.skip("the writer builds its JSON with jq")
+        update_sh = (REPO_ROOT_ / "scripts" / "update.sh").read_text()
+        start = update_sh.index("# --- litclock-dev#835 budget helpers BEGIN ---")
+        end = update_sh.index("# --- litclock-dev#835 budget helpers END ---", start)
+        memo = tmp_path / "memo.json"
+        program = (
+            "set -u\n"
+            'log_info() { :; }\nlog_warn() { echo "[WARN] $1"; }\n'
+            'atomic_write_file() { printf "%s" "$2" > "$1"; }\n'
+            f"RUNTIME_VALIDATION_MEMO_FILE={memo}\n"
+            + update_sh[start:end]
+            + '_runtime_validation_memo_write failed 1 "tools/validate_measurement.py check --stamp exited 1"\n'
+        )
+        r = _subprocess.run(["bash", "-c", program], cwd=REPO_ROOT_, capture_output=True, text=True, timeout=30)
+        assert memo.exists(), (r.stdout, r.stderr)
+        got = self._get(status_file, memo)["runtime_render_validation"]
+        assert got is not None, f"the reader rejected the writer's own output: {memo.read_text()}"
+        assert got["result"] == "failed" and got["rc"] == 1
+        assert got["reason"].endswith("exited 1")
+        assert got["sha"] is not None and len(got["sha"]) == 40
 
 
 class TestPhase3SkipMarkerSurface:

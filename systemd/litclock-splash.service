@@ -13,6 +13,29 @@ ExecStart=/home/pi/litclock/scripts/boot-splash.sh
 # so the first-boot path (litclock-firstboot.service) is unaffected.
 ExecStartPost=+/bin/sh -c '[ -f /etc/litclock/.setup-complete ] && /usr/bin/systemctl start --no-block litclock.service || true'
 TimeoutStartSec=45
+# litclock-dev#856 — bounded stop, the twin of litclock.service's
+# TimeoutStopSec (litclock-dev#271 follow-up). litclock-shutdown.service is now
+# Before=litclock-splash.service, so on a reboot taken during this unit's
+# ~11s ExecStart the shutdown splash's ExecStop waits for OUR stop job to
+# finish. There is no ExecStop here: the stop SIGTERMs the control group
+# (boot-splash.sh -> timeout -> python) and finishes when the cgroup drains,
+# which is what actually releases GPIO17/SPI. Unbounded that is
+# DefaultTimeoutStopSec (90s on Bookworm systemd 252) and another 90s in the
+# SIGKILL phase.
+#
+# WHY THAT MATTERS — and NOT for the reason litclock-dev#271's litclock.service comment
+# gives (it is wrong; corrected there too). TimeoutStopSec is armed when a
+# unit's stop BEGINS, so a stop job blocked on ordered predecessors has no
+# timer running and the paint unit is still plain `active`. A slow
+# predecessor therefore can NEVER cut the paint short — the ExecStop gets
+# its full 30s whenever it finally starts. Predecessor budgets are additive
+# reboot LATENCY in front of the paint, and the real failure is the inverse
+# of the old claim: a reboot-during-splash that stalls for minutes, during
+# which an impatient owner pulls the power and nothing is painted at all.
+# 10s is generous for a SIGTERM a python process answers immediately, and
+# keeps the waiting we add (litclock.service 10s + this 10s = 20s) a
+# minority of litclock-shutdown.service's own 30s paint budget.
+TimeoutStopSec=10s
 RemainAfterExit=yes
 StandardOutput=journal
 StandardError=journal

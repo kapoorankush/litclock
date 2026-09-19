@@ -20,6 +20,7 @@ touching the real system.
 from __future__ import annotations
 
 import json
+import math
 import os
 import stat
 import time as _time
@@ -71,6 +72,18 @@ DEFAULT_PHASE3_SKIPPED_FILE = os.environ.get("LITCLOCK_PHASE3_SKIPPED_FILE", "/v
 # without leaving an indefinitely-stale glyph if the marker never gets
 # cleaned (e.g. update.sh disabled / cron stopped firing).
 PHASE3_SKIP_FRESH_WINDOW_S = 86400
+
+# litclock-dev#847 item 1 — the negative-result memo update.sh Phase 4.5
+# writes when the litclock-dev#531 runtime-render validation is deferred, times out or
+# fails, and removes when it passes (or the marker is already present). JSON:
+# {result, rc, reason, sha, at_unix}. No freshness clamp, unlike the Phase 3
+# marker: it describes the device's CURRENT tier, not a one-off skip, and the
+# writer clears it on the state change that makes it stale.
+DEFAULT_RUNTIME_VALIDATION_MEMO_FILE = os.environ.get(
+    "LITCLOCK_RUNTIME_VALIDATION_MEMO_FILE", "/var/lib/litclock/runtime-render-validation.json"
+)
+RUNTIME_VALIDATION_RESULTS = frozenset({"deferred", "timeout", "failed"})
+MAX_RUNTIME_VALIDATION_MEMO_BYTES = 8 * 1024
 
 # litclock-dev#274 follow-up — adversarial-review P1: budget for treating a
 # `state=running` update.status entry as fresh. Past this, assume update.sh
@@ -209,6 +222,54 @@ def _resolve_phase3_skipped_at(phase3_skipped_file: Path | None = None) -> float
     return float(st.st_mtime)
 
 
+def _resolve_runtime_validation_memo(memo_file: Path | None = None) -> dict | None:
+    """The runtime-render validation memo as a fixed-shape dict, or ``None``.
+
+    ``None`` when the file is absent, unreadable, not a regular file, not a
+    JSON object, or carries a ``result`` outside the writer's three tokens or
+    an ``at_unix`` that is not a finite, convertible number — the reader never
+    forwards a shape the PWA has not been told about. Same bounded loader as
+    the update.status readers (symlinks / FIFOs / oversize files rejected on
+    the open fd).
+
+    EVERY rejection is a `return None`, never an exception (litclock-dev#854 review, Codex
+    probes). ``collect_status`` calls this unconditionally and serves both
+    /api/status and the server-rendered `/`, so one malformed file must not
+    take the control page down until someone deletes it. Two shapes did:
+    an unhashable ``result`` (``{"result": []}``) raised TypeError from the
+    set membership test, and a huge int ``at_unix`` raised OverflowError from
+    ``float()`` — while ``1e999`` sailed through as ``inf`` and would have
+    reached the PWA as a JSON literal no parser accepts.
+    """
+    path = memo_file or Path(DEFAULT_RUNTIME_VALIDATION_MEMO_FILE)
+    data = safe_read_json(path, MAX_RUNTIME_VALIDATION_MEMO_BYTES)
+    if not isinstance(data, dict):
+        return None
+    result = data.get("result")
+    at_unix = data.get("at_unix")
+    # isinstance BEFORE the membership test: `in` hashes its left operand.
+    if not isinstance(result, str) or result not in RUNTIME_VALIDATION_RESULTS:
+        return None
+    if not isinstance(at_unix, (int, float)) or isinstance(at_unix, bool):
+        return None
+    try:
+        at_unix_f = float(at_unix)
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(at_unix_f):
+        return None
+    rc = data.get("rc")
+    reason = data.get("reason")
+    sha = data.get("sha")
+    return {
+        "result": result,
+        "at_unix": at_unix_f,
+        "rc": rc if isinstance(rc, int) and not isinstance(rc, bool) else None,
+        "reason": reason if isinstance(reason, str) and reason else None,
+        "sha": sha if isinstance(sha, str) and sha else None,
+    }
+
+
 def _resolve_update_progress(
     update_status_file: Path | None = None,
 ) -> tuple[str | None, int | None]:
@@ -266,19 +327,32 @@ def _payload_to_last_update(data: dict | None) -> tuple[str | None, str | None] 
     (state=complete) and /var/lib/litclock/last-update.json carry the same
     finished_at_unix + to_version fields. Returns ``(iso, version)`` on a
     successful extraction, or ``None`` if the payload is missing /
-    non-complete / has no usable timestamp."""
+    non-complete / has no usable timestamp / did not install anything.
+
+    litclock-dev#847 item 4 (litclock-dev#854 review): ``complete`` means "this RUN
+    finished cleanly", not "something was installed" — update.sh's two
+    deliberate no-op early-outs (nothing resolvable, and a blocked SHA) stamp
+    it before Phase 2 ever calls ``update_status_set_to_version``. A null
+    ``to_version`` is therefore the marker of a tick that installed nothing,
+    and this row must not move for one: an always-offline device would
+    otherwise report a fresh "Last update" every week, for an update that
+    never happened, with an em-dash where the version belongs. The persistent
+    mirror agrees by construction — Phase 7 is the only writer of
+    last-update.json, and its own gate requires ``to_version == $NEW_SHA``.
+    """
     if not isinstance(data, dict) or data.get("state") != "complete":
         return None
     finished = data.get("finished_at_unix")
     to_version = data.get("to_version")
+    if not isinstance(to_version, str) or not to_version:
+        return None
     if not isinstance(finished, (int, float)):
         return None
     try:
         iso = datetime.fromtimestamp(float(finished), tz=UTC).isoformat()
     except (OSError, OverflowError, ValueError):
         return None
-    version = to_version if isinstance(to_version, str) and to_version else None
-    return iso, version
+    return iso, to_version
 
 
 def _resolve_last_update(
@@ -415,6 +489,7 @@ def collect_status(
     last_update_file: Path | None = None,
     lkg_sha_file: Path | None = None,
     phase3_skipped_file: Path | None = None,
+    runtime_validation_memo_file: Path | None = None,
 ) -> dict:
     """Build the status payload — used by both `/api/status` (jsonified)
     and the `/` Status-tab template render (server-side first paint per
@@ -430,7 +505,8 @@ def collect_status(
 
     `phase3_skipped_file` plumbed through for the same reason — the
     Status hero Phase-3-skip banner (litclock-dev#274 follow-up #5) needs a tmp
-    path in tests."""
+    path in tests. `runtime_validation_memo_file` likewise (litclock-dev#847
+    item 1)."""
     status_path = status_file or Path(DEFAULT_STATUS_FILE)
     quote_payload = _read_status_file(status_path)
 
@@ -460,6 +536,8 @@ def collect_status(
     # read, two consumers. None when no update.status file is present
     # (the common steady-state case).
     update_state, update_phase = _resolve_update_progress(update_status_file=update_status_file)
+    # litclock-dev#847 item 1: why this device is (still) on the PNG tier.
+    runtime_render_validation = _resolve_runtime_validation_memo(memo_file=runtime_validation_memo_file)
     return {
         "ok": True,
         "stale": stale,
@@ -493,6 +571,12 @@ def collect_status(
         # Both null in the common no-update-running state.
         "update_state": update_state,
         "update_phase_index": update_phase,
+        # litclock-dev#847 item 1: null when the last runtime-render validation
+        # passed (or never ran and was never deferred); otherwise
+        # {result: deferred|timeout|failed, at_unix, rc, reason, sha}. The PWA
+        # does not render it yet — a Diagnostics/Status surface is the
+        # follow-up; the payload is the contract.
+        "runtime_render_validation": runtime_render_validation,
     }
 
 
@@ -507,6 +591,8 @@ def status() -> tuple[object, int]:
     lkg_sha_cfg = current_app.config.get("LKG_SHA_FILE")
     lkg_sha_path = Path(lkg_sha_cfg) if lkg_sha_cfg else None
     phase3_skipped_cfg = current_app.config.get("PHASE3_SKIPPED_FILE")
+    memo_cfg = current_app.config.get("RUNTIME_VALIDATION_MEMO_FILE")
+    memo_path = Path(memo_cfg) if memo_cfg else None
     phase3_skipped_path = Path(phase3_skipped_cfg) if phase3_skipped_cfg else None
     body = collect_status(
         status_file=status_path,
@@ -516,5 +602,6 @@ def status() -> tuple[object, int]:
         last_update_file=last_update_path,
         lkg_sha_file=lkg_sha_path,
         phase3_skipped_file=phase3_skipped_path,
+        runtime_validation_memo_file=memo_path,
     )
     return jsonify(body), 200

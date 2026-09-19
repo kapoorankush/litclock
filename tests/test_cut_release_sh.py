@@ -45,12 +45,33 @@ HERMETIC_GIT = {
     "GIT_COMMITTER_EMAIL": "t@example.com",
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_CONFIG_SYSTEM": "/dev/null",
+    # HOME passes through (below), and with it git's default core.excludesFile
+    # at ~/.config/git/ignore -- a maintainer's global ignore could hide a file
+    # from the dirty-tree check. Point XDG at nothing.
+    "XDG_CONFIG_HOME": "/nonexistent-xdg-config-home",
     "LC_ALL": "C",
 }
 
 
+# What the script's subprocess is ALLOWED to inherit from the pytest process
+# (litclock-dev#824). It used to take all of os.environ, so anything an earlier
+# test in a full-suite run left behind -- a TZ, a LITCLOCK_*, a GIT_CONFIG_*, a
+# token that switches on the remote probe -- rode along, and the test then
+# passed alone and failed in company with nothing in the failure text to say
+# why. These are the variables needed to FIND and START git and python3:
+# LD_LIBRARY_PATH because actions/setup-python's interpreter is --enable-shared
+# and finds libpython through it; TMPDIR because the script mktemps; TZ
+# because the script's `date +%Y-%m-%d` must agree with the parent's
+# `datetime.date.today()` in test_the_date_is_today_in_the_existing_format,
+# and a pytest run under a TZ override would otherwise have the two computing
+# "today" in different zones (the midnight tolerance absorbs one direction of
+# that, not both).
+_PASSTHROUGH = ("PATH", "HOME", "TMPDIR", "LD_LIBRARY_PATH", "TZ")
+
+
 def _env(**overrides):
-    env = {**os.environ, **HERMETIC_GIT}
+    env = {key: os.environ[key] for key in _PASSTHROUGH if key in os.environ}
+    env.update(HERMETIC_GIT)
     for key, value in overrides.items():
         if value is None:
             env.pop(key, None)
@@ -108,7 +129,13 @@ def _run(repo, *args, expect_rc=None, stdin="", env=None):
         env=env if env is not None else _env(),
     )
     if expect_rc is not None:
-        assert proc.returncode == expect_rc, f"rc={proc.returncode}\nout={proc.stdout}\nerr={proc.stderr}"
+        # Everything the next intermittent needs is in this one message: the
+        # litclock-dev#824 sighting lost its evidence because the failure text
+        # was the only record and it was not kept.
+        assert proc.returncode == expect_rc, (
+            f"rc={proc.returncode} (expected {expect_rc}) args={list(args)} stdin={stdin!r}\n"
+            f"cwd={repo}\nout={proc.stdout}\nerr={proc.stderr}"
+        )
     return proc
 
 
@@ -320,7 +347,7 @@ class TestItStopsBeforePushing:
         it runs' property this script exists to remove. Asserted against a real
         remote rather than by grepping for 'git push'."""
         remote = tmp_path / "origin.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, timeout=60)
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, timeout=60, env=_env())
         _git(repo, "remote", "add", "origin", str(remote))
         _git(repo, "push", "-q", "origin", "master")
         before = _git(repo, "ls-remote", str(remote)).stdout
@@ -352,7 +379,7 @@ class TestItStopsBeforePushing:
         tag cut in a clone whose origin is the dev repo was checked against the
         wrong tag list. Printing the URL makes that visible."""
         remote = tmp_path / "origin.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, timeout=60)
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, timeout=60, env=_env())
         _git(repo, "remote", "add", "origin", str(remote))
         _git(repo, "push", "-q", "origin", "master")
 
@@ -430,6 +457,23 @@ class TestUsage:
         assert _tags(repo) == []
 
 
+class TestTheSubprocessEnvironmentIsBuiltNotInherited:
+    """litclock-dev#824. `_env()` used to be `{**os.environ, **HERMETIC_GIT}`,
+    so whatever the pytest process held at that moment went into the script.
+    The PR litclock-dev#852 review showed the allowlist had no executed guard: reverting it
+    to `dict(os.environ)` left all 102 tests green. This is the guard."""
+
+    def test_a_leaked_git_variable_in_the_pytest_process_does_not_reach_the_script(self, repo, monkeypatch):
+        # Both are real shapes: GIT_CONFIG_PARAMETERS is how `git -c` hands
+        # config to child processes (a signing requirement with no key fails
+        # every commit), and GIT_DIR relocates every git command to a
+        # repository that is not the fixture's.
+        monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'commit.gpgsign=true'")
+        monkeypatch.setenv("GIT_DIR", str(repo.parent / "not-the-fixture.git"))
+        proc = _run(repo, "v0.2.0", "--yes", expect_rc=0)
+        assert _tags(repo) == ["v0.2.0"], f"out={proc.stdout}\nerr={proc.stderr}"
+
+
 class TestTheInteractiveConfirmation:
     """The DEFAULT path — taken whenever neither --expect-sha nor --yes is given,
     which is what docs/building-image.md's short form does. It had zero coverage:
@@ -438,13 +482,19 @@ class TestTheInteractiveConfirmation:
     """
 
     def test_y_proceeds(self, repo):
-        _run(repo, "v0.2.0", stdin="y\n", expect_rc=0)
-        assert _tags(repo) == ["v0.2.0"]
+        proc = _run(repo, "v0.2.0", stdin="y\n", expect_rc=0)
+        assert _tags(repo) == ["v0.2.0"], f"out={proc.stdout}\nerr={proc.stderr}"
 
     def test_yes_also_proceeds(self, repo):
-        """'yes' is what people type. Aborting on it is a trap, not a safeguard."""
-        _run(repo, "v0.2.0", stdin="yes\n", expect_rc=0)
-        assert _tags(repo) == ["v0.2.0"]
+        """'yes' is what people type. Aborting on it is a trap, not a safeguard.
+
+        Seen failing once in a full-suite run and never since (litclock-dev#824,
+        no output kept). The subprocess gets an explicit stdin pipe and an
+        allowlisted environment (`_env`), and both assertions carry the script's
+        output, so the next sighting arrives with its evidence.
+        """
+        proc = _run(repo, "v0.2.0", stdin="yes\n", expect_rc=0)
+        assert _tags(repo) == ["v0.2.0"], f"out={proc.stdout}\nerr={proc.stderr}"
 
     def test_n_aborts_and_changes_nothing(self, repo):
         before = (repo / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -475,7 +525,7 @@ class TestTheRemoteTagGuard:
         branch was unreachable in the suite — every other test either has no
         origin (rc=128) or an origin without the tag (rc=2)."""
         remote = tmp_path / "origin.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, timeout=60)
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, timeout=60, env=_env())
         _git(repo, "remote", "add", "origin", str(remote))
         _git(repo, "push", "-q", "origin", "master")
         _git(repo, "tag", "v0.2.0")
@@ -778,7 +828,7 @@ class TestTheVersionMustBeTheNextOne:
         at v0.222.0 while the fleet has been on v0.224.0 for days. Cutting
         v0.223.0 must be refused on the strength of the REMOTE tag alone."""
         remote = tmp_path / "fleet.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, timeout=60)
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, timeout=60, env=_env())
         _git(repo, "remote", "add", "origin", str(remote))
         _git(repo, "push", "-q", "origin", "master")
         _git(repo, "tag", "-a", "v0.224.0", "-m", "x")
@@ -895,7 +945,7 @@ class TestTheFleetRemoteIsProbedEvenWhenItIsNotOrigin:
         URL shapes with no network at all."""
         bare = tmp_path / backing
         if not bare.exists():
-            subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True, timeout=60)
+            subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True, timeout=60, env=_env())
         _git(repo, "remote", "add", name, url)
         _git(repo, "config", f'url.{bare}.insteadOf', url)
         return bare
@@ -948,7 +998,7 @@ class TestFleetRemoteIdentityMatching:
 
     def _redirect(self, repo, name, url, tmp_path):
         bare = tmp_path / f"{name}.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True, timeout=60)
+        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True, timeout=60, env=_env())
         _git(repo, "remote", "add", name, url)
         _git(repo, "config", f"url.{bare}.insteadOf", url)
         _git(repo, "push", "-q", name, "master")
@@ -1040,7 +1090,7 @@ class TestResolvingTheFleetConstants:
         name = re.search(r'^DEFAULT_REPO[^=]*=\s*"([^"]+)"', original, re.M).group(1)
         url = f"https://github.com/{owner}/{name}.git"
         bare = tmp_path / "fleet.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True, timeout=60)
+        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True, timeout=60, env=_env())
         _git(repo, "remote", "add", "pubref", url)
         _git(repo, "config", f"url.{bare}.insteadOf", url)
         _git(repo, "push", "-q", "pubref", "master")
@@ -1067,7 +1117,7 @@ class TestAPartialRemoteRead:
         name = re.search(r'^DEFAULT_REPO[^=]*=\s*"([^"]+)"', owner_repo, re.M).group(1)
         url = f"https://github.com/{owner}/{name}.git"
         bare = tmp_path / "fleet.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True, timeout=60)
+        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True, timeout=60, env=_env())
         _git(repo, "remote", "add", "pubref", url)
         _git(repo, "config", f"url.{bare}.insteadOf", url)
         _git(repo, "push", "-q", "pubref", "master")

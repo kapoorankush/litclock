@@ -10,6 +10,20 @@ Complete the full installation on one Pi by flashing the released image (see [Fl
 
 ## 2. Prepare for Cloning
 
+Run this as the **only open session** on the Pi: log out of every other shell
+first (SSH sessions, tmux panes, a `sudo -i` root shell). The script clears the
+bash history, but any interactive shell still holding history when the Pi
+powers off writes it back to disk on exit, and that is what gets imaged onto
+every card.
+
+That rule cannot cover **the shell you run it from** — it is alive for the
+whole run and writes its own history as it exits. The script covers that one
+itself, by locking both history files against write-back until the clone's
+first boot, and it now stops rather than continue if it cannot apply the lock.
+
+Running over SSH is otherwise supported; only the WiFi question below requires
+a local console.
+
 ```bash
 sudo ./scripts/prepare-for-cloning.sh
 ```
@@ -21,12 +35,17 @@ This script will (and then power the Pi off):
 - Optionally clear WiFi credentials
 - Re-enable the first-boot setup service
 - Clear logs and caches
+- Clear the bash history, and lock both history files so no shell still open at power-off — including the one you are typing in — can write it back (the clone's first boot unlocks them). The run stops if either path cannot be cleared or locked.
 - Clear the SSL certificates
 - Delete the persisted setup-hotspot password, so no clone carries your key
 - Disable SSH, so clones ship in the same posture as a fresh flash (to get back into a clone: put a blank file named `ssh` in the SD card's boot partition)
 
 If any of those steps cannot finish, the script says so in red and stops rather
-than reporting success. Do not clone a card it refused. The one refusal you may
+than reporting success. Do not clone a card it refused. If the API-key and
+location wipe itself fails, it stops right there, before asking about WiFi, and
+nothing on the card has been changed at all — the clock still works and still
+boots normally. Fix the cause (usually the control PWA still holding
+`env.sh.lock`) and run it again; the PWA comes back on the next boot. The one refusal you may
 not SEE is the final SSH-disable check when running over the network (output is
 cut before it, deliberately) — its tell is a Pi that has not powered itself off
 within a minute of your session dropping; do not image that card either, and

@@ -334,7 +334,10 @@ class TestLocationEnvKeys:
 class TestSetSystemTimezoneWrapper:
     """The arbitrary-tz path must sudo the fixed-path wrapper, never
     `timedatectl set-timezone <tz>` directly — sudoers/020 only authorizes the
-    wrapper (a `set-timezone *` glob would be a privilege hole once 010 drops)."""
+    wrapper, and a `set-timezone *` glob would let pi set the clock to any
+    string that reaches the resolver. The image keeps 010_pi-nopasswd (the
+    litclock-dev#387/litclock-dev#82 drop was reversed 2026-07-12), so this pins a scoped grant that
+    must keep working on its own merits, not a migration in progress."""
 
     def _patch_subprocess(self, mocker, *, valid_tz="America/Chicago"):
         calls = []

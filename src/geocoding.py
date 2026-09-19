@@ -185,8 +185,12 @@ def set_system_timezone(timezone):
 
         # Set the timezone via the root-owned wrapper (litclock-dev#387). We CANNOT call
         # `sudo timedatectl set-timezone <tz>` directly: sudoers/020 only
-        # authorizes the wrapper's fixed path (a `set-timezone *` glob would be
-        # a privilege hole once 010_pi-nopasswd is dropped). The wrapper
+        # authorizes the wrapper's fixed path (a `set-timezone *` glob would
+        # let pi set the clock to any string reaching the resolver). The image
+        # keeps 010_pi-nopasswd — the drop planned under litclock-dev#387/litclock-dev#82 was reversed
+        # 2026-07-12 — so the wrapper is defense-in-depth rather than the only
+        # thing standing between pi and root; it is kept because a scoped,
+        # re-validating grant is the right default for this call site. The wrapper
         # re-validates the tz in root-owned code — this in-process check is a
         # UX fast-path, not the security boundary.
         result = subprocess.run(  # noqa: S603,S607
