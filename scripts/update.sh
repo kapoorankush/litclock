@@ -1998,7 +1998,38 @@ _runtime_render_selftest() {
     log_info "Running the runtime-render self-test (litclock-dev#871 Stage A; inert — records a verdict, changes nothing)..."
     # Microseconds via EPOCHREALTIME (bash 5): the figure is compared against a
     # 4s render lead, and whole-second $SECONDS is ±1s on it (litclock-dev#875 red team).
-    t0=${EPOCHREALTIME/./}
+    #
+    # `[.,]`, not a literal dot (litclock-dev#879). EPOCHREALTIME's decimal separator
+    # follows LC_NUMERIC, so under a comma locale `${x/./}` matches NOTHING
+    # and the comma then parses as bash arithmetic's COMMA OPERATOR, which
+    # discards the left operand. THREE measured outcomes, all wrong, which one
+    # you get depending on the digits (litclock-dev#879 follow-up — the first two versions
+    # of this comment each described a shape that does not occur, so the
+    # examples below are transcripts, not reasoning):
+    #
+    #     leading-zero end fraction  ->  bash: value too great for base
+    #                                    (invalid octal), duration EMPTY
+    #     "0.-3" / "0.-7" and friends -> `jq … tonumber` REFUSES it, rc 5, so
+    #                                    the record is not written and the
+    #                                    "Could not write" warning fires
+    #     a plain wrong number, e.g.  ->  silent: rc 0, nothing on stderr,
+    #     "0.0" / "0.3"                   and it IS recorded
+    #
+    # Only the third is the real hazard, and it is the whole reason for this
+    # fix: a wrong duration_s written beside "result":"passed" in the record
+    # litclock-dev#871 Stage B is meant to gate on, with a falsely SMALL value sailing
+    # through any "renders inside the 4s lead" threshold where an absurd one
+    # would at least look wrong to a human reading the file. The other two
+    # fail loudly. The PROPORTIONS were not characterised — they turn on the
+    # relationship between the two fractions, and guessing at them is how the
+    # earlier versions of this comment went wrong.
+    #
+    # A character class rather than a pinned LC_ALL: it does not depend on bash
+    # calling setlocale() for a `local` assignment. litclock-update.service
+    # runs with no locale so production always got C; the exposure is a
+    # maintainer running this script by hand from a non-English desktop, which
+    # README's manual-update section tells owners they may do.
+    t0=${EPOCHREALTIME/[.,]/}
     # Subshell: env.sh must not leak into this script (the same isolation the
     # RUNTIME_MARKER resolution above uses). PIPESTATUS, not the pipeline's
     # exit — `if cmd | sed; then` tests sed (the smoke gate's own lesson).
@@ -2010,7 +2041,7 @@ _runtime_render_selftest() {
         timeout "$SELFTEST_TIMEOUT_S" "$PYTHON" src/literary_clock.py --dry-run --require-runtime-render 2>&1
     ) | sed 's/^/[selftest] /'
     rc="${PIPESTATUS[0]}"
-    dur_ms=$(( (${EPOCHREALTIME/./} - t0) / 1000 ))
+    dur_ms=$(( (${EPOCHREALTIME/[.,]/} - t0) / 1000 ))
     duration="$((dur_ms / 1000)).$((dur_ms % 1000 / 100))"
     # Only ever the fresh mktemp directory: -d, and never a fallback path.
     [[ -n "$dir" && -d "$dir" ]] && rm -rf -- "$dir" 2>/dev/null

@@ -13,6 +13,46 @@ import pytest
 
 import setup_server
 
+
+@pytest.fixture(autouse=True)
+def _stub_ip_geo(monkeypatch):
+    """Stub the IP-geo resolver for EVERY test in this file.
+
+    A live network call in a unit test either way, and on any machine where
+    the installer has run the success path shells out to
+    `sudo /usr/local/lib/litclock/litclock-set-timezone`, so a plain
+    `pytest tests/` could change the SYSTEM TIMEZONE. `ENV_FILE` is
+    monkeypatched by these tests; that sudo call is not sandboxed by anything.
+
+    It is also the cause of the CI flake this file kept producing: four
+    attempts on a 1/3/9s ladder with a 5s socket timeout, a documented ~33s
+    worst case (`src/location_resolver.py`), against ip-api.com, whose free
+    tier rate-limits. That outran the wait and surfaced as `assert True is
+    False` on master (`53be0e79`, 2026-09-19) — the runner's own log carries
+    the tell, a `set_system_timezone('America/Chicago')` warning, i.e. a
+    SUCCESSFUL live geo lookup.
+
+    MODULE-WIDE, not per class, and that is the whole point of this revision
+    (litclock-dev#879). The first version of this fixture lived on
+    `TestConnectAndTeardown` and its docstring asserted that "the Ordering
+    class and the manual-SSID harness both do" stub the resolver. The harness
+    does; the Ordering class does NOT — only 1 of its 5 tests stubs it
+    inline, and the shared `_install_fake_wp` helper fakes `connect_to_wifi`,
+    `teardown_hotspot` and `create_hotspot` and nothing else. Measured with a
+    socket probe over the whole file: 24 DNS lookups of ip-api.com attributed
+    to 8 tests across three classes, and 3 of those tests FAIL outright when
+    the network is blocked. A per-class fixture is a list of the classes
+    somebody remembered; the resolver has no business being reachable from
+    any test here, so the stub belongs at module scope where a new class
+    inherits it by default.
+
+    A test that wants to OBSERVE the call still overrides it locally — a
+    later `monkeypatch.setattr` wins — which is what
+    `test_success_path_call_ordering` does.
+    """
+    monkeypatch.setattr(setup_server, "_resolve_location_from_ip", lambda *a, **kw: None)
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
@@ -463,31 +503,6 @@ class TestConnectAndTeardown:
     at runtime, so we inject a fake wifi_provision module into sys.modules
     *before* the POST and keep it alive until the thread finishes.
     """
-
-    @pytest.fixture(autouse=True)
-    def _stub_ip_geo(self, monkeypatch):
-        """The REAL cause of the CI flake this class kept producing (litclock-dev#876
-        review, Claude adversarial pass), and a live network call in a unit
-        test either way.
-
-        This was the ONE class in the file that never stubbed the resolver —
-        the Ordering class and the manual-SSID harness both do. So on the
-        success path the background thread ran `_resolve_location_from_ip`
-        for real: four attempts on a 1/3/9s ladder with a 5s socket timeout,
-        a documented ~33s worst case (`src/location_resolver.py`), against
-        ip-api.com, whose free tier rate-limits. That is what outran the
-        wait and surfaced as `assert True is False` on master (`53be0e79`,
-        2026-09-19) — the runner's own log carries the tell, a
-        `set_system_timezone('America/Chicago')` warning, i.e. a SUCCESSFUL
-        live geo lookup.
-
-        And on any machine where the installer has run — a Pi, or a dev box —
-        that success path shells out to
-        `sudo /usr/local/lib/litclock/litclock-set-timezone`, so a plain
-        `pytest tests/` could change the SYSTEM TIMEZONE. Stubbing it is the
-        fix; the longer, louder wait beside it is a backstop, not the cure.
-        """
-        monkeypatch.setattr(setup_server, "_resolve_location_from_ip", lambda *a, **kw: None)
 
     def _make_post_body(self, **overrides):
         defaults = {

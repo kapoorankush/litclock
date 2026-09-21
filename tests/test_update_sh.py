@@ -4010,3 +4010,142 @@ class TestAnOfflineTickFinalizesCleanly:
         r, data = self._run(update_sh_content, tmp_path, lib_sourced=False)
         assert "REACHED_END" in r.stdout, (r.stdout, r.stderr)
         assert "legacy path" in r.stdout
+
+
+class TestSelfTestDurationIsLocaleProof:
+    """litclock-dev#879 — the self-test's `duration_s` under a comma `LC_NUMERIC`.
+
+    `EPOCHREALTIME`'s decimal separator follows the locale, and the original
+    code stripped a LITERAL dot. Under a comma locale that matched nothing and
+    the comma then parsed as bash arithmetic's COMMA OPERATOR, which discards
+    the left operand. Three measured outcomes, all wrong; only one of them is
+    silent AND recorded, and that one is the hazard, because it lands beside
+    `"result":"passed"` in the record litclock-dev#871 Stage B gates on.
+
+    These tests EXECUTE THE SHIPPED LINES, lifted out of `_runtime_render_selftest`
+    by their assignment names and run verbatim with `EPOCHREALTIME` injected
+    (`unset` first, which drops its dynamic nature and leaves an ordinary
+    variable). Two earlier versions tested a hand-written copy of those lines
+    instead, and a copy proves nothing about the script: a source-text
+    assertion that merely COUNTED `${EPOCHREALTIME/[.,]/}` occurrences passed
+    against a mutant that kept two correct-looking probes and did the real
+    arithmetic through an indirect expansion with a literal-dot strip
+    (litclock-dev#879 follow-up, Codex cross-model pass). Lifting the real
+    assignments closes that: whatever the right-hand side becomes, it is what
+    runs here.
+    """
+
+    _T0_SEC, _T0_FRAC = "1789955228", "932373"
+    _T1_SEC = "1789955232"
+    _DEFAULT_FRAC = "539821"
+
+    @classmethod
+    def _shipped_lines(cls, update_sh_content):
+        """The three duration assignments, verbatim, from the shipped function."""
+        body = update_sh_content[update_sh_content.index("_runtime_render_selftest() {"):]
+        out = {}
+        for name in ("t0", "dur_ms", "duration"):
+            hits = [
+                ln.strip() for ln in body.splitlines()
+                if re.match(rf"\s*{name}=", ln) and not ln.lstrip().startswith("#")
+            ]
+            assert len(hits) == 1, (
+                f"expected exactly one executed `{name}=` assignment in "
+                f"_runtime_render_selftest, found {len(hits)}: {hits}"
+            )
+            out[name] = hits[0]
+        return out
+
+    @classmethod
+    def _expected(cls, frac):
+        """What the SHIPPED arithmetic must print for this end fraction."""
+        t0_us = int(cls._T0_SEC + cls._T0_FRAC)
+        dur_ms = (int(cls._T1_SEC + frac) - t0_us) // 1000
+        return f"{dur_ms // 1000}.{dur_ms % 1000 // 100}"
+
+    @classmethod
+    def _run(cls, lines, sep, frac=None):
+        """Run the three lifted lines with EPOCHREALTIME injected.
+
+        `sep` is the decimal separator the locale would produce. `frac` is the
+        END timestamp's microseconds; it matters because the comma failure has
+        several shapes and which one you get turns on the digits.
+        """
+        frac = frac or cls._DEFAULT_FRAC
+        script = "\n".join([
+            "unset EPOCHREALTIME",
+            f'EPOCHREALTIME="{cls._T0_SEC}{sep}{cls._T0_FRAC}"',
+            lines["t0"],
+            f'EPOCHREALTIME="{cls._T1_SEC}{sep}{frac}"',
+            lines["dur_ms"],
+            lines["duration"],
+            'echo "$duration"',
+        ])
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+    @staticmethod
+    def _as_literal_dot(lines):
+        """The pre-fix code: the same lines with the character class reverted."""
+        reverted = {k: v.replace("${EPOCHREALTIME/[.,]/}", "${EPOCHREALTIME/./}") for k, v in lines.items()}
+        assert reverted != lines, "nothing to revert — the shipped lines no longer use [.,]"
+        return reverted
+
+    def test_shipped_lines_are_direct_epochrealtime_reads(self, update_sh_content):
+        """Both duration reads come STRAIGHT off EPOCHREALTIME.
+
+        Not a count over the file: a count is satisfied by a decoy in a
+        comment, or by correct-looking probes beside an indirect read that
+        does the real work. This pins the right-hand sides that actually feed
+        the arithmetic.
+        """
+        lines = self._shipped_lines(update_sh_content)
+        assert lines["t0"] == "t0=${EPOCHREALTIME/[.,]/}", lines["t0"]
+        assert lines["dur_ms"] == "dur_ms=$(( (${EPOCHREALTIME/[.,]/} - t0) / 1000 ))", lines["dur_ms"]
+
+    def test_shipped_lines_are_correct_with_a_dot(self, update_sh_content):
+        lines = self._shipped_lines(update_sh_content)
+        assert self._run(lines, ".") == (0, self._expected(self._DEFAULT_FRAC), "")
+
+    def test_shipped_lines_are_correct_with_a_comma(self, update_sh_content):
+        """The fix: a comma locale must produce the same elapsed time."""
+        lines = self._shipped_lines(update_sh_content)
+        assert self._run(lines, ",") == (0, self._expected(self._DEFAULT_FRAC), "")
+
+    def test_shipped_lines_are_correct_with_a_leading_zero_fraction(self, update_sh_content):
+        """The fraction that is an invalid OCTAL literal to bash's arithmetic
+        must be ordinary microseconds here."""
+        lines = self._shipped_lines(update_sh_content)
+        assert self._run(lines, ",", frac="039821") == (0, self._expected("039821"), "")
+
+    def test_the_control_literal_dot_is_correct_with_a_dot(self, update_sh_content):
+        """The CONTROL. The old pattern was never wrong in an English locale,
+        which is exactly why it shipped green."""
+        old = self._as_literal_dot(self._shipped_lines(update_sh_content))
+        assert self._run(old, ".") == (0, self._expected(self._DEFAULT_FRAC), "")
+
+    def test_the_mutant_literal_dot_is_silently_wrong_with_a_comma(self, update_sh_content):
+        """The hazard: status 0, NOTHING on stderr, and a duration that is not
+        the elapsed time, so no caller can tell.
+
+        The wrong value is asserted as a PROPERTY, not a literal. The comma
+        operator's survivor depends on the digits — `0.0`, `0.3`, `0.-3` and
+        empty have all been measured — so pinning one would record an
+        arithmetic accident rather than the defect.
+        """
+        old = self._as_literal_dot(self._shipped_lines(update_sh_content))
+        rc, out, err = self._run(old, ",")
+        assert rc == 0, f"expected the old pattern to fail SILENTLY, got rc={rc}"
+        assert err == "", f"expected no diagnostic, got: {err!r}"
+        assert out != self._expected(self._DEFAULT_FRAC), (
+            "the old pattern parsed a comma correctly — premise gone"
+        )
+
+    def test_the_mutant_literal_dot_is_noisy_on_a_leading_zero_fraction(self, update_sh_content):
+        """The other direction, kept because the first version of these tests
+        used THIS shape while describing the silent one above, and never
+        captured stderr to notice. Wrong out loud rather than quietly."""
+        old = self._as_literal_dot(self._shipped_lines(update_sh_content))
+        rc, out, err = self._run(old, ",", frac="039821")
+        assert "value too great for base" in err, f"expected bash's octal diagnostic, got: {err!r}"
+        assert out != self._expected("039821"), "the old pattern parsed a comma correctly — premise gone"
