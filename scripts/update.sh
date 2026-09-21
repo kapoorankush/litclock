@@ -19,6 +19,8 @@
 #   Phase 4  venv hash-gate → pip install if hash changed
 #                  │
 #   Phase 4.5      smoke: $PYTHON src/literary_clock.py --dry-run (60s hard timeout)
+#                  (pass) then: runtime-render marker (re-)stamp, and the
+#                  litclock-dev#871 self-test -> memo (both inert to the update's verdict)
 #                  │                      ╲
 #                (pass)                  (fail)
 #                  ▼                        ▼
@@ -106,8 +108,30 @@ if [[ "${LITCLOCK_UPDATE_LOCK_HELD:-0}" != "1" ]] && command -v flock >/dev/null
         # The inherited descriptor is the pre-existing behaviour and the
         # cleanup race is the worse of the two, so it stays. The leak side is
         # bounded elsewhere: the one gate that could leak a helper is under
-        # coreutils `timeout` now, and the lock design itself is the follow-up
-        # on litclock-dev#847 (item 2; it began on litclock-dev#835).
+        # coreutils `timeout` now.
+        #
+        # SETTLED, owner decision 2026-09-19 (litclock-dev#847 item 2, closed
+        # as accepted — do not reopen this as pending work). Two facts made
+        # the redesign not worth its risk on the highest-blast-radius script
+        # in the tree. EVERY production trigger activates the same unit —
+        # litclock-update.timer, the PWA's "update now"
+        # (routes/updates.py: `systemctl start --no-block`), and the
+        # bootcheck/LKG rollback (litclock-bootcheck.sh's UPDATE_TRIGGER_CMD,
+        # the same argv) — and systemd does not spawn a second process for a
+        # start request against an invocation that is already running, so all
+        # three are serialised before this lock is reached. (`Type=oneshot`
+        # with no RemainAfterExit: the unit is `activating` for the whole run,
+        # not `active`, and a start lands on that job rather than beside it.)
+        # What remains is the direct-script path — and it is NOT maintainer-
+        # only (litclock-dev#877 review): README's "Manual update (optional)" tells an
+        # owner to run `/home/pi/litclock/scripts/update.sh`, so this flock is
+        # load-bearing exactly there, which is the argument for leaving it
+        # alone rather than for redesigning it. The residual is a descendant
+        # that outlives such a run and holds the descriptor, cleared with a
+        # kill. A
+        # root-owned lock helper would close it properly and is the shape to
+        # reach for IF this ever bites in the field — new privileged surface
+        # here has to earn its place.
         flock -n -E 75 "$LITCLOCK_UPDATE_LOCK_FILE" "$0" "$@"
         _rc=$?
         if [[ "$_rc" == "75" ]]; then
@@ -204,7 +228,9 @@ LEGACY_UPDATE_CHECK_CACHE_FILE="$STATE_DIR/update-check.json"
 # no new LKG was recorded yet.
 LAST_UPDATE_FILE="$STATE_DIR/last-update.json"
 # litclock-dev#847 item 1 — the NEGATIVE-RESULT MEMO for the litclock-dev#531
-# runtime-render validation. Phase 4.5's KEEP arm writes it when the check is
+# runtime-render validation — and, since litclock-dev#871 Stage A, the
+# runtime-render SELF-TEST's verdict (`selftest-failed` with the painter's rc,
+# or `selftest-deferred`). Phase 4.5's KEEP arm writes it when the check is
 # DEFERRED (not enough of this run's systemd budget left), TIMES OUT or FAILS,
 # and removes it when the check passes or the marker is already present.
 # JSON, one object: {result, rc, reason, sha, at_unix}. Persistent (SD-backed,
@@ -216,6 +242,14 @@ LAST_UPDATE_FILE="$STATE_DIR/last-update.json"
 # error from a half-built wheel, and skipping on the second would strand a
 # device on the PNG tier until the next release.
 RUNTIME_VALIDATION_MEMO_FILE="$STATE_DIR/runtime-render-validation.json"
+# litclock-dev#871 Stage A — the POSITIVE record the memo above cannot carry:
+# {result: passed, duration_s, sha, at_unix}, written by the self-test on a
+# pass and removed on a fail. The journal is capped at 7 days (the weekly tick
+# cadence) and a tick with nothing new exits before Phase 4.5, so a pass logged
+# only there is gone before Stage B can read it; and "no memo" is not "passed"
+# (a reset or a rollback tick removes the memo without re-asking). Stage B
+# gates the flag flip on THIS file, sha-matched (litclock-dev#875 red team).
+RUNTIME_SELFTEST_RECORD_FILE="$STATE_DIR/runtime-render-selftest.json"
 # litclock-dev#845 — where the revert arms re-install the clock units from
 # (_reinstall_clock_units_from_tree). Overridable only so the executed tests
 # can point the arms at a fake directory; Phase 5's loop names
@@ -585,9 +619,10 @@ _LS_REMOTE_TIMEOUT_S="${LITCLOCK_LS_REMOTE_TIMEOUT_S:-30}"
 # child is gone and never reaches the -k KILL) — that helper is not
 # timeout's to kill. git waits for its helpers and git-remote-https honours
 # TERM, so both shapes are synthetic here; the consequence that would
-# matter (a leaked descendant holding the update lock) is the lock-design
-# follow-up on litclock-dev#847 (item 2; this residual is its item 3), see
-# the flock comment at the top.
+# matter (a leaked descendant holding the update lock) was accepted with the
+# lock design itself (litclock-dev#847 items 2 and 3, closed 2026-09-19 —
+# both accepted, neither pending). See the flock comment at the top for why
+# the redesign was judged not worth its risk.
 _remote_reachable() {
     timeout -k 5 "$_LS_REMOTE_TIMEOUT_S" git ls-remote --exit-code origin &>/dev/null
 }
@@ -656,7 +691,30 @@ update_status_init "$OLD_SHA"
 #      than a stopped timer, and the status file already says manual
 #      recovery is needed. It is NOT covered by the bootcheck/LKG chain —
 #      that chain asks "did this BOOT paint once", and a mid-uptime update
-#      has always painted before it ran (litclock-dev#847 item 6).
+#      has always painted before it ran.
+#
+#      RECOVERY IS BOOT-SCOPED BY DESIGN. Owner decision 2026-09-19
+#      (litclock-dev#847 item 6, closed as accepted — not pending work).
+#      The timer already re-polls every 5 minutes, so the schedule was never
+#      the missing piece; the predicate is ("heartbeat since boot", not
+#      "heartbeat fresh"). But swapping the predicate alone would NOT be the
+#      one-line change that sounds like (litclock-dev#877 review): bootcheck's
+#      sub-threshold action is `systemctl reboot`, so freshness would first
+#      produce a REBOOT loop, and `boot-fail-count` counts failed BOOTS — at
+#      THRESHOLD=3 it would silently come to mean "three consecutive 5-minute
+#      polls", i.e. revert after ~15 minutes of no paint. Three deliberate
+#      pieces, not one. On a fleet that is mostly
+#      unreachable gifts, a clock that reverts itself on a fault that is not
+#      the code's is worse than one that holds its last frame on a bistable
+#      panel while the status file asks for a human. That retention is the
+#      COMMON shape, not a guarantee (litclock-dev#877 review): a painter that dies at
+#      import or mid-render never reaches the hardware, so the frame stands —
+#      but `epd.Clear()` runs before `epd.display()` on the nightly
+#      DISPLAY_CLEAR_HOUR pass, so a failure in that one-minute-a-day window,
+#      after the clear and before the display, leaves the panel BLANK until
+#      someone intervenes. Narrow, and it does not change the decision;
+#      it is the honest bound on it. Revisit with evidence of a real
+#      mid-uptime painter failure in the field.
 _LITCLOCK_UPDATE_FINALIZED=0
 _LITCLOCK_UPDATE_CLEANED=0
 # The one cleanup, IDEMPOTENT, reachable from both the EXIT trap and the
@@ -1253,7 +1311,10 @@ unset _PHASE3_ADDED_FILE
 # re-validates what pi passes — not a broader sudoers line. (The timer-start
 # grants 020 DOES carry name a fixed unit with no path argument, so they
 # hand pi nothing it can redirect; that is the scoped default for anything
-# that does not need the blanket grant.) Tracked on litclock-dev#847.
+# that does not need the blanket grant.) Recorded on litclock-dev#847, which
+# closed 2026-09-19: this is a description of a settled arrangement, not a
+# scheduled task — the `010` drop it was once contingent on was itself
+# reversed (litclock-dev#387).
 #
 # Returns non-zero when a unit still differs after the attempt, so the arms
 # can say so loudly. Never fatal: the arm's own `exit 1` and status stamp are
@@ -1656,6 +1717,11 @@ VALIDATOR_TIMEOUT_S=300
 # 2W (litclock-dev#835); the reserve is generous because an update that runs
 # out of budget here loses the stamp, not just the validation.
 VALIDATOR_BUDGET_RESERVE_S=120
+# litclock-dev#871 Stage A — bound on the runtime-render SELF-TEST (a dry-run
+# with the text renderer forced on). The smoke gate's own dry-run is bounded
+# at 60s and this is the same render plus ~1.3s of freetype prep, so the same
+# bound; it must fit the budget behind the validator's reserve.
+SELFTEST_TIMEOUT_S=60
 
 # The budget systemd LOADED for this unit, in whole seconds, on stdout
 # (0 = no limit); non-zero return when unknown. Read as the raw D-Bus
@@ -1768,8 +1834,11 @@ _block_reverted_release() {
 }
 
 # litclock-dev#847 item 1 — write the negative-result memo (see
-# RUNTIME_VALIDATION_MEMO_FILE). $1 result: deferred|timeout|failed;
-# $2 the validator's rc, or empty when it never ran; $3 the reason, prose.
+# RUNTIME_VALIDATION_MEMO_FILE). $1 result: deferred|timeout|failed, or
+# selftest-failed|selftest-deferred (litclock-dev#871 Stage A); $2 the
+# validator's or the self-test painter's rc, or empty when it never ran; $3
+# the reason, prose. src/control_server/routes/status.py's
+# RUNTIME_VALIDATION_RESULTS must list every token written here.
 # jq builds the object so the reason cannot break the JSON, and the file
 # lands via the same atomic writer as every other state marker. Best-effort:
 # a failed memo is a warning, never an update failure.
@@ -1809,9 +1878,14 @@ _runtime_validation_memo_write() {
 # One deferral: the log line the operator reads, then the memo. The
 # reason is the log text minus the fixed prefix, so the journal and the
 # memo cannot disagree. Returns 1, the guard's own "does not fit" answer.
+# $1 reason; $2 memo token (default `deferred`, the validator's); $3 what
+# is being deferred (default the validator) — litclock-dev#871's self-test
+# passes its own token and label so the PWA can tell the two apart by
+# `result` alone.
 _defer_runtime_validation() {
-    log_info "deferring runtime-render validation to the next update: $1 (litclock-dev#835)"
-    _runtime_validation_memo_write deferred "" "$1"
+    local token="${2:-deferred}" label="${3:-runtime-render validation}"
+    log_info "deferring $label to the next update: $1 (litclock-dev#835)"
+    _runtime_validation_memo_write "$token" "" "$1"
     return 1
 }
 
@@ -1821,17 +1895,26 @@ _defer_runtime_validation() {
 # (litclock-dev#847 item 1): a device that NEVER has budget never validates
 # and stays on the PNG tier — the safe direction — and the memo is how that
 # stops being invisible.
+# $1 seconds the work needs (default: the validator's bound); $2 memo token
+# and $3 label are passed through to the deferral. litclock-dev#871's self-test
+# calls this with its own bound and token. The validator's default deliberately
+# does NOT reserve for the self-test that follows it (litclock-dev#875 red team): on the
+# transition tick (a 600s unit) that would defer the one step that changes
+# device behaviour — earning the marker — to protect an INERT probe that has
+# its own guard and loses nothing by waiting. Stamp now, defer the self-test.
 _validation_fits_remaining_budget() {
+    local needed="${1:-$VALIDATOR_TIMEOUT_S}" token="${2:-deferred}"
+    local label="${3:-runtime-render validation}"
     local elapsed budget rc
     elapsed=$(_update_elapsed_seconds); rc=$?
     if [[ $rc -eq 2 ]]; then
         return 0
     elif [[ $rc -ne 0 ]]; then
-        _defer_runtime_validation "cannot determine how much of this run's systemd budget is left"
+        _defer_runtime_validation "cannot determine how much of this run's systemd budget is left" "$token" "$label"
         return 1
     fi
     if ! budget=$(_update_budget_seconds); then
-        _defer_runtime_validation "cannot read the unit's effective TimeoutStartSec"
+        _defer_runtime_validation "cannot read the unit's effective TimeoutStartSec" "$token" "$label"
         return 1
     fi
     # 0 here means UNLIMITED (the helper maps infinity to 0 and rounds a
@@ -1839,13 +1922,118 @@ _validation_fits_remaining_budget() {
     # hold this run at all, and reaching Phase 4.5 under one is impossible,
     # so treating the two alike is harmless in that direction only).
     [[ "$budget" -eq 0 ]] && return 0
-    if (( elapsed + VALIDATOR_TIMEOUT_S + VALIDATOR_BUDGET_RESERVE_S > budget )); then
-        _defer_runtime_validation "${elapsed}s of this run's ${budget}s budget are gone and the check needs up to ${VALIDATOR_TIMEOUT_S}s plus a ${VALIDATOR_BUDGET_RESERVE_S}s reserve for the phases after it, with litclock.timer stopped"
+    if (( elapsed + needed + VALIDATOR_BUDGET_RESERVE_S > budget )); then
+        _defer_runtime_validation "${elapsed}s of this run's ${budget}s budget are gone and the check needs up to ${needed}s plus a ${VALIDATOR_BUDGET_RESERVE_S}s reserve for the phases after it, with litclock.timer stopped" "$token" "$label"
         return 1
     fi
     return 0
 }
 # --- litclock-dev#835 budget helpers END ---
+
+# litclock-dev#871 Stage A — the runtime-render SELF-TEST, shipped INERT.
+#
+# The marker says this device's freetype reproduces the GD measurement dump;
+# it does not say this device can paint a quote from text. Between the two sit
+# the corpus resolution (litclock-dev#870), the fonts on disk, the renderer's
+# own guards, and every reason `_runtime_render_enabled()` has to decline —
+# and today every one of them degrades SILENTLY to the PNG tier, so a fleet
+# device could carry a valid marker and still never render a line of text.
+# Stage B (release N+1) will flip LITCLOCK_RUNTIME_RENDER on devices whose
+# self-test passes; this release only asks the question and records the answer.
+#
+# The same dry-run the smoke gate runs, with the renderer FORCED on (env.sh's
+# flag says what the owner chose, not what the device can do) and
+# --require-runtime-render, which makes the painter exit 3 when the frame came
+# from anywhere but the text tier. env.sh is sourced in the subshell so the
+# render uses the DEVICE's language and marker path — the smoke gate pins
+# LITCLOCK_LANGUAGE=en for its catalog probes, but the point here is whether
+# THIS device's corpus renders (litclock-dev#870 review). Two things env.sh must NOT
+# bring along: weather is forced OFF (a capability probe has no business on
+# the network, and the fetch could spend the bound before a glyph is drawn —
+# litclock-dev#875 review), and the frame goes to a throwaway directory, because a dry-run
+# with the renderer on persists its frame and /run/litclock/current-quote.png
+# is the panel's current one. No scratch directory, no run (litclock-dev#875 review: the
+# painter's default IS the panel's directory).
+#
+# NEVER fails the update. A failed self-test means "stay on PNGs", which is
+# where the device already is. The verdict lands in the litclock-dev#847 memo:
+# `selftest-failed` with the painter's rc (3 = fell back, 124 = timed out,
+# anything else = the painter died), or `selftest-deferred` when the budget or
+# the scratch directory is gone. A pass writes the POSITIVE record
+# (RUNTIME_SELFTEST_RECORD_FILE) with its DURATION: Stage B needs a durable
+# on-device pass, sha-matched, and needs to know the device renders inside
+# the 4s lead, not merely that it renders (litclock-dev#875 review + red team).
+# One sample, one minute, one random row: a corpus gap at that minute reads as
+# a fallback too, and the painter now says so in its own [selftest] line, so
+# a `selftest-failed` is "did not render text this time", never proof of
+# incapacity — Stage B acts only on a PASS.
+# The pass record (RUNTIME_SELFTEST_RECORD_FILE). $1 duration in seconds, one
+# decimal. Same jq/atomic/0644 shape as the memo writer; best-effort.
+_runtime_selftest_record_write() {
+    local duration="$1" sha json
+    if ! command -v jq >/dev/null 2>&1; then
+        log_warn "jq missing — not recording the runtime-render self-test pass (litclock-dev#871)"
+        return 0
+    fi
+    sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+    json=$(jq -nc --arg d "$duration" --arg sha "$sha" --arg at "$(date +%s 2>/dev/null || echo 0)" \
+        '{result: "passed", duration_s: ($d | tonumber), sha: ($sha | if . == "" then null else . end), at_unix: ($at | tonumber)}' 2>/dev/null) || json=""
+    if [[ -z "$json" ]] || ! atomic_write_file "$RUNTIME_SELFTEST_RECORD_FILE" "$json"; then
+        log_warn "Could not write $RUNTIME_SELFTEST_RECORD_FILE — Stage B will not see this pass (litclock-dev#871)"
+        return 0
+    fi
+    chmod 0644 "$RUNTIME_SELFTEST_RECORD_FILE" 2>/dev/null || sudo chmod 0644 "$RUNTIME_SELFTEST_RECORD_FILE" 2>/dev/null || true
+    chown pi:pi "$RUNTIME_SELFTEST_RECORD_FILE" 2>/dev/null || sudo chown pi:pi "$RUNTIME_SELFTEST_RECORD_FILE" 2>/dev/null || true
+    return 0
+}
+
+_runtime_render_selftest() {
+    local rc dir t0 dur_ms duration
+    _validation_fits_remaining_budget "$SELFTEST_TIMEOUT_S" selftest-deferred "the runtime-render self-test" || return 0
+    if ! dir=$(mktemp -d 2>/dev/null) || [[ -z "$dir" ]]; then
+        log_info "deferring the runtime-render self-test to the next update: could not create a scratch directory (litclock-dev#871)"
+        _runtime_validation_memo_write selftest-deferred "" "self-test: could not create a scratch directory (mktemp -d failed)"
+        return 0
+    fi
+    log_info "Running the runtime-render self-test (litclock-dev#871 Stage A; inert — records a verdict, changes nothing)..."
+    # Microseconds via EPOCHREALTIME (bash 5): the figure is compared against a
+    # 4s render lead, and whole-second $SECONDS is ±1s on it (litclock-dev#875 red team).
+    t0=${EPOCHREALTIME/./}
+    # Subshell: env.sh must not leak into this script (the same isolation the
+    # RUNTIME_MARKER resolution above uses). PIPESTATUS, not the pipeline's
+    # exit — `if cmd | sed; then` tests sed (the smoke gate's own lesson).
+    (
+        [[ -f "${INSTALL_DIR:-}/env.sh" ]] && source "${INSTALL_DIR:-}/env.sh" 2>/dev/null
+        export LITCLOCK_RUNTIME_RENDER=true
+        export LITCLOCK_RUNTIME_RENDER_DIR="$dir"
+        export WEATHER_ENABLED=false
+        timeout "$SELFTEST_TIMEOUT_S" "$PYTHON" src/literary_clock.py --dry-run --require-runtime-render 2>&1
+    ) | sed 's/^/[selftest] /'
+    rc="${PIPESTATUS[0]}"
+    dur_ms=$(( (${EPOCHREALTIME/./} - t0) / 1000 ))
+    duration="$((dur_ms / 1000)).$((dur_ms % 1000 / 100))"
+    # Only ever the fresh mktemp directory: -d, and never a fallback path.
+    [[ -n "$dir" && -d "$dir" ]] && rm -rf -- "$dir" 2>/dev/null
+    if [[ "$rc" -eq 0 ]]; then
+        log_info "runtime-render self-test PASSED in ${duration}s — this device renders text (litclock-dev#871 Stage A; LITCLOCK_RUNTIME_RENDER is unchanged this release)"
+        _runtime_selftest_record_write "$duration"
+        return 0
+    fi
+    # A fail retires any earlier pass: Stage B must never flip on a stale one.
+    atomic_remove_file "$RUNTIME_SELFTEST_RECORD_FILE"
+    if [[ "$rc" -eq 124 ]]; then
+        log_info "runtime-render self-test did not finish within ${SELFTEST_TIMEOUT_S}s (${duration}s elapsed) — staying as is (this is not an update failure)"
+        _runtime_validation_memo_write selftest-failed "$rc" "the self-test did not finish within ${SELFTEST_TIMEOUT_S}s"
+    elif [[ "$rc" -eq 3 ]]; then
+        log_info "runtime-render self-test did not pass: the painter fell back to pre-rendered images after ${duration}s — staying as is (this is not an update failure; the [selftest] lines above say why)"
+        _runtime_validation_memo_write selftest-failed "$rc" "the painter fell back to pre-rendered images with the text renderer forced on"
+    else
+        log_info "runtime-render self-test did not pass (rc=$rc) — staying as is (this is not an update failure)"
+        _runtime_validation_memo_write selftest-failed "$rc" "src/literary_clock.py --dry-run --require-runtime-render exited $rc"
+    fi
+    return 0
+}
+
 
 if [[ "$smoke_rc" -eq 0 ]]; then
     log_info "Smoke test passed"
@@ -1889,7 +2077,10 @@ if [[ "$smoke_rc" -eq 0 ]]; then
     # item 1): the device validated since — by a later tick, or by an
     # operator running `check --stamp` by hand — and a memo left behind would
     # have the PWA report a failure the marker contradicts.
-    if [[ -f "$RUNTIME_MARKER" ]]; then
+    # Not in ROLLBACK_MODE (litclock-dev#875 red team): the self-test below does not run
+    # there, so a `selftest-failed` verdict the memo carries would be erased
+    # without being re-asked, and Stage B would read the absence as a pass.
+    if [[ -f "$RUNTIME_MARKER" && "${ROLLBACK_MODE:-0}" -ne 1 ]]; then
         atomic_remove_file "$RUNTIME_VALIDATION_MEMO_FILE"
     fi
     if [[ ! -f "$RUNTIME_MARKER" && -x "$PYTHON" && "${ROLLBACK_MODE:-0}" -ne 1 ]] && _validation_fits_remaining_budget; then
@@ -1932,6 +2123,12 @@ if [[ "$smoke_rc" -eq 0 ]]; then
             rm -f "$RUNTIME_MARKER".[a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_] 2>/dev/null || true
         fi
         unset _validate_rc
+    fi
+    # litclock-dev#871 Stage A — see _runtime_render_selftest. Only with a
+    # marker (surviving, or just stamped above): without one the painter
+    # declines before it tries. Not in ROLLBACK_MODE, for the reason above.
+    if [[ -f "$RUNTIME_MARKER" && -x "$PYTHON" && "${ROLLBACK_MODE:-0}" -ne 1 ]]; then
+        _runtime_render_selftest
     fi
 else
     log_error "Smoke test failed (exit $smoke_rc) — reverting to $REVERT_SHA"

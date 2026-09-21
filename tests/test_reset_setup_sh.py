@@ -14,6 +14,8 @@ RESET_SH = REPO_ROOT / "scripts" / "reset-setup.sh"
 
 STATE_SH = REPO_ROOT / "scripts" / "lib" / "state.sh"
 
+from tests.state_sh_lifts import extract_history_helper  # noqa: E402
+
 
 @pytest.fixture(scope="module")
 def reset_sh_content():
@@ -721,6 +723,43 @@ _SSH_GATE_STUB = 'disable_ssh_for_handoff() { echo "STUB_SSH_GATE"; }\n'
 _TIMEOUT_STUB = 'timeout() { shift; "$@"; }\n'
 
 
+_extract_history_helper = extract_history_helper
+
+
+def _extract_handoff_history_fn(content: str) -> str:
+    """reset-setup.sh's clear_shell_history_for_handoff, verbatim, with its
+    fail-closed parts asserted (the litclock-dev#662 rule)."""
+    assert content.count("clear_shell_history_for_handoff() {") == 1
+    start = content.index("clear_shell_history_for_handoff() {")
+    end = content.index("\n}\n", start) + len("\n}\n")
+    fn = content[start:end]
+    for required, why in (
+        ('clear_and_lock_bash_history "$_PI_BASH_HISTORY" "$_ROOT_BASH_HISTORY"', "the shared wipe+lock call"),
+        ("exit 1", "the fail-closed abort"),
+        ("do NOT hand this device on", "the operator warning"),
+        ("NOT powering off", "the refusal to power off"),
+    ):
+        assert required in fn, f"clear_shell_history_for_handoff lost {why} ({required!r})"
+    return fn
+
+
+def _history_fixture(tmp_path):
+    """Two history files with an owner's commands in them, at paths the lifted
+    handoff arms are pointed at by redefining the script's two fixed
+    variables (same convention as the cloning harness)."""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    pi, root = home / "pi.bash_history", home / "root.bash_history"
+    # A test that pre-stages a survivor (a non-empty directory at the path)
+    # keeps it; the fixture only supplies the ordinary owner's-history shape.
+    if not pi.exists():
+        pi.write_text("nmcli dev wifi connect HomeNet password hunter2\n", encoding="utf-8")
+    if not root.exists():
+        root.write_text("sudo -i\n", encoding="utf-8")
+    decl = f"_PI_BASH_HISTORY={shlex.quote(str(pi))}\n_ROOT_BASH_HISTORY={shlex.quote(str(root))}\n"
+    return pi, root, decl
+
+
 class TestHotspotPasswordResetSemantics:
     """litclock-dev#620 — the persisted hotspot password survives a plain reset
     and a WiFi reset ON PURPOSE (the owner's phone has the network saved, and a
@@ -798,7 +837,24 @@ class TestHotspotPasswordResetSemantics:
             f"lifted rotation guard has no call in it: {hoist_block!r}"
         )
         assert "NetworkManager" not in hoist_block, "lifted span reaches Step 7's WiFi wipe"
-        block = hoist_block + "\n" + content[anchor:]
+        # litclock-dev#868: the history wipe is a THIRD span, hoisted between
+        # Step 7 and the "Reset Complete!" banner for both handoff arms. Its
+        # condition is inside the lifted text, so the non-handoff arms exercise
+        # the guard rather than an absence.
+        hist = content.find(
+            'if [[ "$ENV_WIPE_FAILED" != "true" && ( "$GIFT_MODE" == "true" || "$DO_POWEROFF" == "true" ) ]]; then'
+        )
+        assert hist != -1, "litclock-dev#868: the hoisted handoff history-wipe guard is missing"
+        assert hoist_end <= hist < anchor, (
+            "the history wipe must sit after the rotation guard and before the terminal branch"
+        )
+        hist_end = content.index("\nfi\n", hist) + len("\nfi\n")
+        hist_block = content[hist:hist_end]
+        assert "clear_shell_history_for_handoff" in hist_block, (
+            f"lifted history guard has no call in it: {hist_block!r}"
+        )
+        assert "NetworkManager" not in hist_block
+        block = hoist_block + "\n" + hist_block + "\n" + content[anchor:]
         for required, why in (
             ('elif [[ "$DO_POWEROFF" == "true" ]]', "the --poweroff arm"),
             ('elif [[ "$DO_REBOOT" == "true" ]]', "the --reboot arm"),
@@ -869,6 +925,11 @@ class TestHotspotPasswordResetSemantics:
             f"LITCLOCK_STATE_DIR={state}\n"
             f"{self._state_dir_line(content)}\n"
             'RED=""\nGREEN=""\nYELLOW=""\nNC=""\n'
+            # litclock-dev#868: the handoff arms wipe+lock the shell history.
+            # Real helper, real function, paths redirected into tmp_path/home.
+            f"{_history_fixture(tmp_path)[2]}"
+            f"{_extract_history_helper()}\n"
+            f"{_extract_handoff_history_fn(content)}\n"
             f"{extra}\n"
             f"{self._rotation_fn(content)}\n"
             f"{self._terminal_branch(content)}"
@@ -972,6 +1033,7 @@ class TestHotspotPasswordResetSemantics:
         config.mkdir()
 
         content = reset_sh_content
+        hist_pi, _, hist_decl = _history_fixture(tmp_path)
         default_line = next(ln for ln in content.splitlines() if ln.startswith("WIPE_WIFI="))
         parse_start = content.index("while [[ $# -gt 0 ]]; do")
         parse_end = content.index("done", parse_start) + len("done")
@@ -995,12 +1057,20 @@ class TestHotspotPasswordResetSemantics:
             f"LITCLOCK_STATE_DIR={state}\n"
             f"{self._state_dir_line(content)}\n"
             'RED=""\nGREEN=""\nYELLOW=""\nNC=""\n'
+            f"{hist_decl}"
+            f"{_extract_history_helper()}\n"
+            f"{_extract_handoff_history_fn(content)}\n"
             f"{self._rotation_fn(content)}\n"
             f"{self._terminal_branch(content)}"
         )
         # No arguments: the plain `sudo reset-setup.sh` a person actually types.
         result = subprocess.run(["bash", "-c", program, "bash"], capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, result.stderr
+        # litclock-dev#868: the plain reset keeps the operator's history — it hands
+        # control back to them, not to a new owner.
+        assert hist_pi.is_file() and "hunter2" in hist_pi.read_text(encoding="utf-8"), (
+            "the plain no-flag reset must NOT wipe the shell history — it is the same-owner path"
+        )
         assert "WARNING: could not re-arm" not in result.stdout, result.stdout  # litclock-dev#833: see _run
         assert not pw.exists(), (
             "a no-argument factory reset did not rotate the setup network's password. "
@@ -1418,6 +1488,12 @@ class TestHotspotPasswordResetSemantics:
             # deliberately rather than loosening the scan (this guard caught
             # the addition, which is what it is for).
             "runtime-render-validation.json",
+    # litclock-dev#871 Stage A: the self-test pass record, per-device like the memo.
+    "runtime-render-selftest.json",
+        # litclock-dev#871 Stage A: the self-test pass record, per-device like the memo.
+        "runtime-render-selftest.json",
+            # litclock-dev#871 Stage A: the self-test pass record, per-device like the memo.
+            "runtime-render-selftest.json",
         )
 
         fn = self._rotation_fn(reset_sh_content)
@@ -3225,3 +3301,169 @@ class TestTheRuntimeValidationMemoIsCleared:
         a = executed.index('rm -f "$STATE_DIR/reset-failed"')
         b = executed.index('rm -f "$STATE_DIR/runtime-render-validation.json"')
         assert abs(a - b) < 200, executed[min(a, b): max(a, b) + 80]
+
+
+class TestHandoffHistoryWipe:
+    """litclock-dev#868 — gift mode and the --poweroff factory reset wipe and
+    LOCK the previous owner's shell history; the plain reset and --reboot do
+    not. EXECUTED through the same lifted terminal branch as the rotation
+    tests (real helper from lib/state.sh, real function from this script),
+    with the two fixed history paths redirected into tmp_path/home.
+    """
+
+    _sem = TestHotspotPasswordResetSemantics
+
+    @staticmethod
+    def _hist_paths(tmp_path):
+        home = tmp_path / "home"
+        return home / "pi.bash_history", home / "root.bash_history"
+
+    def _run(self, content, tmp_path, **kw):
+        return self._sem()._run(content, tmp_path, **kw)
+
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            pytest.param(dict(gift_mode="true", wipe_wifi="false"), id="gift"),
+            pytest.param(dict(gift_mode="false", do_poweroff="true", wipe_wifi="true"), id="pwa-factory-reset"),
+            pytest.param(dict(gift_mode="false", do_poweroff="true", wipe_wifi="false"), id="keep-wifi-poweroff"),
+        ],
+    )
+    def test_handoff_arms_wipe_and_lock_the_history_before_ssh_off(self, reset_sh_content, tmp_path, kw):
+        pi, root = self._hist_paths(tmp_path)
+        _, result, _ = self._run(reset_sh_content, tmp_path, **kw)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "STUB_POWEROFF" in result.stdout
+        for p in (pi, root):
+            assert p.is_dir() and not p.is_symlink(), f"{p} is not the write-back lock directory"
+            assert not any(p.iterdir()), f"{p} is not empty"
+        assert "hunter2" not in "".join(q.read_text() for q in (tmp_path / "home").rglob("*") if q.is_file())
+        out = result.stdout
+        assert "Clearing shell history before handoff... done" in out
+        assert out.index("Clearing shell history") < out.index("STUB_SSH_GATE") < out.index("STUB_POWEROFF"), (
+            "the history wipe must run BEFORE SSH-off (a failure has to leave the owner a shell) and before poweroff"
+        )
+
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            pytest.param(dict(gift_mode="false", do_reboot="true", wipe_wifi="true"), id="reboot"),
+            pytest.param(dict(gift_mode="false", wipe_wifi="true"), id="plain"),
+        ],
+    )
+    def test_non_handoff_arms_keep_the_history(self, reset_sh_content, tmp_path, kw):
+        """The litclock-dev#718 distinction: these hand control back to an
+        operator at a console, not to a new owner."""
+        pi, root = self._hist_paths(tmp_path)
+        _, result, _ = self._run(reset_sh_content, tmp_path, **kw)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Clearing shell history" not in result.stdout
+        assert pi.is_file() and "hunter2" in pi.read_text(encoding="utf-8")
+        assert root.is_file() and "sudo -i" in root.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            pytest.param(dict(gift_mode="true", wipe_wifi="false"), id="gift"),
+            pytest.param(dict(gift_mode="false", do_poweroff="true", wipe_wifi="true"), id="pwa-factory-reset"),
+        ],
+    )
+    def test_a_surviving_history_is_fatal_and_keeps_the_owner_a_shell(self, reset_sh_content, tmp_path, kw):
+        """A NON-EMPTY directory at the path (what an earlier aborted run plus a
+        stray file looks like) cannot be removed by rmdir or rm -f, so its
+        contents survive. Decision (litclock-dev#868): fatal, like a failed rotation —
+        no poweroff, no SSH-off, red banner, exit 1."""
+        pi, root = self._hist_paths(tmp_path)
+        (tmp_path / "home").mkdir(exist_ok=True)
+        pi.mkdir()
+        (pi / "stray").write_text("hunter2\n", encoding="utf-8")
+        _, result, _ = self._run(reset_sh_content, tmp_path, **kw)
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Shell history SURVIVED" in result.stdout
+        assert "do NOT hand this device on" in result.stdout
+        # The per-path diagnostic, pinned (litclock-dev#873 testing specialist: deleting
+        # both diagnostic blocks left every test green).
+        assert "Could not clear the shell history at" in result.stdout and str(pi) in result.stdout
+        assert "STUB_POWEROFF" not in result.stdout, "must refuse to power off with the old owner's history on it"
+        assert "STUB_SSH_GATE" not in result.stdout, "SSH-off must not run — the owner still needs a shell to fix this"
+        assert (pi / "stray").is_file(), "the harness's survivor was not the thing that failed"
+        # The other path was still processed: report, not short-circuit — and
+        # the banner tells the owner that lock stays until the next boot.
+        assert root.is_dir()
+        assert "Locks already placed at" in result.stdout and str(root) in result.stdout
+
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            pytest.param(dict(gift_mode="true", wipe_wifi="false"), id="gift"),
+            pytest.param(dict(gift_mode="false", do_poweroff="true", wipe_wifi="true"), id="pwa-factory-reset"),
+        ],
+    )
+    def test_a_history_that_cannot_be_locked_is_fatal_and_names_the_path(self, reset_sh_content, tmp_path, kw):
+        """The UNLOCKED shape (the litclock-dev#834 write-back case): the path
+        is empty but the lock cannot be placed. Staged with a parent that does
+        not exist — mirrors the cloning file's test."""
+        pi, root = self._hist_paths(tmp_path)
+        unlockable = tmp_path / "no-such-dir" / ".bash_history"
+        extra = f"_PI_BASH_HISTORY={shlex.quote(str(unlockable))}\n"
+        _, result, _ = self._run(reset_sh_content, tmp_path, extra=extra, **kw)
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Could not lock" in result.stdout and str(unlockable) in result.stdout
+        assert "STUB_SSH_GATE" not in result.stdout and "STUB_POWEROFF" not in result.stdout
+        assert not unlockable.exists()
+        assert root.is_dir() and "Locks already placed at" in result.stdout and str(root) in result.stdout
+        del pi
+
+    def test_state_sh_gate_requires_the_history_helper(self, reset_sh_content):
+        """A new reset-setup.sh beside an old lib/state.sh must refuse before
+        Step 1 rather than reach the handoff arm and fail with
+        `command not found` — which, with no `set -e`, would print FAILED and
+        exit 1 only because the function is written fail-closed."""
+        m = re.search(r"^for _fn in (.+); do$", reset_sh_content, re.M)
+        assert m, "the lib/state.sh helper gate is missing"
+        assert "clear_and_lock_bash_history" in m.group(1).split()
+
+    def test_history_wipe_is_one_hoisted_call_above_the_wifi_wipe(self, reset_sh_content):
+        """Order is the contract (litclock-dev#873 review + red team): non-gift rotation
+        belts -> history wipe (both handoff arms, fail-closed) -> Step 7 WiFi
+        wipe -> "Reset Complete!" banner -> terminal arms (gift gates, SSH-off,
+        poweroff). A failure must never print the banner, the lock must exist
+        before the step that can SIGHUP the run, and the terminal arms must not
+        carry a second call."""
+        content = reset_sh_content
+        calls = [
+            (n, ln)
+            for n, ln in enumerate(content.splitlines(), 1)
+            if not ln.lstrip().startswith("#")
+            and re.search(r'(?<![A-Za-z0-9_"])clear_shell_history_for_handoff(?![A-Za-z0-9_(])', ln)
+        ]
+        assert len(calls) == 1, f"expected exactly one history-wipe call site, found {calls}"
+        rotation_guard = content.index('if [[ "$GIFT_MODE" != "true" && "$WIPE_WIFI" == "true" ]]; then')
+        wifi_wipe = content.index("# Step 7:", rotation_guard)
+        banner = content.index("Reset Complete!")
+        call_at = content.index(
+            'if [[ "$ENV_WIPE_FAILED" != "true" && ( "$GIFT_MODE" == "true" || "$DO_POWEROFF" == "true" ) ]]; then'
+        )
+        assert rotation_guard < call_at < wifi_wipe < banner, (
+            "history wipe must sit ABOVE Step 7 (a SIGHUP'd bash saves its history — litclock-dev#873 red team) "
+            "and precede the banner"
+        )
+        terminal = content[content.rfind('if [[ "$GIFT_MODE" == "true" ]]; then') :]
+        assert "clear_shell_history_for_handoff" not in [
+            ln.strip() for ln in terminal.splitlines() if not ln.lstrip().startswith("#")
+        ], "the terminal arms must not carry a second call"
+        gift = terminal[: terminal.index('elif [[ "$DO_POWEROFF" == "true" ]]')]
+        assert "SURVIVED the reset" in gift and "disable_ssh_for_handoff" in gift
+
+    def test_a_gift_prep_that_will_abort_on_env_wipe_does_not_touch_the_history(self, reset_sh_content, tmp_path):
+        """The device stays with its owner on that path (the litclock-dev#393 gate refuses
+        to power off), so no lock is placed and their history file is intact."""
+        pi, root = self._hist_paths(tmp_path)
+        _, result, _ = self._run(
+            reset_sh_content, tmp_path, gift_mode="true", wipe_wifi="false", extra="ENV_WIPE_FAILED=true"
+        )
+        assert result.returncode == 1
+        assert "Gift prep FAILED" in result.stdout
+        assert "Clearing shell history" not in result.stdout
+        assert pi.is_file() and "hunter2" in pi.read_text(encoding="utf-8")
+        assert root.is_file()

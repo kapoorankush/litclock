@@ -118,7 +118,7 @@ def test_lookup_handles_embedded_quote_chars(synthetic_corpus) -> None:
     assert 'embedded "quotes"' in meta["quote"]
 
 
-def test_lookup_real_corpus_first_row_smoke() -> None:
+def test_lookup_real_corpus_first_row_smoke(monkeypatch) -> None:
     """Smoke test against the real bundled corpus — pins that the
     CSV-vs-filename contract holds with the actual production data,
     catching any drift between PHP-side numbering and our Python-side
@@ -131,10 +131,11 @@ def test_lookup_real_corpus_first_row_smoke() -> None:
     real_csv = repo_root / "image-gen" / "litclock_annotated.csv"
     if not real_csv.exists():
         pytest.skip("bundled corpus CSV not present in this checkout")
-    os.environ.pop("LITCLOCK_CORPUS_CSV", None)
-    # Direct attribute swap because the module reads the env var only at
-    # import time. monkeypatch.setenv won't help post-import.
-    quote_corpus._CORPUS_PATH = real_csv  # type: ignore[attr-defined]
+    # Attribute swap, RESTORED by monkeypatch (litclock-dev#874 red team): since
+    # litclock-dev#870 `_CORPUS_PATH` carries a mode — None means "resolve
+    # through the registry" — and a bare assignment here pinned the override
+    # rung for every later test in the session.
+    monkeypatch.setattr(quote_corpus, "_CORPUS_PATH", real_csv)
     quote_corpus.reset_cache()
     meta = quote_corpus.lookup_by_filename("quote_0000_0_credits.png")
     assert meta is not None
@@ -387,3 +388,280 @@ class TestNsfwBasenameIdentity:
 
     def test_nsfw_filename_refuses_tame_row(self):
         assert quote_corpus.lookup_by_filename("quote_0300_0_nsfw_credits.png") is None
+
+
+# ── litclock-dev#870: the corpus follows the active language via the registry ──
+
+
+def _write_registry(root: Path, languages: dict[str, dict]) -> None:
+    import json
+
+    (root / "languages.json").write_text(
+        json.dumps({"schema_version": 1, "fleet_default": "en", "languages": languages}), encoding="utf-8"
+    )
+
+
+def _lang_entry(code: str, corpus_rel: str, *, status: str = "active") -> dict:
+    return {
+        "code": code,
+        "native_name": code,
+        "status": status,
+        "corpus": {"path": corpus_rel, "rows": 1, "sfw_coverage_pct": 0.1},
+        "strings": f"languages/{code}/strings.json",
+        "plural_forms": ["one", "other"],
+    }
+
+
+def _one_row(path: Path, author: str, quote: str = "quote") -> None:
+    _write_corpus(path, [("00:00", "midnight", quote, f"Title {author}", author, "NO")])
+
+
+@pytest.fixture
+def two_language_registry(tmp_path, monkeypatch):
+    """A repo root with an English and an `xx` corpus, each one row at 00:00,
+    registered in a tmp languages.json. Both modules are pointed at the tmp
+    root, the shipped-default constant at the tmp English file (so the image
+    tier is observable), and LITCLOCK_LANGUAGE is read from the process env."""
+    import strings_catalog
+
+    (tmp_path / "corpora").mkdir()
+    en = tmp_path / "corpora" / "en.csv"
+    xx = tmp_path / "corpora" / "xx.csv"
+    _one_row(en, "Author EN", "english quote")
+    _one_row(xx, "Author XX", "xx quote")
+    _write_registry(tmp_path, {"en": _lang_entry("en", "corpora/en.csv"), "xx": _lang_entry("xx", "corpora/xx.csv")})
+    monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", tmp_path / "languages.json")
+    monkeypatch.setattr(strings_catalog, "_REPO_ROOT", tmp_path)
+    monkeypatch.setattr(quote_corpus, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(quote_corpus, "_DEFAULT_CORPUS_PATH", en)
+    monkeypatch.setattr(quote_corpus, "_CORPUS_PATH", None)
+    monkeypatch.delenv("LITCLOCK_LANGUAGE", raising=False)
+    monkeypatch.setenv("LITCLOCK_ENV_FILE", str(tmp_path / "no-env.sh"))  # no env.sh channel
+    strings_catalog.reset_cache()
+    quote_corpus.reset_cache()
+    yield {"en": en, "xx": xx, "root": tmp_path}
+    strings_catalog.reset_cache()
+    quote_corpus.reset_cache()
+
+
+def _rewrite_registry(reg, languages):
+    import strings_catalog
+
+    _write_registry(reg["root"], languages)
+    strings_catalog.reset_cache()
+
+
+def _author(hhmm="0000"):
+    return quote_corpus.bucket_entries(hhmm)[0]["author"]
+
+
+class TestCorpusFollowsTheActiveLanguage:
+    def test_default_is_the_english_registry_corpus(self, two_language_registry):
+        assert quote_corpus.corpus_path() == two_language_registry["en"]
+        assert [e["quote_raw"] for e in quote_corpus.bucket_entries("0000")] == ["english quote"]
+
+    def test_an_active_language_reads_its_own_corpus(self, two_language_registry, monkeypatch):
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        assert quote_corpus.corpus_path() == two_language_registry["xx"]
+        assert _author() == "Author XX"
+
+    def test_switching_language_within_one_process_switches_the_corpus(self, two_language_registry, monkeypatch):
+        """The lru_cache trap named on the issue: a naive resolution pins the
+        FIRST language's corpus for the life of the process. Three lookups,
+        no reset_cache() between them, in a single process."""
+        assert _author() == "Author EN"
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        assert _author() == "Author XX"
+        monkeypatch.delenv("LITCLOCK_LANGUAGE")
+        assert _author() == "Author EN"
+
+    def test_the_renderer_selection_pool_follows_too(self, two_language_registry, monkeypatch):
+        """rows_for_time(None, …) is what the clock's runtime path calls."""
+        import quote_renderer
+
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        assert [r.quote for r in quote_renderer.rows_for_time(None, "0000")] == ["xx quote"]
+
+    def test_an_unknown_code_degrades_to_english(self, two_language_registry, monkeypatch):
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "zz")
+        assert quote_corpus.corpus_path() == two_language_registry["en"]
+
+    def test_an_incubating_code_degrades_to_english(self, two_language_registry, monkeypatch):
+        _rewrite_registry(
+            two_language_registry,
+            {"en": _lang_entry("en", "corpora/en.csv"), "xx": _lang_entry("xx", "corpora/xx.csv", status="incubating")},
+        )
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        assert quote_corpus.corpus_path() == two_language_registry["en"]
+
+    def test_a_registry_corpus_missing_on_disk_falls_back_to_english_with_one_warning(
+        self, two_language_registry, monkeypatch, caplog
+    ):
+        import logging
+
+        _rewrite_registry(
+            two_language_registry,
+            {"en": _lang_entry("en", "corpora/en.csv"), "xx": _lang_entry("xx", "corpora/gone.csv")},
+        )
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        with caplog.at_level(logging.WARNING, logger="strings_catalog"):
+            assert quote_corpus.corpus_path() == two_language_registry["en"]
+            assert _author() == "Author EN"
+            quote_corpus.corpus_path()
+        hits = [r for r in caplog.records if "corpora/gone.csv" in r.getMessage()]
+        assert len(hits) == 1, "the missing-corpus warning must fire once, not per lookup"
+
+    def test_an_empty_corpus_does_not_shadow_english(self, two_language_registry, monkeypatch):
+        """litclock-dev#874 review: existence alone let a zero-byte translation win over a
+        healthy English corpus and paint nothing."""
+        two_language_registry["xx"].write_text("", encoding="utf-8")
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        assert quote_corpus.corpus_path() == two_language_registry["en"]
+
+    @pytest.mark.parametrize("rel", ["../outside.csv", "/etc/passwd"])
+    def test_a_corpus_path_outside_the_checkout_is_refused(self, two_language_registry, monkeypatch, caplog, rel):
+        """litclock-dev#874 review (Codex + security): `root / rel` discards the root for an
+        absolute rel and follows `..`, so a registry typo could serve any
+        pi-readable file's lines as quote text."""
+        import logging
+
+        outside = two_language_registry["root"].parent / "outside.csv"
+        _one_row(outside, "Author OUTSIDE")
+        _rewrite_registry(
+            two_language_registry, {"en": _lang_entry("en", "corpora/en.csv"), "xx": _lang_entry("xx", rel)}
+        )
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        with caplog.at_level(logging.WARNING, logger="strings_catalog"):
+            assert quote_corpus.corpus_path() == two_language_registry["en"]
+        assert any("outside the checkout" in r.getMessage() for r in caplog.records)
+
+    def test_a_symlink_loop_is_unusable_not_fatal(self, two_language_registry, monkeypatch):
+        """litclock-dev#874 red team: resolve() raises RuntimeError on a loop, which the
+        first guard (OSError only) let escape — and the runtime tier's broad
+        except would then have dropped to PNGs every minute instead of
+        falling through to English."""
+        loop = two_language_registry["root"] / "corpora" / "loop.csv"
+        loop.symlink_to(loop)
+        _rewrite_registry(
+            two_language_registry,
+            {"en": _lang_entry("en", "corpora/en.csv"), "xx": _lang_entry("xx", "corpora/loop.csv")},
+        )
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        assert quote_corpus.corpus_path() == two_language_registry["en"]
+
+    def test_a_symlink_out_of_the_checkout_is_refused(self, two_language_registry, monkeypatch):
+        outside = two_language_registry["root"].parent / "outside2.csv"
+        _one_row(outside, "Author OUTSIDE")
+        link = two_language_registry["root"] / "corpora" / "link.csv"
+        link.symlink_to(outside)
+        _rewrite_registry(
+            two_language_registry,
+            {"en": _lang_entry("en", "corpora/en.csv"), "xx": _lang_entry("xx", "corpora/link.csv")},
+        )
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        assert quote_corpus.corpus_path() == two_language_registry["en"]
+
+    def test_both_registry_corpora_missing_lands_on_the_shipped_default_with_two_warnings(
+        self, two_language_registry, monkeypatch, caplog
+    ):
+        import logging
+
+        shipped = two_language_registry["root"] / "shipped.csv"
+        _one_row(shipped, "Author SHIPPED")
+        monkeypatch.setattr(quote_corpus, "_DEFAULT_CORPUS_PATH", shipped)
+        _rewrite_registry(
+            two_language_registry,
+            {"en": _lang_entry("en", "corpora/gone-en.csv"), "xx": _lang_entry("xx", "corpora/gone-xx.csv")},
+        )
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        with caplog.at_level(logging.WARNING, logger="strings_catalog"):
+            assert quote_corpus.corpus_path() == shipped
+            assert _author() == "Author SHIPPED"
+            quote_corpus.corpus_path()
+        hits = [r for r in caplog.records if "gone-" in r.getMessage()]
+        assert len(hits) == 2, "one warning per missing rung, each once"
+
+    def test_the_env_override_wins_over_the_registry_for_both_tiers(self, two_language_registry, monkeypatch):
+        override = two_language_registry["root"] / "override.csv"
+        _one_row(override, "Author OV")
+        monkeypatch.setattr(quote_corpus, "_CORPUS_PATH", override)
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        assert quote_corpus.corpus_path() == override
+        assert quote_corpus.image_corpus_path() == override
+        assert _author() == "Author OV"
+        assert quote_corpus.lookup_by_filename("quote_0000_0_credits.png")["author"] == "Author OV"
+
+    def test_the_image_lookup_reads_the_shipped_corpus_whatever_the_language_or_registry_says(
+        self, two_language_registry, monkeypatch
+    ):
+        """See quote_corpus.image_corpus_path: the PNGs' provenance is the
+        file the generator opens by name, not the device language and not
+        even the registry's English entry."""
+        other = two_language_registry["root"] / "corpora" / "other.csv"
+        _one_row(other, "Author OTHER")
+        _rewrite_registry(
+            two_language_registry,
+            {"en": _lang_entry("en", "corpora/other.csv"), "xx": _lang_entry("xx", "corpora/xx.csv")},
+        )
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        assert quote_corpus.image_corpus_path() == two_language_registry["en"]
+        assert quote_corpus.lookup_by_filename("quote_0000_0_credits.png")["author"] == "Author EN"
+        # ...while the renderer's pool, in the same process, is the xx corpus,
+        # and an English device's runtime pool follows the registry's English.
+        assert _author() == "Author XX"
+        monkeypatch.delenv("LITCLOCK_LANGUAGE")
+        assert _author() == "Author OTHER"
+
+
+class TestRegistryCorpusAccessors:
+    def test_english_points_at_the_shipped_corpus(self, monkeypatch):
+        import strings_catalog
+
+        monkeypatch.setattr(quote_corpus, "_CORPUS_PATH", None)
+        monkeypatch.delenv("LITCLOCK_LANGUAGE", raising=False)
+        monkeypatch.setenv("LITCLOCK_ENV_FILE", "/nonexistent/env.sh")
+        strings_catalog.reset_cache()
+        assert strings_catalog.corpus_relpath("en") == "image-gen/litclock_annotated.csv"
+        assert quote_corpus.corpus_path() == quote_corpus._DEFAULT_CORPUS_PATH
+        assert quote_corpus.image_corpus_path() == quote_corpus._DEFAULT_CORPUS_PATH
+
+    def test_the_image_corpus_is_the_file_the_generator_opens(self):
+        """litclock-dev#874 review: nothing else pins the PNGs' provenance to the resolver.
+        The PHP generator, the release verifier and the render tooling all
+        name this file; image_corpus_path() must name the same one."""
+        repo = Path(__file__).resolve().parents[1]
+        assert quote_corpus._DEFAULT_CORPUS_PATH == repo / "image-gen" / "litclock_annotated.csv"
+        assert "litclock_annotated.csv" in (repo / "image-gen" / "quote_to_image.php").read_text(encoding="utf-8")
+        assert 'CORPUS_FILE="$REPO_ROOT/image-gen/litclock_annotated.csv"' in (
+            repo / "scripts" / "download_images.sh"
+        ).read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {"status": "active"},
+            {"status": "active", "corpus": None},
+            {"status": "active", "corpus": {}},
+            {"status": "active", "corpus": {"path": ""}},
+            {"status": "active", "corpus": {"path": 7}},
+        ],
+        ids=["no-corpus", "corpus-none", "corpus-empty", "path-empty", "path-int"],
+    )
+    def test_a_malformed_entry_has_no_corpus_and_the_clock_still_resolves(
+        self, two_language_registry, monkeypatch, entry
+    ):
+        import strings_catalog
+
+        xx = {**_lang_entry("xx", "x"), **entry}
+        if "corpus" not in entry:
+            del xx["corpus"]
+        _rewrite_registry(two_language_registry, {"en": _lang_entry("en", "corpora/en.csv"), "xx": xx})
+        assert strings_catalog.corpus_relpath("xx") is None
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        assert quote_corpus.corpus_path() == two_language_registry["en"]
+
+    def test_unknown_code_has_no_corpus(self):
+        import strings_catalog
+
+        strings_catalog.reset_cache()
+        assert strings_catalog.corpus_relpath("zz") is None

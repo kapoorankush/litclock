@@ -74,15 +74,22 @@ DEFAULT_PHASE3_SKIPPED_FILE = os.environ.get("LITCLOCK_PHASE3_SKIPPED_FILE", "/v
 PHASE3_SKIP_FRESH_WINDOW_S = 86400
 
 # litclock-dev#847 item 1 — the negative-result memo update.sh Phase 4.5
-# writes when the litclock-dev#531 runtime-render validation is deferred, times out or
-# fails, and removes when it passes (or the marker is already present). JSON:
+# writes when the litclock-dev#531 runtime-render validation is deferred, times
+# out or fails, and removes when it passes (or the marker is already present) —
+# and, since litclock-dev#871 Stage A, the runtime-render self-test's verdict. JSON:
 # {result, rc, reason, sha, at_unix}. No freshness clamp, unlike the Phase 3
 # marker: it describes the device's CURRENT tier, not a one-off skip, and the
 # writer clears it on the state change that makes it stale.
 DEFAULT_RUNTIME_VALIDATION_MEMO_FILE = os.environ.get(
     "LITCLOCK_RUNTIME_VALIDATION_MEMO_FILE", "/var/lib/litclock/runtime-render-validation.json"
 )
-RUNTIME_VALIDATION_RESULTS = frozenset({"deferred", "timeout", "failed"})
+# `selftest-failed` / `selftest-deferred` since litclock-dev#871 Stage A: the
+# same memo file carries the runtime-render SELF-TEST's verdict (a forced-on
+# dry-run that fell back to PNGs, timed out, or died — the rc says which), or
+# its deferral (budget or scratch directory gone). Distinct tokens, so a
+# marker-bearing device whose validation passed is never reported as
+# "validation deferred" (litclock-dev#875 review).
+RUNTIME_VALIDATION_RESULTS = frozenset({"deferred", "timeout", "failed", "selftest-failed", "selftest-deferred"})
 MAX_RUNTIME_VALIDATION_MEMO_BYTES = 8 * 1024
 
 # litclock-dev#274 follow-up — adversarial-review P1: budget for treating a
@@ -573,7 +580,7 @@ def collect_status(
         "update_phase_index": update_phase,
         # litclock-dev#847 item 1: null when the last runtime-render validation
         # passed (or never ran and was never deferred); otherwise
-        # {result: deferred|timeout|failed, at_unix, rc, reason, sha}. The PWA
+        # {result: <one of RUNTIME_VALIDATION_RESULTS>, at_unix, rc, reason, sha}. The PWA
         # does not render it yet — a Diagnostics/Status surface is the
         # follow-up; the payload is the contract.
         "runtime_render_validation": runtime_render_validation,

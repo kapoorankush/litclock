@@ -273,6 +273,12 @@ class TestUpdateShStampBlockExecutes:
             f"RUNTIME_VALIDATION_MEMO_FILE={memo}\n"
             f"POST_UPDATE_GRACE_FILE=/dev/null\nsmoke_rc=0\n"
             f"ROLLBACK_MODE={1 if rollback_mode else 0}\n"
+            # litclock-dev#871 Stage A: the KEEP arm now calls the self-test after
+            # the stamp block. Stubbed DISTINGUISHABLY (this harness has no
+            # `set -e`, so an unstubbed call would print `command not found` and
+            # carry on green); the real function is driven on its own in
+            # TestRuntimeRenderSelftestExecutes below.
+            '_runtime_render_selftest() { echo STUB_SELFTEST; }\n'
             f"{self._budget_helpers()}"
             # Stub AFTER the lifted helpers so the stub wins; the guard itself
             # is the real one.
@@ -319,6 +325,10 @@ class TestUpdateShStampBlockExecutes:
         helpers = self._budget_helpers()
         timeout_s = int(re.search(r"^VALIDATOR_TIMEOUT_S=(\d+)", helpers, re.M).group(1))
         reserve_s = int(re.search(r"^VALIDATOR_BUDGET_RESERVE_S=(\d+)", helpers, re.M).group(1))
+        # litclock-dev#871 (litclock-dev#875 red team): the validator's guard does NOT
+        # reserve for the self-test that follows it — on the transition tick
+        # that would defer earning the marker to protect an inert probe. The
+        # self-test's own guard is driven in TestRuntimeRenderSelftestExecutes.
         budget = 600
         elapsed = budget - timeout_s - reserve_s - slack
         r = self._run(tmp_path, marker_exists=False, validator_rc=0, elapsed_s=elapsed, installed_budget_s=budget)
@@ -444,6 +454,13 @@ class TestUpdateShStampBlockExecutes:
         r = self._run(tmp_path, marker_exists=False, validator_rc=0, stamps=True, memo_exists=True)
         assert "validation PASSED" in r.stdout, (r.stdout, r.stderr)
         assert self._memo(tmp_path) is None, "a pass must remove the negative memo"
+
+    def test_rollback_mode_keeps_a_stale_memo_because_nothing_re_asks(self, tmp_path):
+        """litclock-dev#875 red team: a rollback tick skips the self-test, so clearing a
+        `selftest-failed` memo there would turn 'failed' into 'no record'."""
+        r = self._run(tmp_path, marker_exists=True, validator_rc=0, rollback_mode=True, memo_exists=True)
+        assert "REACHED_END" in r.stdout
+        assert self._memo(tmp_path) is not None, "the memo must survive a rollback tick"
 
     def test_a_present_marker_clears_a_stale_memo_without_running_anything(self, tmp_path):
         """Hand-stamped since, or stamped by a later tick: the marker wins, and
@@ -859,3 +876,276 @@ class TestTheCheckItselfBehaves:
         assert r.returncode == 2, f"expected the refusal exit (2), got {r.returncode}\n{r.stderr}"
         assert "refusing --stamp" in (r.stdout + r.stderr)
         assert marker.read_text() == "pre-existing", "a refused stamp must leave the marker untouched"
+
+
+class TestTheSelftestIsCalledFromTheKeepArm:
+    """litclock-dev#871 Stage A — WHEN the KEEP arm asks the self-test, pinned
+    by the stub in the harness above: with a marker (surviving or just
+    stamped), never without one, never in rollback mode."""
+
+    _h = TestUpdateShStampBlockExecutes
+
+    def test_it_runs_after_a_fresh_stamp(self, tmp_path):
+        r = self._h()._run(tmp_path, marker_exists=False, validator_rc=0, stamps=True)
+        assert "validation PASSED" in r.stdout
+        assert "STUB_SELFTEST" in r.stdout, r.stdout
+        assert r.stdout.index("validation PASSED") < r.stdout.index("STUB_SELFTEST"), "stamp first, then ask"
+
+    def test_it_runs_with_a_surviving_marker(self, tmp_path):
+        r = self._h()._run(tmp_path, marker_exists=True, validator_rc=1)
+        assert "FAKE_VALIDATOR_RAN" not in r.stderr, "a present marker skips the validator"
+        assert "STUB_SELFTEST" in r.stdout, r.stdout
+
+    def test_it_is_skipped_when_the_validation_did_not_stamp(self, tmp_path):
+        r = self._h()._run(tmp_path, marker_exists=False, validator_rc=1)
+        assert "did not pass" in r.stdout
+        assert "STUB_SELFTEST" not in r.stdout, "no marker, no self-test: the painter would decline before trying"
+
+    def test_it_is_skipped_in_rollback_mode(self, tmp_path):
+        r = self._h()._run(tmp_path, marker_exists=True, validator_rc=0, rollback_mode=True)
+        assert "STUB_SELFTEST" not in r.stdout, "a rollback run exists to get the clock painting, not to learn"
+
+    def test_the_call_sits_inside_the_keep_arm_after_the_validation_block(self):
+        body = UPDATE_SH.read_text()
+        keep = body.index('if [[ "$smoke_rc" -eq 0 ]]; then\n    log_info "Smoke test passed"')
+        else_at = body.index('else\n    log_error "Smoke test failed', keep)
+        arm = body[keep:else_at]
+        executed = [ln for ln in arm.splitlines() if not ln.lstrip().startswith("#")]
+        calls = [ln for ln in executed if ln.strip() == "_runtime_render_selftest"]
+        assert len(calls) == 1, f"exactly one self-test call inside the KEEP arm; found {calls}"
+        assert arm.index("unset _validate_rc") < arm.index("\n        _runtime_render_selftest\n"), (
+            "the self-test must follow the validation block (a fresh stamp is what makes it worth asking)"
+        )
+        executed_all = [ln for ln in body.splitlines() if not ln.lstrip().startswith("#")]
+        whole = [ln for ln in executed_all if ln.strip() == "_runtime_render_selftest"]
+        assert len(whole) == 1, "the self-test must not be called from anywhere else"
+
+
+class TestRuntimeRenderSelftestExecutes:
+    """The self-test function itself, RUN with a fake painter (litclock-dev#871
+    Stage A). What it must do: force the renderer on, source env.sh for the
+    device's language, pass --require-runtime-render, point the frame
+    directory somewhere disposable, and turn the painter's exit code into the
+    memo — 0 clears nothing, 3 is 'fell back', 124 is a timeout, anything
+    else is 'died'. And never fail the update."""
+
+    def _selftest_fn(self):
+        body = UPDATE_SH.read_text()
+        assert body.count("_runtime_render_selftest() {") == 1
+        start = body.index("_runtime_render_selftest() {")
+        end = body.index("\n}\n", start) + len("\n}\n")
+        fn = body[start:end]
+        for required, why in (
+            ("export LITCLOCK_RUNTIME_RENDER=true", "the renderer forced on"),
+            ("--require-runtime-render", "the flag that makes a fallback a failure"),
+            ("LITCLOCK_RUNTIME_RENDER_DIR", "the throwaway frame directory"),
+            ("export WEATHER_ENABLED=false", "weather forced off — a capability probe stays off the network"),
+            ("source \"${INSTALL_DIR:-}/env.sh\"", "env.sh sourced for the device's language"),
+            ("selftest-deferred", "the deferral token, distinct from the validator's"),
+            ("_validation_fits_remaining_budget \"$SELFTEST_TIMEOUT_S\"", "the shared budget guard, own bound"),
+            ('rc="${PIPESTATUS[0]}"', "the painter's status, not sed's"),
+            ('[[ -n "$dir" && -d "$dir" ]] && rm -rf -- "$dir"', "cleanup of the fresh directory only"),
+            ("_runtime_selftest_record_write", "the durable pass record"),
+            ('atomic_remove_file "$RUNTIME_SELFTEST_RECORD_FILE"', "a fail retiring an earlier pass"),
+            ("selftest-failed", "the memo token"),
+            ("return 0", "never failing the update"),
+        ):
+            assert required in fn, f"_runtime_render_selftest lost {why} ({required!r})"
+        assert "exit " not in "\n".join(ln for ln in fn.splitlines() if not ln.lstrip().startswith("#")), (
+            "the self-test must never exit the updater"
+        )
+        return fn
+
+    def _run(
+        self,
+        tmp_path,
+        *,
+        painter_rc: int,
+        elapsed_s=None,
+        installed_budget_s=None,
+        language="xx",
+        sleep=0,
+        mktemp_fails=False,
+        pass_record_exists=False,
+    ):
+        log = tmp_path / "painter.log"
+        fake_py = tmp_path / "python3"
+        # The fake painter records what it was told, whether the scratch
+        # directory EXISTS (not merely that the variable is set — litclock-dev#875 testing
+        # specialist), and leaves a file in it so the cleanup has to remove a
+        # non-empty directory.
+        fake_py.write_text(
+            "#!/bin/bash\n"
+            f'printf "argv=%s\\n" "$*" >> {log}\n'
+            f'printf "render=%s lang=%s weather=%s dir=%s\\n" "${{LITCLOCK_RUNTIME_RENDER:-unset}}" '
+            f'"${{LITCLOCK_LANGUAGE:-unset}}" "${{WEATHER_ENABLED:-unset}}" '
+            f'"${{LITCLOCK_RUNTIME_RENDER_DIR:-unset}}" >> {log}\n'
+            f'if [ -d "${{LITCLOCK_RUNTIME_RENDER_DIR:-}}" ]; then echo exists=yes >> {log}; '
+            f': > "$LITCLOCK_RUNTIME_RENDER_DIR/current-quote.png"; else echo exists=no >> {log}; fi\n'
+            f"sleep {sleep}\n"
+            "echo painter-says-hello\n"
+            f"exit {painter_rc}\n"
+        )
+        fake_py.chmod(0o755)
+        install = tmp_path / "install"
+        install.mkdir(exist_ok=True)
+        (install / "env.sh").write_text(
+            f"export LITCLOCK_LANGUAGE={language}\nexport LITCLOCK_RUNTIME_RENDER=false\nexport WEATHER_ENABLED=true\n"
+        )
+        memo = tmp_path / "memo.json"
+        # A test may call this twice in one tmp_path: start each run clean, or
+        # the second run's assertions read the first run's log and memo.
+        log.unlink(missing_ok=True)
+        memo.unlink(missing_ok=True)
+        h = TestUpdateShStampBlockExecutes()
+        if elapsed_s is None:
+            stub = "_update_elapsed_seconds() { return 2; }\n"
+        elif elapsed_s == "unknown":
+            stub = "_update_elapsed_seconds() { return 1; }\n"
+        else:
+            stub = f"_update_elapsed_seconds() {{ echo {int(elapsed_s)}; }}\n"
+        if installed_budget_s is None:
+            stub += "_update_budget_seconds() { return 1; }\n"
+        else:
+            stub += f"_update_budget_seconds() {{ echo {int(installed_budget_s)}; }}\n"
+        program = (
+            "set -u\n"
+            'log_info() { echo "[INFO] $1"; }\n'
+            'log_warn() { echo "[WARN] $1"; }\n'
+            'log_error() { echo "[ERROR] $1"; }\n'
+            'atomic_remove_file() { [ "$1" = /dev/null ] || rm -f "$1"; }\n'
+            'atomic_write_file() { [ "$1" = /dev/null ] || printf "%s" "$2" > "$1"; }\n'
+            f"PYTHON={fake_py}\nINSTALL_DIR={install}\nRUNTIME_VALIDATION_MEMO_FILE={memo}\n"
+            f"RUNTIME_SELFTEST_RECORD_FILE={tmp_path / 'selftest.json'}\n"
+            f"{h._budget_helpers()}"
+            # AFTER the lifted helpers, which carry the script's own constants:
+            # a 2s bound keeps the timeout case fast, and the boundary tests
+            # compute against it.
+            "SELFTEST_TIMEOUT_S=2\nVALIDATOR_BUDGET_RESERVE_S=120\n"
+            f"{stub}"
+            + ("mktemp() { return 1; }\n" if mktemp_fails else "")
+            + f"{self._record_fn()}"
+            + f"{self._selftest_fn()}"
+            "_runtime_render_selftest\n"
+            'echo "REACHED_END rc=$?"\n'
+        )
+        record = tmp_path / "selftest.json"
+        record.unlink(missing_ok=True)
+        if pass_record_exists:
+            record.write_text('{"result": "passed", "duration_s": 1.0, "sha": null, "at_unix": 1}')
+        r = subprocess.run(["bash", "-c", program], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+        painter = log.read_text() if log.exists() else ""
+        return r, painter, (json.loads(memo.read_text()) if memo.exists() else None)
+
+    def _record_fn(self):
+        body = UPDATE_SH.read_text()
+        assert body.count("_runtime_selftest_record_write() {") == 1
+        start = body.index("_runtime_selftest_record_write() {")
+        end = body.index("\n}\n", start) + len("\n}\n")
+        fn = body[start:end]
+        assert 'result: "passed"' in fn and "duration_s" in fn
+        return fn
+
+    @staticmethod
+    def _record(tmp_path):
+        path = tmp_path / "selftest.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def test_a_pass_forces_the_renderer_on_with_the_devices_language_and_writes_no_memo(self, tmp_path):
+        r, painter, memo = self._run(tmp_path, painter_rc=0)
+        assert "REACHED_END rc=0" in r.stdout, r.stdout + r.stderr
+        assert "self-test PASSED" in r.stdout
+        assert "[selftest] painter-says-hello" in r.stdout, "the painter's output must reach the journal, prefixed"
+        assert "argv=src/literary_clock.py --dry-run --require-runtime-render" in painter, painter
+        assert "render=true" in painter, "the renderer must be FORCED on, whatever env.sh says"
+        assert "lang=xx" in painter, "env.sh must be sourced so the device's language is the one rendered"
+        assert "weather=false" in painter, "weather must be forced OFF, whatever env.sh says"
+        assert "exists=yes" in painter, "the frame directory must EXIST while the painter runs"
+        assert "self-test PASSED in " in r.stdout, "the duration is the evidence Stage B needs"
+        assert memo is None
+        rec = self._record(tmp_path)
+        assert rec is not None and rec["result"] == "passed", "a pass must leave a DURABLE record for Stage B"
+        assert isinstance(rec["duration_s"], (int, float)) and 0 <= rec["duration_s"] < 5, rec
+        assert rec["sha"] and rec["at_unix"] > 0
+
+    def test_a_fail_retires_an_earlier_pass_record(self, tmp_path):
+        _, _, memo = self._run(tmp_path, painter_rc=3, pass_record_exists=True)
+        assert memo is not None and memo["result"] == "selftest-failed"
+        assert self._record(tmp_path) is None, "Stage B must never flip on a stale pass"
+
+    def test_a_deferral_leaves_an_earlier_pass_record_alone(self, tmp_path):
+        _, painter, memo = self._run(tmp_path, painter_rc=0, mktemp_fails=True, pass_record_exists=True)
+        assert painter == "" and memo is not None and memo["result"] == "selftest-deferred"
+        assert self._record(tmp_path) is not None, "nothing was asked, nothing learned; the record stands"
+
+    def test_a_fallback_is_memoed_as_selftest_failed_with_rc_3(self, tmp_path):
+        r, _, memo = self._run(tmp_path, painter_rc=3)
+        assert "REACHED_END rc=0" in r.stdout, "a failed self-test is not an update failure"
+        assert "fell back to pre-rendered images" in r.stdout
+        assert memo is not None and memo["result"] == "selftest-failed" and memo["rc"] == 3, memo
+        assert "fell back" in memo["reason"]
+
+    def test_a_dead_painter_is_memoed_with_its_rc(self, tmp_path):
+        r, _, memo = self._run(tmp_path, painter_rc=1)
+        assert "REACHED_END rc=0" in r.stdout
+        assert memo is not None and memo["result"] == "selftest-failed" and memo["rc"] == 1, memo
+        assert "exited 1" in memo["reason"]
+
+    def test_a_timeout_is_told_apart(self, tmp_path):
+        r, _, memo = self._run(tmp_path, painter_rc=0, sleep=5)
+        assert "REACHED_END rc=0" in r.stdout
+        assert "did not finish" in r.stdout
+        assert memo is not None and memo["result"] == "selftest-failed" and memo["rc"] == 124, memo
+
+    def test_a_disposable_frame_directory_is_removed_afterwards(self, tmp_path):
+        _, painter, _ = self._run(tmp_path, painter_rc=0)
+        d = next(ln.split("dir=", 1)[1].strip() for ln in painter.splitlines() if "dir=" in ln)
+        assert d and d != "unset" and d != "/run/litclock", d
+        assert "exists=yes" in painter, "the painter left a file in it, so the cleanup removed a NON-empty directory"
+        assert not Path(d).exists(), d
+
+    def test_no_scratch_directory_means_no_run(self, tmp_path):
+        """litclock-dev#875 review (Codex, security, adversarial): with mktemp failed the
+        painter's default frame directory IS the panel's (/run/litclock), so
+        running anyway would overwrite the live frame. Defer instead."""
+        r, painter, memo = self._run(tmp_path, painter_rc=0, mktemp_fails=True)
+        assert "REACHED_END rc=0" in r.stdout
+        assert painter == "", "the painter must not run without a scratch directory"
+        assert memo is not None and memo["result"] == "selftest-deferred" and "scratch" in memo["reason"], memo
+
+    def test_an_unreadable_budget_defers_even_when_elapsed_is_known(self, tmp_path):
+        """litclock-dev#875 testing specialist: this arm was untested, and a mutant that read
+        an unreadable budget as UNLIMITED — the inversion the litclock-dev#835 helpers
+        forbid — stayed green."""
+        r, painter, memo = self._run(tmp_path, painter_rc=0, elapsed_s=100, installed_budget_s=None)
+        assert "REACHED_END rc=0" in r.stdout
+        assert painter == "", "an unreadable budget is 'cannot afford it', never 'no budget'"
+        assert memo is not None and memo["result"] == "selftest-deferred" and "TimeoutStartSec" in memo["reason"], memo
+
+    def test_no_budget_left_defers_with_a_memo_and_does_not_run_the_painter(self, tmp_path):
+        r, painter, memo = self._run(tmp_path, painter_rc=0, elapsed_s=1700, installed_budget_s=1800)
+        assert "REACHED_END rc=0" in r.stdout
+        assert "deferring the runtime-render self-test" in r.stdout
+        assert painter == "", "the painter must not run when the budget cannot hold it"
+        assert memo is not None and memo["result"] == "selftest-deferred", memo
+
+    def test_enough_budget_runs_it(self, tmp_path):
+        _, painter, memo = self._run(tmp_path, painter_rc=0, elapsed_s=1600, installed_budget_s=1800)
+        assert "argv=" in painter and memo is None
+
+    def test_the_boundary_is_exact(self, tmp_path):
+        # elapsed + 2 (timeout) + 120 (reserve) > budget defers; == does not.
+        _, painter, _ = self._run(tmp_path, painter_rc=0, elapsed_s=1678, installed_budget_s=1800)
+        assert "argv=" in painter, "1678+2+120 == 1800 fits"
+        _, painter, _ = self._run(tmp_path, painter_rc=0, elapsed_s=1679, installed_budget_s=1800)
+        assert painter == "", "1679+2+120 > 1800 defers"
+
+    def test_an_unknown_budget_defers_an_unlimited_one_runs(self, tmp_path):
+        _, painter, memo = self._run(tmp_path, painter_rc=0, elapsed_s="unknown")
+        assert painter == "" and memo is not None and memo["result"] == "selftest-deferred"
+        _, painter, memo = self._run(tmp_path, painter_rc=0, elapsed_s=5000, installed_budget_s=0)
+        assert "argv=" in painter and memo is None
+
+    def test_outside_systemd_there_is_no_budget_to_respect(self, tmp_path):
+        _, painter, memo = self._run(tmp_path, painter_rc=0, elapsed_s=None)
+        assert "argv=" in painter and memo is None

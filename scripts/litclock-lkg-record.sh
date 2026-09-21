@@ -21,9 +21,13 @@
 #                                       ▼
 #                                    write lkg-sha   (atomic: .tmp + mv)
 #
-# Bootcheck/revert is a separate follow-up (issue litclock-dev#241 → bootcheck-revert)
-# and is intentionally NOT shipped here. This script is observability +
-# substrate; consumption lands in its own PR after we have field data.
+# This script is the substrate: it records the LKG sha and nothing else.
+# Consumption SHIPPED — `litclock-bootcheck.sh` reads this sha, counts failed
+# boots, pins `rollback-target`/`blocked-sha` and triggers the updater in
+# rollback mode. The sentence that stood here said bootcheck/revert was "a
+# separate follow-up ... intentionally NOT shipped", which stopped being true
+# when it landed; corrected 2026-09-19 alongside litclock-dev#847's own
+# pending-work wording.
 
 set -uo pipefail
 

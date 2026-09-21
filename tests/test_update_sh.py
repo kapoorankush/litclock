@@ -1664,6 +1664,8 @@ CHMOD_NEEDS_NO_TRACKED_MODE = {
     # undoes mktemp's 0600 so the pi-user control_server can read a memo a
     # root-run update wrote.
     "$RUNTIME_VALIDATION_MEMO_FILE": "a /var/lib state file, not a repo path (and 0644, not +x)",
+    # litclock-dev#871 Stage A: the self-test pass record, same shape and reason.
+    "$RUNTIME_SELFTEST_RECORD_FILE": "a /var/lib state file, not a repo path (and 0644, not +x)",
 }
 
 # Targets that are a single repo file rather than a glob.
@@ -2746,6 +2748,12 @@ class TestCatalogSmokeGateIsLanguageAgnostic:
             # TestRevertArmsReinstallTheClockUnits below.
             '_reinstall_clock_units_from_tree() { echo "STUB_REINSTALL_CLOCK_UNITS"; }\n'
             '_block_reverted_release() { echo "STUB_BLOCK_REVERTED $*"; }\n'
+            # litclock-dev#871 Stage A — the KEEP arm calls the self-test once the
+            # marker is present (it is, below). Stubbed so it neither runs the
+            # real painter through the probe wrapper (a fifth logged probe) nor
+            # dies as `command not found`; driven for real in
+            # tests/test_runtime_render_autostamp.py.
+            '_runtime_render_selftest() { echo "STUB_SELFTEST"; }\n'
             f"PYTHON={shlex.quote(str(wrapper))}\n"
             "REVERT_SHA=deadbeef\nUPDATE_FAILED_FILE=/dev/null\nHASH_FILE=/dev/null\n"
             # litclock-dev#531 — the KEEP arm now re-stamps the runtime-render
@@ -2834,6 +2842,10 @@ class TestCatalogSmokeGateIsLanguageAgnostic:
             f"all four probes must run on the happy path; got {probes}. Dropping an entry "
             "from the `for probe in ...` list is otherwise invisible."
         )
+        # litclock-dev#871 Stage A: with the marker present, the KEEP arm asks the
+        # self-test after the probes. Positive, so the stub is not a silent
+        # `command not found` in disguise.
+        assert "STUB_SELFTEST" in r.stdout, r.stdout
 
     def test_the_gate_still_fails_when_the_catalog_is_gone(self, update_sh_content, tmp_path):
         """The litclock-dev#532 failure the gate was written for: `languages/`
@@ -3592,7 +3604,10 @@ class TestTheExitTrapRearmsTheClock:
         leaked descendant holding the lock, but under systemd's group-wide
         TERM the flock parent dies first and the script's signal cleanup then
         runs unlocked against a second updater (reproduced). The pre-existing
-        inheritance stays; the lock design is the issue's follow-up."""
+        inheritance stays — and since 2026-09-19 that is a SETTLED decision,
+        not a pending follow-up: litclock-dev#847 item 2 closed as accepted,
+        because every production trigger activates the same oneshot and is
+        serialised by systemd before this lock is reached."""
         executed = _executed_lines(update_sh_content)
         assert 'flock -n -E 75 "$LITCLOCK_UPDATE_LOCK_FILE" "$0" "$@"' in executed
         assert "--close" not in executed

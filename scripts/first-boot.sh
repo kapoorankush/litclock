@@ -507,6 +507,10 @@ disable_first_boot() {
 # explicit `history -w` and the HISTFILESIZE truncate all fail with EISDIR,
 # root included). That directory rides every clone; this puts the paths back
 # to "absent" so bash creates a normal file on the recipient's first login.
+# Since litclock-dev#868 the same lock (clear_and_lock_bash_history in
+# lib/state.sh) is left by reset-setup.sh's gift-mode and --poweroff arms too,
+# and a reset lands on this same not-yet-set-up path, so one restore covers
+# every handoff. The name keeps its clone-prep origin.
 #
 # `rmdir`, unconditionally, through sudo: it removes an EMPTY DIRECTORY and
 # nothing else, so a real history file (ENOTDIR) or an absent path (ENOENT) is
@@ -533,10 +537,10 @@ restore_bash_history_after_clone_prep() {
         case "$_verdict" in
             CLEAR) ;;
             LOCKED)
-                log "WARN clone-prep history lock at $_p could not be removed; shell history will not be saved there (litclock-dev#834)"
+                log "WARN handoff history lock at $_p could not be removed; shell history will not be saved there (litclock-dev#834, litclock-dev#868)"
                 ;;
             *)
-                log "WARN could not check the clone-prep history lock at $_p (the privileged probe did not run); if shell history is not saved there, remove it with: sudo rmdir $_p (litclock-dev#834)"
+                log "WARN could not check the handoff history lock at $_p (the privileged probe did not run); if shell history is not saved there, remove it with: sudo rmdir $_p (litclock-dev#834, litclock-dev#868)"
                 ;;
         esac
     done
@@ -557,9 +561,8 @@ main() {
         exit 0
     fi
 
-    # litclock-dev#834 — undo prepare-for-cloning.sh's history lock before
-    # anything else on the not-yet-set-up path, which is the only path a
-    # cloned card takes, so the recipient's first login gets a normal history.
+    # litclock-dev#834 / litclock-dev#868 — undo the handoff history lock before anything
+    # else on the not-yet-set-up path (see the function header).
     restore_bash_history_after_clone_prep /home/pi/.bash_history /root/.bash_history
 
     # Stop the clock timer — if re-running first-boot (e.g. after removing

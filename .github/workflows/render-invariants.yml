@@ -38,6 +38,10 @@ on:
     branches: [master]
     paths:
       - 'src/quote_renderer.py'
+      # quote_corpus owns the corpus walk (litclock-dev#590) and, since litclock-dev#870,
+      # decides WHICH corpus the renderer reads from languages.json
+      - 'src/quote_corpus.py'
+      - 'languages.json'
       - 'src/gd_measure.py'
       # render_invariants derives notch geometry from literary_clock's QR
       # constants — a geometry-only change must re-run this gate

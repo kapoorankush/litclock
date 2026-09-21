@@ -311,3 +311,125 @@ class TestStructural:
         )
         assert provider_idx != -1
         assert get_idx < provider_idx, "WEATHER_ENABLED must be checked BEFORE the weather provider is constructed"
+
+
+# ── litclock-dev#871 Stage A: --dry-run --require-runtime-render ──────────────
+
+
+def _runtime_capable_interpreter() -> str | None:
+    """An interpreter with freetype-py: the current one (CI installs
+    requirements into it) or the repo venv (the dev box). None -> skip."""
+    for candidate in (sys.executable, str(REPO_ROOT / "venv" / "bin" / "python3")):
+        if not Path(candidate).exists():
+            continue
+        probe = subprocess.run([candidate, "-c", "import freetype, PIL, requests"], capture_output=True, timeout=60)
+        if probe.returncode == 0:
+            return candidate
+    return None
+
+
+@pytest.fixture(scope="module")
+def stamped_marker(tmp_path_factory):
+    """A REAL validation marker for this checkout, written by the real
+    validator (~21s on x86). The pass path cannot be faked: the painter binds
+    the marker to a digest of the fonts, the dump and the FreeType version."""
+    py = _runtime_capable_interpreter()
+    if py is None:
+        pytest.skip("no interpreter with freetype-py; the runtime pass path needs one")
+    marker = tmp_path_factory.mktemp("marker") / ".runtime-render-validated"
+    r = subprocess.run(
+        [py, str(REPO_ROOT / "tools" / "validate_measurement.py"), "check", "--stamp", "--marker", str(marker)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert r.returncode == 0 and marker.is_file(), f"the validator did not stamp\n{r.stdout}\n{r.stderr}"
+    return py, marker
+
+
+class TestRequireRuntimeRender:
+    def _run(self, py, extra_env, *flags):
+        env = _python_env()
+        env.update(extra_env)
+        return subprocess.run(
+            [py, "-m", "src.literary_clock", "--dry-run", *flags],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    @staticmethod
+    def _tier(stdout: str) -> str:
+        import re
+
+        m = re.search(r"^dry-run: rendered \d+x\d+ image, render_mode=([\w-]+)$", stdout, re.M)
+        assert m, f"the dry-run must print its tier on stdout; got {stdout!r}"
+        return m.group(1)
+
+    # `images/` is untracked and absent on a clean checkout (CI's unit-test job
+    # never downloads the image release), so the non-text tier is `image` here
+    # and `time-only` there (litclock-dev#875 review). Either is a fallback; neither is
+    # `runtime`. Both tests pin the marker to a missing path so a developer's
+    # local marker cannot flip them onto the text tier.
+    _NO_TEXT_TIER = {"image", "time-only"}
+
+    def test_the_default_dry_run_reports_its_tier_and_still_exits_zero(self):
+        """The smoke gate's contract is untouched: a fallback frame is a pass."""
+        r = self._run(
+            sys.executable,
+            {"LITCLOCK_RUNTIME_RENDER": "true", "LITCLOCK_RUNTIME_VALIDATED_MARKER": "/nonexistent/marker"},
+        )
+        assert r.returncode == 0, r.stderr
+        assert self._tier(r.stdout) in self._NO_TEXT_TIER, r.stdout
+
+    def test_a_fallback_frame_exits_3_with_the_flag(self):
+        """No marker -> the painter declines the text tier. The flag turns that
+        silent degrade into the exit code the self-test needs."""
+        r = self._run(
+            sys.executable,
+            {"LITCLOCK_RUNTIME_RENDER": "true", "LITCLOCK_RUNTIME_VALIDATED_MARKER": "/nonexistent/marker"},
+            "--require-runtime-render",
+        )
+        assert r.returncode == 3, (r.returncode, r.stderr)
+        tier = self._tier(r.stdout)
+        assert tier in self._NO_TEXT_TIER, "the render itself succeeded; only the tier is wrong"
+        assert f"--require-runtime-render but the frame came from render_mode={tier}" in r.stderr, r.stderr
+
+    def test_the_flag_without_dry_run_is_refused(self):
+        """Silently ignoring it would let a typo'd invocation look like a pass."""
+        r = subprocess.run(
+            [sys.executable, "-m", "src.literary_clock", "--require-runtime-render"],
+            cwd=REPO_ROOT,
+            env=_python_env(),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert r.returncode == 2, (r.returncode, r.stderr)
+        assert "only means something with --dry-run" in r.stderr
+
+    def test_a_runtime_frame_exits_zero_with_the_flag(self, stamped_marker, tmp_path):
+        """The pass path, for real: a stamped marker, the renderer on, and the
+        frame comes from text. This is the line the OTA self-test reads."""
+        py, marker = stamped_marker
+        r = self._run(
+            py,
+            {
+                "LITCLOCK_RUNTIME_RENDER": "true",
+                "LITCLOCK_RUNTIME_VALIDATED_MARKER": str(marker),
+                "LITCLOCK_RUNTIME_RENDER_DIR": str(tmp_path),
+            },
+            "--require-runtime-render",
+        )
+        assert r.returncode == 0, (r.returncode, r.stderr)
+        assert self._tier(r.stdout) == "runtime", (r.stdout, r.stderr)
+        assert (tmp_path / "current-quote.png").is_file(), "a runtime dry-run persists its frame where it is told to"
+
+    def test_the_flag_is_argparse_and_dry_run_only(self):
+        src = LITERARY_CLOCK.read_text(encoding="utf-8")
+        executed = "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
+        assert '"--require-runtime-render"' in executed
+        assert "sys.exit(3)" in executed, "the fallback verdict is exit 3, distinct from a crash (1)"

@@ -4,6 +4,10 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- Preparing a clock to hand on — gift mode, or a factory reset from the app — now clears the shell history as well, so a previous owner's typed commands do not travel with the device. Preparing an SD card for cloning already did this.
+
 ## [v0.228.0] - 2026-09-18
 
 ### Changed

@@ -177,6 +177,8 @@ class TestMainBlockActuallyTerminatesViaOsExit:
         class _Args:
             def __init__(self):
                 self.dry_run = dry_run
+                # litclock-dev#871 Stage A: the dry-run block reads this flag too.
+                self.require_runtime_render = False
 
         class _Parser:
             def __init__(self, *a, **k):

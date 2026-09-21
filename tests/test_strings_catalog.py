@@ -149,6 +149,13 @@ class TestCoverageGate:
             floor = entry.get("min_coverage_pct", 80)
             corpus = REPO_ROOT / entry["corpus"]["path"]
             assert corpus.is_file(), f"{code}: corpus missing at {entry['corpus']['path']}"
+            # litclock-dev#870 (litclock-dev#874 red team): measure the file the DEVICE
+            # would read, through the same resolver — a path that escapes the
+            # checkout, or an empty file, is refused on the device and must
+            # not pass here as a healthy translation.
+            assert quote_corpus._registry_corpus(code) == corpus, (
+                f"{code}: the device's resolver refuses {entry['corpus']['path']} (outside the checkout, or empty)"
+            )
             quote_corpus.reset_cache()
             index = quote_corpus._index(corpus)
             sfw_minutes = {

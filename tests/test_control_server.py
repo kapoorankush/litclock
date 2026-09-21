@@ -1059,6 +1059,24 @@ class TestRuntimeValidationMemoSurface:
             "reason": "400s of this run's 600s budget are gone", "sha": "a" * 40,
         }
 
+    def test_a_selftest_failure_memo_surfaces(self, status_file, tmp_path):
+        """litclock-dev#871 Stage A writes `selftest-failed` into the same memo;
+        the reader must forward it, or the PWA never learns a device fell back."""
+        memo = tmp_path / "memo.json"
+        memo.write_text('{"result": "selftest-failed", "rc": 3, "reason": "fell back", "sha": null, "at_unix": 5}')
+        got = self._get(status_file, memo)["runtime_render_validation"]
+        assert got is not None and got["result"] == "selftest-failed" and got["rc"] == 3
+
+    def test_a_selftest_deferral_is_its_own_token(self, status_file, tmp_path):
+        """Distinct from the validator's `deferred`: a marker-bearing device
+        whose validation passed must not read as 'validation deferred'."""
+        memo = tmp_path / "memo.json"
+        memo.write_text(
+            '{"result": "selftest-deferred", "rc": null, "reason": "self-test: budget", "sha": null, "at_unix": 5}'
+        )
+        got = self._get(status_file, memo)["runtime_render_validation"]
+        assert got is not None and got["result"] == "selftest-deferred" and got["rc"] is None
+
     def test_a_failure_memo_carries_its_rc(self, status_file, tmp_path):
         memo = tmp_path / "memo.json"
         memo.write_text('{"result": "failed", "rc": 1, "reason": "exited 1", "sha": null, "at_unix": 5}')

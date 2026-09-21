@@ -123,7 +123,7 @@ _THIS_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # "say DO NOT CLONE loudly". Check explicitly, before any step has run, so the
 # operator gets a reason instead of a bash error. Same check as
 # reset-setup.sh's, which needs it for correctness rather than for the message.
-for _fn in atomic_write_env_sh env_sh_defaults; do
+for _fn in atomic_write_env_sh env_sh_defaults clear_and_lock_bash_history; do
     if ! declare -F "$_fn" >/dev/null 2>&1; then
         echo -e "${RED}ERROR: $_fn is not defined after sourcing lib/state.sh.${NC}" >&2
         echo "  $_THIS_SCRIPT_DIR/lib/state.sh is missing or too old for this script." >&2
@@ -528,6 +528,8 @@ rm -f "$STATE_DIR/reset-failed" 2>/dev/null || true
 # the expected measurement (or that a tick never had the budget to try); every
 # clone would inherit the master's verdict about hardware it has never run on.
 rm -f "$STATE_DIR/runtime-render-validation.json" 2>/dev/null || true
+# litclock-dev#871 Stage A: the self-test pass record is per-device too.
+rm -f "$STATE_DIR/runtime-render-selftest.json" 2>/dev/null || true
 
 for _m in .setup-complete .handoff-complete; do
     # `-L` alongside `-e` because `-e` follows symlinks and is false for a
@@ -666,31 +668,11 @@ echo -e "${GREEN}done${NC}"
 
 # Step 6: Clear bash history — and lock it against write-back (litclock-dev#834).
 #
-# `history -c` clears only THIS script's non-interactive shell. Any interactive
-# shell still open when the Pi powers off (the console login the operator ran
-# this from, an SSH session, a `sudo -i` root shell) writes its in-memory
-# history back on exit — bash's save_history() APPENDS the session's lines,
-# then truncates to HISTFILESIZE — so on the bench the file `rm` had removed was
-# back eight seconds later holding the operator's last commands, and the card
-# was imaged with them. On a master for strangers that can include
-# `nmcli ... password ...` lines.
-#
-# The lock is an empty DIRECTORY at each history path. The shape is deliberate,
-# measured against bash 5.2 / readline 8.2:
-#   - an empty mode-0 root-owned FILE blocks the exit-time append for `pi`
-#     (EACCES) but not for a root shell (DAC override), and not `history -w`,
-#     which readline writes to a sibling temp file and rename()s over the
-#     target — a rename needs only the parent directory;
-#   - a `/dev/null` symlink loses to the same rename;
-#   - `chattr +i` blocks everything but needs ext4 and root to undo, and a
-#     failed restore leaves the recipient an unremovable file;
-#   - a directory fails open(O_WRONLY|O_APPEND), rename() over it and the
-#     truncate's read with EISDIR, which no capability bypasses, and one
-#     `rmdir` removes it.
-# scripts/first-boot.sh removes both directories on the clone's first boot
-# (restore_bash_history_after_clone_prep), so the recipient gets an ordinary
-# history. A HISTFILE drop-in under /etc/profile.d was rejected: it reaches
-# only shells started AFTER it, never the open one doing the write-back.
+# The mechanism — why `history -c` is not enough, why the lock is an empty
+# DIRECTORY and not a mode-0 file or a symlink, and what first-boot.sh does
+# about it on the clone — is documented once, on clear_and_lock_bash_history
+# in lib/state.sh (shared with reset-setup.sh's handoff arms since
+# litclock-dev#868). What is specific to THIS script is the verdict:
 #
 # FATAL if either path cannot be emptied or locked (litclock-dev#855 review).
 # A YELLOW note was the first cut and is not enough here: this script's whole
@@ -701,46 +683,14 @@ echo -e "${GREEN}done${NC}"
 # "locked" and printed green over the contents, which first-boot's rmdir then
 # leaves in place on every clone.
 echo -n "Clearing bash history... "
-history -c 2>/dev/null || true
-_HIST_DIRTY=()
-_HIST_UNLOCKED=()
-for _h in "$_PI_BASH_HISTORY" "$_ROOT_BASH_HISTORY"; do
-    # Empty the path whatever shape it has: rmdir takes the lock a previous run
-    # left (and refuses a non-empty one), rm -f takes a real history file. An
-    # absent path satisfies both harmlessly.
-    #
-    # The rmdir is NOT redundant with the mkdir below (litclock-dev#855 review
-    # G): it was, while a surviving entry only warned, but now a surviving
-    # entry ABORTS — so without it a second run over the lock this script
-    # itself left would meet a directory `rm -f` cannot remove and refuse the
-    # card. Pinned by test_a_second_run_over_the_lock_is_a_noop.
-    rmdir "$_h" 2>/dev/null || rm -f "$_h" 2>/dev/null || true
-    if [[ -e "$_h" || -L "$_h" ]]; then
-        # Something we could not remove survives — and on this path that means
-        # its CONTENTS survive too. `-L` as well as `-e`, which follows
-        # symlinks and is false for a dangling one.
-        _HIST_DIRTY+=("$_h")
-        continue
-    fi
-    mkdir "$_h" 2>/dev/null || true
-    # Just "is it a directory". Emptiness and non-symlink-ness need no test
-    # HERE and deliberately have none (litclock-dev#855 review E3, and a mutant
-    # that proved the point): nothing reaches this line unless the path was
-    # verified gone two lines up, so what `mkdir` leaves is a real, empty
-    # directory or nothing at all. A non-empty directory or a symlink — the
-    # shapes that matter — survive removal and are caught by the DIRTY arm
-    # above, which is where `-L` earns its place, because `-e` follows symlinks
-    # and is blind to a dangling one. An arm no case can reach is an arm no
-    # mutant can kill, so it is better not written.
-    if [[ ! -d "$_h" ]]; then
-        _HIST_UNLOCKED+=("$_h")
-    fi
-done
+# The helper reports; this script decides (see above).
+clear_and_lock_bash_history "$_PI_BASH_HISTORY" "$_ROOT_BASH_HISTORY" || true
 if (( ${#_HIST_DIRTY[@]} )); then
     _abort_do_not_clone "Could not clear the shell history at ${_HIST_DIRTY[*]}." \
         "every copy would carry the commands typed on this device, WiFi passwords included." \
-        "A file that will not unlink (chattr +i, a read-only card) or a non-empty directory" \
-        "left by an earlier aborted run. This card is already part-way prepared: markers" \
+        "A file that will not unlink (chattr +i, a read-only card), a symlinked or hard-linked" \
+        "history file, or a non-empty directory left by an earlier aborted run. This card is" \
+        "already part-way prepared: markers" \
         "cleared, env.sh scrubbed, setup-WiFi key NOT yet removed. Fix the cause, then run" \
         "this script again from the start."
 fi
@@ -752,7 +702,7 @@ if (( ${#_HIST_UNLOCKED[@]} )); then
         "exists. This card is already part-way prepared: markers cleared, env.sh scrubbed," \
         "setup-WiFi key NOT yet removed. Fix the cause, then run this script again."
 fi
-unset _HIST_DIRTY _HIST_UNLOCKED _h
+unset _HIST_DIRTY _HIST_UNLOCKED _HIST_LOCKED
 echo -e "${GREEN}done${NC}"
 
 # Step 7: Clear legacy SSL certificates (nothing regenerates these since litclock-dev#715)

@@ -12,6 +12,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PREPARE_SH = REPO_ROOT / "scripts" / "prepare-for-cloning.sh"
 STATE_SH = REPO_ROOT / "scripts" / "lib" / "state.sh"
 
+from tests.state_sh_lifts import extract_history_helper  # noqa: E402
+
 
 @pytest.fixture(scope="module")
 def prepare_sh_content():
@@ -62,7 +64,18 @@ class TestPrepareForCloningStructure:
         below) and the step both removes and LOCKS them."""
         assert '_PI_BASH_HISTORY="/home/pi/.bash_history"' in prepare_sh_content
         assert '_ROOT_BASH_HISTORY="/root/.bash_history"' in prepare_sh_content
-        assert 'for _h in "$_PI_BASH_HISTORY" "$_ROOT_BASH_HISTORY"; do' in prepare_sh_content
+        # litclock-dev#868: the loop lives in lib/state.sh now, shared with
+        # reset-setup.sh; the script passes its two fixed paths to it.
+        assert 'clear_and_lock_bash_history "$_PI_BASH_HISTORY" "$_ROOT_BASH_HISTORY"' in prepare_sh_content
+        assert 'for _h in "$@"; do' in _extract_history_helper()
+
+    def test_state_sh_gate_requires_the_history_helper(self, prepare_sh_content):
+        """litclock-dev#868: a new script beside an old lib/state.sh must refuse
+        before Step 1, not fail Step 6 with `command not found` after the WiFi
+        profiles are already gone."""
+        m = re.search(r"^for _fn in (.+); do$", prepare_sh_content, re.M)
+        assert m, "the lib/state.sh helper gate is missing"
+        assert "clear_and_lock_bash_history" in m.group(1).split()
 
     def test_clears_ssl_certs(self, prepare_sh_content):
         """SSL cert contains litclock.local — fine to share, but regenerating
@@ -2614,7 +2627,7 @@ class TestStepTwoAbortsBeforeTheWifiPrompt:
 # real interactive bash, holding history, exiting against the locked path.
 
 _HIST_START = 'echo -n "Clearing bash history... "'
-_HIST_END = "unset _HIST_DIRTY _HIST_UNLOCKED _h"
+_HIST_END = "unset _HIST_DIRTY _HIST_UNLOCKED _HIST_LOCKED"
 
 
 def _extract_history_step() -> str:
@@ -2626,9 +2639,18 @@ def _extract_history_step() -> str:
     end = body.index('echo -e "${GREEN}done${NC}"', body.index(_HIST_END, start))
     end += len('echo -e "${GREEN}done${NC}"')
     span = body[start:end]
-    assert "mkdir" in span and "history -c" in span, "span lost the lock or the clear"
+    # litclock-dev#868: the wipe and the lock moved into lib/state.sh's
+    # clear_and_lock_bash_history (shared with reset-setup.sh's handoff arms);
+    # the step is the CALL plus the two fatal verdicts, and _extract_history_helper
+    # pins the helper's own load-bearing parts.
+    assert 'clear_and_lock_bash_history "$_PI_BASH_HISTORY" "$_ROOT_BASH_HISTORY"' in span, (
+        "span lost the shared wipe+lock call"
+    )
     assert span.count("_abort_do_not_clone") == 2, "span lost one of the two aborts"
     return span
+
+
+_extract_history_helper = extract_history_helper
 
 
 def _run_history_step(tmp_path, pi_path: Path, root_path: Path):
@@ -2637,6 +2659,7 @@ def _run_history_step(tmp_path, pi_path: Path, root_path: Path):
 _PI_BASH_HISTORY={shlex.quote(str(pi_path))}
 _ROOT_BASH_HISTORY={shlex.quote(str(root_path))}
 {_extract_env_abort_fn()}
+{_extract_history_helper()}
 {_ERREXIT_PROBE}
 {_extract_history_step()}
 echo REACHED-NEXT-STEP
@@ -2691,6 +2714,47 @@ class TestBashHistoryLock:
         assert r.returncode == 0, r.stdout + r.stderr
         assert "FAILED" not in r.stdout
         assert pi.is_dir() and root.is_dir()
+
+    def test_a_symlinked_history_is_refused_and_its_target_survives_untouched(self, tmp_path):
+        """litclock-dev#873 review (Codex): `rm -f` on a symlink unlinks the LINK and leaves
+        the target — contents included — on the card, and the old step then
+        locked the path and printed green. A symlink is now refused BEFORE
+        anything is removed: abort, link intact, target intact, no lock."""
+        home, pi, root = self._paths(tmp_path)
+        target = tmp_path / "saved-history"
+        target.write_text("nmcli dev wifi connect x password y\n")
+        pi.unlink()
+        pi.symlink_to(target)
+        r = _run_history_step(tmp_path, pi, root)
+        assert r.returncode == 1, f"a symlinked history was accepted\n{r.stdout}"
+        assert "Could not clear the shell history at" in r.stdout and str(pi) in r.stdout
+        assert "REACHED-NEXT-STEP" not in r.stdout
+        assert pi.is_symlink(), "the helper must not unlink a symlink it refused"
+        assert target.read_text() == "nmcli dev wifi connect x password y\n", "the target must be untouched"
+
+    def test_the_dev_null_symlink_idiom_is_cleared_and_locked(self, tmp_path):
+        """`ln -sf /dev/null ~/.bash_history` is the standard way to disable
+        history; a blanket symlink refusal would have made every factory reset
+        of such a device fail forever (litclock-dev#873 red team). A char-device target
+        holds nothing: the link goes, the lock lands."""
+        home, pi, root = self._paths(tmp_path)
+        pi.unlink()
+        pi.symlink_to("/dev/null")
+        r = _run_history_step(tmp_path, pi, root)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "REACHED-NEXT-STEP" in r.stdout
+        assert pi.is_dir() and not pi.is_symlink() and not any(pi.iterdir())
+
+    def test_a_hard_linked_history_is_refused(self, tmp_path):
+        """Same class: unlinking one NAME of a two-link file leaves the inode
+        and its contents reachable by the other name."""
+        home, pi, root = self._paths(tmp_path)
+        other = tmp_path / "history-copy"
+        os.link(pi, other)
+        r = _run_history_step(tmp_path, pi, root)
+        assert r.returncode == 1, f"a hard-linked history was accepted\n{r.stdout}"
+        assert str(pi) in r.stdout
+        assert pi.is_file() and other.is_file() and "password" in other.read_text()
 
     def test_the_harness_shell_really_writes_history(self, tmp_path):
         """Control for the test below: WITHOUT the lock the same shell writes

@@ -508,9 +508,10 @@ def iter_corpus(
 def rows_for_time(csv_path: str | os.PathLike | None, hhmm: str) -> list[CorpusRow]:
     """All corpus rows for one HHMM bucket, in file order (the runtime
     selection pool — mirrors the clock's PNG glob semantics).
-    ``csv_path=None`` means quote_corpus's default corpus, which honors
-    ``LITCLOCK_CORPUS_CSV`` — production passes None so the renderer and
-    the PWA lookup can never read different corpora.
+    ``csv_path=None`` means ``quote_corpus.corpus_path()`` — the active
+    language's registry corpus (litclock-dev#870), still overridable by
+    ``LITCLOCK_CORPUS_CSV``; production passes None. The PWA's PNG lookup
+    reads ``quote_corpus.image_corpus_path()`` instead, on purpose.
 
     litclock-dev#590: served from ``quote_corpus``'s mtime-cached index
     instead of a full ``iter_corpus`` walk — the walk re-parsed and
