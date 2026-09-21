@@ -20,6 +20,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
 from pathlib import Path
 
@@ -4037,23 +4038,66 @@ class TestSelfTestDurationIsLocaleProof:
 
     _T0_SEC, _T0_FRAC = "1789955228", "932373"
     _T1_SEC = "1789955232"
-    _DEFAULT_FRAC = "539821"
+    # The end fraction that makes the OLD pattern silent AND recorded — the
+    # hazard the fix exists for. The first version defaulted to "539821",
+    # whose `0.-3` output `jq tonumber` REFUSES (rc 5), so the record is never
+    # written and the failure is loud downstream: the class docstring claimed
+    # the silent-and-recorded shape and no test covered it (litclock-dev#881 follow-up
+    # review). `999821` yields `0.0`, which jq accepts.
+    _DEFAULT_FRAC = "999821"
+    _JQ_REFUSED_FRAC = "539821"
+
+    # Assignment prefixes bash accepts. `local t0=…` is an assignment to t0 and
+    # the extractor below MUST see it: a mutant that leaves the bare line as a
+    # decoy and does the real work one line later behind `local` reintroduces
+    # the bug with every test still green (litclock-dev#881 follow-up, Codex
+    # cross-model pass — reproduced, 7 passed against buggy production).
+    _DECL = r"(?:local|declare|typeset|readonly|export)\s+"
+
+    @classmethod
+    def _function_body(cls, update_sh_content):
+        """Just `_runtime_render_selftest`, not the rest of the file.
+
+        The first version scanned from the function's opening brace to EOF, so
+        a same-named assignment anywhere below it was in scope.
+        """
+        marker = "_runtime_render_selftest() {"
+        start = update_sh_content.index(marker) + len(marker)
+        end = update_sh_content.index("\n}\n", start)
+        return update_sh_content[start:end]
 
     @classmethod
     def _shipped_lines(cls, update_sh_content):
-        """The three duration assignments, verbatim, from the shipped function."""
-        body = update_sh_content[update_sh_content.index("_runtime_render_selftest() {"):]
+        """The three duration assignments, verbatim, from the shipped function.
+
+        Every finding here is loud. A silent skip is what let the decoy mutant
+        through, so an unexpected shape fails the test rather than being
+        filtered out of the match set.
+        """
+        body = cls._function_body(update_sh_content)
+        executable = [ln for ln in body.splitlines() if not ln.lstrip().startswith("#")]
         out = {}
         for name in ("t0", "dur_ms", "duration"):
-            hits = [
-                ln.strip() for ln in body.splitlines()
-                if re.match(rf"\s*{name}=", ln) and not ln.lstrip().startswith("#")
-            ]
+            # Deliberately matches DECLARED assignments too, so they cannot hide.
+            hits = [ln.strip() for ln in executable if re.match(rf"\s*(?:{cls._DECL})?{name}=", ln)]
             assert len(hits) == 1, (
                 f"expected exactly one executed `{name}=` assignment in "
                 f"_runtime_render_selftest, found {len(hits)}: {hits}"
             )
+            assert not re.match(rf"\s*{cls._DECL}", hits[0]), (
+                f"the `{name}` assignment carries a declaration prefix, so lifting it "
+                f"in isolation would not reproduce what the function runs: {hits[0]!r}"
+            )
             out[name] = hits[0]
+
+        # Nothing else in the function may read the clock. A correct-looking
+        # probe beside an indirect read is the other half of the same trick.
+        reads = [ln.strip() for ln in executable if "EPOCHREALTIME" in ln]
+        unexpected = [ln for ln in reads if ln not in (out["t0"], out["dur_ms"])]
+        assert not unexpected, (
+            "unexpected EPOCHREALTIME read(s) in _runtime_render_selftest — the two "
+            f"duration assignments are the only ones that may touch it: {unexpected}"
+        )
         return out
 
     @classmethod
@@ -4087,8 +4131,8 @@ class TestSelfTestDurationIsLocaleProof:
     @staticmethod
     def _as_literal_dot(lines):
         """The pre-fix code: the same lines with the character class reverted."""
-        reverted = {k: v.replace("${EPOCHREALTIME/[.,]/}", "${EPOCHREALTIME/./}") for k, v in lines.items()}
-        assert reverted != lines, "nothing to revert — the shipped lines no longer use [.,]"
+        reverted = {k: v.replace("${EPOCHREALTIME//[^0-9]/}", "${EPOCHREALTIME/./}") for k, v in lines.items()}
+        assert reverted != lines, "nothing to revert — the shipped lines no longer use the non-digit strip"
         return reverted
 
     def test_shipped_lines_are_direct_epochrealtime_reads(self, update_sh_content):
@@ -4100,8 +4144,8 @@ class TestSelfTestDurationIsLocaleProof:
         the arithmetic.
         """
         lines = self._shipped_lines(update_sh_content)
-        assert lines["t0"] == "t0=${EPOCHREALTIME/[.,]/}", lines["t0"]
-        assert lines["dur_ms"] == "dur_ms=$(( (${EPOCHREALTIME/[.,]/} - t0) / 1000 ))", lines["dur_ms"]
+        assert lines["t0"] == "t0=${EPOCHREALTIME//[^0-9]/}", lines["t0"]
+        assert lines["dur_ms"] == "dur_ms=$(( (${EPOCHREALTIME//[^0-9]/} - t0) / 1000 ))", lines["dur_ms"]
 
     def test_shipped_lines_are_correct_with_a_dot(self, update_sh_content):
         lines = self._shipped_lines(update_sh_content)
@@ -4140,6 +4184,39 @@ class TestSelfTestDurationIsLocaleProof:
         assert out != self._expected(self._DEFAULT_FRAC), (
             "the old pattern parsed a comma correctly — premise gone"
         )
+        # …and it is RECORDED. Silence at the bash layer is only half the
+        # hazard: `_runtime_selftest_record_write` builds the JSON through
+        # `jq … tonumber`, so a value jq refuses never reaches the file and
+        # fails loudly instead. This asserts the wrong value gets through.
+        if shutil.which("jq") is None:
+            pytest.skip("the record is written through jq")
+        r = subprocess.run(
+            ["jq", "-nc", "--arg", "d", out, '{duration_s: ($d | tonumber)}'],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, (
+            f"jq refused {out!r}, so this fraction exercises the LOUD band, not the "
+            f"silent-and-recorded hazard this test claims: {r.stderr.strip()}"
+        )
+        assert '"duration_s"' in r.stdout, r.stdout
+
+    def test_the_mutant_literal_dot_can_also_land_in_the_loud_band(self, update_sh_content):
+        """The other silent-at-bash shape, kept so the split is on the record.
+
+        `0.-3` clears bash with rc 0 and no stderr exactly as above, but `jq
+        tonumber` REFUSES it, so `_runtime_selftest_record_write` writes
+        nothing and logs "Could not write" instead. Same bug, caught
+        downstream by luck rather than design — which is why the default
+        fraction is the one jq accepts.
+        """
+        if shutil.which("jq") is None:
+            pytest.skip("the record is written through jq")
+        old = self._as_literal_dot(self._shipped_lines(update_sh_content))
+        rc, out, err = self._run(old, ",", frac=self._JQ_REFUSED_FRAC)
+        assert (rc, err) == (0, ""), (rc, err)
+        r = subprocess.run(["jq", "-nc", "--arg", "d", out, '($d | tonumber)'],
+                           capture_output=True, text=True)
+        assert r.returncode != 0, f"expected jq to refuse {out!r}, it accepted it"
 
     def test_the_mutant_literal_dot_is_noisy_on_a_leading_zero_fraction(self, update_sh_content):
         """The other direction, kept because the first version of these tests
@@ -4149,3 +4226,95 @@ class TestSelfTestDurationIsLocaleProof:
         rc, out, err = self._run(old, ",", frac="039821")
         assert "value too great for base" in err, f"expected bash's octal diagnostic, got: {err!r}"
         assert out != self._expected("039821"), "the old pattern parsed a comma correctly — premise gone"
+
+
+class TestSelfTestDurationSurvivesToTheRecord:
+    """litclock-dev#881 — what `_runtime_render_selftest` actually HANDS to the
+    record writer, observed by running it.
+
+    `TestSelfTestDurationIsLocaleProof` above lifts the three duration
+    assignments and runs them under injected separators, which is what proves
+    the strip is locale-complete. But every assertion it makes is ultimately
+    about SOURCE TEXT, and four review rounds each broke the previous round's
+    rule with a shape it did not model: a decoy in a comment, an indirect
+    expansion, a `local`-prefixed assignment doing the real work beside a bare
+    decoy, and finally `printf -v duration '0.0'` — a write form that is not an
+    assignment at all, so no amount of assignment-matching sees it.
+
+    Adding a fifth rule loses to a sixth trick. This class stops playing: it
+    executes the REAL function with its helpers stubbed and a painter that
+    sleeps a known time, then asserts on the value `_runtime_selftest_record_write`
+    receives. Anything that corrupts the duration between the clock read and the
+    record — another write form, a recompute, laundering through a second
+    variable, a subshell — changes that value and fails this, whatever it looks
+    like in the source.
+
+    The two layers are complementary and both are needed: this one uses the real
+    clock, so it cannot vary the decimal separator; the lifted-line tests can,
+    and cannot see past the lines they lift.
+    """
+
+    SLEEP_S = 1.2
+    TOLERANCE_S = 1.0          # generous: a loaded box may add most of a second
+
+    @staticmethod
+    def _function_text():
+        sh = (REPO_ROOT / "scripts" / "update.sh").read_text()
+        start = sh.index("_runtime_render_selftest() {")
+        return sh[start:sh.index("\n}\n", start) + 3]
+
+    @classmethod
+    def _run_real_function(cls, tmp_path, sleep_s=None):
+        """Run the shipped function; return what the record writer was handed."""
+        painter = tmp_path / "painter"
+        painter.write_text(f"#!/bin/bash\nsleep {sleep_s or cls.SLEEP_S}\n")
+        painter.chmod(0o755)
+        harness = textwrap.dedent(f"""
+            set -o pipefail
+            SELFTEST_TIMEOUT_S=60
+            INSTALL_DIR={tmp_path}/nonexistent
+            RUNTIME_SELFTEST_RECORD_FILE=/dev/null
+            PYTHON={painter}
+            _validation_fits_remaining_budget() {{ return 0; }}
+            log_info() {{ :; }}
+            log_warn() {{ :; }}
+            atomic_remove_file() {{ :; }}
+            _runtime_validation_memo_write() {{ echo "MEMO rc=$2"; }}
+            _runtime_selftest_record_write() {{ echo "RECORDED=$1"; }}
+        """) + cls._function_text() + "\n_runtime_render_selftest\n"
+        r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, cwd=REPO_ROOT)
+        return r
+
+    def test_the_recorded_duration_is_the_real_elapsed_time(self, tmp_path):
+        """The painter sleeps a known time; the record must receive it.
+
+        This is the assertion four rounds of source-text rules were reaching
+        for. It is immune to how the value is produced.
+        """
+        r = self._run_real_function(tmp_path)
+        assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+        assert "MEMO" not in r.stdout, f"the self-test did not take the PASS arm:\n{r.stdout}"
+        m = re.search(r"^RECORDED=(\S+)$", r.stdout, re.M)
+        assert m, f"_runtime_selftest_record_write was never called:\n{r.stdout}\n{r.stderr}"
+        recorded = float(m.group(1))
+        assert abs(recorded - self.SLEEP_S) <= self.TOLERANCE_S, (
+            f"recorded duration {recorded}s is not the {self.SLEEP_S}s the painter took — "
+            f"something between the clock read and the record corrupted it"
+        )
+
+    def test_a_longer_paint_records_a_longer_duration(self, tmp_path):
+        """The CONTROL for the test above.
+
+        A hardcoded constant, a zero, or an epoch would satisfy a single
+        measurement just as well; this one only passes if the recorded value
+        actually TRACKS how long the painter ran.
+        """
+        short = self._run_real_function(tmp_path, sleep_s=0.3)
+        long = self._run_real_function(tmp_path, sleep_s=2.5)
+        s = float(re.search(r"^RECORDED=(\S+)$", short.stdout, re.M).group(1))
+        ln = float(re.search(r"^RECORDED=(\S+)$", long.stdout, re.M).group(1))
+        assert ln - s >= 1.5, (
+            f"a painter that ran 2.2s longer moved the recorded duration by only "
+            f"{ln - s}s ({s} -> {ln}) — the value is not tracking the clock"
+        )
+

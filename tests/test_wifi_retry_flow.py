@@ -158,7 +158,7 @@ def post_setup(handler):
 
 
 class TestWaitForConnectThreadHelper:
-    """The helper itself (litclock-dev litclock-dev#876 review). Both arms are driven with
+    """The helper itself (litclock-dev#876 review). Both arms are driven with
     a FAKE clock, because the window they differ in is a scheduler delay a
     healthy box never produces — the mutation check on the real suite passes
     with the guard removed, which is precisely why this test exists."""

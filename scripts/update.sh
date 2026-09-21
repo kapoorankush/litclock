@@ -1999,13 +1999,23 @@ _runtime_render_selftest() {
     # Microseconds via EPOCHREALTIME (bash 5): the figure is compared against a
     # 4s render lead, and whole-second $SECONDS is ±1s on it (litclock-dev#875 red team).
     #
-    # `[.,]`, not a literal dot (litclock-dev#879). EPOCHREALTIME's decimal separator
-    # follows LC_NUMERIC, so under a comma locale `${x/./}` matches NOTHING
-    # and the comma then parses as bash arithmetic's COMMA OPERATOR, which
-    # discards the left operand. THREE measured outcomes, all wrong, which one
-    # you get depending on the digits (litclock-dev#879 follow-up — the first two versions
-    # of this comment each described a shape that does not occur, so the
-    # examples below are transcripts, not reasoning):
+    # Strip EVERY non-digit (litclock-dev#879, widened in litclock-dev#881). EPOCHREALTIME's decimal
+    # separator follows LC_NUMERIC, so under a comma locale the original
+    # `${x/./}` matched NOTHING and the comma then parsed as bash arithmetic's
+    # COMMA OPERATOR, which discards the left operand.
+    #
+    # `[^0-9]` rather than the `[.,]` this first shipped as: the separator is
+    # not limited to those two. glibc gives fa_IR and ps_AF U+066B (٫), and
+    # measured, `${x/[.,]/}` leaves it in place — rc 0, `duration=0.0`,
+    # `invalid arithmetic operator` on stderr, and a wrong value that jq
+    # accepts and records. Same hazard class, rarer locale family, and an
+    # exhaustive class costs nothing (litclock-dev#881 follow-up review). `//`, because
+    # stripping every non-digit needs the replace-all form.
+    #
+    # THREE measured outcomes under the old pattern, all wrong, which one you
+    # get depending on the digits (the first two versions of this comment each
+    # described a shape that does not occur, so the examples below are
+    # transcripts, not reasoning):
     #
     #     leading-zero end fraction  ->  bash: value too great for base
     #                                    (invalid octal), duration EMPTY
@@ -2029,7 +2039,7 @@ _runtime_render_selftest() {
     # runs with no locale so production always got C; the exposure is a
     # maintainer running this script by hand from a non-English desktop, which
     # README's manual-update section tells owners they may do.
-    t0=${EPOCHREALTIME/[.,]/}
+    t0=${EPOCHREALTIME//[^0-9]/}
     # Subshell: env.sh must not leak into this script (the same isolation the
     # RUNTIME_MARKER resolution above uses). PIPESTATUS, not the pipeline's
     # exit — `if cmd | sed; then` tests sed (the smoke gate's own lesson).
@@ -2041,7 +2051,7 @@ _runtime_render_selftest() {
         timeout "$SELFTEST_TIMEOUT_S" "$PYTHON" src/literary_clock.py --dry-run --require-runtime-render 2>&1
     ) | sed 's/^/[selftest] /'
     rc="${PIPESTATUS[0]}"
-    dur_ms=$(( (${EPOCHREALTIME/[.,]/} - t0) / 1000 ))
+    dur_ms=$(( (${EPOCHREALTIME//[^0-9]/} - t0) / 1000 ))
     duration="$((dur_ms / 1000)).$((dur_ms % 1000 / 100))"
     # Only ever the fresh mktemp directory: -d, and never a fallback path.
     [[ -n "$dir" && -d "$dir" ]] && rm -rf -- "$dir" 2>/dev/null
