@@ -69,8 +69,8 @@ clock over SSH: it preserves both, so the device returns to its own network and
 never raises a hotspot — which also means your SSH session survives. Without it,
 a reset over SSH drops the connection when the WiFi goes.
 
-Use `--gift-mode` to prepare a device for shipping to someone else (wipes WiFi +
-config, writes a welcome splash, powers off). See
+Use `--gift-mode` to prepare a device for shipping to someone else (wipes WiFi, config
+and the default shell history files, writes a welcome splash, powers off). See
 [SD Card Cloning](sd-card-cloning.md) for duplicating a configured card.
 
 ---

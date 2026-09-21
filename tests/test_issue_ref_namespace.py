@@ -34,7 +34,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #   across all tracked files: exactly ONE, in .github/DEPENDABOT-NOTE.md, and
 #   it genuinely refers to this repo's own PRs #63-#66. Nothing in that range
 #   is a development-repo reference. Ceiling raised to 67.
-PUBLIC_NUMBER_CEILING = 67
+# 2026-09-21 (v0.229.0 port): highest issue still 57; PRs #68 and #69 landed
+#   the v0.227.0 and v0.228.0 port trains, and this port lands as #70. Audited
+#   68..70 across all tracked files: ZERO bare `#N` in that range, so nothing
+#   in the tree changes meaning. Raised so a future note about one of those
+#   three PRs can say `#68` and mean it. Caught by the port review — the
+#   ceiling had been left behind by two ports.
+PUBLIC_NUMBER_CEILING = 70
 
 # EVERY tracked text file, not an extension allowlist. The first version of
 # this listed ten extensions, inherited from the audit's own scan command, and

@@ -13,7 +13,99 @@ import pytest
 
 import setup_server
 
+
+@pytest.fixture(autouse=True)
+def _stub_ip_geo(monkeypatch):
+    """Stub the IP-geo resolver for EVERY test in this file.
+
+    A live network call in a unit test either way, and on any machine where
+    the installer has run the success path shells out to
+    `sudo /usr/local/lib/litclock/litclock-set-timezone`, so a plain
+    `pytest tests/` could change the SYSTEM TIMEZONE. `ENV_FILE` is
+    monkeypatched by these tests; that sudo call is not sandboxed by anything.
+
+    It is also the cause of the CI flake this file kept producing: four
+    attempts on a 1/3/9s ladder with a 5s socket timeout, a documented ~33s
+    worst case (`src/location_resolver.py`), against ip-api.com, whose free
+    tier rate-limits. That outran the wait and surfaced as `assert True is
+    False` on master (`53be0e79`, 2026-09-19) — the runner's own log carries
+    the tell, a `set_system_timezone('America/Chicago')` warning, i.e. a
+    SUCCESSFUL live geo lookup.
+
+    MODULE-WIDE, not per class, and that is the whole point of this revision
+    (litclock-dev#879). The first version of this fixture lived on
+    `TestConnectAndTeardown` and its docstring asserted that "the Ordering
+    class and the manual-SSID harness both do" stub the resolver. The harness
+    does; the Ordering class does NOT — only 1 of its 5 tests stubs it
+    inline, and the shared `_install_fake_wp` helper fakes `connect_to_wifi`,
+    `teardown_hotspot` and `create_hotspot` and nothing else. Measured with a
+    socket probe over the whole file: 24 DNS lookups of ip-api.com attributed
+    to 8 tests across three classes, and 3 of those tests FAIL outright when
+    the network is blocked. A per-class fixture is a list of the classes
+    somebody remembered; the resolver has no business being reachable from
+    any test here, so the stub belongs at module scope where a new class
+    inherits it by default.
+
+    A test that wants to OBSERVE the call still overrides it locally — a
+    later `monkeypatch.setattr` wins — which is what
+    `test_success_path_call_ordering` does.
+    """
+    monkeypatch.setattr(setup_server, "_resolve_location_from_ip", lambda *a, **kw: None)
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _wait_for_connect_thread(timeout=30.0):
+    """Block until the background connect thread clears
+    ``setup_server.WIFI_CONNECT_IN_FLIGHT``; raise if it never does.
+
+    ONE helper for all four test classes (litclock-dev, 2026-09-19). There were
+    four copy-paste `_wait_for_thread` staticmethods: one failed loudly, three
+    returned SILENTLY on expiry, and the silent ones are what turned a slow CI
+    runner into `assert True is False` at the caller's next line — a message
+    naming no thread, no wait and no timeout, which reads like a production bug
+    in the flag's lifecycle. Two runs died that way (master 53be0e79 and branch
+    5be644d8) while the file passed locally every time.
+
+    Failing loudly is not only about diagnosability, and the loud copy already
+    said why: the callers' `finally` un-fakes `wifi_provision`, and the connect
+    thread sleeps 1s before importing it, so a swallowed timeout lets a
+    still-live thread re-import the REAL module and shell out to
+    `sudo nmcli device wifi connect` on the dev box or the runner.
+
+    The flag is re-checked AFTER the loop before raising (litclock-dev#876 review, Codex):
+    the deadline is tested before the sleep, so a thread that clears the flag
+    during the final sleep would otherwise be reported as a hang — precisely
+    under the scheduler delays this exists to tolerate. Demonstrated: with a
+    0.2s bound and the flag cleared at 0.19s, the unguarded loop raises and
+    the guarded one returns.
+
+    The bound is a runaway guard, not a schedule. A healthy wait is a little
+    over a second (the thread sleeps 1s to let the response flush to the phone
+    before it does anything), so 30s is slack for a loaded runner; only a
+    genuinely stuck thread pays it. Callers that want a tighter bound pass one.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not setup_server.WIFI_CONNECT_IN_FLIGHT:
+            return
+        time.sleep(0.05)
+    if not setup_server.WIFI_CONNECT_IN_FLIGHT:
+        return
+    # pytest.fail, not a bare assert: this file's own convention (see the
+    # litclock-dev#781 note further down) — under `PYTHONOPTIMIZE=1
+    # --assert=plain` a bare assert is stripped, and a stripped guard here
+    # would restore exactly the silent-return this helper exists to remove.
+    pytest.fail(
+        f"the background WiFi-connect thread did not clear WIFI_CONNECT_IN_FLIGHT within {timeout}s "
+        f"(WIFI_CONNECT_ERROR={setup_server.WIFI_CONNECT_ERROR!r}). Production clears it in a NESTED "
+        "`finally` (src/setup_server.py), so this is a thread still running, not one that died on the "
+        "way out. Look first at _resolve_location_from_ip — unstubbed it is a LIVE ip-api.com call on "
+        "a 1/3/9s ladder, ~33s worst case, which is what made this fail on CI before; then connect, "
+        "hotspot teardown/restore, and the terminate scheduler. The caller's `finally` is about to "
+        "un-fake wifi_provision underneath it."
+    )
 
 
 class FakeRequest:
@@ -63,6 +155,54 @@ def post_setup(handler):
     handler.do_POST()
     handler.wfile.seek(0)
     return handler.wfile.read().decode()
+
+
+class TestWaitForConnectThreadHelper:
+    """The helper itself (litclock-dev#876 review). Both arms are driven with
+    a FAKE clock, because the window they differ in is a scheduler delay a
+    healthy box never produces — the mutation check on the real suite passes
+    with the guard removed, which is precisely why this test exists."""
+
+    @staticmethod
+    def _fake_clock(monkeypatch, *, clears_during_last_sleep):
+        """A clock that jumps the deadline on the first sleep, optionally
+        clearing the in-flight flag in the same instant — the real race: the
+        loop tests the deadline BEFORE it sleeps, so a flag cleared during
+        that sleep is invisible to the next iteration."""
+        now = [1000.0]
+        monkeypatch.setattr(time, "monotonic", lambda: now[0])
+
+        def fake_sleep(_seconds):
+            now[0] += 999.0
+            if clears_during_last_sleep:
+                setup_server.WIFI_CONNECT_IN_FLIGHT = False
+
+        monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    def test_a_flag_cleared_during_the_final_sleep_is_not_a_hang(self, monkeypatch):
+        setup_server.WIFI_CONNECT_IN_FLIGHT = True
+        self._fake_clock(monkeypatch, clears_during_last_sleep=True)
+        _wait_for_connect_thread(timeout=5.0)  # must return, not fail
+
+    def test_a_flag_that_never_clears_fails_with_the_diagnostic(self, monkeypatch):
+        setup_server.WIFI_CONNECT_IN_FLIGHT = True
+        setup_server.WIFI_CONNECT_ERROR = "boom"
+        self._fake_clock(monkeypatch, clears_during_last_sleep=False)
+        with pytest.raises(BaseException) as exc:
+            _wait_for_connect_thread(timeout=5.0)
+        message = str(exc.value)
+        assert "did not clear WIFI_CONNECT_IN_FLIGHT within 5.0s" in message
+        assert "'boom'" in message, "the recorded error must be in the message"
+        assert "un-fake wifi_provision" in message, "the reason a swallowed timeout is dangerous"
+        # The autouse reset_state spends its full 2s drain budget on a flag
+        # this test deliberately left set; clear it rather than charge every
+        # run for a condition we fabricated.
+        setup_server.WIFI_CONNECT_IN_FLIGHT = False
+
+    def test_an_already_clear_flag_returns_without_sleeping(self, monkeypatch):
+        setup_server.WIFI_CONNECT_IN_FLIGHT = False
+        monkeypatch.setattr(time, "sleep", lambda _s: pytest.fail("the happy path must not sleep"))
+        _wait_for_connect_thread(timeout=5.0)
 
 
 @pytest.fixture(autouse=True)
@@ -376,14 +516,7 @@ class TestConnectAndTeardown:
         defaults.update(overrides)
         return urllib.parse.urlencode(defaults)
 
-    @staticmethod
-    def _wait_for_thread(timeout=3.0):
-        """Wait for background daemon threads to finish."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if not setup_server.WIFI_CONNECT_IN_FLIGHT:
-                return
-            time.sleep(0.05)
+    _wait_for_thread = staticmethod(_wait_for_connect_thread)
 
     def test_post_rejects_own_hotspot_ssid(self, monkeypatch, tmp_env_file):
         """Submitting the clock's own hotspot SSID is rejected up front — no
@@ -783,20 +916,7 @@ class TestConnectAndTeardownOrdering:
         defaults.update(overrides)
         return urllib.parse.urlencode(defaults)
 
-    @staticmethod
-    def _wait_for_thread(timeout=3.0):
-        """Fails loudly on timeout, unlike the sibling helper.
-
-        The `finally` below un-fakes wifi_provision. The connect thread sleeps
-        1s before importing it, so a silently-swallowed timeout would let a
-        still-live thread re-import the REAL module and shell out to
-        `sudo nmcli device wifi connect` on the dev box or CI runner."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if not setup_server.WIFI_CONNECT_IN_FLIGHT:
-                return
-            time.sleep(0.05)
-        pytest.fail("connect thread did not drain before the fake module was removed")
+    _wait_for_thread = staticmethod(_wait_for_connect_thread)
 
     @staticmethod
     def _install_fake_wp(monkeypatch, *, connect_result=(True, None), teardown_raises=False, calls=None):
@@ -1055,13 +1175,7 @@ class TestConnectAndTeardownFailureAndExceptionPaths:
         defaults.update(overrides)
         return urllib.parse.urlencode(defaults)
 
-    @staticmethod
-    def _wait_for_thread(timeout=3.0):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if not setup_server.WIFI_CONNECT_IN_FLIGHT:
-                return
-            time.sleep(0.05)
+    _wait_for_thread = staticmethod(_wait_for_connect_thread)
 
     def test_wifi_failure_does_not_signal_or_sigterm(self, monkeypatch, tmp_env_file, tmp_path):
         """connect_to_wifi returns (False, error): no signal, no SIGTERM,
@@ -1332,13 +1446,7 @@ class _ManualSsidHarness:
         defaults.update(overrides)
         return urllib.parse.urlencode(defaults)
 
-    @staticmethod
-    def _wait_for_thread(timeout=3.0):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if not setup_server.WIFI_CONNECT_IN_FLIGHT:
-                return
-            time.sleep(0.05)
+    _wait_for_thread = staticmethod(_wait_for_connect_thread)
 
     def _fake_wp(self, connect_calls, result=(True, None)):
         import types

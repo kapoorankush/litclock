@@ -81,6 +81,105 @@ atomic_remove_file() {
     rm -f "$target" 2>/dev/null || sudo rm -f "$target" 2>/dev/null || true
 }
 
+# ─── shell-history wipe + write-back lock (litclock-dev#834, litclock-dev#868) ──
+#
+# clear_and_lock_bash_history <path>... — empty each history path, then replace
+# it with an empty DIRECTORY so that shells still open when the device powers
+# off cannot write their history back. Shared by prepare-for-cloning.sh (Step
+# 6) and reset-setup.sh's two handoff arms (gift mode and the --poweroff
+# factory reset), because all three exist to pass the device to someone else
+# and the previous owner's typed commands — an `nmcli … password …` line
+# included — must not go with it. Before litclock-dev#868 only clone prep did this.
+#
+# `history -c` reaches only the calling script's own non-interactive shell.
+# The console or SSH shell the operator ran the script FROM writes its history
+# back on exit, during the power-off — bash's save_history() APPENDS the
+# session's lines, then truncates to HISTFILESIZE — so on the bench the file
+# `rm` had removed was back eight seconds later holding the operator's last
+# command. A directory at the path fails open(O_WRONLY|O_APPEND), rename() over
+# it (`history -w` writes a sibling temp file and renames) and the truncate's
+# read with EISDIR, which no capability bypasses (root's DAC override beats a
+# mode-0 file; a /dev/null symlink loses to the rename), and one `rmdir`
+# removes it. scripts/first-boot.sh removes both directories on the
+# not-yet-set-up path (restore_bash_history_after_clone_prep), which every
+# clone AND every reset lands on, so the next owner's first login gets an
+# ordinary history file.
+#
+# Reports, does not decide: the caller owns fatality. On return,
+#   _HIST_DIRTY     paths whose CONTENTS survived (could not be removed — an
+#                   immutable file, a read-only parent, a NON-EMPTY directory
+#                   left by an earlier aborted run — or were refused because
+#                   removing the NAME would not remove the contents: a symlink,
+#                   or a file with a second hard link);
+#   _HIST_UNLOCKED  paths that were emptied but could not be locked;
+#   _HIST_LOCKED    paths now holding the lock — a caller that aborts can tell
+#                   the operator which locks stay until the next boot.
+# Returns 0 when DIRTY and UNLOCKED are both empty, 1 otherwise. The `rmdir`
+# before `rm -f` takes the lock a previous run left (and refuses a non-empty
+# one); an absent path satisfies both harmlessly.
+#
+# What the lock is, and is not (litclock-dev#873 review): a barrier against bash's own
+# exit-time write-back and `history -w`, which is the measured leak. It is a
+# root-owned directory in a pi-writable home, so the pi user can `rmdir` it —
+# that user is the device's current owner, and a hostile owner racing their
+# own reset is outside the threat model (the previous owner's history reaching
+# the NEXT owner). Only the two default paths are covered; a shell with its own
+# HISTFILE saves wherever that points.
+clear_and_lock_bash_history() {
+    history -c 2>/dev/null || true
+    _HIST_DIRTY=()
+    _HIST_UNLOCKED=()
+    _HIST_LOCKED=()
+    local _h _links
+    for _h in "$@"; do
+        # Refuse to follow (litclock-dev#873 review, Codex): `rm -f` on a SYMLINK unlinks
+        # the link and leaves its target — contents included — on the device;
+        # a file with a second hard link survives the same way. Both are the
+        # owner's own arrangement, and the honest verdict is "could not clear",
+        # never a green line over a file that is still there. Checked BEFORE
+        # anything is removed, so the evidence of what survived is intact.
+        # The one symlink that is fine is the standard "disable history" idiom,
+        # `ln -sf /dev/null ~/.bash_history` (litclock-dev#873 red team): a character
+        # device holds nothing, so the link is simply removed and locked over.
+        # `-c` follows the link; `-L` does not.
+        if [[ -L "$_h" && ! -c "$_h" ]]; then
+            _HIST_DIRTY+=("$_h")
+            continue
+        fi
+        if [[ -f "$_h" ]]; then
+            _links=$(stat -c %h "$_h" 2>/dev/null || echo 0)
+            if [[ "$_links" != 1 ]]; then
+                _HIST_DIRTY+=("$_h")
+                continue
+            fi
+        fi
+        # `chattr +a` / `+i` on .bash_history is a common hardening idiom, and
+        # on the --poweroff arm a DIRTY verdict lands after env.sh is wiped and
+        # the key rotated, with no PWA left to retry from (litclock-dev#873 review, Claude
+        # adversarial). Every caller runs as root, so clear the attributes
+        # first; on a non-ext4 path or a missing chattr this is a no-op and the
+        # verdict below still tells the truth. Only reached for a regular file
+        # or a directory — the symlink case was refused above.
+        chattr -ia "$_h" 2>/dev/null || true
+        rmdir "$_h" 2>/dev/null || rm -f "$_h" 2>/dev/null || true
+        if [[ -e "$_h" || -L "$_h" ]]; then
+            _HIST_DIRTY+=("$_h")
+            continue
+        fi
+        # mkdir IS the lock, and its status is the verdict: it either created
+        # OUR empty directory or something landed at the path between the rm
+        # and here. A failure is reported as UNLOCKED, not swallowed and then
+        # re-tested with `-d`, which follows a symlink and would have called a
+        # pi-planted link "locked" (litclock-dev#873 review, Codex + security specialist).
+        if mkdir "$_h" 2>/dev/null && [[ -d "$_h" && ! -L "$_h" ]]; then
+            _HIST_LOCKED+=("$_h")
+        else
+            _HIST_UNLOCKED+=("$_h")
+        fi
+    done
+    (( ${#_HIST_DIRTY[@]} == 0 && ${#_HIST_UNLOCKED[@]} == 0 ))
+}
+
 # ─── env.sh writer-lock helpers (issue litclock-dev#274) ─────────────────────────
 #
 # Three shell writers mutate env.sh (update.sh Phase 3, reset-setup.sh,

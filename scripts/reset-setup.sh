@@ -29,6 +29,11 @@ CONFIG_DIR="/etc/litclock"
 # Same override convention as the other scripts (wifi-watchdog, bootcheck,
 # lkg-record, update) and as src/wifi_provision.py's STATE_DIR.
 STATE_DIR="${LITCLOCK_STATE_DIR:-/var/lib/litclock}"
+# litclock-dev#868 — the two shell-history paths the handoff arms wipe and
+# lock. Fixed, not env-overridable (same convention as prepare-for-cloning.sh's
+# pair); the executed tests inject their own by redefining these two lines.
+_PI_BASH_HISTORY="/home/pi/.bash_history"
+_ROOT_BASH_HISTORY="/root/.bash_history"
 # Bound on each `systemctl start litclock-shutdown.service` re-arm (litclock-dev#727,
 # litclock-dev#833). Must stay well inside litclock-reset.service's TimeoutStartSec=60:
 # on the PWA arm this script runs INSIDE that unit.
@@ -58,11 +63,12 @@ _THIS_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # knob and the gift language would be gone with nothing saying so, on a device
 # that is usually about to be shipped to someone. Fail loudly instead: nothing
 # destructive has run at this point, so exiting here is free.
-for _fn in atomic_write_env_sh env_sh_defaults; do
+for _fn in atomic_write_env_sh env_sh_defaults clear_and_lock_bash_history; do
     if ! declare -F "$_fn" >/dev/null 2>&1; then
         echo -e "${RED}ERROR: $_fn is not defined after sourcing lib/state.sh.${NC}" >&2
         echo "  $_THIS_SCRIPT_DIR/lib/state.sh is missing or too old for this script." >&2
-        echo "  Refusing to reset: a partial reset would leave env.sh empty." >&2
+        echo "  Refusing to reset: a partial reset would leave env.sh empty, or hand the" >&2
+        echo "  device on with its shell history still on it (litclock-dev#868)." >&2
         echo "  Re-run the updater, or reinstall from a matching release." >&2
         exit 1
     fi
@@ -76,6 +82,66 @@ done
 # Complete. Definitions live here, before the first executable step, so a
 # future call-site move cannot recreate the class; a structural test pins
 # def-before-first-call for every function in this file.
+
+# litclock-dev#868 — wipe the previous owner's shell history before the device
+# leaves their hands, on BOTH handoff arms (gift mode and the --poweroff factory
+# reset the PWA runs). prepare-for-cloning.sh had done this since litclock-dev#834;
+# these two paths rotate the setup key and wipe env.sh for exactly the same
+# "this device is changing hands" reason and left the history behind — measured
+# after a PWA Factory reset on 2026-09-18: /home/pi/.bash_history, 7 lines,
+# survived. A normal owner never opens a shell, so this usually finds nothing;
+# it bites on the devices most likely to be handed on deliberately — one a
+# maintainer SSHed into, or one where WiFi was ever configured by hand (an
+# `nmcli … password …` line lands in history with the passphrase verbatim).
+#
+# The plain CLI reset and --reboot are deliberately NOT covered: they hand
+# control back to an operator at a console, not to a new owner — the same
+# distinction litclock-dev#718 draws for the "Powered Off" splash.
+#
+# FATAL, on both arms, by decision (litclock-dev#868 left it open). It matches how these
+# same arms already treat a failed setup-key rotation: the device stays ON with
+# its CURRENT owner and a red banner, rather than powering off as "ready to hand
+# on" with the old owner's commands still on it. Called ONCE, for both arms,
+# from the guard just above Step 7: after the non-gift rotation belts, BEFORE
+# the WiFi wipe (a SIGHUP'd bash saves its history, so the lock must exist
+# before the one step that can SIGHUP a CLI-over-SSH run — litclock-dev#873 red team),
+# before the completion banner (so a failure never prints one — and that
+# banner's literal text is a test anchor, hence "completion banner" here), before
+# the gift arm's own rotation, and before disable_ssh_for_handoff, so a
+# failure here leaves the owner their shell to fix it with. It does NOT run
+# when a gift prep is already going to abort on its env.sh wipe. The lock (a
+# directory at each path) is what stops the shell you are typing in from
+# writing its history back as the device powers off; first-boot.sh removes it
+# on the next owner's first boot. `--keep-wifi --poweroff` (same owner, moved
+# house) takes the poweroff arm and gets the wipe too, exactly as it gets
+# SSH-off — a technical user's path, and `sudo rmdir` undoes the lock.
+clear_shell_history_for_handoff() {
+    echo -n "Clearing shell history before handoff... "
+    if clear_and_lock_bash_history "$_PI_BASH_HISTORY" "$_ROOT_BASH_HISTORY"; then
+        echo -e "${GREEN}done${NC}"
+        return 0
+    fi
+    echo -e "${RED}FAILED${NC}"
+    echo -e "${RED}========================================${NC}"
+    echo -e "${RED}  Shell history SURVIVED — do NOT hand this device on${NC}"
+    echo -e "${RED}========================================${NC}"
+    if (( ${#_HIST_DIRTY[@]} )); then
+        echo -e "${RED}Could not clear the shell history at ${_HIST_DIRTY[*]}.${NC}"
+        echo -e "${RED}The commands typed on this device, WiFi passwords included, are still on it.${NC}"
+    fi
+    if (( ${#_HIST_UNLOCKED[@]} )); then
+        echo -e "${RED}Could not lock ${_HIST_UNLOCKED[*]} against write-back.${NC}"
+        echo -e "${RED}The shell you are typing in would write its history back as the device powers off.${NC}"
+    fi
+    if (( ${#_HIST_LOCKED[@]} )); then
+        echo -e "${YELLOW}Locks already placed at ${_HIST_LOCKED[*]} stay until the next boot; to keep${NC}"
+        echo -e "${YELLOW}using shell history on this device meanwhile, 'sudo rmdir' them.${NC}"
+    fi
+    echo -e "${RED}NOT powering off. Fix the cause (a symlinked or hard-linked history file, an immutable${NC}"
+    echo -e "${RED}file, a read-only filesystem, or a non-empty directory left by an earlier run), then${NC}"
+    echo -e "${RED}run the reset again (litclock-dev#868).${NC}"
+    exit 1
+}
 
 # litclock-dev#528 + litclock-dev#636: force SSH off before the device leaves the owner's
 # hands, shared by BOTH handoff paths — gift mode (ships to a recipient) and
@@ -353,10 +419,11 @@ while [[ $# -gt 0 ]]; do
             echo "                      /etc/litclock/.gift-language and seeded into env.sh"
             echo "                      (only meaningful with --gift-mode; litclock-dev#532)"
             echo ""
-            echo "  --poweroff and --gift-mode DISABLE SSH before powering down, so a device"
-            echo "  being handed on gets the same posture as a fresh flash (litclock-dev#528)."
+            echo "  --poweroff and --gift-mode wipe and lock the shell history (litclock-dev#868)"
+            echo "  and DISABLE SSH before powering down, so a device being handed on gets the"
+            echo "  same posture as a fresh flash (litclock-dev#528). --keep-wifi skips neither."
             echo "  To get back in: put a blank 'ssh' file in the SD card boot partition, or"
-            echo "  use the console. See docs/recovery.md. --keep-wifi does NOT skip this."
+            echo "  use the console. See docs/recovery.md."
             exit 1
             ;;
     esac
@@ -680,6 +747,8 @@ rm -f "$STATE_DIR/reset-failed" 2>/dev/null || true
 # above: a surviving memo is cosmetic, and aborting a reset over it would be
 # the wrong trade.
 rm -f "$STATE_DIR/runtime-render-validation.json" 2>/dev/null || true
+# litclock-dev#871 Stage A: the self-test pass record is per-device too.
+rm -f "$STATE_DIR/runtime-render-selftest.json" 2>/dev/null || true
 # Verify, don't assume (litclock-dev#673's lesson). A directory, a symlink, or a
 # read-only remount leaves the marker in place and `rm -f` still returns 0. This
 # WARNS rather than aborting: a stale warning marker is the fail-safe direction
@@ -934,6 +1003,20 @@ if [[ "$GIFT_MODE" != "true" && "$WIPE_WIFI" == "true" ]]; then
     fi
 fi
 
+# litclock-dev#868 — the previous owner's shell history goes with the key, on
+# both handoff arms. One call, HERE, above Step 7, for the reason the rotation
+# above sits here too — and a stronger one: a SIGHUP'd interactive bash SAVES
+# its history on the way out, so a CLI run over SSH-on-WiFi that Step 7 kills
+# would write the operator's session to the file at the exact moment the lock
+# should already be there (litclock-dev#873 red team). Skipped when the gift arm is
+# already going to abort on a failed env.sh wipe: that device stays with its
+# owner, and a lock placed now would only mute their shell until the next
+# boot. (--poweroff implies --strict-env-wipe, which aborted long before here.)
+# Ordering rule and fatality rationale on clear_shell_history_for_handoff.
+if [[ "$ENV_WIPE_FAILED" != "true" && ( "$GIFT_MODE" == "true" || "$DO_POWEROFF" == "true" ) ]]; then
+    clear_shell_history_for_handoff
+fi
+
 # Step 7: Optionally wipe saved WiFi networks for fresh-flash simulation.
 # Only deletes WiFi-type NetworkManager connection profiles — wired
 # ethernet, VPN (OpenVPN/WireGuard), bluetooth PAN, etc. live in the same
@@ -1037,10 +1120,11 @@ if [[ "$GIFT_MODE" == "true" ]]; then
     # litclock-dev#528 — shared handoff gate; see disable_ssh_for_handoff above.
     # Deliberately AFTER the env-wipe-failed gate: on a failed prep the device
     # stays on and the owner may still need SSH to fix it. Also AFTER the
-    # rotation, for the same reason — that block fails CLOSED and can exit 1,
-    # which leaves the device with its CURRENT owner, and disabling SSH first
-    # would strip that owner's remote access on the exact path where they still
-    # need it to recover. SSH-off is the last thing before poweroff.
+    # rotation and the history wipe, for the same reason — those blocks fail
+    # CLOSED and can exit 1, which leaves the device with its CURRENT owner, and
+    # disabling SSH first would strip that owner's remote access on the exact
+    # path where they still need it to recover. SSH-off is the last thing
+    # before poweroff.
     disable_ssh_for_handoff
 
     # Marker was written earlier (pre-stop) so shutdown-splash has already

@@ -1768,6 +1768,8 @@ def test_first_boot_actually_writes_every_env_sample_key(tmp_path, with_state_li
 
 
 # ── litclock-dev#834: the clone-prep history lock is undone on first boot ─────
+# (since litclock-dev#868 reset-setup.sh's gift-mode and --poweroff arms leave the
+# same directory, and a reset lands on this same not-yet-set-up path)
 #
 # prepare-for-cloning.sh Step 6 replaces /home/pi/.bash_history and
 # /root/.bash_history with empty DIRECTORIES so that shells still open when

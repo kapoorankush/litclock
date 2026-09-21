@@ -9,6 +9,12 @@ in HTML rather than read text out of a baked PNG — and, since litclock-dev#590
 the forward direction too: ``bucket_entries()`` feeds the runtime
 renderer's per-minute row selection (``quote_renderer.rows_for_time``).
 
+Which CSV (litclock-dev#870): the forward direction reads the ACTIVE
+LANGUAGE's corpus from ``languages.json`` (``corpus_path``); the inverse
+reads the corpus the PNGs were baked from — the shipped default the PHP
+generator opens by name (``image_corpus_path``). ``LITCLOCK_CORPUS_CSV``
+overrides both.
+
 Both directions share one walk, one cache, and ONE text pipeline
 (``preprocess_quote``): the eng review of litclock-dev#590 found the previous
 split — ``preprocess_quote`` on the e-ink path vs a local outer-quote
@@ -41,18 +47,128 @@ immune (fresh cache each run).
 from __future__ import annotations
 
 import csv
+import logging
 import os
 import re
 from functools import lru_cache
 from pathlib import Path
 
+import strings_catalog  # acyclic: strings_catalog imports nothing from this package
+
+logger = logging.getLogger(__name__)
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_CORPUS_PATH = Path(
-    os.environ.get(
-        "LITCLOCK_CORPUS_CSV",
-        str(_PROJECT_ROOT / "image-gen" / "litclock_annotated.csv"),
-    )
-)
+# The corpus the repo ships AND the one the PHP generator reads by name
+# (`image-gen/quote_to_image.php` opens `litclock_annotated.csv` directly, and
+# `scripts/download_images.sh` verifies the image set against the same file).
+# It is therefore the provenance of every PNG under images/ — which is why
+# image_corpus_path() returns it — and the LAST rung of corpus_path(), never
+# the first (litclock-dev#870).
+_DEFAULT_CORPUS_PATH = _PROJECT_ROOT / "image-gen" / "litclock_annotated.csv"
+# Highest-precedence override for BOTH resolvers: tooling and tests point it at
+# a synthetic CSV (`monkeypatch.setattr(quote_corpus, "_CORPUS_PATH", ...)` is
+# the established seam). ``None`` means "resolve through the registry". It
+# says "this file is the whole corpus, images included", so it is NOT the way
+# to bench-test a translation — that redirects the PNG metadata too (litclock-dev#874
+# review); register the translation in languages.json and set LITCLOCK_LANGUAGE.
+_CORPUS_PATH: Path | None = Path(os.environ["LITCLOCK_CORPUS_CSV"]) if os.environ.get("LITCLOCK_CORPUS_CSV") else None
+
+
+def _registry_corpus(code: str) -> Path | None:
+    """``languages.json[code].corpus.path`` as a usable file inside the
+    checkout, else ``None`` — with one warning per code per PROCESS for each
+    way it can be unusable, because each is a packaging error the clock must
+    paint through. (The painter is a fresh process every minute, so on a
+    device with a broken registry entry that is one line per paint — the
+    rate every other painter warning already has; the dedup is for
+    long-lived importers.) Contained on purpose (litclock-dev#874 review): ``root / rel`` discards the
+    root for an absolute ``rel`` and follows ``..`` and symlinks, so a
+    registry typo could name any pi-readable file and serve its lines as
+    quote text; a resolved path outside the checkout is refused. A zero-byte
+    file is refused too, so an empty translation cannot shadow a healthy
+    English corpus. A file that exists but does not parse is NOT caught here
+    (that costs a full read per minute) — it falls to the PNG tier exactly
+    as a corrupt English corpus always has.
+    """
+    rel = strings_catalog.corpus_relpath(code)
+    if not rel:
+        return None
+    candidate = _PROJECT_ROOT / rel
+    try:
+        # Inside one guard: resolve() and is_file() raise on EACCES rather than
+        # answering False, resolve() raises RuntimeError on a symlink loop and
+        # ValueError on a NUL byte in the registry string (litclock-dev#874 review, red
+        # team) — and the painter must never die here.
+        root = _PROJECT_ROOT.resolve()
+        real = candidate.resolve()
+        if not real.is_relative_to(root):
+            strings_catalog.warn_once(
+                f"corpus-escape:{code}",
+                "languages.json corpus %r for %r resolves outside the checkout; ignored",
+                rel,
+                code,
+            )
+            return None
+        usable = real.is_file() and real.stat().st_size > 0
+    except (OSError, RuntimeError, ValueError):
+        usable = False
+    if not usable:
+        strings_catalog.warn_once(
+            f"corpus-missing:{code}", "languages.json names corpus %r for %r but it is missing or empty", rel, code
+        )
+        return None
+    # The plain join, not the resolved path: both accessors then spell a path
+    # the same way (_index realpaths for the cache key regardless).
+    return candidate
+
+
+def corpus_path() -> Path:
+    """The corpus the RUNTIME RENDERER reads: the active language's registry
+    corpus (litclock-dev#870, unblocking litclock-dev#532 Stage 4).
+
+    Precedence: the ``LITCLOCK_CORPUS_CSV`` override -> ``languages.json``'s
+    ``corpus.path`` for ``strings_catalog.active_language()`` -> the English
+    registry corpus -> the shipped default. Degrades the way the strings
+    catalog does: an unknown or inactive code is already English by the time
+    it reaches here, and a registry entry that is missing, empty or outside
+    the checkout falls through with a warning (once per process — see
+    ``_registry_corpus``). A clock must never stop painting over a registry
+    typo.
+
+    Resolved on EVERY call, on purpose: the index cache is keyed by path, so
+    a language change reaches any long-lived importer on its next lookup —
+    the ``lru_cache`` trap the issue named, where a module-level resolution
+    would pin the first language's corpus for the life of the process. (No
+    such importer exists today — see the module docstring — and the registry
+    itself is cached for process lifetime by ``strings_catalog``, so a
+    registry EDIT, as opposed to a language change, needs a restart there.)
+    """
+    if _CORPUS_PATH is not None:
+        return _CORPUS_PATH
+    code = strings_catalog.active_language()
+    for candidate_code in dict.fromkeys((code, strings_catalog.CANONICAL_LANGUAGE)):
+        resolved = _registry_corpus(candidate_code)
+        if resolved is not None:
+            return resolved
+    return _DEFAULT_CORPUS_PATH
+
+
+def image_corpus_path() -> Path:
+    """The corpus the PRE-RENDERED PNGs were baked from: the shipped default,
+    whatever the device language and whatever the registry says (litclock-dev#874 review).
+
+    ``lookup_by_filename`` inverts the PHP namer, and the namer walked ONE
+    file, by name — ``image-gen/litclock_annotated.csv`` — so that file is the
+    provenance of every PNG under ``images/``, not any registry entry: a
+    registry that repointed English's ``corpus.path`` must not move the PNG
+    metadata off the images it describes. ``images/`` has no language
+    dimension, so a device on a second language while still on the PNG tier
+    paints these PNGs and gets their metadata from here, not from its own
+    corpus. (That such a device paints the wrong language at all is why
+    runtime render is the multilingual enabler, litclock-dev#871.)
+    """
+    return _CORPUS_PATH if _CORPUS_PATH is not None else _DEFAULT_CORPUS_PATH
+
 
 # Image filename forms generated by quote_to_image.php:
 #   quote_{HHMM}_{idx}.png                       (image)
@@ -180,7 +296,7 @@ def _current_stat(path: Path) -> tuple[int, int]:
 
 
 def _index(csv_path: str | os.PathLike | None = None) -> dict[str, list[dict]]:
-    path = _CORPUS_PATH if csv_path is None else Path(csv_path)
+    path = corpus_path() if csv_path is None else Path(csv_path)
     # realpath: symlinked installs and env-var overrides must key ONE
     # cache entry per underlying file, not one per spelling of its path.
     path = Path(os.path.realpath(path))
@@ -193,7 +309,7 @@ def bucket_entries(hhmm: str, csv_path: str | os.PathLike | None = None) -> tupl
     selection pool — ``quote_renderer.rows_for_time`` builds its
     ``CorpusRow`` objects from this). Entries carry ``quote_raw``; apply
     ``preprocess_quote`` to the rows actually used. ``csv_path=None``
-    means the production corpus.
+    means ``corpus_path()`` — the active language's corpus (litclock-dev#870).
 
     Returns a tuple so callers cannot reorder/extend the cached bucket;
     the entry dicts themselves are still the SHARED cached objects —
@@ -228,7 +344,9 @@ def lookup_by_filename(filename: str) -> dict[str, str] | None:
     idx = int(m.group("idx"))
     filename_is_nsfw = m.group("nsfw") is not None
     entry = None
-    for e in _index().get(hhmm, []):
+    # The corpus the PNGs were baked from, never the device language's
+    # (see image_corpus_path).
+    for e in _index(image_corpus_path()).get(hhmm, []):
         if e["idx"] == idx:
             entry = e
     if entry is None or entry["is_nsfw"] != filename_is_nsfw:
@@ -245,5 +363,6 @@ def lookup_by_filename(filename: str) -> dict[str, str] | None:
 def reset_cache() -> None:
     """Test hook — clears the lru_cache so each test sees a fresh index.
     Without this, tests that monkeypatch the corpus path will see the
-    stale index from the first call."""
+    stale index from the first call. (The warn-once memory lives in
+    ``strings_catalog``; its ``reset_cache`` clears that.)"""
     _index_for.cache_clear()

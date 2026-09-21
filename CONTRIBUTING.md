@@ -32,6 +32,13 @@ Translations are welcome — the corpus is built to be localized, and
 you start, because both are cheap to check once and effectively unauditable
 across thousands of rows later.
 
+A translated corpus is a CSV of its own: point the language's `corpus.path` in
+`languages.json` at it and the clock's text renderer reads that file for the
+device's active language (litclock-dev#870) — no per-language image set is
+needed. The pre-rendered PNGs under `images/` stay English (the registry's
+`fleet_default`), which is why a second language needs on-device text
+rendering (litclock-dev#871) before it can be activated.
+
 **Name the edition you took a quote from, in the pull request.** Which edition
 a row came from is the one fact nobody can recover from a CSV diff.
 

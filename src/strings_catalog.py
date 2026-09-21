@@ -75,7 +75,9 @@ _env_file_state: tuple[str, float, str] | None = None  # (path, mtime, value)
 _warned: set[str] = set()
 
 
-def _warn_once(subject: str, fmt: str, *args: Any) -> None:
+def warn_once(subject: str, fmt: str, *args: Any) -> None:
+    """Log ``fmt`` once per distinct ``subject`` for the process (public since
+    litclock-dev#870 — ``quote_corpus`` shares it; ``reset_cache`` clears the memory)."""
     with _lock:
         if subject in _warned:
             return
@@ -88,7 +90,7 @@ def _load_json(path: Path) -> dict[str, Any] | None:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        _warn_once(f"load:{path}", "strings catalog unreadable at %s: %s", path, exc)
+        warn_once(f"load:{path}", "strings catalog unreadable at %s: %s", path, exc)
         return None
     return data if isinstance(data, dict) else None
 
@@ -165,7 +167,7 @@ def active_language() -> str:
         return code
     entry = (_registry().get("languages") or {}).get(code)
     if not isinstance(entry, dict) or entry.get("status") != "active":
-        _warn_once(
+        warn_once(
             f"lang:{code}",
             "%s=%r is not an active registry language; using English",
             ENV_KEY,
@@ -231,11 +233,25 @@ def get(key: str, /, **slots: Any) -> str:
     if template is None and code != CANONICAL_LANGUAGE:
         template = _catalog(CANONICAL_LANGUAGE).get(key)
         if template is not None:
-            _warn_once(f"miss:{code}:{key}", "catalog key %r missing for %r; served English", key, code)
+            warn_once(f"miss:{code}:{key}", "catalog key %r missing for %r; served English", key, code)
     if template is None:
-        _warn_once(f"miss:en:{key}", "catalog key %r missing entirely; serving the key", key)
+        warn_once(f"miss:en:{key}", "catalog key %r missing entirely; serving the key", key)
         template = key
     return _fill(template, slots)
+
+
+def corpus_relpath(code: str) -> str | None:
+    """The registry's ``corpus.path`` for ``code`` (relative to the repo root),
+    or ``None`` when the code is unlisted or the entry has no usable path.
+    Public because ``quote_corpus.corpus_path`` resolves the quote corpus
+    through it (litclock-dev#870); the precedence and degrade order live there.
+    """
+    entry = (_registry().get("languages") or {}).get(code)
+    if not isinstance(entry, dict):
+        return None
+    corpus = entry.get("corpus")
+    rel = corpus.get("path") if isinstance(corpus, dict) else None
+    return rel if isinstance(rel, str) and rel else None
 
 
 def active_languages() -> dict[str, dict[str, Any]]:
@@ -346,7 +362,7 @@ def get_many(keys: list[str] | tuple[str, ...]) -> dict[str, str]:
         if template is None:
             template = fallback.get(key)
         if template is None:
-            _warn_once(f"miss:en:{key}", "catalog key %r missing entirely; serving the key", key)
+            warn_once(f"miss:en:{key}", "catalog key %r missing entirely; serving the key", key)
             template = key
         out[key] = template
     return out

@@ -729,10 +729,12 @@ def get_current_quote_runtime(
         logging.warning(f"runtime render enabled but renderer unavailable ({e}); using images")
         return None
     try:
-        # csv_path=None: quote_corpus's env-aware default, so the renderer
-        # and lookup_by_filename can never read different corpora (litclock-dev#594
-        # review — CORPUS_CSV ignored LITCLOCK_CORPUS_CSV and its spelling
-        # keyed a second cache entry for the same file).
+        # csv_path=None: quote_corpus.corpus_path() — the active language's
+        # registry corpus (litclock-dev#870); LITCLOCK_CORPUS_CSV still
+        # overrides it, and a local constant here was the litclock-dev#594 bug
+        # (it ignored that override and keyed a second cache entry for the same
+        # file). The PNG lookup below reads quote_corpus.image_corpus_path() on
+        # purpose — the corpus the images were baked from.
         rows = quote_renderer.rows_for_time(None, now.strftime("%H%M"))
     except Exception as e:
         logging.error(f"runtime render: corpus read failed: {e}")
@@ -740,7 +742,14 @@ def get_current_quote_runtime(
     if not allow_nsfw:
         rows = [r for r in rows if not r.is_nsfw]
     if not rows:
-        return None  # corpus gap — identical outcome to the PNG-glob miss
+        # Corpus gap — identical outcome to the PNG-glob miss. SAID, since
+        # litclock-dev#871: the self-test reads a fallback as "did not render
+        # text", and without this line the journal could not tell a gap at
+        # this minute from a renderer that cannot render at all.
+        logging.warning(
+            f"runtime render: no rows for {now.strftime('%H:%M')} after the NSFW filter; using pre-rendered images"
+        )
+        return None
     row = rows[randrange(len(rows))]
     # ONE guard around render+validate+convert+persist: the "returns None
     # on ANY failure" contract must hold for unexpected shapes too, not
@@ -1058,7 +1067,18 @@ if __name__ == "__main__":
             "the update so the clock never gets bricked by a bad release."
         ),
     )
+    parser.add_argument(
+        "--require-runtime-render",
+        action="store_true",
+        help=(
+            "With --dry-run: exit 3 unless the frame came from the on-device text renderer "
+            "(render_mode == 'runtime'). The litclock-dev#871 Stage A self-test — a dry-run that "
+            "silently fell back to a pre-rendered PNG must not count as 'this device renders text'."
+        ),
+    )
     args = parser.parse_args()
+    if args.require_runtime_render and not args.dry_run:
+        parser.error("--require-runtime-render only means something with --dry-run")
 
     if args.dry_run:
         # Smoke test path: exercise image composition end-to-end (fonts, corpus,
@@ -1081,7 +1101,26 @@ if __name__ == "__main__":
         if image is None:
             logging.error("dry-run: main() returned None image")
             sys.exit(1)
-        logging.info("dry-run OK: rendered %sx%s image", image.size[0], image.size[1])
+        # litclock-dev#871 Stage A: say WHICH tier produced the frame, and let
+        # the self-test insist on the text renderer. main() degrades to the
+        # PNG tier on every runtime failure (marker missing, freetype unusable,
+        # digest stale, corpus gap, render error) and returns a perfectly good
+        # image, so exit 0 alone cannot tell "this device renders text" from
+        # "this device fell back" — which is the whole question the self-test
+        # asks. `time-only` is the no-quote fallback (quote_meta None).
+        render_mode = result[1].get("render_mode") if result[1] else "time-only"
+        # stdout, not the log: setup_logging() defaults to WARNING unless
+        # LOG_LEVEL is set, so an INFO line is normally invisible — and the
+        # self-test's verdict is the one line of a dry-run anyone reads
+        # (`[selftest] dry-run: render_mode=runtime` in the update journal).
+        print(f"dry-run: rendered {image.size[0]}x{image.size[1]} image, render_mode={render_mode}", flush=True)
+        if args.require_runtime_render and render_mode != "runtime":
+            logging.error(
+                "dry-run: --require-runtime-render but the frame came from render_mode=%s — "
+                "the text renderer did not produce it (see the warning above for why)",
+                render_mode,
+            )
+            sys.exit(3)
         sys.exit(0)
 
     # Register signal handlers for graceful shutdown

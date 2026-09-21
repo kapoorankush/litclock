@@ -300,7 +300,7 @@ The clock keeps working on whatever SHA it's pinned to; manual updates via the a
 Most resets don't need a shell — use the control app's **System** tab:
 
 - **Reset WiFi** — forget saved networks and return to the LitClock-Setup network (your settings — location, weather, gift mode — are kept)
-- **Factory reset** — wipe all settings, your WiFi, and the setup network's password, then power off. The next power-on raises `LitClock-Setup` with a **new** password shown on the clock's screen, so a phone that saved the old one must forget the network first
+- **Factory reset** — wipe all settings, your WiFi, the setup network's password, and the default shell history files, then power off. The next power-on raises `LitClock-Setup` with a **new** password shown on the clock's screen, so a phone that saved the old one must forget the network first
 - **Prepare for Gifting** — wipe WiFi, write a welcome message for the recipient, and power off ready to box up
 
 From a shell, the equivalent is:
@@ -315,7 +315,7 @@ Flags:
 - `--reboot` — reboot automatically after reset
 - `--keep-wifi` — keep your WiFi **and** the setup network's password. For a technical user resetting their own clock: the device stays on its network, never starts a setup network, and an SSH session survives the reset
 - `--wipe-wifi` — no-op; erasing both passwords is the default (litclock-dev#666)
-- `--gift-mode` — prepare for shipping: wipes WiFi, paints a welcome splash on the e-ink, and powers off. Implies `--wipe-wifi --yes`.
+- `--gift-mode` — prepare for shipping: wipes WiFi and the default shell history files, paints a welcome splash on the e-ink, and powers off. Implies `--wipe-wifi --yes`.
 
 ### Troubleshooting
 

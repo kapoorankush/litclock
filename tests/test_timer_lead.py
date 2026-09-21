@@ -362,6 +362,9 @@ class TestTheNightlyClearIsDecidedByExecutingTheGate:
 
         class _Args:
             dry_run = False
+            # litclock-dev#871 Stage A: __main__ reads this before the dry-run
+            # branch, so every parser stub must carry it.
+            require_runtime_render = False
 
         class _Parser:
             def __init__(self, *a, **k):
