@@ -4,6 +4,8 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+## [v0.230.0] - 2026-09-22
+
 ### Fixed
 
 - A damaged validation file no longer stops the clock painting; it falls back to the pre-rendered quotes until the file is rebuilt.
