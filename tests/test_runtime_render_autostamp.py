@@ -14,6 +14,7 @@ position is what makes them safe.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -50,6 +51,42 @@ DUMP = REPO_ROOT / "tools" / "gd-expected-measurements.json.gz"
 # assertion below compared against the wrong offset. Found by running the
 # tests; the same trap litclock-dev#782 catalogued and this session has hit twice.
 STAMP_CALL = re.compile(r'(?:"\$PYTHON"|\./venv/bin/python3)\s+tools/validate_measurement\.py\s+check\s+--stamp')
+
+# The self-test arm's two bounds, NAMED because more than one thing computes
+# against them (litclock-dev#883): `_run`'s default and
+# `test_the_boundary_is_exact`'s arithmetic. They were bare literals in both,
+# linked only by a comment — so the boundary test could silently stop tracking
+# the default it claims to follow. Only the RESERVE mirrors `scripts/update.sh`;
+# the 2s timeout is a harness choice that keeps the rc-124 test fast, and
+# production ships 60s (update.sh:1724).
+SELFTEST_TIMEOUT_DEFAULT_S = 2
+SELFTEST_BUDGET_RESERVE_S = 120
+
+def render_lead_s():
+    """The render lead Stage B will gate `duration_s` against, read from the
+    source of truth so a change to the lead moves the test with it (litclock-dev#883).
+
+    Read by AST, not by regex, and called from the test rather than at import.
+    A regex over the assignment was the first version and it is wrong three
+    ways the review found by trying them: `RENDER_LEAD_DEFAULT_S: float = 4.0`
+    and `= (4.0)` both report the constant "gone", `= 40e-1` reads FORTY, and
+    an import-time assert on any of those stops the whole FILE collecting —
+    including the pi-gen tests, which have nothing to do with this. `ast`
+    handles the annotation and the parens, `literal_eval` handles the exponent,
+    and a computed value raises here instead of being silently misread.
+    `src/literary_clock.py` is still not IMPORTED: these are bash-harness tests
+    and pulling PIL in for one float would be the heaviest import in the module.
+    """
+    tree = ast.parse((REPO_ROOT / "src" / "literary_clock.py").read_text())
+    for node in tree.body:
+        targets = [node.target] if isinstance(node, ast.AnnAssign) else getattr(node, "targets", [])
+        for t in targets:
+            if isinstance(t, ast.Name) and t.id == "RENDER_LEAD_DEFAULT_S":
+                return float(ast.literal_eval(node.value))
+    raise AssertionError(
+        "RENDER_LEAD_DEFAULT_S is gone from src/literary_clock.py — "
+        "litclock-dev#883's gate-boundary test has no boundary to sit above"
+    )
 
 
 class TestSomethingActuallyWritesTheMarker:
@@ -965,6 +1002,7 @@ class TestRuntimeRenderSelftestExecutes:
         installed_budget_s=None,
         language="xx",
         sleep=0,
+        selftest_timeout_s=SELFTEST_TIMEOUT_DEFAULT_S,
         mktemp_fails=False,
         pass_record_exists=False,
     ):
@@ -982,7 +1020,11 @@ class TestRuntimeRenderSelftestExecutes:
             f'"${{LITCLOCK_RUNTIME_RENDER_DIR:-unset}}" >> {log}\n'
             f'if [ -d "${{LITCLOCK_RUNTIME_RENDER_DIR:-}}" ]; then echo exists=yes >> {log}; '
             f': > "$LITCLOCK_RUNTIME_RENDER_DIR/current-quote.png"; else echo exists=no >> {log}; fi\n'
-            f"sleep {sleep}\n"
+            # `|| exit 97`: the duration tests are the first to depend on the
+            # painter actually SLEEPING, and a swallowed failure here reports as
+            # a defect in the shipped writer. 97 is outside every arm the
+            # self-test distinguishes (0/3/124), so it reads as the harness.
+            f"sleep {sleep} || exit 97\n"
             "echo painter-says-hello\n"
             f"exit {painter_rc}\n"
         )
@@ -1019,9 +1061,10 @@ class TestRuntimeRenderSelftestExecutes:
             f"RUNTIME_SELFTEST_RECORD_FILE={tmp_path / 'selftest.json'}\n"
             f"{h._budget_helpers()}"
             # AFTER the lifted helpers, which carry the script's own constants:
-            # a 2s bound keeps the timeout case fast, and the boundary tests
-            # compute against it.
-            "SELFTEST_TIMEOUT_S=2\nVALIDATOR_BUDGET_RESERVE_S=120\n"
+            # the 2s default keeps the timeout case fast, and the boundary
+            # tests compute against it. The duration tests raise it, because
+            # they need a painter that runs LONGER than the default bound.
+            f"SELFTEST_TIMEOUT_S={selftest_timeout_s}\nVALIDATOR_BUDGET_RESERVE_S={SELFTEST_BUDGET_RESERVE_S}\n"
             f"{stub}"
             + ("mktemp() { return 1; }\n" if mktemp_fails else "")
             + f"{self._record_fn()}"
@@ -1065,6 +1108,9 @@ class TestRuntimeRenderSelftestExecutes:
         assert memo is None
         rec = self._record(tmp_path)
         assert rec is not None and rec["result"] == "passed", "a pass must leave a DURABLE record for Stage B"
+        # SHAPE only: any constant in [0, 5) satisfies this, `0.0` included,
+        # which is what litclock-dev#883 was filed about. The VALUE is asserted
+        # by TestSelfTestDurationReachesTheRecord below.
         assert isinstance(rec["duration_s"], (int, float)) and 0 <= rec["duration_s"] < 5, rec
         assert rec["sha"] and rec["at_unix"] > 0
 
@@ -1134,11 +1180,16 @@ class TestRuntimeRenderSelftestExecutes:
         assert "argv=" in painter and memo is None
 
     def test_the_boundary_is_exact(self, tmp_path):
-        # elapsed + 2 (timeout) + 120 (reserve) > budget defers; == does not.
-        _, painter, _ = self._run(tmp_path, painter_rc=0, elapsed_s=1678, installed_budget_s=1800)
-        assert "argv=" in painter, "1678+2+120 == 1800 fits"
-        _, painter, _ = self._run(tmp_path, painter_rc=0, elapsed_s=1679, installed_budget_s=1800)
-        assert painter == "", "1679+2+120 > 1800 defers"
+        # elapsed + timeout + reserve > budget defers; == does not. DERIVED from
+        # the two constants rather than the hand-computed 1678/1679 this used to
+        # carry (litclock-dev#883): the bound became a defaulted parameter, and a
+        # literal here would track it only by comment.
+        budget = 1800
+        fits = budget - SELFTEST_BUDGET_RESERVE_S - SELFTEST_TIMEOUT_DEFAULT_S
+        _, painter, _ = self._run(tmp_path, painter_rc=0, elapsed_s=fits, installed_budget_s=budget)
+        assert "argv=" in painter, f"{fits}+{SELFTEST_TIMEOUT_DEFAULT_S}+{SELFTEST_BUDGET_RESERVE_S} == {budget} fits"
+        _, painter, _ = self._run(tmp_path, painter_rc=0, elapsed_s=fits + 1, installed_budget_s=budget)
+        assert painter == "", f"{fits + 1}+{SELFTEST_TIMEOUT_DEFAULT_S}+{SELFTEST_BUDGET_RESERVE_S} > {budget} defers"
 
     def test_an_unknown_budget_defers_an_unlimited_one_runs(self, tmp_path):
         _, painter, memo = self._run(tmp_path, painter_rc=0, elapsed_s="unknown")
@@ -1149,3 +1200,190 @@ class TestRuntimeRenderSelftestExecutes:
     def test_outside_systemd_there_is_no_budget_to_respect(self, tmp_path):
         _, painter, memo = self._run(tmp_path, painter_rc=0, elapsed_s=None)
         assert "argv=" in painter and memo is None
+
+
+class TestSelfTestDurationReachesTheRecord:
+    """litclock-dev#883 — `duration_s` in the REAL record, the field litclock-dev#871
+    Stage B is designed to gate on ("does this device render inside the render lead").
+
+    `TestRuntimeRenderSelftestExecutes` is the only place the real
+    `_runtime_selftest_record_write` executes, and every duration assertion it
+    made was `0 <= duration_s < 5` — a band any constant in it satisfies, `0.0`
+    included. `TestSelfTestDurationSurvivesToTheRecord` in test_update_sh.py
+    covers the layer above and cannot see this one: it STUBS the writer, so it is
+    scoped to what `_runtime_render_selftest` HANDS the writer. The boundary
+    between the two classes is the writer itself, which is why these live here.
+    Measured: `local duration="0.0"` in the writer is red here and GREEN there.
+
+    Three shapes, because the first draft of this class was one band plus one
+    movement control and four independent review passes each defeated it.
+    MEASURED against an eleven-mutation battery on a quiet box (x = caught):
+
+        mutation                          accuracy  control  lead
+        writer: hardcoded 0.0                 x        x       x
+        writer: constant 1.5                  -        x       x
+        writer: epoch                         x        -       x
+        writer: floor                         x        -       x
+        writer: +0.9                          x        -       x
+        writer: *0.7 / *1.5                   x        -       x
+        writer: *0.98                         x        -       x
+        writer: clamp at 3                    -        -       x
+        selftest: dropped decisecond          x        -       x
+        selftest: $SECONDS revert             x        -       x
+
+    Read that honestly, in three parts.
+
+    The lead test catches all eleven and the other two are dominated on THIS
+    battery. They stay for their diagnosis, not their coverage: "below the
+    sleep", "not tracking the clock" and "Stage B would pass a device that
+    cannot make it" send the next reader to three different places. The control
+    also holds the one RELATIONAL property — compared between two records rather
+    than against a computed bound — so it survives any future loosening of the
+    bounds below.
+
+    The battery is a measurement, not a guarantee. The accuracy window is
+    `[sleep, wall]`, so its WIDTH is however much the box stalled: ~0.05s idle,
+    and a second wide under a second of stall, where a coarse mutation such as
+    `floor` fits inside it and passes (measured, by injecting the delay). The
+    degradation is one-way — load widens the window, so it costs catching power
+    and never produces a false red — which is the right direction for CI, and
+    the reason to run the battery on a quiet box when it matters.
+
+    The one genuinely unqualified claim is the LOWER bound: a reading below the
+    sleep cannot be the elapsed time. Its only escape is a backward
+    CLOCK_REALTIME step inside the painter's window, which reds it. The upper
+    bound is now measured on the same clock as the value (see `_timed_run`), so
+    a step moves both together and cannot break the nesting.
+
+    Total cost 8.8s of sleeping in a suite that runs ~330s.
+
+    **The accuracy bound is the painter's own sleep and the subprocess's measured
+    wall clock, not a fixed tolerance.** The first draft used `abs(d - 1.5) <= 1.0`
+    and four imprecision mutations stayed green under it, the sharpest being
+    `t0=$SECONDS` / `dur_ms=$(( (SECONDS-t0)*1000 ))` — a literal revert of the
+    decision recorded four lines above the code it mutates ("whole-second
+    $SECONDS is ±1s on it", the litclock-dev#875 red team), because a ±1.0s tolerance is
+    exactly what that revert costs. `floor`, `+0.9` and a dropped decisecond
+    survived it too. A tighter fixed tolerance would trade that for flake, so the
+    bound is not fixed: the painter really did sleep `S`, so an honest reading is
+    never below `S`; and the whole subprocess is strictly longer than the painter
+    inside it, so an honest reading is never above the wall clock. Neither side
+    is a number anybody had to guess at, and the failure direction under load is
+    one-way — see the third part of the battery note below for what that does
+    and does not buy.
+
+    What these do NOT cover, stated so it is not re-derived: a mutation that
+    keeps the value honest at every sleep used here. The locale layer
+    (`TestSelfTestDurationIsLocaleProof`, test_update_sh.py) covers the separator
+    class, which no amount of sleeping reaches.
+    """
+
+    # Must exceed every sleep below: the painter is wrapped in `timeout
+    # "$SELFTEST_TIMEOUT_S"`, and exceeding it takes the rc-124 arm, which
+    # deletes the record and surfaces as "no record" rather than "bound too low".
+    TIMEOUT_S = 30
+    # Every sleep sits on a decisecond BOUNDARY, which is what lets the lower
+    # bound be the sleep exactly rather than the sleep minus a quantum
+    # (litclock-dev#883, second review round). `duration` is formatted `S.d` by
+    # truncation, and truncating an elapsed time of at least 1.5s cannot yield
+    # 1.4s — so subtracting a quantum "for safety" admits values the shipped
+    # formatter cannot honestly produce. It cost a real mutation: `d * 0.98`
+    # passed all three tests, recording a 4.05s paint as 3.92s — inside the lead.
+    SLEEP_S = 1.5              # deliberately mid-second: whole-second arithmetic
+    #                            lands 0.5s away whichever way it rounds
+    CONTROL_SHORT_S = 0.3
+    CONTROL_LONG_S = 2.5
+    MIN_MOVE_S = 1.5           # true movement 2.2s; ~0.7s of slack
+    SLOW_MARGIN_S = 0.5        # the slow painter runs this far ABOVE the lead
+
+    H = TestRuntimeRenderSelftestExecutes
+
+    def _timed_run(self, tmp_path, **kw):
+        """Run the real self-test and time the whole subprocess.
+
+        The elapsed wall clock is an UPPER bound on what the painter inside it
+        can honestly have taken — it also carries bash startup, the lifted
+        helpers and the writer's own `jq`/`git`.
+        """
+        # time.time(), NOT time.monotonic(): the value under test comes from
+        # EPOCHREALTIME, which is CLOCK_REALTIME. Timing the outside on the
+        # monotonic clock compares two clocks that step differently, and an NTP
+        # step or a suspend then breaks the nesting this bound rests on (review
+        # replayed both directions). Reading the SAME clock on both sides means
+        # a step moves the inner and outer measurement together.
+        t0 = time.time()
+        r, _painter, memo = self.H()._run(tmp_path, selftest_timeout_s=self.TIMEOUT_S, **kw)
+        wall = time.time() - t0
+        assert "self-test PASSED" in r.stdout, (
+            f"the run did not take the PASS arm, so there is no duration to judge — "
+            f"rc 97 here means the HARNESS's `sleep` failed, not the writer:\n{r.stdout}\n{r.stderr}"
+        )
+        assert memo is None, f"a pass writes no memo, got {memo}"
+        rec = self.H._record(tmp_path)
+        assert rec is not None, "the pass arm must have written the record"
+        return rec, wall
+
+    def _assert_honest(self, rec, slept, wall):
+        d = rec["duration_s"]
+        assert d >= slept, (
+            f"the record says {d}s for a painter that slept {slept}s — a reading BELOW the "
+            f"sleep cannot be the elapsed time, whatever the machine was doing"
+        )
+        assert d <= wall, (
+            f"the record says {d}s but the whole subprocess took {wall:.2f}s — the painter "
+            f"is strictly inside that, so the value is not the elapsed time"
+        )
+
+    def test_the_recorded_duration_is_the_real_elapsed_time(self, tmp_path):
+        """A painter that sleeps a known time must put THAT time in the record."""
+        rec, wall = self._timed_run(tmp_path, painter_rc=0, sleep=self.SLEEP_S)
+        self._assert_honest(rec, self.SLEEP_S, wall)
+
+    def test_a_slower_painter_records_a_longer_duration(self, tmp_path):
+        """The movement control.
+
+        A constant INSIDE the accuracy bounds passes them exactly as the real
+        clock does; only a second measurement at a different paint time
+        separates the two. The reverse also holds, which is the part worth
+        recording: an epoch-valued duration MOVES between the two runs and
+        passes this test, while failing accuracy — measured, and the inverse of
+        what this docstring claimed in its first draft. So accuracy and movement
+        each catch something the other does not, even though the lead test above
+        happens to catch both.
+        """
+        short, _ = self._timed_run(tmp_path, painter_rc=0, sleep=self.CONTROL_SHORT_S)
+        long, _ = self._timed_run(tmp_path, painter_rc=0, sleep=self.CONTROL_LONG_S)
+        moved = long["duration_s"] - short["duration_s"]
+        asked = self.CONTROL_LONG_S - self.CONTROL_SHORT_S
+        assert moved >= self.MIN_MOVE_S, (
+            f"a painter asked to run {asked:.1f}s longer moved the recorded duration by only "
+            f"{moved}s ({short['duration_s']} -> {long['duration_s']}) — duration_s is not "
+            f"tracking the clock (or this box stalled the short run by ~{asked - self.MIN_MOVE_S:.1f}s)"
+        )
+
+    def test_a_paint_slower_than_the_lead_is_recorded_as_slower(self, tmp_path):
+        """The gate boundary — the shape the other two cannot see.
+
+        Stage B's question is "did this device render inside the lead", so the
+        value has to be honest AT that boundary, not merely somewhere near 1.5s.
+        Measured: a writer that CLAMPS the duration (`min(d, 3)`) passes both
+        tests above and would report every slow device as comfortably inside the
+        lead — the exact "falsely SMALL value sailing through a threshold"
+        hazard `update.sh`'s own litclock-dev#879 comment names. (A scale-down
+        like `d * 0.7` is caught by accuracy as well; only the clamp reaches
+        here alone.)
+
+        The lead assertion runs BEFORE the accuracy bounds on purpose. It is the
+        weaker of the two — the lower bound already implies it — so behind them
+        it could never fail, and the clamp would report as "below the sleep"
+        rather than as the Stage B consequence, which is the diagnosis worth
+        reading.
+        """
+        lead = render_lead_s()
+        slept = lead + self.SLOW_MARGIN_S
+        rec, wall = self._timed_run(tmp_path, painter_rc=0, sleep=slept)
+        assert rec["duration_s"] >= lead, (
+            f"a paint that took {slept}s was recorded as {rec['duration_s']}s, inside "
+            f"the {lead}s lead — Stage B would pass a device that cannot make it"
+        )
+        self._assert_honest(rec, slept, wall)

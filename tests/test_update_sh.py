@@ -4305,9 +4305,20 @@ class TestSelfTestDurationSurvivesToTheRecord:
     def test_a_longer_paint_records_a_longer_duration(self, tmp_path):
         """The CONTROL for the test above.
 
-        A hardcoded constant, a zero, or an epoch would satisfy a single
+        A hardcoded constant INSIDE the tolerance band above satisfies a single
         measurement just as well; this one only passes if the recorded value
-        actually TRACKS how long the painter ran.
+        actually TRACKS how long the painter ran. Corrected in litclock-dev#883:
+        this used to say "a constant, a zero, or an epoch", and neither a zero
+        nor an epoch satisfies the measurement above — both land further than
+        TOLERANCE_S from SLEEP_S. An epoch does pass THIS one, by moving between
+        the two runs, so the overbroad version named as the control's reason the
+        one example where the control is the test that is fooled.
+
+        The twin of this pair, one layer down, is
+        `TestSelfTestDurationReachesTheRecord` in
+        tests/test_runtime_render_autostamp.py: it executes the REAL writer,
+        where this class stubs it. Retuning the sleeps or the tolerance here
+        should check there too.
         """
         short = self._run_real_function(tmp_path, sleep_s=0.3)
         long = self._run_real_function(tmp_path, sleep_s=2.5)

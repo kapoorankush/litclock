@@ -654,6 +654,65 @@ class TestRuntimeRender:
         monkeypatch.setattr(literary_clock, "RUNTIME_VALIDATED_MARKER", str(tmp_path / "missing-marker"))
         assert literary_clock._runtime_render_enabled() is False
 
+    def test_a_corrupt_marker_degrades_instead_of_raising(self, monkeypatch, tmp_path, caplog) -> None:
+        """A marker that is not valid UTF-8 must be treated as unvalidated.
+
+        The one input to this guard that could not degrade. `open(...,
+        encoding="utf-8")` defers decoding to `.read()`, and a
+        UnicodeDecodeError is a ValueError — so `except OSError` missed it and
+        it propagated out of the function whose whole contract is to return
+        False, killing the paint rather than falling back to the PNG tier.
+
+        Reachable only where the flag is on, which is why it survived this
+        long — but that is not nobody: the fielded clock runs with it true
+        (checked 2026-09-21, `render_mode: runtime`), so the crash path is live
+        in production rather than latent. litclock-dev#871 Stage B would have
+        made it reachable on every migrated device at once, which is how it was
+        found. It is worse than a stray traceback because nothing catches the
+        aftermath: `litclock-bootcheck` asks whether a heartbeat exists since
+        boot, not whether it is recent, so a clock that stops painting after a
+        Sunday update still reads as healthy.
+        """
+        marker = tmp_path / ".runtime-render-validated"
+        marker.write_bytes(b"freetype=2.13.2 digest=\xff\xfe not-utf8\n")
+        monkeypatch.setenv("LITCLOCK_RUNTIME_RENDER", "true")
+        monkeypatch.setattr(literary_clock, "RUNTIME_VALIDATED_MARKER", str(marker))
+        assert literary_clock._runtime_render_enabled() is False
+        assert "not valid UTF-8" in caplog.text
+
+    def test_the_corrupt_marker_control_a_valid_one_is_accepted_this_far(self, monkeypatch, tmp_path) -> None:
+        """The control for the test above.
+
+        `False` is also what a VALID marker returns here once the freetype or
+        digest check declines, so "returns False" on its own proves nothing
+        about the decode. This asserts the corrupt marker is rejected at the
+        READ — by the message it logs — while a well-formed one gets past the
+        read and is refused later, for a different and stated reason.
+        """
+        marker = tmp_path / ".runtime-render-validated"
+        marker.write_text("freetype=0.0.0 digest=deadbeef\n")
+        monkeypatch.setenv("LITCLOCK_RUNTIME_RENDER", "true")
+        monkeypatch.setattr(literary_clock, "RUNTIME_VALIDATED_MARKER", str(marker))
+        import logging as _logging
+
+        with monkeypatch.context():
+            records = []
+            handler = _logging.Handler()
+            handler.emit = records.append
+            _logging.getLogger().addHandler(handler)
+            try:
+                assert literary_clock._runtime_render_enabled() is False
+            finally:
+                _logging.getLogger().removeHandler(handler)
+        text = " ".join(r.getMessage() for r in records)
+        assert "not valid UTF-8" not in text, "a well-formed marker must get past the read"
+        # Which later check declines depends on the box: a dev machine has no
+        # freetype-py wheel at all, a validated Pi gets as far as the digest.
+        # Any of them proves the read succeeded, which is the point.
+        assert any(
+            phrase in text for phrase in ("freetype-py unusable", "FreeType", "proof inputs", "digest")
+        ), text
+
     def _blank_frame(self):
         from PIL import Image
 

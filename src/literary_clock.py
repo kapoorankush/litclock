@@ -606,6 +606,38 @@ def _runtime_render_enabled() -> bool:
             "first; using pre-rendered images"
         )
         return False
+    except UnicodeDecodeError:
+        # A CORRUPT marker, which is not the same as a missing one and used to
+        # be the one input to this function that could not degrade: `open(...,
+        # encoding="utf-8")` defers decoding to `.read()`, and a
+        # UnicodeDecodeError is a ValueError, so `except OSError` did not catch
+        # it. It propagated out of the guard whose entire contract is to return
+        # False, and the painter died instead of falling back to the PNG tier.
+        #
+        # NOT latent: this line is unreachable only where
+        # `LITCLOCK_RUNTIME_RENDER` is false, and the fielded clock is not one
+        # of those — checked directly on 2026-09-21, flag true and
+        # `render_mode: runtime` in its live status file. The gifted clocks and
+        # the internet flashers are on images and are not exposed yet;
+        # litclock-dev#871 Stage B would have exposed all of them in one weekly
+        # tick, which is how this was found (in that PR's review, before it
+        # shipped).
+        #
+        # It matters more than a stray traceback because nothing catches the
+        # aftermath: `litclock-bootcheck` asks whether the heartbeat exists at
+        # all since boot, not whether it is RECENT, so a clock that painted all
+        # week and stopped after a Sunday update still looks healthy to it.
+        #
+        # Rejected rather than salvaged with errors="replace": a marker is a
+        # proof, and a proof that did not survive the disk is not one. One
+        # re-stamp re-earns it, and until then the device paints PNGs.
+        logging.warning(
+            f"runtime-render validation marker at {RUNTIME_VALIDATED_MARKER} is not valid "
+            "UTF-8 — treating this device as unvalidated and using pre-rendered images. "
+            "Re-run `venv/bin/python3 tools/validate_measurement.py check --stamp` to "
+            "replace it (litclock-dev#871 review)"
+        )
+        return False
     # The marker records which FreeType it validated. A freetype-py bump
     # (OTA venv rebuild) must invalidate it — hinted metrics are version-
     # sensitive and a stale marker would keep the flag honored in a

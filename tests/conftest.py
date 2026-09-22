@@ -1,10 +1,13 @@
 """Shared fixtures for LitClock tests."""
 
+import ipaddress
 import json
 import os
 import shlex
+import socket
 import subprocess
 import textwrap
+import threading
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +27,205 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # env at import time) — conftest import order guarantees that. setdefault so
 # a deliberate override still wins.
 os.environ.setdefault("LITCLOCK_SYSTEMCTL", str(REPO_ROOT / "tests" / ".no-such-systemctl"))
+
+
+# --- litclock-dev#881: no unit test may touch the network -------------------
+#
+# Installed at IMPORT, not as a fixture, and that is the whole point. The bug
+# this closes is fixture-ORDERING: `_reset_setup_server_state` below does not
+# request `monkeypatch`, so it is set up first and finalized LAST — its
+# `reset_state()` drain therefore runs AFTER monkeypatch has restored the real
+# `setup_server._resolve_location_from_ip`. A connect thread still draining at
+# that moment reaches the LIVE resolver, whatever the test stubbed. A guard that
+# is itself a function-scoped fixture would be subject to the same ordering it
+# exists to defend against. (A SESSION-scoped one would outlive monkeypatch and
+# would also work; import-time simply has no ordering to reason about at all.)
+#
+# What that late call does is why this is not tidiness. The resolver's success
+# path calls `set_system_timezone()` BEFORE the env write, which shells out to
+# `sudo /usr/local/lib/litclock/litclock-set-timezone`. That sudo call is
+# sandboxed by nothing, so on a Pi — or any box where the installer has run — a
+# `pytest tests/` reaching this window can change the SYSTEM TIMEZONE. (It needs
+# `setup_server.ENV_FILE` to be set for the resolver to get that far, which a
+# fully-restored teardown may not have; the hazard is real but conditional.) It
+# is also a live call on a 1/3/9s ladder with a 5s socket timeout — ~33s of
+# nominal ladder, not an enforced deadline — against a rate-limited free tier,
+# which is the CI-flake mechanism from litclock-dev#876.
+#
+# litclock-dev#879's finding was that a per-class list of stubs is a list of the
+# classes somebody remembered. This is the structural half. It is deliberately
+# NOT a replacement for those stubs: a stub says what a test MEANS, this says
+# only that no DNS left the process.
+#
+# SCOPE, stated exactly, because the first draft of this comment got it backwards
+# in both halves (review). It covers IN-PROCESS DNS. `socket.create_connection`,
+# `http.client`, `urllib` and `requests` all resolve through here — INCLUDING for
+# a literal IP, which `create_connection` still passes to `getaddrinfo`, so
+# literals do NOT slip past on those paths. What genuinely bypasses it is a raw
+# `socket.connect` to a literal, and this tree has two:
+# `src/literary_clock.py::_resolve_lan_ip` and `src/control_server/handoff.py`
+# both `sock.connect(("1.1.1.1", 80))` on a UDP socket to pick a route. No packet
+# leaves for those, and the literary_clock tests stub `socket.socket` — but the
+# shape exists, and the earlier claim that "nothing in this tree does that" was
+# false. Also outside the guard: SUBPROCESSES. `ScriptSandbox` and every
+# bash-script test inherit no Python patch, so a script that shells out to `curl`
+# egresses normally. Widening to `socket.connect` would have to tell the loopback
+# servers the control-server tests bind apart from real egress, trading a live
+# risk of false failures for a hypothetical leak.
+#
+# Proxies are neutralised rather than left as a hole: with `http_proxy` pointing
+# at a loopback address, the only name resolved is the PROXY's, which is
+# allowlisted, and the request for `ip-api.com` goes out through it with no
+# refusal recorded at all (reproduced in review, on a box with a corporate,
+# mitmproxy or Docker proxy variable set). So the vars are cleared here.
+for _var in ("http_proxy", "https_proxy", "ftp_proxy", "all_proxy", "no_proxy"):
+    os.environ.pop(_var, None)
+    os.environ.pop(_var.upper(), None)
+os.environ["no_proxy"] = os.environ["NO_PROXY"] = "*"
+
+_REAL_GETADDRINFO = socket.getaddrinfo
+
+# Names that mean this machine. Numeric forms are NOT listed: they are classified
+# by `ipaddress` below, because a frozenset of spellings refused `127.0.0.2`,
+# `::ffff:127.0.0.1` and `::1%0` — all genuinely loopback here — and would have
+# turned any future test using one into a false red (review).
+_LOOPBACK_NAMES = frozenset({"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"})
+
+
+def _is_loopback_host(host) -> bool:
+    """True when `host` cannot leave this machine.
+
+    `None` and `""` are the wildcard-bind forms. Bytes are a valid `getaddrinfo`
+    host. On the NAME path a trailing dot is a legal FQDN and case is not
+    significant, so both are normalised away there — but not before the numeric
+    parse, for the reason given inline below.
+
+    Two forms are refused although they would resolve to loopback, both
+    deliberately: `inet_aton` shorthand such as `127.1`, and unicode spellings
+    such as a unicode look-alike of `localhost` that the resolver NFKC-folds back
+    to the ASCII spelling. Refusing
+    is the safe direction — it costs a false red that nothing in this tree
+    triggers, where accepting would cost the guarantee.
+    """
+    if host is None:
+        return True
+    if isinstance(host, (bytes, bytearray)):
+        try:
+            host = host.decode("ascii")
+        except UnicodeDecodeError:
+            return False
+    if not isinstance(host, str):
+        return False
+    raw = host.strip()
+    if not raw:
+        return True
+    try:
+        addr = ipaddress.ip_address(raw.split("%", 1)[0])
+    except ValueError:
+        # The trailing dot is stripped ONLY here, on the name path. Doing it
+        # before the numeric parse made `"127.0.0.1."` classify as a numeric
+        # loopback while the resolver still treats that exact spelling as a NAME
+        # needing DNS — approved, forwarded, and resolved with no ledger entry
+        # (reproduced in review). The guard forwards the ORIGINAL host, so the
+        # numeric path must judge the original.
+        return raw.rstrip(".").casefold() in _LOOPBACK_NAMES
+    # `::ffff:127.0.0.1` is loopback but `IPv6Address.is_loopback` is False for
+    # it, so unmap first.
+    if addr.version == 6 and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return addr.is_loopback or addr.is_unspecified
+
+
+class _NetworkAttemptState:
+    """Resolutions the guard refused (litclock-dev#881).
+
+    ``attempts`` is ``(test nodeid, host, thread name)`` per occurrence. The
+    thread name is carried because it narrows the diagnosis: a refusal from
+    ``MainThread`` is usually an unstubbed call in the test body, while one from
+    a background thread is usually the litclock-dev#881 teardown window. Neither
+    is proof — an unstubbed worker thread looks the same — so read it as a
+    pointer, not a verdict.
+    """
+
+    def __init__(self) -> None:
+        self.attempts: list[tuple[str, str, str]] = []
+
+
+_NETWORK_ATTEMPTS = _NetworkAttemptState()
+
+# The nodeid a refusal is attributed to: the last test to START, which is the
+# test ACTIVE WHEN OBSERVED and not necessarily the one that spawned the thread.
+# For a leak that drains inside its own teardown those coincide, which is the
+# common case; for a thread that outlives its test — the shape `_ESCAPED_THREADS`
+# below exists to track — the name printed is whichever test started next. The
+# earlier version of this comment claimed the spawning test, which is wrong.
+_CURRENT_NODEID = "<no test running>"
+
+
+class NetworkAccessAttempted(BaseException):
+    """Raised in whichever thread tried to leave the box.
+
+    `BaseException`, not `Exception`, and that is load-bearing: the callers this
+    guard is aimed at swallow broadly. `geocoding.ip_geolocate` and
+    `location_resolver.resolve_location_from_ip` both wrap their work in
+    `except Exception`, so an `AssertionError` subclass was caught, logged as
+    "IP geolocation failed" and RETRIED down the 1/3/9s ladder — the refusal
+    downgraded to a soft failure that fails nothing (measured in review).
+    Deriving from `BaseException` means a main-thread refusal really does fail
+    its own test instead of being absorbed by the code under test.
+    """
+
+
+def _guarded_getaddrinfo(host, *args, **kwargs):
+    if _is_loopback_host(host):
+        return _REAL_GETADDRINFO(host, *args, **kwargs)
+    _NETWORK_ATTEMPTS.attempts.append(
+        (_CURRENT_NODEID, str(host), threading.current_thread().name)
+    )
+    raise NetworkAccessAttempted(
+        f"a unit test tried to resolve {host!r} (thread {threading.current_thread().name}). "
+        "Unit tests must not touch the network: stub the caller. If this came from a "
+        "background thread during teardown, it is litclock-dev#881 — the stub was already "
+        "restored by monkeypatch while the thread was still draining."
+    )
+
+
+socket.getaddrinfo = _guarded_getaddrinfo
+
+
+def foreign_attempts(attempts, expected):
+    """The refusals in ``attempts`` a quarantining test did NOT ask for.
+
+    Split out as a pure function for the same reason
+    ``network_attempts_summary_line`` is: a test can hand it its own lists
+    instead of exercising it through a fixture whose whole job is to leave no
+    trace, which made the round trip impossible to assert from inside.
+
+    ``expected`` holds hosts the test deliberately tripped; those are its own
+    business. Everything else — a different host, or the same host from another
+    thread — belongs to the run and is migrated back to the real ledger.
+    """
+    return [a for a in attempts if a[1] not in expected or a[2] != "MainThread"]
+
+
+def network_attempts_summary_line(state: _NetworkAttemptState) -> str | None:
+    """The reported text for ``state``, or None when nothing was refused.
+
+    A pure function of the state, matching ``escaped_threads_summary_line``
+    below and for the same reason: tests call it with their OWN state object
+    rather than mutating the module singleton.
+    """
+    if not state.attempts:
+        return None
+    shown = state.attempts[:_ESCAPE_REPORT_LIMIT]
+    hidden = len(state.attempts) - len(shown)
+    detail = "; ".join(f"{nodeid} -> {host} ({thread})" for nodeid, host, thread in shown)
+    more = f" (+{hidden} more)" if hidden else ""
+    return (
+        f"[litclock-dev#881] {len(state.attempts)} network resolution(s) REFUSED during the "
+        f"run: {detail}{more}. A call from a non-main thread points at the litclock-dev#881 "
+        "teardown window; one from MainThread points at a missing stub. The run has been failed."
+    )
 
 
 @pytest.fixture
@@ -382,6 +584,59 @@ def absorber_summary_line(state):
     )
 
 
+def pytest_runtest_logstart(nodeid, location):
+    """Attribute later refusals to the test that is starting (litclock-dev#881)."""
+    global _CURRENT_NODEID
+    _CURRENT_NODEID = nodeid
+
+
+def pytest_sessionstart(session):
+    """Start each session with an empty ledger (litclock-dev#881).
+
+    Process-lifetime state outlives a session when pytest is driven in-process
+    (`pytest.main()` twice, some IDE runners), and a refusal from run 1 would
+    then redden run 2 — a self-inflicted version of the poisoning this guard is
+    meant to detect (found in review).
+
+    xdist is refused outright rather than silently tolerated. A worker's
+    `exitstatus` is snapshotted before ordinary hooks run and the controller does
+    not treat a worker's exit status as a failed test, so under `-n` the backstop
+    below is disarmed while still printing its red line — the exact
+    looks-like-it-works shape litclock-dev#860/litclock-dev#864 catalogued. Wire
+    worker-to-controller reporting before removing this.
+    """
+    _NETWORK_ATTEMPTS.attempts.clear()
+    if session.config.pluginmanager.hasplugin("xdist") and session.config.getoption("numprocesses", None):
+        raise pytest.UsageError(
+            "litclock-dev#881: the network guard's run-failing backstop does not survive "
+            "xdist workers. Wire worker-to-controller reporting before using -n."
+        )
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """Fail the run if anything was refused (litclock-dev#881).
+
+    A refusal raised in a BACKGROUND thread cannot fail the test it came from:
+    the exception dies with the thread and the test passes. Reporting alone
+    would therefore be the silent-allow shape this repo keeps getting bitten by
+    (litclock-dev#860/litclock-dev#864), so the exit status is set here as well. A MAIN
+    thread refusal fails its own test on its own — `NetworkAccessAttempted`
+    derives from `BaseException` precisely so the code under test cannot swallow
+    it. This only converts a green run to red, never the reverse.
+
+    `trylast` so it samples the ledger after other plugins' session hooks have
+    run. The residual is honest and unfixable from inside the process: a refusal
+    recorded AFTER this hook — a thread that outlives the whole session, or a
+    later rung of the 1/3/9s retry ladder spilling past the final test — is
+    recorded and then dropped, and the run exits 0. The FIRST refusal of any
+    leak is prompt, which is why the common case is caught; a leak starting in
+    the session's last test is the one that can escape.
+    """
+    if _NETWORK_ATTEMPTS.attempts and exitstatus == 0:
+        session.exitstatus = 1
+
+
 def pytest_terminal_summary(terminalreporter):
     """Surface the absorber's findings where they survive capture.
 
@@ -399,3 +654,8 @@ def pytest_terminal_summary(terminalreporter):
     escaped_line = escaped_threads_summary_line(_ESCAPED_THREADS)
     if escaped_line is not None:
         terminalreporter.write_line(escaped_line, yellow=True, bold=True)
+    # litclock-dev#881 — red, not yellow: unlike the two above, this one has
+    # already failed the run in pytest_sessionfinish.
+    network_line = network_attempts_summary_line(_NETWORK_ATTEMPTS)
+    if network_line is not None:
+        terminalreporter.write_line(network_line, red=True, bold=True)
