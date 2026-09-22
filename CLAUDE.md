@@ -504,9 +504,92 @@ sudo systemctl start litclock-update.service && journalctl -fu litclock-update
 
      **First field measurement, 2026-09-20 (`dev-20260920-512c291`, Pi Zero 2 W):** the self-test recorded **3.8s** during the update; five hand-run repeats on an idle system gave **3.4 / 3.5 / 3.5 / 3.5 / 3.7s**. The gap is update-time load, not instrument bias, and it errs the safe way.
 
+     **Confirmed in PRODUCTION, 2026-09-21** — a real weekly-tick OTA onto
+     v0.229.0 on the fielded clock recorded **3.5s**, and the bench measured
+     **3.4s** against an INDEPENDENTLY timed 3497ms (`date +%s%N` around the
+     run, not the function's own claim). Two runs moved together, and the
+     control — the strip replaced by a no-op — returned an EMPTY duration
+     against a real 3558ms, which is what makes the 3.4s evidence rather than
+     a number the function asserts about itself. Same figure across a dev
+     image, a public image and production, so the expansion widening in
+     litclock-dev#879/litclock-dev#881 did not move it.
+
+     **The field IS tested now — litclock-dev#883, closed 2026-09-22.** It was not: the
+     only assertion on the real record was `0 <= duration_s < 5`, which a
+     hardcoded `0.0` satisfies, and mutating `_runtime_selftest_record_write`
+     to `local duration="0.0"` left it green. Three executed tests replaced it
+     (`TestSelfTestDurationReachesTheRecord`), and the bound is no longer a
+     tolerance: the painter really did sleep `S`, so an honest reading is never
+     below `S`, and the whole subprocess is strictly longer than the painter
+     inside it, so it is never above the measured wall clock — both move with
+     load, and both sides are timed on the SAME clock the value comes from
+     (`time.time()`, since `EPOCHREALTIME` is CLOCK_REALTIME).
+
+     **What that does NOT give you, before Stage B builds a gate on it.** An
+     eleven-mutation battery is red, but the accuracy window is `[sleep, wall]`
+     — its WIDTH is however much the box stalled, so a coarse mutation such as
+     `floor` fits inside it under a second of load and passes (measured). The
+     degradation is one-way, costing catching power rather than producing a
+     false red. More importantly `duration_s` is WHOLE-PROCESS wall time —
+     env.sh sourcing, interpreter start, the PIL import, then the render — so
+     it is not comparable to the 4s render lead, and the painter pays that same
+     startup BEFORE it computes its target instant, so the lead does not cover
+     it either. A "renders inside the lead" threshold built on this number
+     would be measuring the wrong thing. Stage B as written gates on the
+     record's `result` and `sha`, not its duration, deliberately.
+
+     **A release that touches any of the six proof inputs revokes the marker
+     fleet-wide.** v0.229.0 changed `src/quote_renderer.py`, so the fielded
+     clock revoked and re-validated (179s, 568044/568044 exact) inside its
+     update — a ~3.5 min longer tick for every marker-bearing device, and a
+     window where a device with `LITCLOCK_RUNTIME_RENDER=true` has no marker
+     and silently paints PNGs. Expected per litclock-dev#604, self-heals on re-stamp.
+     **Fresh flashes are unaffected**: the image stamps the marker at build
+     time against the new renderer — verified on the public v0.229.0 image,
+     digest `c09ebeaf…`, identical to the bench dev card and the fielded
+     clock. Check that digest on any new image; an ABSENT marker there would
+     ship devices that never render text and say nothing about it.
+
      **Read what `duration_s` actually contains before you build a threshold on it** (litclock-dev#878 review). It is WHOLE-PROCESS wall time: `t0` is stamped before the subshell, so it includes sourcing `env.sh`, spawning the interpreter, and importing PIL — a material share of 3.5s on a Zero 2 W — and only then the render. It is **not** render time, and it is **not** comparable to a frame-settle figure, which includes a panel refresh the dry-run never performs (it exits before `epd.init()`).
 
      Worse for a naive gate: the painter pays that same startup BEFORE it computes its target instant, so that share is not covered by the 4.0s lead at all. The lead is not a render budget. What actually makes a frame late — timer fire through `epd.display()` returning, panel included — is measured by neither this number nor the lead, so Stage B needs to decide what it is really gating before picking a value. Two things that ARE settled: render duration cannot change WHICH minute is painted, because the target is computed once and threaded through the quote pick, masthead, status file and clear gate; but a stall BEFORE that computation (a hanging weather fetch, say) can push the target into the next minute and leave one unpainted, so "slow is harmless" is true only on the render side.
+- **A CORRUPT validation marker must degrade, not kill the paint (litclock-dev#886).**
+  The marker's other failure modes — absent, stale FreeType, wrong digest — all
+  return False and fall back. A marker that is not valid UTF-8 used to propagate
+  `UnicodeDecodeError` out of `_runtime_render_enabled()` and take the painter
+  with it, because `open(..., encoding="utf-8")` defers decoding to `.read()`
+  and a `UnicodeDecodeError` is a `ValueError`, so the `except OSError` beside it
+  never caught one. Reachable only where `LITCLOCK_RUNTIME_RENDER=true`.
+
+  Run it on a device with the flag ON, offscreen so it cannot race the minute
+  tick for GPIO:
+
+  ```bash
+  cd ~/litclock && cp .runtime-render-validated /tmp/marker.bak
+  printf 'freetype=2.13.2 digest=\xff\xfe\xfd broken\n' > .runtime-render-validated
+  mkdir -p /tmp/rr && LITCLOCK_RUNTIME_RENDER=true LITCLOCK_RUNTIME_RENDER_DIR=/tmp/rr \
+    WEATHER_ENABLED=false timeout 60 ./venv/bin/python3 src/literary_clock.py --dry-run; echo "EXIT=$?"
+  cp /tmp/marker.bak .runtime-render-validated     # or `validate_measurement.py check --stamp`
+  ```
+
+  PASS is a warning naming the file and the re-stamp command, then
+  `dry-run: rendered 800x480 image, render_mode=image`, **exit 0**. A FAIL is a
+  `UnicodeDecodeError` traceback and **exit 1**.
+
+  **The asymmetry is measured, not assumed** (bench device, 2026-09-22;
+  address deliberately not recorded here — this file is public).
+  The bench tracks the PUBLIC repo, so at v0.229.0 it was fleet code WITHOUT the
+  fix and reproduced the crash — `UnicodeDecodeError ... position 23` at
+  `literary_clock.py:600`, exit 1 — while the same corrupt marker with
+  `src/literary_clock.py` from dev degraded to the PNG tier at exit 0. That
+  public-tracking bench is the cheapest control you have for any fix whose bug is
+  live on the fleet: reproduce on it first, then rsync the single changed file.
+  Full record is kept with the maintainer's QA notes, off-repo.
+
+  **What this does NOT cover:** the SPI write. `--dry-run` exits before
+  `epd.init()`, so it proves the render path and the fallback decision, not the
+  panel.
+
 - **`catalog-count` is stdout-compared, so check its contract directly.** On the
   device: `sudo -u pi /home/pi/litclock/venv/bin/python3 src/eink_display.py
   catalog-count` must print an integer and **exit 0**. Break the bundle
