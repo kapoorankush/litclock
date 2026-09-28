@@ -834,6 +834,36 @@ if [[ -n "$_ENV_LEAKS" ]]; then
     _abort_env_credentials "$_ENV_LEAKS"
 fi
 unset _ENV_LEAKS
+
+# litclock-dev#871 /review (adversarial) — the gate above reads ONE path, and
+# the atomic env.sh writers stage through `mktemp "${dest}.XXXXXX"` beside it.
+# Every in-script failure arm removes that file; a SIGKILL or power loss inside
+# the printf -> chmod -> chown -> mv window does not, and `with_env_lock` runs
+# the writer in a subshell where bash has reset this script's traps to default,
+# so the signal handler does not cover it either. What is left is a full,
+# UNREDACTED copy of the previous owner's env.sh — API key, coordinates, city —
+# which Step 2's wipe never touches because it targets `env.sh`, which
+# `git reset --hard` never removes because it is untracked, and which this gate
+# printed `done` over because it never looked. It then ships on every clone.
+#
+# Refuse rather than delete: a staging file here means a writer died mid-write,
+# so the card's state is not what the operator thinks, and silently removing the
+# evidence is the wrong answer on a path whose whole job is to certify the card.
+shopt -s nullglob
+_ENV_STAGING=("$INSTALL_DIR"/env.sh.??????)
+shopt -u nullglob
+# env.sh.sample is six characters too; it is tracked and is not a staging file.
+_ENV_STAGING_REAL=()
+for _s in "${_ENV_STAGING[@]}"; do
+    [[ "$(basename "$_s")" == "env.sh.sample" ]] && continue
+    _ENV_STAGING_REAL+=("$_s")
+done
+if [[ ${#_ENV_STAGING_REAL[@]} -gt 0 ]]; then
+    _abort_env_credentials \
+        "abandoned atomic-write staging file(s) beside it: ${_ENV_STAGING_REAL[*]}" \
+        "each is a full copy of the previous owner's env.sh; remove them and re-run."
+fi
+unset _ENV_STAGING _ENV_STAGING_REAL _s
 echo -e "${GREEN}done${NC}"
 
 echo ""

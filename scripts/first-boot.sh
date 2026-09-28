@@ -607,7 +607,10 @@ main() {
             local _defaults
             # NO language argument — a fresh device keeps Accept-Language
             # negotiation alive on this boot (the litclock-dev#743 empty-seed contract).
-            _defaults=$(env_sh_defaults)$'\n'
+            # `true`: a FRESH flash renders text from its first paint. The
+            # helper defaults to false for the reset and cloning callers,
+            # which run on existing devices (litclock-dev#871 Stage B).
+            _defaults=$(env_sh_defaults "" true)$'\n'
             if ! atomic_write_env_sh "$ENV_FILE" "$_defaults"; then
                 local _rc=$?
                 if [[ "$_rc" == "75" ]]; then
@@ -646,7 +649,7 @@ export ALLOW_NSFW_QUOTES=false
 export LITCLOCK_LANGUAGE=
 export SHOW_DIAGNOSTICS_SHORTCUT=false
 export GIFT_MODE_MESSAGE=
-export LITCLOCK_RUNTIME_RENDER=false
+export LITCLOCK_RUNTIME_RENDER=true
 # export DISPLAY_CLEAR_HOUR=2
 # export LITCLOCK_RENDER_LEAD_S=4
 # export WEATHER_API_TIMEOUT=15

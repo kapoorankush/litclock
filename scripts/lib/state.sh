@@ -234,12 +234,22 @@ ENV_FILE_DEFAULT="${LITCLOCK_ENV_FILE:-/home/pi/litclock/env.sh}"
 #      substitution STRIPS trailing newlines, so every caller re-adds one:
 #      `DEFAULTS=$(env_sh_defaults)$'\n'`. Do not "simplify" that away.
 #
-# VALUES may differ from the sample and two deliberately do: the sample
+# VALUES may differ from the sample and three deliberately do: the sample
 # documents WEATHER_LATITUDE/LONGITUDE with real Austin coordinates as an
 # example, while a seeded device must leave them EMPTY. With
 # WEATHER_LOCATION_MODE=auto the IP-geo resolver fills them on a good boot;
 # on the ip-api.com-blocked path a seeded coordinate would render Austin
 # weather on a device that is not in Austin — worse than an honest empty.
+# The third is LITCLOCK_RUNTIME_RENDER, which is a PARAMETER here rather than
+# a constant: `true` when first-boot.sh asks for it (a fresh flash renders text
+# from its first paint, against a marker stamped at image-build time), `false`
+# for every other caller and for the sample. The sample is what update.sh
+# Phase 3 BACKFILLS onto existing devices, so a `true` there would switch an
+# old clock on with none of litclock-dev#871 Stage B's guards run. Fresh-flash
+# default and existing-device backfill are different jobs and this is the only
+# key where they disagree; do not "fix" them into agreement.
+# tests/test_first_boot_flow.py compares the KEY SET and comment status, not
+# values, and tests/test_runtime_render_autostamp.py pins the divergence.
 #
 # LANGUAGE ($1, optional) seeds LITCLOCK_LANGUAGE. Empty (the default, used by
 # first-boot and prepare-for-cloning) keeps Accept-Language negotiation alive
@@ -254,6 +264,23 @@ ENV_FILE_DEFAULT="${LITCLOCK_ENV_FILE:-/home/pi/litclock/env.sh}"
 # that moving the interpolation into this file did not leave the belt behind.
 env_sh_defaults() {
     local language="${1-}"
+    # RUNTIME_RENDER ($2, optional) — litclock-dev#871 Stage B. Defaults to
+    # `false`, and the default is the fail-safe direction ON PURPOSE: this
+    # helper is NOT a fresh-flash-only seeder. reset-setup.sh and
+    # prepare-for-cloning.sh both call it on an EXISTING device, and neither
+    # removes `.runtime-render-validated` (they clear the self-test record, not
+    # the marker). So a `true` default would hand a reset clock runtime render
+    # with none of Stage B's five guards run — including a clock whose
+    # self-test had FAILED, which is precisely the device the guards exist to
+    # hold back. Those callers take the default; a device that can render text
+    # is migrated properly by update.sh on its next tick, within a week.
+    # `first-boot.sh` passes `true` explicitly, because a fresh flash carries a
+    # marker stamped at image-build time against the shipped renderer.
+    local runtime_render="${2-false}"
+    if [[ "$runtime_render" != "true" && "$runtime_render" != "false" ]]; then
+        echo "[state] env_sh_defaults: runtime_render '$runtime_render' is not true/false; seeding false" >&2
+        runtime_render="false"
+    fi
     if [[ -n "$language" && ! "$language" =~ ^[a-z][a-z0-9-]{0,16}$ ]]; then
         echo "[state] env_sh_defaults: language '$language' failed the shape check; seeding empty" >&2
         language=""
@@ -273,7 +300,7 @@ export ALLOW_NSFW_QUOTES=false
 export LITCLOCK_LANGUAGE=$language
 export SHOW_DIAGNOSTICS_SHORTCUT=false
 export GIFT_MODE_MESSAGE=
-export LITCLOCK_RUNTIME_RENDER=false
+export LITCLOCK_RUNTIME_RENDER=$runtime_render
 # export DISPLAY_CLEAR_HOUR=2
 # export LITCLOCK_RENDER_LEAD_S=4
 # export WEATHER_API_TIMEOUT=15
@@ -367,13 +394,31 @@ _atomic_write_env_sh_finalize() {
     if [[ -e "$dest" ]]; then
         owner=$(stat -c '%U:%G' "$dest" 2>/dev/null) || owner=""
         mode=$(stat -c '%a' "$dest" 2>/dev/null) || mode=""
+        # MODE FIRST, then ownership. The other order installs an unreadable
+        # env.sh whenever the destination is root-owned and this runs as pi: the
+        # mktemp staging file is pi-owned 0600, `sudo chown root:root` succeeds,
+        # the subsequent unprivileged `chmod 644` then FAILS on a file pi no
+        # longer owns, and the rename replaces a world-readable config with a
+        # root-owned 0600 one that every pi-user service — the painter, the
+        # control server — can no longer read. Both failures are swallowed, so
+        # the caller reports success (review of litclock-dev#871 Stage B, which
+        # is the first path to exercise this helper from update.sh).
+        #
+        # Setting the mode while pi still owns the temp file is the case that
+        # matters and it succeeds there; it can still fail (a read-only mount,
+        # an exotic ACL), which is why the sudo fallback and the `|| true` stay.
+        # If the chown then fails the file lands pi:pi at whatever mode was set
+        # — readable, degraded, not broken. That is the safe direction, and it
+        # is why these stay best-effort rather than becoming a hard abort.
+        # `$mode` is the DESTINATION's mode, not a constant 0644: a device whose
+        # env.sh is 0600 keeps 0600.
+        if [[ -n "$mode" ]]; then
+            chmod "$mode" "$tmp" 2>/dev/null || sudo chmod "$mode" "$tmp" 2>/dev/null || true
+        fi
         if [[ -n "$owner" ]]; then
             chown "$owner" "$tmp" 2>/dev/null \
                 || sudo chown "$owner" "$tmp" 2>/dev/null \
                 || true
-        fi
-        if [[ -n "$mode" ]]; then
-            chmod "$mode" "$tmp" 2>/dev/null || true
         fi
     else
         # First-boot path: mktemp staged the file at 0600. env.sh must be

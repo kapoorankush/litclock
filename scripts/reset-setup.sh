@@ -872,6 +872,23 @@ if [[ -f "$INSTALL_DIR/env.sh" ]]; then
     # trailing newlines, and update.sh Phase 3 appends missing sample keys with
     # `>>`, which would otherwise splice the first one onto the last line.
     DEFAULTS=$(env_sh_defaults "$GIFT_LANGUAGE_CODE")$'\n'
+    # litclock-dev#871 /review (adversarial) — sweep abandoned atomic-write
+    # staging files FIRST. The writers stage through `mktemp "${dest}.XXXXXX"`
+    # beside env.sh and remove it on every in-script failure arm; a SIGKILL or
+    # power loss inside the write window does not, and `with_env_lock` runs the
+    # writer in a subshell where bash has reset this script's traps to default.
+    # What survives is a full copy of the gifter's env.sh — API key, home
+    # coordinates, city — which this wipe would leave untouched because it
+    # writes `env.sh` only, and which then travels to the recipient.
+    # env.sh.sample is six characters too and is a tracked repo file, so it is
+    # excluded by name rather than by glob.
+    shopt -s nullglob
+    for _stale in "$INSTALL_DIR"/env.sh.??????; do
+        [[ "$(basename "$_stale")" == "env.sh.sample" ]] && continue
+        rm -f "$_stale" 2>/dev/null || sudo rm -f "$_stale" 2>/dev/null || true
+    done
+    shopt -u nullglob
+    unset _stale
     if atomic_write_env_sh "$INSTALL_DIR/env.sh" "$DEFAULTS"; then
         echo -e "${GREEN}done${NC}"
     else

@@ -10,6 +10,19 @@ env.sh
 # (litclock-dev#721 bench pass).
 env.sh.lock
 env.sh.bak
+# mktemp staging for the atomic env.sh writers (`mktemp "${dest}.XXXXXX"` in
+# lib/state.sh and update.sh). Normally renamed over env.sh within milliseconds,
+# but a SIGKILL or power loss inside that window leaves a full, unredacted copy
+# of env.sh — API key, coordinates, city — sitting beside it. The siblings above
+# are enumerated, so this shape was not covered and `git reset --hard` never
+# removes it (litclock-dev#871 /review, adversarial). Exactly six X's, matching
+# mktemp's template, so nothing else that shares the prefix is swept up.
+env.sh.??????
+# `sample` is also six characters, so the template pattern matches the TRACKED
+# env.sh.sample. Harmless while it stays tracked (ignore rules do not apply to
+# tracked files) and a trap the moment it is removed and re-added, so exclude it
+# explicitly rather than relying on that.
+!env.sh.sample
 *.log
 .vscode
 *.pickle
