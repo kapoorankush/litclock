@@ -4,6 +4,8 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+## [v0.231.0] - 2026-09-28
+
 ### Changed
 
 - Your clock now draws each quote from text instead of using a pre-made picture, once it has checked on itself that it can do so correctly; the pictures stay on the clock as a backup.
