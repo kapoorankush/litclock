@@ -426,10 +426,12 @@ margin.)
 
 Not in the checklist above because it is not a first-boot flow — but it is the
 highest-blast-radius surface in the tree, and **the failure direction is
-asymmetric**. A false GREEN ships a broken update once. A false RED reverts
-every update, on every device, every weekly tick, forever: nothing writes a
-blocked-sha on the smoke-revert path, so the next tick resolves the same target
-and reverts again. Test on a device you can re-flash.
+asymmetric**. A false GREEN ships a broken update once. A false RED reverts a
+healthy update on every affected device and, since litclock-dev#865, BLOCKS it:
+the revert records the release in `blocked-sha`, so those devices stay off it
+until a newer release ships (before litclock-dev#865 it was worse — every weekly tick
+re-applied and re-reverted the same target, forever). Test on a device you can
+re-flash.
 
 Force a run rather than waiting for the Sunday timer:
 
@@ -500,7 +502,7 @@ sudo systemctl start litclock-update.service && journalctl -fu litclock-update
   ticks verified on hardware 2026-09-18. The pip hash stays deleted across the
   blocked ticks (the revert removes `HASH_FILE`) so the recovering release
   re-runs pip once; that is expected, not a second fault.
-- **The runtime-render self-test runs after the marker, and its verdict lands in the memo (litclock-dev#871 Stage A — INERT this release).** It runs only on an APPLIED release: a tick with nothing new exits at the no-op early-out before Phase 4.5, so publish one from a local bare remote — and build that release so it touches NONE of the six proof inputs (`fonts/`, the measurement dump, `requirements.txt`, `quote_renderer.py`, `gd_measure.py`, `validate_measurement.py`), or Phase 2b's revoke block removes the marker you are about to tamper with, the KEEP arm re-stamps a fresh one, and the self-test passes; a `runtime-render validation marker removed:` line in the journal means the staging was undone and the run proves nothing. A normal run on a device with a marker must log `Running the runtime-render self-test`, then `[selftest] dry-run: rendered 800x480 image, render_mode=runtime`, then `runtime-render self-test PASSED in N.Ns`, and `/var/lib/litclock/runtime-render-selftest.json` holding `"result":"passed"` with `duration_s` and the release `sha` — the durable pass record Stage B will gate on (the journal is capped at 7 days, so the log line alone would be gone before the next release); read `duration_s`: Stage B will need devices that render inside the 4s lead — and `LITCLOCK_RUNTIME_RENDER` in `env.sh` must be UNCHANGED afterwards, because Stage A changes nothing on the device; that is the point. A failure is silent by design, so stage one to prove the harness can fail — **in the marker, not in the tree**: `sudo sed -i 's/digest=[0-9a-f]*/digest=deadbeef/' /home/pi/litclock/.runtime-render-validated`. The marker is gitignored, so Phase 2's `git reset --hard` leaves it alone; it is still PRESENT, so the KEEP arm does not re-stamp it and clears the memo; and the painter's digest check declines the text tier, so the self-test paints a PNG and exits 3. Expect `[selftest] ... render_mode=image`, then `self-test did not pass: the painter fell back`, then `jq .result,.rc /var/lib/litclock/runtime-render-validation.json` printing `"selftest-failed"` and `3` (the file is compact JSON — do not grep for a spaced literal), `/var/lib/litclock/runtime-render-selftest.json` GONE (a fail retires an earlier pass), and `/api/status` showing the memo as `runtime_render_validation`. **The update must still end in `Update Complete`** and the panel must keep painting — a failed self-test is not an update failure. Two stagings that CANNOT fail, recorded so nobody re-derives them: moving the marker aside (the KEEP arm re-stamps an absent marker before the self-test runs, so that run passes), and `sudo mv fonts{,.bak}` (four tracked files — Phase 2 restores them before anything looks, and even if it did not, the PNG tier needs the same fonts for the masthead, so the smoke gate's own dry-run would revert the release before reaching the self-test). Then restore the marker — `sudo -u pi /home/pi/litclock/venv/bin/python3 tools/validate_measurement.py check --stamp` re-earns it — and apply another release: the present marker clears the memo at the top of the KEEP arm, the self-test passes, and the memo file must be gone. Three more things to confirm while there: with a non-English `LITCLOCK_LANGUAGE` in `env.sh` the `[selftest]` lines render THAT corpus (the catalog probes above are pinned to English; this one deliberately is not); `/run/litclock/current-quote.png` keeps its pre-tick mtime (the self-test renders into a throwaway directory); and no weather request leaves the device during the self-test (`WEATHER_ENABLED` is forced off for it — a capability probe has no business on the network).
+- **The runtime-render self-test runs after the marker, and its verdict lands in the memo (litclock-dev#871 Stage A — shipped inert one release ahead of Stage B).** **It runs on EVERY tick, not only on an applied release** — this line used to claim the opposite and it is wrong (measured 2026-09-23 during the Stage B bench run, and pre-existing since Stage A shipped). There is no same-SHA early-out: an up-to-date tick logs `Already up to date (<sha>)` as a plain message and runs straight on through Phase 4.5, self-test and all — verified at 3.9s on a tick that applied nothing. So a plain `sudo systemctl start litclock-update.service` is enough to exercise the self-test, and the harness is only needed when you must control what the release CONTAINS. It also means the ~3.5s self-test is paid weekly on every marker-bearing device forever, and it is what makes Stage B's "retry next cycle" real. When you do publish one, build that release so it touches NONE of the six proof inputs (`fonts/`, the measurement dump, `requirements.txt`, `quote_renderer.py`, `gd_measure.py`, `validate_measurement.py`), or Phase 2b's revoke block removes the marker you are about to tamper with, the KEEP arm re-stamps a fresh one, and the self-test passes; a `runtime-render validation marker removed:` line in the journal means the staging was undone and the run proves nothing. A normal run on a device with a marker must log `Running the runtime-render self-test`, then `[selftest] dry-run: rendered 800x480 image, render_mode=runtime`, then `runtime-render self-test PASSED in N.Ns`, and `/var/lib/litclock/runtime-render-selftest.json` holding `"result":"passed"` with `duration_s` and the release `sha` — the durable pass record Stage B gates on (the journal is capped at 7 days, so the log line alone would be gone before the next release). `duration_s` is recorded for diagnosis, not as a gate: Stage B reads the record's `result` and `sha` only (why, below). The self-test itself changes nothing on the device. What this step checks is narrow: `LITCLOCK_RUNTIME_RENDER` may END the tick as `true` when it did not start that way ONLY with a `MIGRATED to runtime text rendering` line in THIS run's journal — bound the read with `--since` the run's start, because journald is persistent and an older MIGRATED line would vouch for a flip nobody can explain. That covers both starting points: `false`, and a key that was MISSING, which Phase 3 backfills from `env.sh.sample` as `false` before Stage B runs, so an old device can go missing → `true` in one tick with a MIGRATED line (correct), or missing → `false` with none (also correct: Stage B refused, silently or with a `Not migrating …` line). Any other change is the failure. Whether a given device SHOULD have flipped is not this step's question — Stage B's guards decide that, and the Stage B section below tests them. A failure is silent by design, so stage one to prove the harness can fail — **in the marker, not in the tree**: `sudo sed -i 's/digest=[0-9a-f]*/digest=deadbeef/' /home/pi/litclock/.runtime-render-validated`. The marker is gitignored, so Phase 2's `git reset --hard` leaves it alone; it is still PRESENT, so the KEEP arm does not re-stamp it and clears the memo; and the painter's digest check declines the text tier, so the self-test paints a PNG and exits 3. Expect `[selftest] ... render_mode=image`, then `self-test did not pass: the painter fell back`, then `jq .result,.rc /var/lib/litclock/runtime-render-validation.json` printing `"selftest-failed"` and `3` (the file is compact JSON — do not grep for a spaced literal), `/var/lib/litclock/runtime-render-selftest.json` GONE (a fail retires an earlier pass), and `/api/status` showing the memo as `runtime_render_validation`. **The update must still end in `Update Complete`** and the panel must keep painting — a failed self-test is not an update failure. Two stagings that CANNOT fail, recorded so nobody re-derives them: moving the marker aside (the KEEP arm re-stamps an absent marker before the self-test runs, so that run passes), and `sudo mv fonts{,.bak}` (four tracked files — Phase 2 restores them before anything looks, and even if it did not, the PNG tier needs the same fonts for the masthead, so the smoke gate's own dry-run would revert the release before reaching the self-test). Then restore the marker — `sudo -u pi /home/pi/litclock/venv/bin/python3 tools/validate_measurement.py check --stamp` re-earns it — and apply another release: the present marker clears the memo at the top of the KEEP arm, the self-test passes, and the memo file must be gone. Three more things to confirm while there: with a non-English `LITCLOCK_LANGUAGE` in `env.sh` the `[selftest]` lines render THAT corpus (the catalog probes above are pinned to English; this one deliberately is not); `/run/litclock/current-quote.png` keeps its pre-tick mtime (the self-test renders into a throwaway directory); and no weather request leaves the device during the self-test (`WEATHER_ENABLED` is forced off for it — a capability probe has no business on the network).
 
      **First field measurement, 2026-09-20 (`dev-20260920-512c291`, Pi Zero 2 W):** the self-test recorded **3.8s** during the update; five hand-run repeats on an idle system gave **3.4 / 3.5 / 3.5 / 3.5 / 3.7s**. The gap is update-time load, not instrument bias, and it errs the safe way.
 
@@ -596,6 +598,205 @@ sudo systemctl start litclock-update.service && journalctl -fu litclock-update
   (`echo '{' > languages/en/strings.json`) and it must print `0` and STILL exit
   0 — a non-zero exit with empty stdout is indistinguishable from a dead
   interpreter, and the gate would have to guess. Restore the bundle afterwards.
+
+### Stage B — the runtime-render migration (litclock-dev#871)
+
+The flip: `update.sh` rewrites `export LITCLOCK_RUNTIME_RENDER=false` to `true`
+under `env.sh.lock` once the Stage A self-test passes on that run. Both calls
+sit in the smoke-gate KEEP arm behind the same `-f "$RUNTIME_MARKER"` and
+`ROLLBACK_MODE` guard, self-test first, migration second.
+
+**Almost none of this belongs on hardware.** `TestStageBMigrationExecutes`
+already EXECUTES every guard arm — missing/unparseable/sha-mismatched record,
+absent or empty `images/metadata`, two active assignments, a bare assignment
+beside the export, a held lock, a transformation that loses lines, idempotence.
+Re-running those on a Pi tests nothing the suite does not already pin. What the
+suite cannot reach is the glass and the clock: it proves `env.sh` changed, never
+that the painter read it, that the panel shows a text frame, or that the frame
+still lands on time. That is the whole of this section.
+
+**Run it on the bench, not the fielded clock.** The bench is re-flashable and
+already in the exact pre-migration state — flashed from the PUBLIC v0.230.0
+image, so `LITCLOCK_RUNTIME_RENDER=false`, marker present from the build-time
+stamp, `images/` on disk, and **no `/var/lib/litclock/runtime-render-selftest.json`
+at all**, because an image flash never runs `update.sh`. That absence is not a
+fault; it is the majority-fleet path (most devices are internet flashers on
+images), and it means the first Stage B tick must write the record AND migrate
+in the same run, with `rec_sha` and `git rev-parse HEAD` resolving to the same
+new release. The fielded clock is already on runtime render and is production —
+do not stage a downgrade on it to create a test subject.
+
+Stage the release from a local bare remote and a tag-list API stub
+(a synthetic release avoiding the six proof inputs, or Phase 2b revokes the
+marker and the KEEP arm re-stamps it — see the Stage A bullet above). Build the
+synthetic release on **public's** HEAD when the device is a public flash: the
+two histories diverge, so a dev commit served to a public-tracking device breaks
+ancestry. Check it (`git merge-base --is-ancestor <device HEAD> <tag>`) rather
+than assuming. **And make the API stub match the tag LIST endpoint exactly** —
+`"/tags" in path` also matches `/repos/{o}/{r}/releases/tags/{tag}`, which
+`download_images.sh` calls; handing that the tags ARRAY throws `AttributeError:
+'list' object has no attribute 'get'` and quarantines `images/`, which silently
+converts the next run into the control case (measured 2026-09-23).
+
+- **REUSE A TAG NAME ACROSS SESSIONS AND YOU SILENTLY TEST THE OLD CODE.** Hit
+  on 2026-09-23 and it produced a clean-looking PASS on a tree that did not
+  contain the fix under test. `update.sh`'s tag fetch is deliberately
+  non-forcing (`refs/tags/<tag>:refs/tags/<tag>`, no `+`), so a device that
+  already carries `v0.231.0` from an earlier harness run REFUSES the new
+  sibling commit and the resolver keeps pointing at the old sha. Nothing warns:
+  the tick logs `Target: Release SHA <old>` and `Already up to date`, both of
+  which read as normal. **Before every harness run, on the device:**
+  `git -C ~/litclock tag -d <tag>`, then confirm
+  `git rev-parse --short <tag>` matches the bare repo's
+  (`git -C <your bare remote> rev-parse --short <tag>`). Cheaper still,
+  check the applied sha afterwards — `Updated: <old> → <new>` naming the sha you
+  built is the only line that proves the release under test actually landed, and
+  a grep for the fix in `~/litclock/scripts/update.sh` settles it outright.
+- **The CONTROL first, and it must REFUSE.** Before staging a passing run, empty
+  the fallback rung: `sudo mv /home/pi/litclock/images/metadata{,.qabak}`. Run
+  the tick. It must log `Not migrating to runtime render: images/metadata is
+  missing or empty`, leave `env.sh` reading `false`, write the memo as
+  `migration-skipped`, and still finish `Update Complete`. **Grep the refusal
+  line, not the word `migrat`** — `MIGRATED to runtime text rendering` and `Not
+  migrating` both match a prefix search, so a sloppy grep passes on either
+  outcome, which is the shape this repo keeps getting caught by. Bound the read
+  with `--since "<the run's start time>"` too: journald here is persistent, so an
+  unbounded grep on the second run happily matches the FIRST run's verdict —
+  which on this check is the opposite verdict. If the control migrates anyway,
+  the staging is wrong and nothing below means anything.
+  - **The control is only meaningful because the smoke gate still passes without
+    images — verified, not assumed** (2026-09-23): a dry-run with
+    `images/metadata` absent degrades to `render_mode=time-only` and exits **0**,
+    so the run reaches the migration. Had it exited non-zero, the gate would have
+    reverted first and the refusal would have proved nothing about the guard.
+    Re-check this if the painter's empty-corpus behaviour ever changes.
+  - **Restoring is not just undoing the `mv`.** The tick's image sync verifies
+    the PNGs against the bundled byte manifest, fails with `images/metadata`
+    gone, and quarantines the WHOLE tree to `images.failed.<ts>`. Recover by
+    moving that directory back to `images/` and renaming `metadata.qabak` inside
+    it, then confirm `cd ~/litclock/images && sha256sum --quiet --strict -c
+    files.sha256` returns **rc 0** before the real run. Skip that and the next
+    tick re-quarantines, the migration refuses again, and you read a false
+    negative as a Stage B failure.
+- **Then the real tick: the flag flips and the PANEL follows.** `env.sh` must
+  read `true`, the journal must carry the `MIGRATED to runtime text rendering`
+  line, and `/var/lib/litclock/runtime-render-validation.json` must be GONE (a
+  successful migration clears the memo). None of that is the payoff. Wait for
+  the next minute tick and read `jq -r .render_mode
+  /run/litclock/current-quote.json` — it must say **`runtime`**. Until that
+  field flips, the device has a rewritten `env.sh` and is still painting PNGs.
+- **Look at the glass once.** The unit tests never see a frame. Compare a
+  text-rendered frame against the PNG it replaced for the same minute: masthead,
+  margins, the long-quote sizes, and the attribution line. Runtime render picks
+  its own font size, so a quote near the wrap boundary is where the two tiers
+  diverge; pick one deliberately rather than whatever minute you happen to be
+  standing there for.
+- **The frame must still settle by `:00`, measured over SSH with `picked_at`.**
+  The second-of-minute of `picked_at` in `/run/litclock/current-quote.json` is
+  **when the frame settled on glass**, which is what makes this checkable without
+  standing at the panel. **Do not re-derive that from the source and conclude
+  otherwise** — `literary_clock.py` carries two different `picked_at` values, and
+  the two in the quote builders (~806, ~856) are SELECTION stamps that are never
+  published: `_write_status_file` builds its own payload with a fresh
+  `_time.time()` and is called immediately after `epd.display()` returns. Grepping
+  the field name lands on the selection stamps first and invites exactly the wrong
+  reading. Sample five consecutive minutes before and after the migration:
+
+  ```bash
+  for i in $(seq 5); do
+    sleep 60
+    jq -r '"\(.time) picked_at=\(.picked_at|strftime("%M:%S")) mode=\(.render_mode)"' \
+      /run/litclock/current-quote.json
+  done
+  ```
+
+  Take these from SCHEDULED `:56` runs — a `systemctl restart litclock.timer`
+  fires an immediate off-schedule paint whose stamp means nothing, and **an
+  update ends by restarting the timer**, so the first stamp you see after a
+  migration is always one of those (measured `settled=:51` on 2026-09-23).
+  Discard it and start counting from the next minute. Baselines measured
+  2026-09-13 at lead 4.0s: bench **:02.8** on images, bench **:03.3** on runtime,
+  fielded clock **:04.3** on runtime. So the flip is expected to cost ~0.5-1s of
+  settle and still land a correct frame. What fails the check is the
+  quote's timestring disagreeing with the wall clock once settled, not the
+  offset itself. If it does disagree, raise `LITCLOCK_RENDER_LEAD_S` on that
+  device — do NOT edit the default, and do NOT revert the migration for it.
+- **The fallback rung still works AFTER the migration.** This is the layer the
+  whole brick argument rests on, and migrating is exactly when it stops being
+  hypothetical. With the device now on `true`, corrupt the marker the litclock-dev#886
+  way (`printf 'freetype=2.13.2 digest=\xff\xfe\xfd broken\n' >
+  .runtime-render-validated`) and confirm the next painted frame comes back with
+  `render_mode` **`image`** and the panel keeps painting — not a traceback, not a
+  frozen panel. Restore the marker with `validate_measurement.py check --stamp`.
+  A migrated device that cannot fall back is the one outcome Stage B is not
+  allowed to produce.
+- **The flip survives a reboot and does not re-fire.** Reboot, confirm `env.sh`
+  still says `true` and `render_mode` is still `runtime`, then run one more tick
+  with nothing new: `env.sh` must stay `true`, no `MIGRATED` line may appear in
+  THAT tick's journal (`--since` its start — the migration tick's own line is
+  still in the persistent journal), and it should write NO memo. An already-`true` device is the goal state, not
+  a negative result. If a `migration-skipped` memo DOES appear, read its reason
+  before calling it a regression: the record guards run before the flag is
+  read, so a pass record that is missing, unreadable or not for this release
+  (the new one failed to write and an older one is still on disk) produces
+  that memo on an already-migrated device too. Any OTHER reason (the images tier, the
+  lock, the rewrite) on a device with a single `true` assignment means the
+  idempotence guard regressed: those guards sit after the silent already-`true`
+  return. (A hand-edited env.sh holding an exported `=false` and a later
+  `=true` is the one exception: effectively `true`, but it has an exported
+  `=false` for Stage B to find, so it can get an images or duplicate-assignment
+  memo legitimately.)
+
+**Measured end to end on the bench, 2026-09-23 — control failed first, real run
+migrated.** Control (images/metadata aside): self-test PASSED 3.5s, `Not
+migrating … images/metadata is missing or empty`, `env.sh` unchanged, memo
+`migration-skipped`, `Update Complete`. Real run: self-test PASSED 3.6s,
+`MIGRATED to runtime text rendering`, memo cleared, record sha == HEAD,
+`images/` retained, and `render_mode` on the next scheduled paint **`runtime`**.
+Settle moved `:01` -> `:02` (five samples each way) — quote the ~1s DELTA, not
+the absolute, since this build's image baseline is already faster than the
+2026-09-13 `:02.8` reference. Corrupt-marker fallback on the MIGRATED device
+degraded to `image` and kept painting on time, then returned to `runtime` on
+re-stamp. Reboot held; a further no-op tick left `env.sh` alone and wrote no
+memo. Full record is kept with the maintainer's QA notes, off-repo.
+
+**Re-QAed the same day after the /review fixes, and the smoke-gate half is the
+part worth re-reading.** The gate now sources `env.sh`, so it renders the tier
+the device is actually on. The evidence is one log line on one device across two
+ticks: `[smoke] dry-run: … render_mode=image` before the migration (env.sh still
+`false` at smoke time) and `render_mode=runtime` on the next. Before the fix the
+second said `image` forever, which meant the only thing that can revert a
+release had stopped exercising the tier the fleet runs. Also confirmed end to
+end: a staged refusal (images/metadata aside, flag reset to `false` so the
+device is eligible) now reaches `/api/status` as
+`runtime_render_validation.result = "migration-skipped"` with its reason — it
+was `null` before the allowlist fix, i.e. identical to a healthy clock.
+
+**Old images take the jump in one tick — measured 2026-09-27.** Fresh flashes
+of public v0.219.0 and v0.226.0 (the OLD 600s unit, no baked marker), then one
+tick to a synthetic v0.231.0 via a pass-through tag stub (it fakes only the
+tag list, so the 124MB image download is real): 379s / 373s, `MIGRATED` on
+that FIRST tick, then `runtime` settling `:03`, and a no-op second tick. The
+budget guard was the only thing between that and the old unit's SIGKILL, with
+~220s to spare — a slow link defers the validator to tick 2 by design. Stop
+`litclock-update.timer` before anything else on a fresh old-image flash, or a real GitHub tick spoils it.
+**Stream the journal to the laptop during any run that reboots** (`journalctl -f`
+over SSH, restarted after each boot): the 2026-09-24 rollback runs' `update.sh`
+lines were missing from the card's own journal three days later, cause unknown.
+
+**The rollback marker revoke, re-run after the pre-landing hardening moved it
+before the reset (2026-09-27): PASS**, without a reflash — a release built on
+the device's own LKG plus a README line serves as the fleeing release, since
+the revoke lives in the FLEEING release's `update.sh`. Evidence line is
+`marker removed: bootcheck rollback`, count exactly 1 in `--since` the reboot,
+ordered before `Updated:`. That staging never re-execs (both `update.sh` copies
+are identical), so it cannot test the snapshot path; the 2026-09-24 run did.
+
+- **What this does NOT cover.** The other three fleet devices are unreachable
+  gifts and will migrate unobserved — that asymmetry is why Stage A shipped inert
+  for a release first, and it does not change here. Nothing on the bench
+  exercises a device whose self-test passes and whose panel then fails, because
+  that device does not exist to hand.
 
 ### litclock-dev#337 — Location/Weather/Temperature IA (post-design-review, A9-A18)
 

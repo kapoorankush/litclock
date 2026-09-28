@@ -19,8 +19,10 @@
 #   Phase 4  venv hash-gate → pip install if hash changed
 #                  │
 #   Phase 4.5      smoke: $PYTHON src/literary_clock.py --dry-run (60s hard timeout)
-#                  (pass) then: runtime-render marker (re-)stamp, and the
-#                  litclock-dev#871 self-test -> memo (both inert to the update's verdict)
+#                  (pass) then: runtime-render marker (re-)stamp, the litclock-dev#871
+#                  self-test -> memo, and the litclock-dev#871 Stage B migration, which
+#                  may rewrite LITCLOCK_RUNTIME_RENDER=true in env.sh (all three
+#                  inert to the update's verdict)
 #                  │                      ╲
 #                (pass)                  (fail)
 #                  ▼                        ▼
@@ -245,8 +247,11 @@ RUNTIME_VALIDATION_MEMO_FILE="$STATE_DIR/runtime-render-validation.json"
 # litclock-dev#871 Stage A — the POSITIVE record the memo above cannot carry:
 # {result: passed, duration_s, sha, at_unix}, written by the self-test on a
 # pass and removed on a fail. The journal is capped at 7 days (the weekly tick
-# cadence) and a tick with nothing new exits before Phase 4.5, so a pass logged
-# only there is gone before Stage B can read it; and "no memo" is not "passed"
+# cadence), so a pass logged only there is gone before Stage B can read it —
+# the journal is the reason this file exists, NOT a no-op early-out: there is
+# none, and a tick with nothing new runs Phase 4.5 like any other (measured
+# 2026-09-23; the claim that it exits first was wrong and is corrected in
+# CLAUDE.md too); and "no memo" is not "passed"
 # (a reset or a rollback tick removes the memo without re-asking). Stage B
 # gates the flag flip on THIS file, sha-matched (litclock-dev#875 red team).
 RUNTIME_SELFTEST_RECORD_FILE="$STATE_DIR/runtime-render-selftest.json"
@@ -989,20 +994,76 @@ fi
 SELF_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
 OLD_SELF_HASH=$(md5sum "$SELF_SCRIPT" | cut -d' ' -f1)
 
+# The runtime-render validation marker (see ANCHOR: runtime-marker-revoke for
+# what it proves). Resolved HERE, before the reset, because a bootcheck rollback
+# must revoke it before anything can re-exec — see below. The reader honors
+# LITCLOCK_RUNTIME_VALIDATED_MARKER (set via env.sh, which runtheclock.sh
+# sources), so resolve the SAME path. Subshell so env.sh can't mutate this script.
+RUNTIME_MARKER=$(
+    [[ -f "$INSTALL_DIR/env.sh" ]] && source "$INSTALL_DIR/env.sh" 2>/dev/null
+    echo "${LITCLOCK_RUNTIME_VALIDATED_MARKER:-$INSTALL_DIR/.runtime-render-validated}"
+)
+# A bootcheck rollback revokes it UNCONDITIONALLY (litclock-dev#894). Stage B
+# flips LITCLOCK_RUNTIME_RENDER to true and nothing writes it back, so without
+# this a rollback whose proof inputs happen to match would put the LKG's
+# painter on the text tier — a combination that LKG never validated, and whose
+# src/literary_clock.py is not a proof input (an LKG predating the litclock-dev#886
+# corrupt-marker fix dies on a bad marker instead of falling back). Dropping
+# the marker instead of un-flipping the flag keeps the migration stateless —
+# no previous-value record, no one-shot marker, nothing for the weekly
+# migration to fight — and the painter declines text without one, so the
+# recovered clock paints the pre-rendered tier. The next release it APPLIES
+# re-stamps (the stamp is skipped in ROLLBACK_MODE, see Phase 4.5) — not the
+# next weekly tick: bootcheck blocks the release it fled, and a tick that skips
+# a blocked target exits before Phase 2, so the LKG stays on PNGs until a newer
+# release lands. That is the conservative direction on purpose.
+#
+# BEFORE the reset and the re-exec (litclock-dev#896 review): if the snapshot below cannot
+# be made, the run falls back to exec'ing the LKG's OWN update.sh, which lands
+# on the right SHA but has no litclock-dev#894 arm. Revoking here holds on every path.
+# The rm is VERIFIED: a marker the updater cannot unlink must not be reported
+# as removed, because the LKG would then paint a tier it never validated.
+if [[ -f "$RUNTIME_MARKER" && "$ROLLBACK_MODE" -eq 1 ]]; then
+    rm -f "$RUNTIME_MARKER" 2>/dev/null
+    if [[ -e "$RUNTIME_MARKER" ]]; then
+        log_error "could not remove the runtime-render validation marker ($RUNTIME_MARKER) during a bootcheck rollback — the last-known-good may paint runtime text it never validated (litclock-dev#894)"
+    else
+        log_info "runtime-render validation marker removed: bootcheck rollback — the last-known-good paints pre-rendered images until the next applied release re-earns it (litclock-dev#894)"
+    fi
+fi
+
 # In rollback mode, snapshot THIS script (which has the rollback logic) BEFORE
-# the reset. If the LKG target carries a different update.sh — very likely,
-# since the LKG usually predates this rollback feature — the self-modification
-# guard below would otherwise re-exec the LKG's update.sh, which has no
-# rollback logic and would re-resolve the latest (bad) Release, resetting
-# straight back to the brick. Re-execing the snapshot instead completes the
-# pinned LKG install (it re-reads rollback-target from disk).
+# the reset, so the self-modification guard below re-execs THIS release's
+# rollback logic rather than the LKG's update.sh. An LKG predating the rollback
+# feature (litclock-dev#209 follow-up, first shipped in v0.209.0) would re-resolve the
+# latest (bad) Release and reset straight back to the brick; every PUBLIC
+# release from v0.219.0 carries it, so the fallback below lands on the right
+# SHA, but loses whatever this release added (the litclock-dev#894 revoke is therefore done
+# above, before the reset). The snapshot re-reads rollback-target from disk.
+#
+# The snapshot is a DIRECTORY holding the script AND its lib/ (litclock-dev#896).
+# The script sources lib/*.sh relative to its own location, so a lone copy in
+# /tmp looked for /tmp/lib/state.sh, found nothing, and ran with no helpers:
+# read_sha_file was missing, so it judged rollback-target "malformed", dropped
+# out of rollback mode and installed origin/master — the bad release, on a real
+# device. Every public release through v0.230.0 shipped that; the lib copy must
+# come from THIS tree, before the reset swaps in the LKG's.
 ROLLBACK_SELF_SNAPSHOT=""
+ROLLBACK_SELF_SNAPSHOT_DIR=""
 if [[ "$ROLLBACK_MODE" -eq 1 ]]; then
-    ROLLBACK_SELF_SNAPSHOT="$(mktemp /tmp/litclock-update-rollback.XXXXXX 2>/dev/null || echo "")"
-    if [[ -n "$ROLLBACK_SELF_SNAPSHOT" ]] && cp "$SELF_SCRIPT" "$ROLLBACK_SELF_SNAPSHOT" 2>/dev/null; then
+    ROLLBACK_SELF_SNAPSHOT_DIR="$(mktemp -d -t litclock-update-rollback.XXXXXX 2>/dev/null || echo "")"
+    if [[ -n "$ROLLBACK_SELF_SNAPSHOT_DIR" ]] \
+        && mkdir -p "$ROLLBACK_SELF_SNAPSHOT_DIR/lib" 2>/dev/null \
+        && cp "$SELF_SCRIPT" "$ROLLBACK_SELF_SNAPSHOT_DIR/update.sh" 2>/dev/null \
+        && cp "$_THIS_SCRIPT_DIR"/lib/*.sh "$ROLLBACK_SELF_SNAPSHOT_DIR/lib/" 2>/dev/null \
+        && [[ -f "$ROLLBACK_SELF_SNAPSHOT_DIR/lib/state.sh" ]]; then
+        ROLLBACK_SELF_SNAPSHOT="$ROLLBACK_SELF_SNAPSHOT_DIR/update.sh"
         chmod +x "$ROLLBACK_SELF_SNAPSHOT" 2>/dev/null || true
     else
+        [[ -n "$ROLLBACK_SELF_SNAPSHOT_DIR" ]] && rm -rf "$ROLLBACK_SELF_SNAPSHOT_DIR" 2>/dev/null
         ROLLBACK_SELF_SNAPSHOT=""
+        ROLLBACK_SELF_SNAPSHOT_DIR=""
+        log_warn "could not snapshot update.sh + lib/ for the rollback (disk full or /tmp unwritable?) — if update.sh differs, the last-known-good's own update.sh finishes the rollback (litclock-dev#896)"
     fi
 fi
 
@@ -1022,17 +1083,31 @@ git submodule update --init --recursive
 NEW_SELF_HASH=$(md5sum "$SELF_SCRIPT" | cut -d' ' -f1)
 if [[ "$OLD_SELF_HASH" != "$NEW_SELF_HASH" ]]; then
     log_info "update.sh changed — re-executing with new version..."
-    if [[ "$ROLLBACK_MODE" -eq 1 && -n "$ROLLBACK_SELF_SNAPSHOT" && -x "$ROLLBACK_SELF_SNAPSHOT" ]]; then
+    if [[ "$ROLLBACK_MODE" -eq 1 && -n "$ROLLBACK_SELF_SNAPSHOT" && -f "$ROLLBACK_SELF_SNAPSHOT" ]]; then
         # Rollback: re-exec the pre-reset snapshot (has rollback logic), NOT the
-        # on-disk LKG update.sh (which would re-resolve the latest bad Release).
-        # rollback-target persists on disk, so the snapshot re-detects rollback.
-        exec bash "$ROLLBACK_SELF_SNAPSHOT" "$OLD_SHA"
+        # on-disk LKG update.sh. rollback-target persists on disk, so the
+        # snapshot re-detects rollback. `exec bash`, so the mode bit is moot
+        # (-f, not -x: a failed chmod must not discard a good snapshot). The
+        # env var hands the directory to the snapshot run, which removes it
+        # below once it has sourced its lib/.
+        LITCLOCK_ROLLBACK_SNAPSHOT_RUNNING="$ROLLBACK_SELF_SNAPSHOT_DIR" exec bash "$ROLLBACK_SELF_SNAPSHOT" "$OLD_SHA"
     fi
     chmod +x "$SELF_SCRIPT"
     exec "$SELF_SCRIPT" "$OLD_SHA"
 fi
 # Snapshot no longer needed once we're past the re-exec point (same bytes).
-[[ -n "$ROLLBACK_SELF_SNAPSHOT" ]] && rm -f "$ROLLBACK_SELF_SNAPSHOT" 2>/dev/null || true
+[[ -n "$ROLLBACK_SELF_SNAPSHOT_DIR" ]] && rm -rf "$ROLLBACK_SELF_SNAPSHOT_DIR" 2>/dev/null || true
+# ...nor the one THIS run is executing from, if it is a snapshot (litclock-dev#896 review:
+# it leaked one directory per rollback onto the SD card). Its lib/ is already
+# sourced and bash reads this script through an open fd, so removing it is
+# safe. Only a directory that IS this script's own, and has the snapshot's
+# name, is ever removed: the env var alone is not trusted.
+if [[ -n "${LITCLOCK_ROLLBACK_SNAPSHOT_RUNNING:-}" \
+      && "$LITCLOCK_ROLLBACK_SNAPSHOT_RUNNING" == "$_THIS_SCRIPT_DIR" \
+      && "$(basename "$_THIS_SCRIPT_DIR")" == litclock-update-rollback.* ]]; then
+    rm -rf "$_THIS_SCRIPT_DIR" 2>/dev/null || true
+fi
+unset LITCLOCK_ROLLBACK_SNAPSHOT_RUNNING
 
 NEW_SHA=$(git rev-parse --short HEAD)
 
@@ -1083,11 +1158,9 @@ fi
 # which runtheclock.sh sources) — resolve the SAME path here or a relocated
 # marker silently survives the one invalidation layer that covers
 # semantics-only proof changes, where the digest recompute can't help
-# (litclock-dev#611 review). Subshell so env.sh can't mutate this script.
-RUNTIME_MARKER=$(
-    [[ -f "$INSTALL_DIR/env.sh" ]] && source "$INSTALL_DIR/env.sh" 2>/dev/null
-    echo "${LITCLOCK_RUNTIME_VALIDATED_MARKER:-$INSTALL_DIR/.runtime-render-validated}"
-)
+# (litclock-dev#611 review). RUNTIME_MARKER is resolved before the reset,
+# beside the litclock-dev#894 rollback revoke; env.sh is gitignored, so the
+# reset cannot change the answer.
 if [[ -f "$RUNTIME_MARKER" ]]; then
     git diff --quiet "$OLD_SHA" "$NEW_SHA" -- \
         fonts/ \
@@ -1185,7 +1258,15 @@ _phase3_merge_sample() {
         # Match both active and commented-out export lines
         if [[ "$line" =~ ^[#\ ]*(export[[:space:]]+)([A-Za-z_][A-Za-z0-9_]*)= ]]; then
             varname="${BASH_REMATCH[2]}"
-            if ! grep -q "^[# ]*export[[:space:]]\+${varname}=" "$INSTALL_DIR/env.sh"; then
+            # `[[:space:]#]*`, not `[# ]*`: a TAB-indented existing assignment
+            # went undetected and the sample's line was appended beside it, so
+            # the sample's value silently became the effective one (the last
+            # assignment wins when the file is sourced). NOT harmless before
+            # now — any key whose device value differs from the sample's could
+            # be silently reverted this way, and the sample's example latitude
+            # and longitude already differ from what a device is seeded with.
+            # litclock-dev#871 Stage B is what made it worth finding (review).
+            if ! grep -q "^[[:space:]#]*export[[:space:]]\+${varname}=" "$INSTALL_DIR/env.sh"; then
                 if [[ "$needs_newline" == "true" ]]; then
                     echo "" >> "$INSTALL_DIR/env.sh"
                     needs_newline=false
@@ -1587,8 +1668,50 @@ if [[ -x "$PYTHON" ]]; then
     # the smoke test reverts every successful update on every device. The
     # smoke test must mirror the production invocation path or it tests
     # nothing useful.
-    timeout 60 "$PYTHON" src/literary_clock.py --dry-run 2>&1 | sed 's/^/[smoke] /'
+    #
+    # SOURCE env.sh, for the same reason. `runtheclock.sh` sources it before
+    # the painter, so without it this gate renders whatever the DEFAULTS say —
+    # and since litclock-dev#871 Stage B those diverge: a migrated device runs
+    # the TEXT tier while `LITCLOCK_RUNTIME_RENDER` unset here made the gate
+    # render a PNG. The gate is the only thing in the system that can revert a
+    # release, so on a migrated fleet it was the one path that could not catch
+    # a runtime-render regression — and the marker-revoke block does not cover
+    # that gap either, because `src/literary_clock.py` is not one of the six
+    # proof inputs (/review 2026-09-23, adversarial).
+    #
+    # In a SUBSHELL, so env.sh cannot leak into this script (the isolation the
+    # self-test below already uses), and `|| true` because a syntactically
+    # broken env.sh must not decide the gate: a false RED reverts every update
+    # on every device — and since litclock-dev#865 the smoke-revert path
+    # records the release in blocked-sha, so a false RED holds a healthy
+    # release off the device until a newer one ships.
+    #
+    # Sourcing env.sh changed two other things, and both are undone here, the
+    # way the self-test below already does (litclock-dev#871 port /review):
+    #   - WEATHER is forced off. Before the source, the gate had no location
+    #     and never fetched weather; with env.sh it fetches live, and a slow
+    #     provider (WEATHER_API_TIMEOUT is owner-tunable) can push the dry-run
+    #     past the 60s bound and revert a healthy release. Weather is not what
+    #     this gate tests; it only ever passed without it.
+    #   - The runtime frame goes to a THROWAWAY directory. On a device on the
+    #     text tier the dry-run writes current-quote.png, the file that claims
+    #     to be the panel's current frame on tmpfs; a frame the panel never
+    #     painted does not belong there. If no scratch directory can be made
+    #     the gate still runs, into the live path — a misleading file is a far
+    #     smaller cost than skipping the only revert path.
+    #   Both are passed with env(1), not `export`: env.sh is sourced first, and
+    #   a `readonly` there would make an export fail (bash logs it, but the gate
+    #   carries on), handing the painter the owner's values anyway (port
+    #   /review, reproduced).
+    smoke_render_dir="$(mktemp -d 2>/dev/null)" || smoke_render_dir=""
+    [[ -n "$smoke_render_dir" ]] || log_warn "smoke test: could not create a scratch directory; a text-tier dry-run will overwrite the live current-quote.png"
+    (
+        [[ -f "$INSTALL_DIR/env.sh" ]] && { source "$INSTALL_DIR/env.sh" 2>/dev/null || true; }
+        env WEATHER_ENABLED=false ${smoke_render_dir:+"LITCLOCK_RUNTIME_RENDER_DIR=$smoke_render_dir"} \
+            timeout 60 "$PYTHON" src/literary_clock.py --dry-run 2>&1
+    ) | sed 's/^/[smoke] /'
     smoke_rc="${PIPESTATUS[0]}"
+    [[ -n "${smoke_render_dir:-}" && -d "$smoke_render_dir" ]] && rm -rf -- "$smoke_render_dir" 2>/dev/null
     # litclock-dev#532 (/review litclock-dev#738): the dry-run never imports the string
     # catalog, so a half-applied OTA missing languages/ passed smoke and
     # shipped raw keys to /api/status and every catalog-get script. Probe a
@@ -1613,15 +1736,15 @@ if [[ -x "$PYTHON" ]]; then
     #
     # Latent only while the registry lists one active language. Once a release
     # activates a second and an owner selects it, the FIRST probe mismatches and
-    # short-circuits the rest, smoke_rc=1 takes the revert arm, and nothing
-    # writes a blocked-sha on that path — only bootcheck does — so the next
-    # weekly tick resolves the same target and reverts again. It is not
-    # unrecoverable: the re-exec above (update.sh changed => exec the new copy)
-    # means the first release that modifies THIS file with the pin runs the
-    # fixed gate and the device heals itself. Until such a release lands, an
-    # affected device stays on its old SHA, shows "Update FAILED (reverted)" in
-    # the PWA, and re-runs the whole pip install every week (the revert deletes
-    # HASH_FILE, which sets NEED_PIP — it does not recreate the venv).
+    # short-circuits the rest and smoke_rc=1 takes the revert arm. (When this
+    # was written nothing wrote a blocked-sha on that path, so every weekly
+    # tick re-applied and re-reverted the same target; since litclock-dev#865
+    # the revert blocks the release instead, so the device stays on its old
+    # SHA until a newer release ships.) It is not unrecoverable: the re-exec
+    # above (update.sh changed => exec the new copy) means the first release
+    # that modifies THIS file with the pin runs the fixed gate and the device
+    # heals itself. Until such a release lands, an affected device stays on its
+    # old SHA and shows "Update FAILED (reverted)" in the PWA.
     #
     # The pin deliberately checks the CANONICAL catalog rather than the device's
     # own bundle. A missing translation degrades zz -> en inside get(), which is
@@ -1629,7 +1752,22 @@ if [[ -x "$PYTHON" ]]; then
     # failure that is not, and that is the en -> key branch this still catches.
     # The cost is that the gate no longer exercises the owner's language at all
     # (litclock-dev#772).
-    if [[ "$smoke_rc" -eq 0 ]]; then
+    #
+    # NOT in bootcheck rollback mode. There this script is the release being
+    # FLED, running against the last-known-good's tree, and the probes below
+    # call subcommands an older LKG does not have: `catalog-get` arrived in
+    # v0.226.0 and `catalog-count` in v0.227.0. Against such a tree every probe
+    # fails, the rollback takes the smoke-failure exit instead of finishing,
+    # and `rollback-target` survives until the LKG's own update.sh re-runs the
+    # rollback a week later (litclock-dev#871 port /review). The LKG needs no
+    # catalog check: it is the code that last painted on this device, and the
+    # dry-run above has just rendered with it.
+    catalog_probes=1
+    if [[ "${ROLLBACK_MODE:-0}" -eq 1 && "$smoke_rc" -eq 0 ]]; then
+        log_info "Catalog smoke skipped in rollback mode: the last-known-good may predate the probes, and it already painted on this device"
+        catalog_probes=0
+    fi
+    if [[ "$smoke_rc" -eq 0 && "$catalog_probes" -eq 1 ]]; then
         catalog_probe="$(LITCLOCK_LANGUAGE=en timeout 30 "$PYTHON" src/eink_display.py catalog-get status.relative.just_now 2>/dev/null)"
         if [[ "$catalog_probe" = "just now" ]]; then
             log_info "Catalog smoke passed"
@@ -1644,7 +1782,7 @@ if [[ -x "$PYTHON" ]]; then
     # the recovery screens degrade. Probe the two prefixes whose loss hurts
     # most: the boot splash (every boot) and the strict recovery screen
     # (the copy a stuck user is left staring at).
-    if [[ "$smoke_rc" -eq 0 ]]; then
+    if [[ "$smoke_rc" -eq 0 && "$catalog_probes" -eq 1 ]]; then
         for probe in "boot.splash.starting.title=LitClock" "firstboot.splash.setup_incomplete.title=Setup Incomplete"; do
             probe_key="${probe%%=*}"
             probe_want="${probe#*=}"
@@ -1676,7 +1814,7 @@ if [[ -x "$PYTHON" ]]; then
     # 75% of it, so a growing catalog forces a deliberate bump rather than
     # letting the gate quietly go slack.
     CATALOG_MIN_KEYS=400
-    if [[ "$smoke_rc" -eq 0 ]]; then
+    if [[ "$smoke_rc" -eq 0 && "$catalog_probes" -eq 1 ]]; then
         catalog_count="$(LITCLOCK_LANGUAGE=en timeout 30 "$PYTHON" src/eink_display.py catalog-count 2>/dev/null)"
         if [[ "$catalog_count" =~ ^[0-9]+$ ]] && [[ "$catalog_count" -ge "$CATALOG_MIN_KEYS" ]]; then
             log_info "Catalog size smoke passed ($catalog_count keys)"
@@ -1900,8 +2038,11 @@ _defer_runtime_validation() {
 # calls this with its own bound and token. The validator's default deliberately
 # does NOT reserve for the self-test that follows it (litclock-dev#875 red team): on the
 # transition tick (a 600s unit) that would defer the one step that changes
-# device behaviour — earning the marker — to protect an INERT probe that has
-# its own guard and loses nothing by waiting. Stamp now, defer the self-test.
+# device behaviour — earning the marker — to protect a probe that has its own
+# guard. Deferring the self-test does defer Stage B's migration by a tick too
+# (Stage B acts only on a pass in the same run), but the marker is what every
+# later tick needs first, and it takes the longest. Stamp now, defer the
+# self-test.
 _validation_fits_remaining_budget() {
     local needed="${1:-$VALIDATOR_TIMEOUT_S}" token="${2:-deferred}"
     local label="${3:-runtime-render validation}"
@@ -1930,7 +2071,265 @@ _validation_fits_remaining_budget() {
 }
 # --- litclock-dev#835 budget helpers END ---
 
-# litclock-dev#871 Stage A — the runtime-render SELF-TEST, shipped INERT.
+# litclock-dev#871 Stage B — the FLIP, and the only part of this feature that
+# changes a device's behaviour.
+#
+# Rewrites `export LITCLOCK_RUNTIME_RENDER=false` to `true` in env.sh, so the
+# device paints quotes from TEXT instead of the pre-rendered PNG set. The point
+# is not the 148MB (litclock-dev#592 is closed; the image pipeline stays as plan B) — it
+# is that a new language becomes a CSV plus a strings bundle instead of a
+# ~124MB image set with its own release tag, integrity gate and version pin.
+# litclock-dev#532 Stage 4 is what this unblocks.
+#
+# Why flipping is safe to do unattended, stated once: runtime render DEGRADES,
+# it does not blank. Every failure path in `literary_clock.py` returns False
+# with "using pre-rendered images" — missing marker, unusable freetype, digest
+# mismatch, empty corpus row, any other exception — so a device that cannot
+# render text keeps painting PNGs — and below THAT is the plain 144pt time
+# display, so losing the PNG tier costs the quote, not the clock. The
+# realistic worst case of this flip is "the device stays on images", which is
+# where it already is.
+#
+# What is NOT a backstop here, despite being the obvious one to reach for:
+# `litclock-bootcheck`. It asks whether `/run/litclock/heartbeat` is at or
+# after BOOT_EPOCH, not whether it is RECENT. A weekly update does not reboot,
+# so a clock that painted before the update and stops after it still satisfies
+# that check with its PRE-update heartbeat and is never recovered. Bootcheck
+# covers a device that fails to paint across a BOOT; it does not cover one
+# that stops mid-boot-session, which is the shape an update would produce.
+# The safety argument above rests on the degradation ladder alone, and must
+# not be written as though it had two layers (review).
+#
+# FIVE GUARDS, all required, checked in this order because that is the order
+# that yields the most useful memo. This list is the single enumeration: the
+# comments that count the guards elsewhere (state.sh, the tests) say five, and
+# an off-by-one reads as a missing guard to a reviewer auditing against it.
+#
+#   1. The self-test PASSED on this run (Stage A, `_runtime_render_selftest`). Not the
+#      marker — the marker says freetype reproduces the GD measurement dump,
+#      which is a long way short of "this device COMPOSED a quote frame from
+#      text". Composed, not painted: the self-test is a --dry-run into a
+#      throwaway directory and never touches the panel, so it proves the
+#      render path, not the SPI write.
+#   2. Its DURABLE pass record exists, parses as JSON, says `passed`, and
+#      carries a sha equal to HEAD. Not redundant with guard 1: if the record
+#      could not be written, Stage A's own durability claim is false on this
+#      device and a later reader would see a migrated clock with no evidence
+#      for why. Evaluated in `_runtime_render_migrate`.
+#   3. The PNG fallback rung is present on disk. `images/metadata/` is checked,
+#      not `images/`, because that is the directory the painter's fallback
+#      actually globs — though a non-empty directory is not proof the PNGs in
+#      it are usable, only that the tier has not been removed. The tier below
+#      it is the plain 144pt time display, NOT a blank panel: losing images/
+#      costs the quote, not the clock. It is still the rung worth keeping —
+#      a clock showing the time and no quote is the product failing quietly —
+#      but the earlier wording here overstated it.
+#   4. env.sh currently says `false`. Self-limiting: after the flip the pattern
+#      no longer matches, so this is idempotent with no extra state to keep. It
+#      is also what makes the DELIBERATE absence of a one-shot marker workable
+#      (owner call, 2026-09-19) — an owner who sets `false` by hand is re-flipped
+#      on the next weekly tick, and that is accepted. THE ONE THING THAT WOULD
+#      CHANGE IT: if anything ever auto-writes `false` — a future auto-revert on
+#      repeated fallback, say — this would re-flip weekly and oscillate. Nothing
+#      does today. Add the marker at the same time as any such auto-revert.
+#   5. Exactly one active assignment to rewrite, and it is an EXPORTED `=false`.
+#      A device whose env.sh somehow carries two is not one to guess about, and
+#      a lone BARE assignment never reached the painter in the first place.
+#
+# It never fails the update, for the same reason the self-test does not: a
+# device that does not migrate is a device that keeps working.
+#
+# NOT every refusal writes a memo, and that is deliberate. A device already on
+# `true`, one with no active assignment, and one whose self-test did not pass
+# all return SILENTLY: the first two are goal states rather than negative
+# results, and the third already has the self-test's own memo, which a second
+# one would contradict. The memo is meant for "this device could have
+# migrated and did not": no images tier, or the write itself failed.
+#
+# Two exceptions. The first is a matter of ORDER: the record guards (guard 2)
+# run before the flag is read, so on a device already on `true` or with no
+# active assignment, a pass record that is missing, unreadable or not for this
+# release still logs `Not migrating …` and writes a `migration-skipped` memo.
+# Harmless — nothing is changed, and the next tick with a good record is
+# silent — so a memo on a long-migrated clock is usually a failed record
+# write, not a regression. The second is a hand-edited env.sh holding an
+# exported `=false` AND a later `=true`: effectively `true`, but the outer
+# guard only asks whether an exported `=false` exists, so it proceeds and the
+# images or duplicate-assignment guard refuses with a memo — on EVERY tick,
+# until someone removes one of the two lines.
+#
+# The guards are numbered above in the order that yields the most useful memo;
+# the code checks the cheap ones first. Guards 1-3 are evaluated in
+# `_runtime_render_migrate`, guards 4 and 5 inside `_runtime_render_migrate_locked`
+# once the lock is held, since both read the file.
+_runtime_render_migrate_locked() {
+    local env_file="$1" body new
+    body=$(cat "$env_file" 2>/dev/null) || {
+        log_warn "Stage B: could not read $env_file — not migrating (litclock-dev#871)"
+        return 1
+    }
+    # Only ACTIVE assignments. A commented `# export ...=false` is documentation
+    # (`env.sh.sample` documents this key in comments above the live line);
+    # rewriting one would edit prose.
+    # Count EVERY active assignment to this variable, whatever its value and
+    # whether or not it carries `export`. Two earlier versions were too narrow
+    # and both were defeated (review). Counting only `=false` let an env.sh
+    # carrying `=false` and a later `=0` migrate "successfully" while the
+    # effective value stayed off — the last assignment wins when the file is
+    # sourced. Requiring `export` then let a BARE `LITCLOCK_RUNTIME_RENDER=0`
+    # do the same, and a bare assignment is not an invented shape: the PWA's
+    # own writer treats `export` as optional (`_KV_PATTERN` in src/config.py),
+    # and re-assigning a variable does not clear its export attribute, so a
+    # bare line genuinely overrides an exported one.
+    #
+    # LIMIT, stated rather than implied: this is a line matcher, not a shell
+    # parser. An assignment inside a heredoc or an `if false` block is counted
+    # as active, and a `readonly` form is not counted at all. env.sh is a
+    # generated file of flat assignments — that is the shape config.py writes
+    # and every seeder emits — so those forms should not occur; if one does,
+    # the failure is toward refusing to migrate, not toward a bad flip.
+    #
+    # Counted both ways, but only an EXPORT form is rewritten. `runtheclock.sh`
+    # does `source ./env.sh` with no `set -a`, so a bare assignment never
+    # reaches the painter's environment at all — migrating a lone bare `=false`
+    # to a bare `=true` changes the file and nothing else, and reports success
+    # for a device that is still painting PNGs (measured: a child process sees
+    # the variable UNSET). Such a device was never honouring the flag either
+    # way; it is refused with a reason rather than silently "migrated".
+    local total false_count
+    total=$(printf '%s\n' "$body" | grep -cE '^[[:space:]]*(export[[:space:]]+)?LITCLOCK_RUNTIME_RENDER=' || true)
+    false_count=$(printf '%s\n' "$body" | grep -cE '^[[:space:]]*export[[:space:]]+LITCLOCK_RUNTIME_RENDER=false[[:space:]]*$' || true)
+    if [[ "$total" -ne 1 || "$false_count" -ne 1 ]]; then
+        log_warn "Stage B: expected exactly one active LITCLOCK_RUNTIME_RENDER assignment and for it to be an exported =false in $env_file, found $total active ($false_count exported =false) — not migrating (litclock-dev#871)"
+        return 1
+    fi
+    # PIPESTATUS, and then a line count. `new=$(... | sed ...)` reports only the
+    # subshell's status, so a `sed` killed mid-stream emits a PARTIAL body that
+    # differs from the original — which sailed straight through the
+    # "did it change anything" check below and got renamed over env.sh, reported
+    # as a successful migration (review reproduced it with a sed exiting 137).
+    # An atomic rename protects against a torn write, not against committing a
+    # complete-looking but truncated body.
+    local sed_rc before_lines after_lines
+    # The capture keeps the line's own indentation. Only an export form reaches
+    # here (see the count above), so the shape is preserved rather than changed.
+    #
+    # NO PIPELINE. A herestring, because the fix above only covered the CONSUMER:
+    # `$?` on a pipeline is its LAST element, so a `sed` killed mid-stream was
+    # caught and a killed `printf` was not. A producer that dies after emitting a
+    # partial final line is invisible three times over — sed exits 0 on the short
+    # input, sed SUPPLIES the missing terminating newline so the line-count belt
+    # below still matches, and the body differs from the original so the
+    # "changed nothing" check passes too. Reproduced 2026-09-23: a producer
+    # exiting 137 committed `OPENWEATHERMAP_APIKEY=original-` over
+    # `=original-secret` and reported a successful migration. `<<<` removes the
+    # second process entirely, so there is no unchecked status left to miss; it
+    # appends the same trailing newline `printf '%s\n'` did, which is what
+    # `before_lines` below is still computed with.
+    new=$(sed -E 's/^([[:space:]]*export[[:space:]]+)LITCLOCK_RUNTIME_RENDER=false[[:space:]]*$/\1LITCLOCK_RUNTIME_RENDER=true/' <<<"$body")
+    sed_rc=$?
+    if [[ "$sed_rc" -ne 0 ]]; then
+        log_warn "Stage B: the env.sh rewrite failed (sed exited $sed_rc) — not migrating, env.sh is untouched (litclock-dev#871)"
+        return 1
+    fi
+    before_lines=$(printf '%s\n' "$body" | wc -l)
+    after_lines=$(printf '%s\n' "$new" | wc -l)
+    if [[ "$before_lines" -ne "$after_lines" ]]; then
+        log_warn "Stage B: the rewrite changed the line count ($before_lines -> $after_lines) — not migrating, env.sh is untouched (litclock-dev#871)"
+        return 1
+    fi
+    if [[ "$new" == "$body" ]]; then
+        log_warn "Stage B: the rewrite changed nothing — not migrating (litclock-dev#871)"
+        return 1
+    fi
+    # The whole body, atomically, preserving owner and mode — NOT an in-place
+    # sed. A half-written env.sh is sourced by every surface on the device.
+    _atomic_write_env_sh_finalize_from_body "$env_file" "$new" || return 1
+    return 0
+}
+
+# Stage the new body through mktemp and hand it to state.sh's finalizer, which
+# preserves owner and mode. Separate from `atomic_write_env_sh` because we are
+# already inside `with_env_lock` — taking the sidecar lock again from here
+# would deadlock on a non-reentrant flock.
+_atomic_write_env_sh_finalize_from_body() {
+    local dest="$1" content="$2" tmp
+    tmp=$(mktemp "${dest}.XXXXXX" 2>/dev/null) || return 1
+    printf '%s\n' "$content" > "$tmp" || { rm -f "$tmp"; return 1; }
+    _atomic_write_env_sh_finalize "$tmp" "$dest" || { rm -f "$tmp" 2>/dev/null; return 1; }
+    return 0
+}
+
+_runtime_render_migrate() {
+    local env_file="$INSTALL_DIR/env.sh"
+
+    if [[ "${RUNTIME_SELFTEST_RESULT:-}" != "pass" ]]; then
+        # The self-test already wrote its own memo saying why; do not write a
+        # second one contradicting it.
+        return 0
+    fi
+    # And the DURABLE record, sha-matched — which is what the Stage A comment
+    # above RUNTIME_SELFTEST_RECORD_FILE says Stage B gates on, so gate on it.
+    # It is not redundant with the in-run result: if the record could not be
+    # written (no jq, an unwritable state dir) then Stage A's own durability
+    # claim is false on this device, and a later reader — a rollback tick, a
+    # support bundle, Stage B's own re-run — would see a migrated device with
+    # no evidence for why. Refusing keeps the device and the record consistent,
+    # and it retries next week.
+    local rec_result rec_sha head_sha
+    if [[ ! -f "$RUNTIME_SELFTEST_RECORD_FILE" ]] || ! command -v jq >/dev/null 2>&1; then
+        log_info "Not migrating to runtime render: the self-test passed but left no durable record (litclock-dev#871 Stage B)"
+        _runtime_validation_memo_write migration-skipped "" "the self-test passed but its pass record is missing, so the migration has no durable evidence"
+        return 0
+    fi
+    # `|| echo ""` is NOT enough: on a record that is a valid object followed by
+    # truncated garbage, jq PRINTS the matching value and then exits non-zero,
+    # so the substitution keeps the value and the fallback never runs (review).
+    # Take the status explicitly and treat any parse failure as no record.
+    if ! rec_result=$(jq -er '.result // ""' "$RUNTIME_SELFTEST_RECORD_FILE" 2>/dev/null) \
+        || ! rec_sha=$(jq -er '.sha // ""' "$RUNTIME_SELFTEST_RECORD_FILE" 2>/dev/null); then
+        log_info "Not migrating to runtime render: the self-test pass record could not be parsed (litclock-dev#871 Stage B)"
+        _runtime_validation_memo_write migration-skipped "" "the self-test pass record is not readable JSON, so the migration has no durable evidence"
+        return 0
+    fi
+    head_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+    if [[ "$rec_result" != "passed" || -z "$rec_sha" || "$rec_sha" != "$head_sha" ]]; then
+        log_info "Not migrating to runtime render: the pass record is not for this release (result='$rec_result', sha='${rec_sha:0:12}', head='${head_sha:0:12}') (litclock-dev#871 Stage B)"
+        _runtime_validation_memo_write migration-skipped "" "the self-test pass record does not match this release"
+        return 0
+    fi
+    if [[ ! -f "$env_file" ]]; then
+        return 0
+    fi
+    # Already migrated, or never eligible — silent, and NOT a memo. A device
+    # running text render is the goal state, not a negative result.
+    if ! grep -qE '^[[:space:]]*export[[:space:]]+LITCLOCK_RUNTIME_RENDER=false[[:space:]]*$' "$env_file" 2>/dev/null; then
+        return 0
+    fi
+    # Guard 3: the fallback rung. `images/metadata/` is what the painter globs.
+    if [[ ! -d "$INSTALL_DIR/images/metadata" ]] || [[ -z "$(ls -A "$INSTALL_DIR/images/metadata" 2>/dev/null)" ]]; then
+        log_info "Not migrating to runtime render: images/metadata is missing or empty, so there would be no fallback if a render ever failed (litclock-dev#871 Stage B)"
+        _runtime_validation_memo_write migration-skipped "" "the PNG fallback tier (images/metadata) is absent, so migrating would drop straight from the text renderer to the plain time display"
+        return 0
+    fi
+
+    ENV_FILE_DEFAULT="$env_file" with_env_lock _runtime_render_migrate_locked "$env_file"
+    local rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+        log_info "MIGRATED to runtime text rendering: LITCLOCK_RUNTIME_RENDER is now true in env.sh (litclock-dev#871 Stage B). The self-test composed a quote frame from text on this device this run; images/ stays on disk as the fallback."
+        atomic_remove_file "$RUNTIME_VALIDATION_MEMO_FILE"
+    elif [[ "$rc" -eq 75 ]]; then
+        log_warn "Not migrating to runtime render: env.sh is locked by another writer — will retry next tick (litclock-dev#871 Stage B)"
+        _runtime_validation_memo_write migration-skipped "$rc" "env.sh was locked by another writer for the whole 30s wait"
+    else
+        log_warn "Not migrating to runtime render: the env.sh rewrite failed (rc=$rc) — will retry next tick (litclock-dev#871 Stage B)"
+        _runtime_validation_memo_write migration-skipped "$rc" "the env.sh rewrite did not complete; env.sh is unchanged"
+    fi
+    return 0
+}
+
+# litclock-dev#871 Stage A — the runtime-render SELF-TEST, shipped INERT one
+# release ahead of Stage B.
 #
 # The marker says this device's freetype reproduces the GD measurement dump;
 # it does not say this device can paint a quote from text. Between the two sit
@@ -1938,8 +2337,9 @@ _validation_fits_remaining_budget() {
 # own guards, and every reason `_runtime_render_enabled()` has to decline —
 # and today every one of them degrades SILENTLY to the PNG tier, so a fleet
 # device could carry a valid marker and still never render a line of text.
-# Stage B (release N+1) will flip LITCLOCK_RUNTIME_RENDER on devices whose
-# self-test passes; this release only asks the question and records the answer.
+# Stage B flips LITCLOCK_RUNTIME_RENDER on devices whose self-test passes and
+# whose other four guards hold — see `_runtime_render_migrate` above. This
+# function only asks the question and records the answer; it changes nothing.
 #
 # The same dry-run the smoke gate runs, with the renderer FORCED on (env.sh's
 # flag says what the owner chose, not what the device can do) and
@@ -1961,12 +2361,20 @@ _validation_fits_remaining_budget() {
 # anything else = the painter died), or `selftest-deferred` when the budget or
 # the scratch directory is gone. A pass writes the POSITIVE record
 # (RUNTIME_SELFTEST_RECORD_FILE) with its DURATION: Stage B needs a durable
-# on-device pass, sha-matched, and needs to know the device renders inside
-# the 4s lead, not merely that it renders (litclock-dev#875 review + red team).
+# on-device pass, sha-matched — and Stage B does gate on this file, not just
+# on the in-run verdict. The DURATION is recorded for diagnosis, NOT as a
+# gate: litclock-dev#883 established that it is whole-process wall time
+# (env.sh sourcing, interpreter start, the PIL import, then the render), so
+# it is not comparable to the 4s render lead, and the painter pays that same
+# startup BEFORE it computes its target instant, so the lead does not cover
+# it either. A "renders inside the lead" threshold built on this number
+# would be measuring the wrong thing; deciding what such a gate should
+# actually measure is its own piece of work (litclock-dev#875 review + red team).
 # One sample, one minute, one random row: a corpus gap at that minute reads as
 # a fallback too, and the painter now says so in its own [selftest] line, so
 # a `selftest-failed` is "did not render text this time", never proof of
 # incapacity — Stage B acts only on a PASS.
+
 # The pass record (RUNTIME_SELFTEST_RECORD_FILE). $1 duration in seconds, one
 # decimal. Same jq/atomic/0644 shape as the memo writer; best-effort.
 _runtime_selftest_record_write() {
@@ -1989,15 +2397,19 @@ _runtime_selftest_record_write() {
 
 _runtime_render_selftest() {
     local rc dir t0 dur_ms duration
+    # Stage B reads this. Set on EVERY arm, including the early returns, so
+    # no stale or unset value can be mistaken for a pass.
+    RUNTIME_SELFTEST_RESULT=deferred
     _validation_fits_remaining_budget "$SELFTEST_TIMEOUT_S" selftest-deferred "the runtime-render self-test" || return 0
     if ! dir=$(mktemp -d 2>/dev/null) || [[ -z "$dir" ]]; then
         log_info "deferring the runtime-render self-test to the next update: could not create a scratch directory (litclock-dev#871)"
         _runtime_validation_memo_write selftest-deferred "" "self-test: could not create a scratch directory (mktemp -d failed)"
         return 0
     fi
-    log_info "Running the runtime-render self-test (litclock-dev#871 Stage A; inert — records a verdict, changes nothing)..."
-    # Microseconds via EPOCHREALTIME (bash 5): the figure is compared against a
-    # 4s render lead, and whole-second $SECONDS is ±1s on it (litclock-dev#875 red team).
+    log_info "Running the runtime-render self-test (litclock-dev#871 Stage A: records a verdict; a PASS lets Stage B migrate an eligible device)..."
+    # Microseconds via EPOCHREALTIME (bash 5): whole-second $SECONDS is ±1s on a
+    # figure of ~3.5s (litclock-dev#875 red team). It is recorded for diagnosis, NOT
+    # compared against the 4s render lead: litclock-dev#883, above.
     #
     # Strip EVERY non-digit (litclock-dev#879, widened in litclock-dev#881). EPOCHREALTIME's decimal
     # separator follows LC_NUMERIC, so under a comma locale the original
@@ -2045,10 +2457,10 @@ _runtime_render_selftest() {
     # exit — `if cmd | sed; then` tests sed (the smoke gate's own lesson).
     (
         [[ -f "${INSTALL_DIR:-}/env.sh" ]] && source "${INSTALL_DIR:-}/env.sh" 2>/dev/null
-        export LITCLOCK_RUNTIME_RENDER=true
-        export LITCLOCK_RUNTIME_RENDER_DIR="$dir"
-        export WEATHER_ENABLED=false
-        timeout "$SELFTEST_TIMEOUT_S" "$PYTHON" src/literary_clock.py --dry-run --require-runtime-render 2>&1
+        # env(1), not `export`, for the reason the smoke gate gives: a
+        # `readonly` in the sourced env.sh would defeat an export.
+        env LITCLOCK_RUNTIME_RENDER=true LITCLOCK_RUNTIME_RENDER_DIR="$dir" WEATHER_ENABLED=false \
+            timeout "$SELFTEST_TIMEOUT_S" "$PYTHON" src/literary_clock.py --dry-run --require-runtime-render 2>&1
     ) | sed 's/^/[selftest] /'
     rc="${PIPESTATUS[0]}"
     dur_ms=$(( (${EPOCHREALTIME//[^0-9]/} - t0) / 1000 ))
@@ -2056,11 +2468,13 @@ _runtime_render_selftest() {
     # Only ever the fresh mktemp directory: -d, and never a fallback path.
     [[ -n "$dir" && -d "$dir" ]] && rm -rf -- "$dir" 2>/dev/null
     if [[ "$rc" -eq 0 ]]; then
-        log_info "runtime-render self-test PASSED in ${duration}s — this device renders text (litclock-dev#871 Stage A; LITCLOCK_RUNTIME_RENDER is unchanged this release)"
+        log_info "runtime-render self-test PASSED in ${duration}s — this device composed a quote frame from text (litclock-dev#871; Stage B may now migrate LITCLOCK_RUNTIME_RENDER on an eligible device, and says so if it does; a device already on true normally logs nothing further)"
         _runtime_selftest_record_write "$duration"
+        RUNTIME_SELFTEST_RESULT=pass
         return 0
     fi
     # A fail retires any earlier pass: Stage B must never flip on a stale one.
+    RUNTIME_SELFTEST_RESULT=fail
     atomic_remove_file "$RUNTIME_SELFTEST_RECORD_FILE"
     if [[ "$rc" -eq 124 ]]; then
         log_info "runtime-render self-test did not finish within ${SELFTEST_TIMEOUT_S}s (${duration}s elapsed) — staying as is (this is not an update failure)"
@@ -2108,9 +2522,9 @@ if [[ "$smoke_rc" -eq 0 ]]; then
     # Pi Zero 2W — on every weekly tick would be pure cost.
     #
     # Not in ROLLBACK_MODE (litclock-dev#835): that run exists to get the
-    # last-known-good clock painting again as fast as possible, and the LKG's
-    # proof inputs almost always differ from HEAD's, so the revoke block above
-    # has just removed the marker. Spending minutes re-earning it here, with
+    # last-known-good clock painting again as fast as possible, and the revoke
+    # block above has just removed the marker — unconditionally in this mode
+    # since litclock-dev#894. Spending minutes re-earning it here, with
     # litclock.timer still stopped, is the opposite of recovery. The next
     # normal update re-stamps.
     #
@@ -2170,6 +2584,10 @@ if [[ "$smoke_rc" -eq 0 ]]; then
     # declines before it tries. Not in ROLLBACK_MODE, for the reason above.
     if [[ -f "$RUNTIME_MARKER" && -x "$PYTHON" && "${ROLLBACK_MODE:-0}" -ne 1 ]]; then
         _runtime_render_selftest
+        # litclock-dev#871 Stage B — the flip, gated on the verdict just recorded.
+        # Inside the same marker/rollback gate on purpose: without a marker the
+        # painter declines before it tries, so there is nothing to migrate to.
+        _runtime_render_migrate
     fi
 else
     log_error "Smoke test failed (exit $smoke_rc) — reverting to $REVERT_SHA"

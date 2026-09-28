@@ -18,6 +18,7 @@ import ast
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -62,8 +63,10 @@ STAMP_CALL = re.compile(r'(?:"\$PYTHON"|\./venv/bin/python3)\s+tools/validate_me
 SELFTEST_TIMEOUT_DEFAULT_S = 2
 SELFTEST_BUDGET_RESERVE_S = 120
 
+
 def render_lead_s():
-    """The render lead Stage B will gate `duration_s` against, read from the
+    """The render lead, the sanity bound an honestly recorded `duration_s` is
+    checked against (NOT a Stage B gate: Stage B reads `result` and `sha`), read from the
     source of truth so a change to the lead moves the test with it (litclock-dev#883).
 
     Read by AST, not by regex, and called from the test rather than at import.
@@ -111,8 +114,12 @@ class TestSomethingActuallyWritesTheMarker:
         """Both are needed ON the device — the check runs there, not on a build host."""
         assert VALIDATOR.is_file(), "the validator must ship; the check runs on the device"
         assert DUMP.is_file(), "the expected-measurement dump must ship alongside it"
-        out = subprocess.run(["git", "ls-files", "--error-unmatch", str(DUMP.relative_to(REPO_ROOT))],
-                             cwd=REPO_ROOT, capture_output=True, text=True)
+        out = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", str(DUMP.relative_to(REPO_ROOT))],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
         assert out.returncode == 0, "the dump must be tracked, or a fresh clone cannot validate"
 
 
@@ -181,7 +188,7 @@ class TestUpdateShPlacesItSafely:
         assert vm, "update.sh must define VALIDATOR_TIMEOUT_S as a plain integer"
         validator_s = int(vm.group(1))
         stamp_at = STAMP_CALL.search(body).start()
-        window = body[max(0, stamp_at - 400):stamp_at + 200]
+        window = body[max(0, stamp_at - 400) : stamp_at + 200]
         assert 'timeout "$VALIDATOR_TIMEOUT_S" "$PYTHON" tools/validate_measurement.py' in window, (
             "the validation call must be bounded by VALIDATOR_TIMEOUT_S — one value, used by "
             "both the bound and the remaining-budget guard"
@@ -192,9 +199,7 @@ class TestUpdateShPlacesItSafely:
         assert um, "litclock-update.service must set an integer TimeoutStartSec"
         unit_s = int(um.group(1))
 
-        executed = "\n".join(
-            line for line in body.splitlines() if not line.lstrip().startswith("#")
-        )
+        executed = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
         inner = [int(n) for n in re.findall(r"\btimeout (\d+)\b", executed)] + [validator_s]
         assert MEASURED_VALIDATOR_S * VALIDATOR_MARGIN <= validator_s <= 2 * MEASURED_VALIDATOR_S, (
             f"validator bound {validator_s}s must cover the measured {MEASURED_VALIDATOR_S}s "
@@ -215,7 +220,7 @@ class TestUpdateShPlacesItSafely:
         body = self._body()
         stamp_at = STAMP_CALL.search(body).start()
         guard_at = body.rindex('if [[ ! -f "$RUNTIME_MARKER"', 0, stamp_at)
-        guard = body[guard_at:body.index("\n", guard_at)]
+        guard = body[guard_at : body.index("\n", guard_at)]
         assert '"${ROLLBACK_MODE:-0}" -ne 1' in guard, guard
 
     def test_a_failed_validation_does_not_fail_the_update(self):
@@ -223,7 +228,7 @@ class TestUpdateShPlacesItSafely:
         fallback is impossible; a wrong render is not."""
         body = self._body()
         stamp_at = STAMP_CALL.search(body).start()
-        window = body[stamp_at:stamp_at + 1200]
+        window = body[stamp_at : stamp_at + 1200]
         assert "not an update failure" in window, (
             "the failure arm must say, on the code, that it does not fail the update"
         )
@@ -315,13 +320,17 @@ class TestUpdateShStampBlockExecutes:
             # `set -e`, so an unstubbed call would print `command not found` and
             # carry on green); the real function is driven on its own in
             # TestRuntimeRenderSelftestExecutes below.
-            '_runtime_render_selftest() { echo STUB_SELFTEST; }\n'
+            "_runtime_render_selftest() { echo STUB_SELFTEST; }\n"
+            # ...and Stage B's migration, called straight after it. It was left
+            # unstubbed and printed `command not found` on every marker-present
+            # run while the tests stayed green (litclock-dev#871 port /review).
+            "_runtime_render_migrate() { echo STUB_MIGRATE; }\n"
             f"{self._budget_helpers()}"
             # Stub AFTER the lifted helpers so the stub wins; the guard itself
             # is the real one.
             f"{elapsed_stub}"
             f"{self._keep_arm()}"
-            'echo REACHED_END\n'
+            "echo REACHED_END\n"
         )
         return subprocess.run(["bash", "-c", program], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
 
@@ -329,6 +338,25 @@ class TestUpdateShStampBlockExecutes:
     def _memo(tmp_path):
         path = tmp_path / "memo.json"
         return json.loads(path.read_text()) if path.exists() else None
+
+    def test_the_migration_runs_after_the_selftest_only_with_a_marker_and_never_in_rollback(self, tmp_path):
+        """Executed, not positional: the flip is gated exactly like the self-test."""
+        # One directory per run: the marker is a file in tmp_path, so a shared
+        # one carries the first run's marker into the "no marker" run.
+        dirs = [tmp_path / n for n in ("present", "absent", "rollback")]
+        for d in dirs:
+            d.mkdir()
+        present = self._run(dirs[0], marker_exists=True, validator_rc=0)
+        out = present.stdout
+        assert "STUB_SELFTEST" in out and "STUB_MIGRATE" in out, out + present.stderr
+        assert out.index("STUB_SELFTEST") < out.index("STUB_MIGRATE"), "the flip must follow the verdict"
+        absent = self._run(dirs[1], marker_exists=False, validator_rc=1)
+        assert "STUB_MIGRATE" not in absent.stdout, "no marker, nothing to migrate to"
+        rollback = self._run(dirs[2], marker_exists=True, validator_rc=0, rollback_mode=True)
+        assert "STUB_MIGRATE" not in rollback.stdout, "a rollback must never flip the flag"
+        for r in (present, absent, rollback):
+            assert "command not found" not in r.stderr, f"an unstubbed call in the KEEP arm:\n{r.stderr}"
+            assert "REACHED_END" in r.stdout
 
     def test_rollback_mode_skips_the_validation(self, tmp_path):
         """litclock-dev#835, executed: the source pin on the guard line is one
@@ -393,7 +421,6 @@ class TestUpdateShStampBlockExecutes:
         r = self._run(tmp_path, marker_exists=False, validator_rc=0, elapsed_s=5000, installed_budget_s=0)
         assert "[validate] FAKE_VALIDATOR_RAN" in r.stdout, r.stdout
 
-
     def test_a_failing_validation_lets_the_update_continue(self, tmp_path):
         r = self._run(tmp_path, marker_exists=False, validator_rc=1)
         # The block pipes the validator through `sed 's/^/[validate] /'` with
@@ -444,7 +471,6 @@ class TestUpdateShStampBlockExecutes:
         for k in keep:
             assert k.exists(), f"{k.name} is not validator litter and must not be removed"
 
-
     # ── litclock-dev#847 item 1: the negative-result memo ───────────────────
 
     def test_a_deferral_is_memoed_with_its_reason(self, tmp_path):
@@ -460,10 +486,14 @@ class TestUpdateShStampBlockExecutes:
         assert isinstance(memo["at_unix"], int) and memo["at_unix"] > 1_600_000_000, memo
         assert re.fullmatch(r"[0-9a-f]{40}", memo["sha"] or ""), memo
 
-    @pytest.mark.parametrize("kw", [
-        {"elapsed_s": "unknown", "installed_budget_s": 1800},
-        {"elapsed_s": 100, "installed_budget_s": None},
-    ], ids=["unknown-elapsed", "unknown-budget"])
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            {"elapsed_s": "unknown", "installed_budget_s": 1800},
+            {"elapsed_s": 100, "installed_budget_s": None},
+        ],
+        ids=["unknown-elapsed", "unknown-budget"],
+    )
     def test_every_deferral_branch_writes_the_memo(self, tmp_path, kw):
         r = self._run(tmp_path, marker_exists=False, validator_rc=0, **kw)
         assert "deferring" in r.stdout, r.stdout
@@ -523,7 +553,6 @@ class TestUpdateShStampBlockExecutes:
         assert "RUNTIME_VALIDATION_MEMO_FILE" not in arm.replace(
             'atomic_remove_file "$RUNTIME_VALIDATION_MEMO_FILE"', ""
         ), "the arm must not write the memo file directly"
-
 
     def test_the_memo_is_left_readable_by_the_control_server(self, tmp_path):
         """litclock-dev#854 review — atomic_write_file stages with mktemp (0600, owned by
@@ -623,9 +652,9 @@ class TestBudgetHelpersExecute:
         "kw",
         [
             dict(invocation_id="abc", owner="other", start_us=1_000_000, budget_us="t 1800000000"),  # not ours
-            dict(invocation_id="abc", owner="abc", start_us=0, budget_us="t 1800000000"),            # zero stamp
-            dict(invocation_id="abc", owner="abc", start_us="", budget_us="t 1800000000"),           # empty
-            dict(invocation_id="abc", owner="abc", start_us="abc", budget_us="t 1800000000"),        # garbage
+            dict(invocation_id="abc", owner="abc", start_us=0, budget_us="t 1800000000"),  # zero stamp
+            dict(invocation_id="abc", owner="abc", start_us="", budget_us="t 1800000000"),  # empty
+            dict(invocation_id="abc", owner="abc", start_us="abc", budget_us="t 1800000000"),  # garbage
             dict(invocation_id="abc", owner="abc", start_us=1_000_000, budget_us="t 1800000000", systemctl_rc=1),
         ],
     )
@@ -748,9 +777,7 @@ class TestPiGenStampBlockExecutes:
             # keeps a zero zero and makes a real 30s grace test-sized.
             grace_re = r"^PIGEN_VALIDATOR_KILL_GRACE_S=(\d+)$"
             grace = min(int(re.search(grace_re, block, re.MULTILINE).group(1)), timeout_s)
-            block, n = re.subn(
-                grace_re, f"PIGEN_VALIDATOR_KILL_GRACE_S={grace}", block, flags=re.MULTILINE
-            )
+            block, n = re.subn(grace_re, f"PIGEN_VALIDATOR_KILL_GRACE_S={grace}", block, flags=re.MULTILINE)
             assert n == 1, "PIGEN_VALIDATOR_KILL_GRACE_S must be one plain assignment the test can scale"
         return block
 
@@ -784,7 +811,10 @@ class TestPiGenStampBlockExecutes:
         try:
             proc = subprocess.run(
                 ["bash", "-e", "-c", self._block(timeout_s)],
-                cwd=tmp_path, capture_output=True, text=True, timeout=20,
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                timeout=20,
             )
         except subprocess.TimeoutExpired:
             pytest.fail("the block did not return within 20s: the bound is not enforced against this interpreter")
@@ -864,8 +894,7 @@ class TestPiGenStampBlockExecutes:
         warnings = self._annotations(proc)
         assert len(warnings) == 1 and "timed out" in warnings[0], proc.stdout
         assert not (tmp_path / ".runtime-render-validated").exists(), (
-            "a marker written after the bound expired shipped in the image while the annotation "
-            "said there was none"
+            "a marker written after the bound expired shipped in the image while the annotation said there was none"
         )
 
 
@@ -881,12 +910,15 @@ class TestTheCheckItselfBehaves:
         pytest.importorskip(
             "freetype",
             reason="freetype-py is not installed: `pip install --user --break-system-packages freetype-py` "
-                   "to run the real validator here (litclock-dev#840)",
+            "to run the real validator here (litclock-dev#840)",
         )
         marker = tmp_path / ".runtime-render-validated"
         r = subprocess.run(
             [sys.executable, str(VALIDATOR), "check", "--stamp", "--marker", str(marker)],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=600,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=600,
         )
         assert r.returncode == 0, f"validation failed on the dev box\n{r.stdout}\n{r.stderr}"
         assert marker.is_file(), "PASS must write the marker at the requested path"
@@ -906,9 +938,11 @@ class TestTheCheckItselfBehaves:
         bogus = tmp_path / "bogus.json.gz"
         bogus.write_bytes(b"not a gzip")
         r = subprocess.run(
-            [sys.executable, str(VALIDATOR), "check", "--stamp",
-             "--dump", str(bogus), "--marker", str(marker)],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=120,
+            [sys.executable, str(VALIDATOR), "check", "--stamp", "--dump", str(bogus), "--marker", str(marker)],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
         assert r.returncode == 2, f"expected the refusal exit (2), got {r.returncode}\n{r.stderr}"
         assert "refusing --stamp" in (r.stdout + r.stderr)
@@ -973,13 +1007,13 @@ class TestRuntimeRenderSelftestExecutes:
         end = body.index("\n}\n", start) + len("\n}\n")
         fn = body[start:end]
         for required, why in (
-            ("export LITCLOCK_RUNTIME_RENDER=true", "the renderer forced on"),
+            ("env LITCLOCK_RUNTIME_RENDER=true", "the renderer forced on, via env(1) so a readonly cannot defeat it"),
             ("--require-runtime-render", "the flag that makes a fallback a failure"),
             ("LITCLOCK_RUNTIME_RENDER_DIR", "the throwaway frame directory"),
-            ("export WEATHER_ENABLED=false", "weather forced off — a capability probe stays off the network"),
-            ("source \"${INSTALL_DIR:-}/env.sh\"", "env.sh sourced for the device's language"),
+            ("WEATHER_ENABLED=false \\", "weather forced off — a capability probe stays off the network"),
+            ('source "${INSTALL_DIR:-}/env.sh"', "env.sh sourced for the device's language"),
             ("selftest-deferred", "the deferral token, distinct from the validator's"),
-            ("_validation_fits_remaining_budget \"$SELFTEST_TIMEOUT_S\"", "the shared budget guard, own bound"),
+            ('_validation_fits_remaining_budget "$SELFTEST_TIMEOUT_S"', "the shared budget guard, own bound"),
             ('rc="${PIPESTATUS[0]}"', "the painter's status, not sed's"),
             ('[[ -n "$dir" && -d "$dir" ]] && rm -rf -- "$dir"', "cleanup of the fresh directory only"),
             ("_runtime_selftest_record_write", "the durable pass record"),
@@ -1005,6 +1039,8 @@ class TestRuntimeRenderSelftestExecutes:
         selftest_timeout_s=SELFTEST_TIMEOUT_DEFAULT_S,
         mktemp_fails=False,
         pass_record_exists=False,
+        preseed_result=None,
+        env_extra="",
     ):
         log = tmp_path / "painter.log"
         fake_py = tmp_path / "python3"
@@ -1033,6 +1069,7 @@ class TestRuntimeRenderSelftestExecutes:
         install.mkdir(exist_ok=True)
         (install / "env.sh").write_text(
             f"export LITCLOCK_LANGUAGE={language}\nexport LITCLOCK_RUNTIME_RENDER=false\nexport WEATHER_ENABLED=true\n"
+            + env_extra
         )
         memo = tmp_path / "memo.json"
         # A test may call this twice in one tmp_path: start each run clean, or
@@ -1067,10 +1104,13 @@ class TestRuntimeRenderSelftestExecutes:
             f"SELFTEST_TIMEOUT_S={selftest_timeout_s}\nVALIDATOR_BUDGET_RESERVE_S={SELFTEST_BUDGET_RESERVE_S}\n"
             f"{stub}"
             + ("mktemp() { return 1; }\n" if mktemp_fails else "")
+            + (f"RUNTIME_SELFTEST_RESULT={preseed_result}\n" if preseed_result else "")
             + f"{self._record_fn()}"
             + f"{self._selftest_fn()}"
             "_runtime_render_selftest\n"
-            'echo "REACHED_END rc=$?"\n'
+            # RESULT is what Stage B reads (`!= pass` returns silently). Printed
+            # on the same line so `rc=$?` is still the function's status.
+            'echo "REACHED_END rc=$? RESULT=${RUNTIME_SELFTEST_RESULT:-<unset>}"\n'
         )
         record = tmp_path / "selftest.json"
         record.unlink(missing_ok=True)
@@ -1094,6 +1134,42 @@ class TestRuntimeRenderSelftestExecutes:
         path = tmp_path / "selftest.json"
         return json.loads(path.read_text()) if path.exists() else None
 
+    @pytest.mark.parametrize(
+        "kwargs, want",
+        [
+            (dict(painter_rc=0), "pass"),
+            (dict(painter_rc=3), "fail"),
+            (dict(painter_rc=124), "fail"),
+            # The early returns, with a stale `pass` pre-seeded: the reset at the
+            # top is what stops Stage B acting on a verdict nobody reached.
+            (dict(painter_rc=0, mktemp_fails=True, preseed_result="pass"), "deferred"),
+            (dict(painter_rc=0, elapsed_s=5000, installed_budget_s=600, preseed_result="pass"), "deferred"),
+        ],
+    )
+    def test_the_verdict_stage_b_reads_matches_the_outcome(self, tmp_path, kwargs, want):
+        """The handoff between the two stages: Stage B acts only on
+        RUNTIME_SELFTEST_RESULT == pass, and every Stage B test injects that
+        value by hand, so nothing pinned the producer (port /review)."""
+        r, _painter, _memo = self._run(tmp_path, **kwargs)
+        # Whole token, end of line: a substring match let `passed` satisfy
+        # `pass`, which is exactly the rename this test exists to catch.
+        assert f"RESULT={want}\n" in r.stdout, r.stdout + r.stderr
+
+    def test_a_readonly_env_sh_cannot_defeat_the_selftests_overrides(self, tmp_path):
+        """Same hole as the smoke gate's (port /review round 2): with `export`, a
+        readonly in env.sh put the probe on the network and its frame in the
+        live directory."""
+        r, painter, _memo = self._run(
+            tmp_path,
+            painter_rc=0,
+            env_extra=(
+                "readonly WEATHER_ENABLED LITCLOCK_RUNTIME_RENDER\n"
+                "export LITCLOCK_RUNTIME_RENDER_DIR=/run/litclock\nreadonly LITCLOCK_RUNTIME_RENDER_DIR\n"
+            ),
+        )
+        assert "render=true" in painter and "weather=false" in painter, painter + r.stderr
+        assert "dir=/run/litclock" not in painter and "exists=yes" in painter, painter
+
     def test_a_pass_forces_the_renderer_on_with_the_devices_language_and_writes_no_memo(self, tmp_path):
         r, painter, memo = self._run(tmp_path, painter_rc=0)
         assert "REACHED_END rc=0" in r.stdout, r.stdout + r.stderr
@@ -1104,7 +1180,7 @@ class TestRuntimeRenderSelftestExecutes:
         assert "lang=xx" in painter, "env.sh must be sourced so the device's language is the one rendered"
         assert "weather=false" in painter, "weather must be forced OFF, whatever env.sh says"
         assert "exists=yes" in painter, "the frame directory must EXIST while the painter runs"
-        assert "self-test PASSED in " in r.stdout, "the duration is the evidence Stage B needs"
+        assert "self-test PASSED in " in r.stdout, "a pass must be logged with its duration"
         assert memo is None
         rec = self._record(tmp_path)
         assert rec is not None and rec["result"] == "passed", "a pass must leave a DURABLE record for Stage B"
@@ -1289,12 +1365,12 @@ class TestSelfTestDurationReachesTheRecord:
     # 1.4s — so subtracting a quantum "for safety" admits values the shipped
     # formatter cannot honestly produce. It cost a real mutation: `d * 0.98`
     # passed all three tests, recording a 4.05s paint as 3.92s — inside the lead.
-    SLEEP_S = 1.5              # deliberately mid-second: whole-second arithmetic
+    SLEEP_S = 1.5  # deliberately mid-second: whole-second arithmetic
     #                            lands 0.5s away whichever way it rounds
     CONTROL_SHORT_S = 0.3
     CONTROL_LONG_S = 2.5
-    MIN_MOVE_S = 1.5           # true movement 2.2s; ~0.7s of slack
-    SLOW_MARGIN_S = 0.5        # the slow painter runs this far ABOVE the lead
+    MIN_MOVE_S = 1.5  # true movement 2.2s; ~0.7s of slack
+    SLOW_MARGIN_S = 0.5  # the slow painter runs this far ABOVE the lead
 
     H = TestRuntimeRenderSelftestExecutes
 
@@ -1364,8 +1440,10 @@ class TestSelfTestDurationReachesTheRecord:
     def test_a_paint_slower_than_the_lead_is_recorded_as_slower(self, tmp_path):
         """The gate boundary — the shape the other two cannot see.
 
-        Stage B's question is "did this device render inside the lead", so the
-        value has to be honest AT that boundary, not merely somewhere near 1.5s.
+        Anyone who ever asks "did this device render inside the lead" needs the
+        value honest AT that boundary, not merely somewhere near 1.5s. Stage B
+        as built does not ask it (it gates on `result` and `sha`), which is why
+        this is a property of the record, not a Stage B threshold.
         Measured: a writer that CLAMPS the duration (`min(d, 3)`) passes both
         tests above and would report every slow device as comfortably inside the
         lead — the exact "falsely SMALL value sailing through a threshold"
@@ -1384,6 +1462,1019 @@ class TestSelfTestDurationReachesTheRecord:
         rec, wall = self._timed_run(tmp_path, painter_rc=0, sleep=slept)
         assert rec["duration_s"] >= lead, (
             f"a paint that took {slept}s was recorded as {rec['duration_s']}s, inside "
-            f"the {lead}s lead — Stage B would pass a device that cannot make it"
+            f"the {lead}s lead — the record would call a slow device fast"
         )
         self._assert_honest(rec, slept, wall)
+
+
+class TestStageBMigrationExecutes:
+    """litclock-dev#871 Stage B — the FLIP, run with the real functions.
+
+    The one part of this feature that changes a device's behaviour, so every
+    guard arm is EXECUTED here and each asserts what env.sh looks like
+    AFTERWARDS. A guard that is only grepped for is a guard nobody has seen
+    refuse anything (litclock-dev#782's whole finding), and this one decides
+    whether a fielded clock stops using its pre-rendered images.
+    """
+
+    SAMPLE_ENV = (
+        "export WEATHER_ENABLED=true\n"
+        "export LITCLOCK_LANGUAGE=en\n"
+        "export LITCLOCK_RUNTIME_RENDER=false\n"
+        "# export LOG_LEVEL=WARNING\n"
+    )
+
+    @staticmethod
+    def _pass_record(tmp_path):
+        """A durable sha-matched pass record, which Stage B gates on."""
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True, timeout=30
+        ).stdout.strip()
+        path = tmp_path / "selftest.json"
+        path.write_text(json.dumps({"result": "passed", "duration_s": 1.2, "sha": head, "at_unix": 1}))
+        return path
+
+    @staticmethod
+    def _fn(name):
+        body = UPDATE_SH.read_text()
+        assert body.count(f"{name}() {{") == 1, name
+        start = body.index(f"{name}() {{")
+        return body[start : body.index("\n}\n", start) + 3]
+
+    def _run(self, tmp_path, *, selftest="pass", env_body=None, images=True, env_file=True, record="match"):
+        install = tmp_path / "install"
+        install.mkdir(exist_ok=True)
+        if env_file:
+            (install / "env.sh").write_text(self.SAMPLE_ENV if env_body is None else env_body)
+        if images:
+            meta = install / "images" / "metadata"
+            meta.mkdir(parents=True, exist_ok=True)
+            (meta / "quote_0000_0_credits.png").write_bytes(b"x")
+        memo = tmp_path / "memo.json"
+        memo.unlink(missing_ok=True)
+        # The durable sha-matched pass record Stage B gates on alongside the
+        # in-run verdict (litclock-dev#871; the Stage A comment above
+        # RUNTIME_SELFTEST_RECORD_FILE promises exactly this).
+        rec = tmp_path / "selftest.json"
+        rec.unlink(missing_ok=True)
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True, timeout=30
+        ).stdout.strip()
+        if record == "match":
+            rec.write_text(json.dumps({"result": "passed", "duration_s": 1.2, "sha": head, "at_unix": 1}))
+        elif record == "stale":
+            rec.write_text(json.dumps({"result": "passed", "duration_s": 1.2, "sha": "0" * 40, "at_unix": 1}))
+        elif record == "failed":
+            rec.write_text(json.dumps({"result": "selftest-failed", "sha": head, "at_unix": 1}))
+        elif record == "corrupt":
+            # A VALID object followed by garbage. jq prints the matching value
+            # and THEN exits non-zero, so a `|| echo ""` fallback never runs and
+            # the substitution keeps the value — measured: the old form captured
+            # "passed" from exactly this file and the gate accepted it.
+            rec.write_text(json.dumps({"result": "passed", "sha": head, "at_unix": 1}) + "\ngarbage{\n")
+        # record == "absent": leave it unwritten
+        program = (
+            "set -u\n"
+            'log_info() { echo "[INFO] $1"; }\n'
+            'log_warn() { echo "[WARN] $1"; }\n'
+            'log_error() { echo "[ERROR] $1"; }\n'
+            'atomic_write_file() { printf "%s" "$2" > "$1"; }\n'
+            'atomic_remove_file() { rm -f "$1"; }\n'
+            # The REAL lock helper and the REAL env.sh finalizer, lifted from
+            # state.sh — the flip's atomicity and its owner/mode preservation
+            # are the point, so a stub here would test a different program.
+            f'source "{REPO_ROOT}/scripts/lib/state.sh"\n'
+            f"INSTALL_DIR={install}\nRUNTIME_VALIDATION_MEMO_FILE={memo}\n"
+            f"RUNTIME_SELFTEST_RECORD_FILE={rec}\n"
+            f"RUNTIME_SELFTEST_RESULT={selftest}\n"
+            f"{self._fn('_atomic_write_env_sh_finalize_from_body')}"
+            f"{self._fn('_runtime_render_migrate_locked')}"
+            f"{self._fn('_runtime_validation_memo_write')}"
+            f"{self._fn('_runtime_render_migrate')}"
+            "_runtime_render_migrate\n"
+            'echo "REACHED_END rc=$?"\n'
+        )
+        r = subprocess.run(["bash", "-c", program], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+        after = (install / "env.sh").read_text() if (install / "env.sh").exists() else None
+        return r, after, (json.loads(memo.read_text()) if memo.exists() else None)
+
+    # ── the one arm that migrates ────────────────────────────────────────
+
+    def test_a_passing_selftest_with_images_flips_the_flag(self, tmp_path):
+        r, after, memo = self._run(tmp_path)
+        assert "REACHED_END rc=0" in r.stdout, r.stdout + r.stderr
+        assert "export LITCLOCK_RUNTIME_RENDER=true" in after
+        assert "=false" not in after
+        assert "MIGRATED to runtime text rendering" in r.stdout
+        assert memo is None, "a successful migration is not a negative result"
+
+    def test_it_changes_nothing_else_in_env_sh(self, tmp_path):
+        """The flip rewrites the whole file, so 'it only touched that line' is a
+        property worth asserting rather than assuming."""
+        _, after, _ = self._run(tmp_path)
+        assert after == self.SAMPLE_ENV.replace("RUNTIME_RENDER=false", "RUNTIME_RENDER=true")
+
+    def test_it_is_idempotent(self, tmp_path):
+        """Self-limiting by design: after the flip the pattern no longer matches,
+        which is what lets Stage B ship with no one-shot marker."""
+        self._run(tmp_path)
+        r, after, memo = self._run(
+            tmp_path, env_body=self.SAMPLE_ENV.replace("RUNTIME_RENDER=false", "RUNTIME_RENDER=true")
+        )
+        assert "MIGRATED" not in r.stdout
+        assert "export LITCLOCK_RUNTIME_RENDER=true" in after
+        assert memo is None, "an already-migrated device is the goal state, not a negative result"
+
+    # ── every arm that must NOT migrate ──────────────────────────────────
+
+    @pytest.mark.parametrize("selftest", ["fail", "deferred", ""])
+    def test_a_selftest_that_did_not_pass_leaves_env_sh_alone(self, tmp_path, selftest):
+        """The marker is not enough. It says freetype reproduces the measurement
+        dump; only the self-test says this device painted a quote from text."""
+        r, after, memo = self._run(tmp_path, selftest=selftest)
+        assert after == self.SAMPLE_ENV, "env.sh must be byte-identical"
+        assert "MIGRATED" not in r.stdout
+        assert memo is None, "the self-test already wrote its own memo; do not contradict it"
+
+    @pytest.mark.parametrize(
+        "record,why,reason_fragment",
+        [
+            # The REASON, not just the token: an absent record and a mismatched
+            # one both refuse, so asserting only "migration-skipped" leaves the
+            # two arms indistinguishable and the absent-record branch could be
+            # deleted with the tests still green (mutation-checked).
+            ("absent", "the record could not be written at all", "pass record is missing"),
+            ("stale", "the record is from a different release", "does not match this release"),
+            ("failed", "the record says the self-test did not pass", "does not match this release"),
+            ("corrupt", "the record is a valid object followed by garbage", "not readable JSON"),
+        ],
+    )
+    def test_the_durable_record_must_match_this_release(self, tmp_path, record, why, reason_fragment):
+        """Stage A's comment above RUNTIME_SELFTEST_RECORD_FILE says Stage B
+        gates on that file, sha-matched. It now does, and not redundantly with
+        the in-run verdict: if the record could not be written — no jq, an
+        unwritable state dir — then Stage A's own durability claim is false on
+        this device, and a later reader would find a migrated clock with no
+        evidence for why. Refusing keeps the device and its record consistent,
+        and it retries next week.
+        """
+        r, after, memo = self._run(tmp_path, record=record)
+        assert after == self.SAMPLE_ENV, f"env.sh must be byte-identical when {why}"
+        assert "MIGRATED" not in r.stdout
+        assert memo is not None and memo["result"] == "migration-skipped", r.stdout
+        assert reason_fragment in memo["reason"], (
+            f"the memo must say WHICH way the record failed, got: {memo['reason']!r}"
+        )
+
+    def test_no_images_leaves_env_sh_alone_and_memos_why(self, tmp_path):
+        """Migrating a device with no PNG tier would remove the only rung below
+        the text renderer — the one change that could turn a render fault into a
+        blank panel."""
+        r, after, memo = self._run(tmp_path, images=False)
+        assert after == self.SAMPLE_ENV, "env.sh must be byte-identical"
+        assert "MIGRATED" not in r.stdout
+        assert memo is not None and memo["result"] == "migration-skipped"
+        assert "fallback" in memo["reason"]
+
+    def test_an_empty_images_metadata_counts_as_absent(self, tmp_path):
+        """`images/metadata/` present but empty is what a half-finished cleanup
+        leaves, and the painter's fallback globs that directory."""
+        install = tmp_path / "install"
+        (install / "images" / "metadata").mkdir(parents=True, exist_ok=True)
+        r, after, memo = self._run(tmp_path, images=False)
+        assert after == self.SAMPLE_ENV
+        assert memo is not None and memo["result"] == "migration-skipped"
+
+    def test_a_commented_line_beside_the_active_one_still_migrates(self, tmp_path):
+        """The realistic env.sh: `env.sh.sample` documents the flag in comments
+        above the live assignment, and update.sh Phase 3 merges sample lines in.
+        The count guard must see ONE active assignment there, not two — a
+        loosened match refuses to migrate any device with the documentation
+        still attached, which is all of them.
+        """
+        body = (
+            "# export LITCLOCK_RUNTIME_RENDER=false  <- what this used to default to\n"
+            "export LITCLOCK_RUNTIME_RENDER=false\n"
+        )
+        r, after, memo = self._run(tmp_path, env_body=body)
+        assert "MIGRATED to runtime text rendering" in r.stdout, r.stdout
+        assert after == body.replace("\nexport LITCLOCK_RUNTIME_RENDER=false", "\nexport LITCLOCK_RUNTIME_RENDER=true")
+        assert after.startswith("# export LITCLOCK_RUNTIME_RENDER=false"), "the comment is untouched"
+
+    def test_a_commented_assignment_is_not_rewritten(self, tmp_path):
+        """`env.sh.sample` ships commented examples and this runs over a real
+        device's env.sh; rewriting a comment would edit documentation."""
+        body = "# export LITCLOCK_RUNTIME_RENDER=false\nexport WEATHER_ENABLED=true\n"
+        r, after, memo = self._run(tmp_path, env_body=body)
+        assert after == body, "a commented line is prose"
+        assert "MIGRATED" not in r.stdout
+        assert memo is None, "nothing to migrate is not a negative result"
+
+    def test_two_active_assignments_are_refused(self, tmp_path):
+        """A device whose env.sh carries two is not one to guess about.
+
+        Also pins the outer function's GENERIC failure branch — the `else` arm
+        of `_runtime_render_migrate`, reached whenever the locked helper returns
+        anything but 0 or 75. Asserting only "env.sh unchanged" would not: every
+        other guard leaves it unchanged too, so that assertion passes when a
+        DIFFERENT guard refuses, and deleting the branch outright left the whole
+        suite green (/review 2026-09-23). The memo is the only operator-visible
+        evidence this path produces, so the memo is what the test asserts.
+        """
+        body = "export LITCLOCK_RUNTIME_RENDER=false\nexport LITCLOCK_RUNTIME_RENDER=false\n"
+        r, after, memo = self._run(tmp_path, env_body=body)
+        assert after == body, "env.sh must be byte-identical"
+        assert "found 2" in r.stdout
+        assert memo is not None, "the generic failure branch must write a memo"
+        assert memo["result"] == "migration-skipped", memo
+        assert "rewrite did not complete" in memo["reason"], memo
+        assert "the env.sh rewrite failed" in r.stdout, r.stdout
+
+    def test_a_lock_timeout_is_memoed_as_such_and_not_as_a_rewrite_failure(self, tmp_path):
+        """rc=75 from `with_env_lock` is its own arm, and says something different.
+
+        A real `flock` is held on the sidecar for the whole wait, which is what
+        the PWA's config.py writing env.sh at the same moment looks like. The
+        distinction matters to whoever reads the memo: "another writer had it"
+        is a retry-next-week condition, while "the rewrite did not complete"
+        points at the rewrite itself. Deleting both arms left 307 tests green
+        (/review 2026-09-23), so this asserts the rc and the reason, not merely
+        that env.sh survived.
+        """
+        install = tmp_path / "install"
+        install.mkdir(exist_ok=True)
+        (install / "env.sh").write_text(self.SAMPLE_ENV)
+        meta = install / "images" / "metadata"
+        meta.mkdir(parents=True, exist_ok=True)
+        (meta / "q.png").write_bytes(b"x")
+        memo = tmp_path / "memo.json"
+        lockfile = install / "env.sh.lock"
+        held = tmp_path / "held"
+
+        if subprocess.run(["bash", "-c", "command -v flock"], capture_output=True).returncode != 0:
+            pytest.skip("flock(1) unavailable — with_env_lock takes its no-lock fallback")
+
+        # Hold the sidecar, and signal only once it is actually held: starting
+        # the holder is not the same as it owning the lock, and racing that
+        # would make this test pass for the wrong reason.
+        holder = subprocess.Popen(
+            ["bash", "-c", f'exec 200>"{lockfile}"; flock 200; : > "{held}"; sleep 30'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            deadline = time.time() + 10
+            while not held.exists() and time.time() < deadline:
+                time.sleep(0.05)
+            assert held.exists(), "the lock holder never acquired the sidecar"
+            program = (
+                "set -u\n"
+                'log_info() { echo "[INFO] $1"; }\n'
+                'log_warn() { echo "[WARN] $1"; }\n'
+                'atomic_write_file() { printf "%s" "$2" > "$1"; }\n'
+                'atomic_remove_file() { rm -f "$1"; }\n'
+                f'source "{REPO_ROOT}/scripts/lib/state.sh"\n'
+                f"INSTALL_DIR={install}\nRUNTIME_VALIDATION_MEMO_FILE={memo}\n"
+                f"RUNTIME_SELFTEST_RECORD_FILE={self._pass_record(tmp_path)}\n"
+                "RUNTIME_SELFTEST_RESULT=pass\nLITCLOCK_ENV_LOCK_WAIT=1\n"
+                f"{self._fn('_atomic_write_env_sh_finalize_from_body')}"
+                f"{self._fn('_runtime_render_migrate_locked')}"
+                f"{self._fn('_runtime_validation_memo_write')}"
+                f"{self._fn('_runtime_render_migrate')}"
+                "_runtime_render_migrate\n"
+                'echo "REACHED_END rc=$?"\n'
+            )
+            r = subprocess.run(["bash", "-c", program], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+        finally:
+            holder.kill()
+            holder.wait(timeout=10)
+
+        assert "REACHED_END rc=0" in r.stdout, r.stdout + r.stderr
+        assert (install / "env.sh").read_text() == self.SAMPLE_ENV, "env.sh must be byte-identical"
+        assert "MIGRATED" not in r.stdout, r.stdout
+        loaded = json.loads(memo.read_text())
+        assert loaded["result"] == "migration-skipped", loaded
+        assert str(loaded["rc"]) == "75", loaded
+        assert "locked by another writer" in loaded["reason"], loaded
+        # The two arms must stay distinguishable — this is the whole point.
+        assert "rewrite did not complete" not in loaded["reason"], loaded
+
+    def test_the_under_lock_recheck_catches_a_writer_that_raced_the_outer_guard(self, tmp_path):
+        """`_runtime_render_migrate_locked` re-reads and re-counts, and that is
+        not redundant with the outer guard in `_runtime_render_migrate`.
+
+        The outer grep runs BEFORE `with_env_lock`. Another writer — the PWA's
+        `config.py`, a `reset-setup.sh` run — can change env.sh in that window,
+        which is the whole reason the lock exists. The re-check is what stops
+        the migration acting on what the file said a moment ago.
+
+        Unreachable with a static file, so the race is staged: `with_env_lock`
+        is replaced by a stub that rewrites env.sh into a bare-only form and
+        THEN calls the target, which is what losing that race looks like.
+        """
+        install = tmp_path / "install"
+        install.mkdir(exist_ok=True)
+        (install / "env.sh").write_text(self.SAMPLE_ENV)
+        meta = install / "images" / "metadata"
+        meta.mkdir(parents=True, exist_ok=True)
+        (meta / "q.png").write_bytes(b"x")
+        memo = tmp_path / "memo.json"
+        raced = "LITCLOCK_RUNTIME_RENDER=false\n"  # bare: never reaches the painter
+        program = (
+            "set -u\n"
+            'log_info() { echo "[INFO] $1"; }\n'
+            'log_warn() { echo "[WARN] $1"; }\n'
+            'atomic_write_file() { printf "%s" "$2" > "$1"; }\n'
+            'atomic_remove_file() { rm -f "$1"; }\n'
+            f'source "{REPO_ROOT}/scripts/lib/state.sh"\n'
+            # the racing writer, standing in for the lock helper
+            f'with_env_lock() {{ printf %s {shlex.quote(raced)} > "{install}/env.sh"; "$@"; }}\n'
+            f"INSTALL_DIR={install}\nRUNTIME_VALIDATION_MEMO_FILE={memo}\n"
+            f"RUNTIME_SELFTEST_RECORD_FILE={self._pass_record(tmp_path)}\n"
+            "RUNTIME_SELFTEST_RESULT=pass\n"
+            f"{self._fn('_atomic_write_env_sh_finalize_from_body')}"
+            f"{self._fn('_runtime_render_migrate_locked')}"
+            f"{self._fn('_runtime_validation_memo_write')}"
+            f"{self._fn('_runtime_render_migrate')}"
+            "_runtime_render_migrate\n"
+        )
+        r = subprocess.run(["bash", "-c", program], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+        after = (install / "env.sh").read_text()
+        assert after == raced, f"the raced file must be left as the other writer wrote it:\n{after}"
+        assert "MIGRATED" not in r.stdout, r.stdout
+        assert "0 exported =false" in r.stdout, r.stdout
+
+    def test_a_missing_env_sh_is_a_silent_no_op(self, tmp_path):
+        r, after, memo = self._run(tmp_path, env_file=False)
+        assert after is None and "MIGRATED" not in r.stdout
+        assert memo is None
+
+    def test_an_already_true_device_writes_no_memo(self, tmp_path):
+        body = "export LITCLOCK_RUNTIME_RENDER=true\n"
+        r, after, memo = self._run(tmp_path, env_body=body)
+        assert after == body and memo is None
+
+    # ── the call site ────────────────────────────────────────────────────
+
+    def test_the_flip_is_called_after_the_selftest_inside_the_keep_arm(self):
+        """Position is the safety property, as it is for the validator above: a
+        smoke failure git-resets the tree, so a flip outside the KEEP arm could
+        migrate a device onto code that was just reverted."""
+        body = UPDATE_SH.read_text()
+        keep = body.index('if [[ "$smoke_rc" -eq 0 ]]; then\n    log_info "Smoke test passed"')
+        else_at = body.index('else\n    log_error "Smoke test failed', keep)
+        selftest_call = body.index("        _runtime_render_selftest\n", keep)
+        migrate_call = body.index("        _runtime_render_migrate\n", keep)
+        assert keep < selftest_call < migrate_call < else_at
+        assert "ROLLBACK_MODE" in body[keep:selftest_call].rsplit("if [[", 1)[-1]
+
+    # ── the review's findings, each with an executed test ────────────────
+
+    def test_another_assignment_with_a_different_value_is_refused(self, tmp_path):
+        """`=false` followed by `=0` used to migrate "successfully" while the
+        effective value stayed OFF — the last assignment wins when the file is
+        sourced, so the flip was cosmetic and the memo was cleared as if it had
+        worked. The count now looks at every ACTIVE assignment, not just the
+        `=false` ones."""
+        body = "export LITCLOCK_RUNTIME_RENDER=false\nexport LITCLOCK_RUNTIME_RENDER=0\n"
+        r, after, _ = self._run(tmp_path, env_body=body)
+        assert after == body, "env.sh must be byte-identical"
+        assert "MIGRATED" not in r.stdout
+        assert "found 2 active" in r.stdout, r.stdout
+
+    def test_a_true_assignment_beside_the_false_one_is_refused(self, tmp_path):
+        body = "export LITCLOCK_RUNTIME_RENDER=false\nexport LITCLOCK_RUNTIME_RENDER=true\n"
+        r, after, _ = self._run(tmp_path, env_body=body)
+        assert after == body
+        assert "MIGRATED" not in r.stdout
+
+    def test_a_failed_transformation_is_not_committed(self, tmp_path):
+        """A `sed` killed mid-stream emits a PARTIAL body. It differs from the
+        original, so the "did it change anything" check accepted it and the
+        finalizer renamed a truncated env.sh into place, reported as a
+        successful migration. An atomic rename protects against a torn write,
+        not against committing a complete-looking truncated body.
+
+        `sed` is shadowed by a function that prints one line and exits 137, the
+        shape a SIGKILL leaves.
+        """
+        install = tmp_path / "install"
+        install.mkdir(exist_ok=True)
+        (install / "env.sh").write_text(self.SAMPLE_ENV)
+        meta = install / "images" / "metadata"
+        meta.mkdir(parents=True, exist_ok=True)
+        (meta / "q.png").write_bytes(b"x")
+        memo = tmp_path / "memo.json"
+        program = (
+            "set -u\n"
+            'log_info() { echo "[INFO] $1"; }\n'
+            'log_warn() { echo "[WARN] $1"; }\n'
+            'atomic_write_file() { printf "%s" "$2" > "$1"; }\n'
+            'atomic_remove_file() { rm -f "$1"; }\n'
+            f'source "{REPO_ROOT}/scripts/lib/state.sh"\n'
+            f"INSTALL_DIR={install}\nRUNTIME_VALIDATION_MEMO_FILE={memo}\n"
+            f"RUNTIME_SELFTEST_RECORD_FILE={self._pass_record(tmp_path)}\n"
+            "RUNTIME_SELFTEST_RESULT=pass\n"
+            # the mid-stream kill
+            'sed() { echo "export WEATHER_ENABLED=true"; return 137; }\n'
+            f"{self._fn('_atomic_write_env_sh_finalize_from_body')}"
+            f"{self._fn('_runtime_render_migrate_locked')}"
+            f"{self._fn('_runtime_validation_memo_write')}"
+            f"{self._fn('_runtime_render_migrate')}"
+            "_runtime_render_migrate\n"
+            'echo "REACHED_END rc=$?"\n'
+        )
+        r = subprocess.run(["bash", "-c", program], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+        after = (install / "env.sh").read_text()
+        assert after == self.SAMPLE_ENV, f"a partial body was committed:\n{after}"
+        assert "MIGRATED" not in r.stdout
+        assert "sed exited 137" in r.stdout, r.stdout
+
+    def test_a_transformation_that_loses_lines_is_not_committed(self, tmp_path):
+        """The line-count belt, for a `sed` that truncates and still exits 0."""
+        install = tmp_path / "install"
+        install.mkdir(exist_ok=True)
+        (install / "env.sh").write_text(self.SAMPLE_ENV)
+        meta = install / "images" / "metadata"
+        meta.mkdir(parents=True, exist_ok=True)
+        (meta / "q.png").write_bytes(b"x")
+        program = (
+            "set -u\n"
+            'log_info() { echo "[INFO] $1"; }\n'
+            'log_warn() { echo "[WARN] $1"; }\n'
+            'atomic_write_file() { printf "%s" "$2" > "$1"; }\n'
+            'atomic_remove_file() { rm -f "$1"; }\n'
+            f'source "{REPO_ROOT}/scripts/lib/state.sh"\n'
+            f"INSTALL_DIR={install}\nRUNTIME_VALIDATION_MEMO_FILE={tmp_path / 'memo.json'}\n"
+            f"RUNTIME_SELFTEST_RECORD_FILE={self._pass_record(tmp_path)}\n"
+            "RUNTIME_SELFTEST_RESULT=pass\n"
+            'sed() { echo "export LITCLOCK_RUNTIME_RENDER=true"; return 0; }\n'
+            f"{self._fn('_atomic_write_env_sh_finalize_from_body')}"
+            f"{self._fn('_runtime_render_migrate_locked')}"
+            f"{self._fn('_runtime_validation_memo_write')}"
+            f"{self._fn('_runtime_render_migrate')}"
+            "_runtime_render_migrate\n"
+        )
+        r = subprocess.run(["bash", "-c", program], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+        assert (install / "env.sh").read_text() == self.SAMPLE_ENV
+        assert "changed the line count" in r.stdout, r.stdout
+
+    def test_the_sample_stays_false_because_phase_3_backfills_it(self):
+        """THE finding that held Stage B back a release.
+
+        `env.sh.sample` is not the fresh-flash default — it is what Phase 3
+        copies VERBATIM onto any existing device missing the key. A `true` here
+        switches on an old clock with none of the five guards run, before the
+        smoke gate, with no revert path. litclock-dev#783 records devices born
+        missing up to ten of these knobs.
+        """
+        sample = (REPO_ROOT / "env.sh.sample").read_text()
+        assert re.search(r"^export LITCLOCK_RUNTIME_RENDER=false$", sample, re.M), (
+            "the sample is the BACKFILL source for existing devices and must stay false"
+        )
+
+    def test_the_seeder_defaults_to_false_and_only_a_fresh_flash_asks_for_true(self, tmp_path):
+        """`env_sh_defaults()` is NOT a fresh-flash-only seeder, which is what
+        the first fix for the above assumed.
+
+        `reset-setup.sh` and `prepare-for-cloning.sh` both call it on an
+        EXISTING device, and neither removes `.runtime-render-validated` — they
+        clear the self-test record, not the marker. So a `true` default handed a
+        reset clock runtime render with none of Stage B's guards run, including
+        a clock whose self-test had FAILED, which is exactly the device the
+        guards exist to hold back (review, round 4).
+
+        Executed against the real helper rather than grepped, because the value
+        is a parameter now and a source-text check would pin the wrong thing.
+        """
+        state_sh = REPO_ROOT / "scripts" / "lib" / "state.sh"
+
+        def seed(*args):
+            call = "env_sh_defaults " + " ".join(f'"{a}"' for a in args) if args else "env_sh_defaults"
+            r = subprocess.run(
+                ["bash", "-c", f'. "{state_sh}"\n{call}'],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert r.returncode == 0, r.stderr
+            return r.stdout
+
+        assert "export LITCLOCK_RUNTIME_RENDER=false" in seed(), "the bare default must be conservative"
+        assert "export LITCLOCK_RUNTIME_RENDER=false" in seed("en"), "a language-only call is a reset caller"
+        assert "export LITCLOCK_RUNTIME_RENDER=true" in seed("", "true"), "a fresh flash asks for text"
+        # A caller that passes nonsense gets the safe value, not the nonsense.
+        assert "export LITCLOCK_RUNTIME_RENDER=false" in seed("", "yes")
+
+    def test_the_reset_and_cloning_callers_take_the_conservative_default(self):
+        """Neither may start asking for `true`: both run on an existing device
+        whose self-test may have failed, and update.sh migrates it properly on
+        the next tick if it can render."""
+        for name in ("reset-setup.sh", "prepare-for-cloning.sh"):
+            body = (REPO_ROOT / "scripts" / name).read_text()
+            for call in re.findall(r"env_sh_defaults[^\n)]*", body):
+                assert "true" not in call, f"{name} must not seed runtime render on an existing device: {call!r}"
+
+    def test_first_boot_asks_for_true_in_both_of_its_seeders(self):
+        """first-boot has two: the helper call and the state.sh-missing heredoc.
+        litclock-dev#783 found the second one missed by a guard that only saw the first."""
+        body = (REPO_ROOT / "scripts" / "first-boot.sh").read_text()
+        assert re.search(r'env_sh_defaults\s+""\s+true', body), "the helper call must ask for text render"
+        assert re.search(r"^export LITCLOCK_RUNTIME_RENDER=true$", body, re.M), (
+            "the fallback heredoc seeds a fresh device too"
+        )
+
+    def test_a_bare_assignment_beside_the_export_is_refused(self, tmp_path):
+        """`export ...=false` plus a later bare `...=0` used to migrate
+        "successfully" while the effective value stayed off — re-assigning does
+        not clear the export attribute, so the bare line wins. A bare assignment
+        is not an invented shape: the PWA's own writer treats `export` as
+        optional (`_KV_PATTERN`, src/config.py)."""
+        body = "export LITCLOCK_RUNTIME_RENDER=false\nLITCLOCK_RUNTIME_RENDER=0\n"
+        r, after, _ = self._run(tmp_path, env_body=body)
+        assert after == body, "env.sh must be byte-identical"
+        assert "found 2 active" in r.stdout, r.stdout
+
+    def test_a_lone_bare_assignment_is_refused_because_it_never_reached_the_painter(self, tmp_path):
+        """Migrating a bare assignment would be a no-op reported as success.
+
+        `runtheclock.sh` does `source ./env.sh` with NO `set -a`, so a bare
+        assignment never enters the painter's environment — measured: a child
+        process sees the variable UNSET. A device with a lone bare `=false` was
+        therefore not honouring the flag either way, and rewriting it to a bare
+        `=true` changes the file and nothing else while clearing the memo and
+        logging a migration. Refused with a reason instead.
+
+        Bare assignments are still COUNTED, because a bare one beside an
+        exported one does change the exported value — that case is covered by
+        `test_a_bare_assignment_beside_the_export_is_refused`.
+        """
+        body = "LITCLOCK_RUNTIME_RENDER=false\nexport WEATHER_ENABLED=true\n"
+        r, after, memo = self._run(tmp_path, env_body=body)
+        assert "MIGRATED" not in r.stdout, r.stdout
+        assert after == body, "env.sh must be byte-identical"
+        # SILENT, and that is what pins the OUTER guard rather than the inner
+        # count: a device with no exported assignment was never eligible, so it
+        # is not a "could have migrated and did not" case. Loosening the outer
+        # guard to accept bare forms pushes this into the locked helper, which
+        # refuses with a warning and a memo — same file, different diagnosis.
+        assert memo is None, f"a device that was never eligible must not be memoed: {memo}"
+        assert "Stage B:" not in r.stdout, r.stdout
+
+    def test_a_bare_assignment_really_does_not_reach_a_child(self, tmp_path):
+        """The measurement the refusal above rests on, executed rather than
+        asserted in prose — and the control beside it, since `export` must."""
+        env = tmp_path / "env.sh"
+        results = {}
+        for label, line in (("bare", "FOO_X=1\n"), ("export", "export FOO_X=1\n")):
+            env.write_text(line)
+            r = subprocess.run(
+                ["bash", "-c", f". \"{env}\"; python3 -c \"import os;print(os.environ.get('FOO_X','<unset>'))\""],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            results[label] = r.stdout.strip()
+        assert results["bare"] == "<unset>", results
+        assert results["export"] == "1", results
+
+    def test_phase_3_sees_an_indented_existing_assignment(self):
+        """A tab-indented assignment went undetected, so Phase 3 appended the
+        sample's line beside it and the sample's value silently became the
+        effective one. Not harmless before Stage B either: the sample's example
+        WEATHER_LATITUDE/LONGITUDE already differed from what a device is seeded
+        with. Stage B is what surfaced it, not the first divergence."""
+        body = UPDATE_SH.read_text()
+        assert 'grep -q "^[[:space:]#]*export[[:space:]]\\+${varname}="' in body, (
+            "Phase 3's existing-key detection must allow leading whitespace"
+        )
+
+    def test_the_finalizer_sets_mode_before_ownership(self):
+        """Ownership first installs an unreadable env.sh: the mktemp file is
+        pi-owned 0600, `sudo chown root:root` succeeds, the unprivileged `chmod
+        644` then fails on a file pi no longer owns, and the rename replaces a
+        world-readable config with a root-owned 0600 one. Both failures are
+        swallowed, so the caller reports success."""
+        state = (REPO_ROOT / "scripts" / "lib" / "state.sh").read_text()
+        fn = state[state.index("_atomic_write_env_sh_finalize() {") :]
+        fn = fn[: fn.index("\n}\n")]
+        assert fn.index('chmod "$mode"') < fn.index('chown "$owner"'), (
+            "mode must be set while pi still owns the staging file"
+        )
+
+
+class TestMemoTokensRoundTripToThePWA:
+    """The shell writes the memo; `routes/status.py` decides whether to show it.
+
+    Those two vocabularies live in different languages and nothing connected
+    them, so Stage B shipped `migration-skipped` that `RUNTIME_VALIDATION_RESULTS`
+    did not accept: every refusal was parsed, rejected and surfaced as `null` —
+    byte-identical to what a healthy device sends, on the one feature whose
+    whole safety argument is that a refusal would be visible (/review
+    2026-09-23, adversarial). Grepping either side alone cannot catch that; the
+    test has to compare them.
+    """
+
+    # Every position a memo token can enter from. Two of these are forwarding
+    # wrappers (`_defer_runtime_validation`, `_validation_fits_remaining_budget`)
+    # that take the token as $2 and hand it to the writer as `"$token"`, so
+    # scanning only the writer's call sites would miss `selftest-deferred`
+    # entirely and make this test weaker than it looks.
+    TOKEN_SINKS = (
+        r"_runtime_validation_memo_write\s+(\S+)",
+        r"_defer_runtime_validation\s+(?:\"[^\"]*\"|\S+)\s+(\S+)",
+        r"_validation_fits_remaining_budget\s+(?:\"[^\"]*\"|\S+)\s+(\S+)",
+    )
+    # The wrappers' own `${2:-<default>}` fallbacks are live tokens too: a caller
+    # that omits $2 writes the default.
+    DEFAULT_TOKEN_RE = r"local\s+(?:\w+=\S+\s+)?token=\"\$\{2:-([a-z-]+)\}\""
+
+    @classmethod
+    def _tokens_written_by_the_shell(cls):
+        """Every literal memo token reachable in update.sh.
+
+        A forwarded `"$token"` is expected at the two wrapper sites and is
+        resolved through their callers and defaults instead. Any OTHER
+        non-literal is refused rather than skipped quietly, because a token the
+        extraction cannot see is a token this test silently stops guarding.
+        """
+        body = UPDATE_SH.read_text()
+        tokens = set()
+        for pattern in cls.TOKEN_SINKS:
+            for raw in re.findall(pattern, body):
+                if raw in ('"$token"', "$token"):
+                    continue  # forwarded; resolved via callers + defaults below
+                assert not raw.startswith(("$", '"', "'")), (
+                    f"non-literal memo token {raw!r} — the round-trip check cannot see it; "
+                    "keep the token a bare literal at the call site, or teach TOKEN_SINKS "
+                    "how to resolve the new wrapper"
+                )
+                tokens.add(raw)
+        defaults = re.findall(cls.DEFAULT_TOKEN_RE, body)
+        assert defaults, "no `${2:-<token>}` wrapper default found — did update.sh refactor?"
+        tokens.update(defaults)
+        return tokens
+
+    def test_every_token_the_shell_writes_is_renderable_by_the_pwa(self):
+        from control_server.routes.status import RUNTIME_VALIDATION_RESULTS
+
+        written = self._tokens_written_by_the_shell()
+        assert written, "found no memo-write call sites — did update.sh refactor?"
+        missing = sorted(written - set(RUNTIME_VALIDATION_RESULTS))
+        assert not missing, (
+            f"update.sh writes {missing} but routes/status.py's "
+            f"RUNTIME_VALIDATION_RESULTS does not accept them, so those memos reach "
+            f"the PWA as null — indistinguishable from a healthy device. "
+            f"Add them to RUNTIME_VALIDATION_RESULTS."
+        )
+
+    def test_the_stage_b_token_specifically_round_trips(self):
+        """Named on its own so a regression points at the right release."""
+        from control_server.routes.status import RUNTIME_VALIDATION_RESULTS
+
+        assert "migration-skipped" in self._tokens_written_by_the_shell()
+        assert "migration-skipped" in RUNTIME_VALIDATION_RESULTS
+
+    def test_a_refusal_memo_actually_renders(self, tmp_path):
+        """End to end through the real reader, not just the allowlist.
+
+        Membership is necessary and not sufficient: the reader also gates on
+        `at_unix`, so a token in the set whose memo the reader still drops would
+        pass the check above and fail the owner.
+        """
+        from control_server.routes.status import _resolve_runtime_validation_memo
+
+        memo = tmp_path / "runtime-render-validation.json"
+        memo.write_text(
+            json.dumps(
+                {
+                    "result": "migration-skipped",
+                    "rc": None,
+                    "reason": "the PNG fallback tier (images/metadata) is absent",
+                    "sha": "0" * 40,
+                    "at_unix": 1790000000,
+                }
+            )
+        )
+        resolved = _resolve_runtime_validation_memo(memo_file=memo)
+        assert resolved is not None, "a Stage B refusal must reach /api/status, not vanish"
+        assert resolved.get("result") == "migration-skipped", resolved
+
+
+class TestTheSmokeGateRendersTheTierTheDeviceIsOn:
+    """The smoke gate is the only thing that can revert a release.
+
+    Before litclock-dev#871 Stage B it ran the painter with no `env.sh`, so it
+    always exercised the PNG tier. That was harmless while the whole fleet was
+    on PNGs and became a hole the moment Stage B migrated them: a regression in
+    the text renderer would render a PNG here, pass, and never be reverted —
+    and `src/literary_clock.py` is not one of the six proof inputs, so the
+    marker-revoke block does not cover it either (/review 2026-09-23).
+    """
+
+    SMOKE_START = '        [[ -f "$INSTALL_DIR/env.sh" ]] && { source "$INSTALL_DIR/env.sh" 2>/dev/null || true; }'
+    SMOKE_END = "    ) | sed 's/^/[smoke] /'"
+
+    def test_the_gate_is_the_one_that_reverts(self):
+        """Anchor: the block we lift is the one whose status becomes smoke_rc."""
+        body = UPDATE_SH.read_text()
+        end = body.index(self.SMOKE_END)
+        after = body[end : end + 200]
+        assert 'smoke_rc="${PIPESTATUS[0]}"' in after, (
+            "the sourced block must be the one feeding smoke_rc, or this test guards a different gate"
+        )
+
+    @classmethod
+    def _smoke_sequence(cls):
+        """The scratch-dir setup, the subshell, smoke_rc, and the cleanup.
+
+        From the `mktemp` line through the `rm` line, so the isolation added in
+        the port /review (weather off, a throwaway frame directory) is executed
+        as written, not re-typed here.
+        """
+        body = UPDATE_SH.read_text()
+        start = body.index('    smoke_render_dir="$(mktemp -d 2>/dev/null)"')
+        rm = body.index('rm -rf -- "$smoke_render_dir"', start)
+        end = body.index("\n", rm)
+        seq = body[start:end]
+        assert cls.SMOKE_START in seq and 'smoke_rc="${PIPESTATUS[0]}"' in seq, seq
+        return seq
+
+    def _run_block(self, tmp_path, env_body, mktemp_fails=False, painter_rc=0):
+        install = tmp_path / "install"
+        install.mkdir(exist_ok=True)
+        (install / "env.sh").write_text(env_body)
+        # A stub painter that reports what it was actually handed.
+        stub = tmp_path / "python3"
+        stub.write_text(
+            "#!/bin/bash\n"
+            "echo \"SAW=${LITCLOCK_RUNTIME_RENDER:-<unset>}\"\n"
+            "echo \"WEATHER=${WEATHER_ENABLED:-<unset>}\"\n"
+            "echo \"DIR=${LITCLOCK_RUNTIME_RENDER_DIR:-<unset>}\"\n"
+            "[[ -n \"${LITCLOCK_RUNTIME_RENDER_DIR:-}\" && -d \"$LITCLOCK_RUNTIME_RENDER_DIR\" ]]"
+            " && echo DIR_EXISTS_DURING\n"
+            f"exit {painter_rc}\n"
+        )
+        stub.chmod(0o755)
+        program = (
+            f"INSTALL_DIR={install}\nPYTHON={stub}\n"
+            'log_warn() { echo "[WARN] $1"; }\n'
+            + ("mktemp() { return 1; }\n" if mktemp_fails else "")
+            # Prove the subshell isolation at the same time.
+            + "LITCLOCK_RUNTIME_RENDER=outer\n"
+            f"{self._smoke_sequence()}\n"
+            'echo "rc=$smoke_rc"\n'
+            'echo "PARENT_AFTER=$LITCLOCK_RUNTIME_RENDER"\n'
+            'echo "SCRATCH=${smoke_render_dir:-<none>}"\n'
+            '[[ -n "${smoke_render_dir:-}" && -e "$smoke_render_dir" ]] && echo SCRATCH_LEFT_BEHIND\n'
+        )
+        # A scrubbed environment: inherited from the runner, WEATHER_ENABLED or
+        # LITCLOCK_RUNTIME_RENDER_DIR would satisfy (or break) the assertions
+        # below for reasons that have nothing to do with the gate (port /review).
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("LITCLOCK_", "WEATHER_")) and k != "ROLLBACK_MODE"
+        }
+        return subprocess.run(
+            ["bash", "-c", program], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60, env=env
+        )
+
+    def test_a_migrated_device_smoke_tests_the_text_tier(self, tmp_path):
+        r = self._run_block(tmp_path, "export LITCLOCK_RUNTIME_RENDER=true\n")
+        assert "[smoke] SAW=true" in r.stdout, r.stdout + r.stderr
+        assert "rc=0" in r.stdout, r.stdout
+
+    def test_an_unmigrated_device_still_smoke_tests_the_png_tier(self, tmp_path):
+        r = self._run_block(tmp_path, "export LITCLOCK_RUNTIME_RENDER=false\n")
+        assert "[smoke] SAW=false" in r.stdout, r.stdout + r.stderr
+
+    def test_env_sh_does_not_leak_into_the_updater(self, tmp_path):
+        """A subshell, not a bare source: update.sh must not inherit env.sh."""
+        r = self._run_block(tmp_path, "export LITCLOCK_RUNTIME_RENDER=true\n")
+        assert "PARENT_AFTER=outer" in r.stdout, (
+            "env.sh leaked into the updater's own shell:\n" + r.stdout
+        )
+
+    def test_a_broken_env_sh_does_not_fail_the_gate(self, tmp_path):
+        """The asymmetry that matters: a false RED reverts a healthy release.
+
+        Since litclock-dev#865 the smoke-revert path blocks the release it fled,
+        so a gate that a corrupt env.sh could fail would hold every release off
+        every such device until the next one ships, and fail that one too.
+        """
+        r = self._run_block(tmp_path, "export LITCLOCK_RUNTIME_RENDER=true\nthis is ( not valid shell\n")
+        assert "rc=0" in r.stdout, (
+            "a syntactically broken env.sh must not make the smoke gate revert the release:\n"
+            + r.stdout + r.stderr
+        )
+
+
+    @pytest.mark.parametrize("painter_rc", [0, 3, 124])
+    def test_the_painters_verdict_reaches_smoke_rc_and_the_scratch_dir_goes(self, tmp_path, painter_rc):
+        """A failing painter must reach smoke_rc THROUGH the new lines around the
+        pipeline — a mutant that overwrote PIPESTATUS survived every test while
+        the stub always exited 0 — and the scratch directory must go either way."""
+        r = self._run_block(tmp_path, "export LITCLOCK_RUNTIME_RENDER=true\n", painter_rc=painter_rc)
+        assert f"rc={painter_rc}\n" in r.stdout, r.stdout + r.stderr
+        assert "SCRATCH_LEFT_BEHIND" not in r.stdout, r.stdout
+
+    def test_weather_is_off_even_when_env_sh_never_mentions_it(self, tmp_path):
+        """The case that needs the override itself: nothing in env.sh to undo."""
+        r = self._run_block(tmp_path, "export LITCLOCK_RUNTIME_RENDER=true\n")
+        assert "[smoke] WEATHER=false" in r.stdout, r.stdout + r.stderr
+
+    def test_a_readonly_env_sh_cannot_defeat_the_overrides(self, tmp_path):
+        """env.sh is sourced first, so a `readonly` there made `export` fail
+        and the painter got the owner's values (reproduced in review)."""
+        r = self._run_block(
+            tmp_path,
+            "export LITCLOCK_RUNTIME_RENDER=true\n"
+            "export WEATHER_ENABLED=true\nreadonly WEATHER_ENABLED\n"
+            "export LITCLOCK_RUNTIME_RENDER_DIR=/run/litclock\nreadonly LITCLOCK_RUNTIME_RENDER_DIR\n",
+        )
+        assert "[smoke] WEATHER=false" in r.stdout, r.stdout + r.stderr
+        assert "[smoke] DIR=/run/litclock" not in r.stdout, r.stdout
+        assert "[smoke] DIR_EXISTS_DURING" in r.stdout, r.stdout
+        assert "rc=0" in r.stdout, r.stdout
+
+    def test_weather_is_forced_off_whatever_env_sh_says(self, tmp_path):
+        """litclock-dev#871 port /review: sourcing env.sh gave the gate a
+        location, so it started fetching live weather, and a slow provider could
+        push the dry-run past its 60s bound and revert a healthy release."""
+        r = self._run_block(
+            tmp_path, "export LITCLOCK_RUNTIME_RENDER=true\nexport WEATHER_ENABLED=true\n"
+        )
+        assert "[smoke] WEATHER=false" in r.stdout, r.stdout + r.stderr
+        assert "rc=0" in r.stdout, r.stdout
+
+    def test_the_frame_goes_to_a_throwaway_directory_that_is_removed(self, tmp_path):
+        """On the text tier the dry-run writes current-quote.png, the live frame
+        the support bundle reports. The gate's frame must not land there."""
+        r = self._run_block(tmp_path, "export LITCLOCK_RUNTIME_RENDER=true\n")
+        dirs = [ln.split("DIR=", 1)[1] for ln in r.stdout.splitlines() if "[smoke] DIR=" in ln]
+        assert dirs and dirs[0] not in ("<unset>", "/run/litclock"), r.stdout + r.stderr
+        assert "[smoke] DIR_EXISTS_DURING" in r.stdout, "the scratch directory must exist while the painter runs"
+        assert f"SCRATCH={dirs[0]}" in r.stdout, r.stdout
+        assert "SCRATCH_LEFT_BEHIND" not in r.stdout, "the scratch directory must be removed after the gate"
+
+    def test_no_scratch_directory_still_runs_the_gate(self, tmp_path):
+        """The gate is the only revert path, so it must not be skipped for want
+        of a scratch directory: it runs into the live path and says so."""
+        r = self._run_block(tmp_path, "export LITCLOCK_RUNTIME_RENDER=true\n", mktemp_fails=True)
+        assert "[smoke] SAW=true" in r.stdout, r.stdout + r.stderr
+        assert "[smoke] DIR=<unset>" in r.stdout, r.stdout
+        assert "[smoke] WEATHER=false" in r.stdout, r.stdout
+        assert "could not create a scratch directory" in r.stdout, r.stdout
+        assert "rc=0" in r.stdout, r.stdout
+
+
+class TestTheRewriteHasNoUncheckedProducer:
+    """`$?` on a pipeline is its LAST element, so only the consumer was checked.
+
+    The fix for a killed `sed` (take `$?`, not `PIPESTATUS[1]`) left the
+    `printf` feeding it unguarded. A producer dying after a partial final line
+    is invisible three times over: sed exits 0 on the short input, sed supplies
+    the missing newline so the line-count belt matches, and the body differs
+    from the original so the "changed nothing" check passes. Reproduced
+    2026-09-23 committing a truncated `OPENWEATHERMAP_APIKEY`.
+    """
+
+    @staticmethod
+    def _rewrite_line():
+        for line in UPDATE_SH.read_text().splitlines():
+            s = line.strip()
+            if s.startswith("new=$(") and "LITCLOCK_RUNTIME_RENDER=false" in s:
+                return s
+        raise AssertionError("the env.sh rewrite line is gone — did update.sh refactor?")
+
+    def test_the_transformation_is_not_fed_by_a_pipeline(self):
+        line = self._rewrite_line()
+        assert "|" not in line, (
+            "the rewrite is fed by a pipeline again; $? cannot see the producer, so a "
+            "producer killed mid-stream commits a truncated env.sh and reports success:\n"
+            f"  {line}"
+        )
+        assert "<<<" in line, f"expected a herestring feed, got:\n  {line}"
+
+    def test_a_killed_producer_is_what_this_prevents(self):
+        """The failure the shape change removes, demonstrated on the OLD shape.
+
+        Kept executable so the reason survives: without it, a future reader
+        sees only a style preference for `<<<` and may pipe it back.
+        """
+        old_shape = r"""
+body=$'export A=1\nexport LITCLOCK_RUNTIME_RENDER=false\nexport SECRET=original-secret'
+flip='s/^([[:space:]]*export[[:space:]]+)LITCLOCK_RUNTIME_RENDER=false[[:space:]]*$/\1LITCLOCK_RUNTIME_RENDER=true/'
+new=$( { printf '%s' $'export A=1\nexport LITCLOCK_RUNTIME_RENDER=false\nexport SECRET=original-'; kill -9 $BASHPID; } \
+  | sed -E "$flip")
+rc=$?
+b=$(printf '%s\n' "$body" | wc -l); a=$(printf '%s\n' "$new" | wc -l)
+echo "rc=$rc lines=$b/$a changed=$([[ "$new" == "$body" ]] && echo no || echo yes)"
+printf '%s\n' "$new" | tail -1
+"""
+        r = subprocess.run(["bash", "-c", old_shape], capture_output=True, text=True, timeout=60)
+        assert "rc=0" in r.stdout, r.stdout + r.stderr
+        assert "lines=3/3" in r.stdout, f"the line-count belt caught it after all:\n{r.stdout}"
+        assert "changed=yes" in r.stdout, r.stdout
+        assert "SECRET=original-\n" in r.stdout, (
+            f"expected the truncated secret the old shape committed:\n{r.stdout}"
+        )
+
+    def test_the_herestring_feeds_sed_the_same_bytes_printf_did(self):
+        """`<<<` must append exactly the newline `printf '%s\\n'` did.
+
+        `before_lines` is still computed with `printf '%s\\n' "$body"`, so a
+        feed that differed by a trailing newline would make the belt compare
+        mismatched shapes and refuse every migration.
+        """
+        for body in ("a\nb\nc", "a\nb\nc\n", "single", ""):
+            prog = (
+                f"body={shlex.quote(body)}\n"
+                'p=$(printf "%s\\n" "$body" | cat | od -c | md5sum)\n'
+                'h=$(cat <<<"$body" | od -c | md5sum)\n'
+                '[[ "$p" == "$h" ]] && echo SAME || echo DIFF\n'
+                'printf "%s\\n" "$body" | od -c\n'
+                'cat <<<"$body" | od -c\n'
+            )
+            r = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, timeout=30)
+            assert "SAME" in r.stdout, f"feed differs for {body!r}:\n{r.stdout}"
+
+
+class TestAbandonedEnvStagingFilesAreNotShipped:
+    """`mktemp "${dest}.XXXXXX"` beside env.sh is a full unredacted copy.
+
+    Every in-script failure arm removes it. A SIGKILL or power loss inside the
+    printf -> chmod -> chown -> mv window does not, and `with_env_lock` runs the
+    writer in a subshell where bash has reset the caller's traps to default, so
+    the signal handler does not cover it either. It is untracked (so
+    `git reset --hard` never removes it), was unignored (so it could be
+    committed), and neither the clone-prep credential gate nor the gift wipe
+    looked at it — so the previous owner's API key and home coordinates shipped
+    on every clone (/review 2026-09-23, adversarial).
+    """
+
+    def test_the_staging_shape_is_gitignored(self):
+        r = subprocess.run(
+            ["git", "check-ignore", "--no-index", "env.sh.A1b2C3"],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
+        )
+        assert r.returncode == 0, "env.sh.<mktemp suffix> must be gitignored; it holds the owner's credentials"
+
+    def test_the_tracked_sample_is_not_swept_up_by_that_pattern(self):
+        """`sample` is also six characters.
+
+        Harmless while env.sh.sample stays tracked, because ignore rules do not
+        apply to tracked files — and a silent trap the moment it is removed and
+        re-added, which is exactly the kind of latency this repo keeps finding.
+        """
+        r = subprocess.run(
+            ["git", "check-ignore", "--no-index", "-v", "env.sh.sample"],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
+        )
+        assert "!env.sh.sample" in r.stdout, (
+            "env.sh.sample must be explicitly re-included, not left to tracked-status luck:\n" + r.stdout
+        )
+
+    def test_clone_prep_refuses_rather_than_certifying_the_card(self):
+        body = (REPO_ROOT / "scripts" / "prepare-for-cloning.sh").read_text()
+        assert "env.sh.??????" in body, "the clone-prep credential gate does not look for staging files"
+        idx = body.index("env.sh.??????")
+        after = body[idx : idx + 1200]
+        assert "_abort_env_credentials" in after, (
+            "clone prep must ABORT on a staging file, not delete it quietly: its job is to "
+            "certify the card, and a staging file means a writer died mid-write"
+        )
+        assert "env.sh.sample" in after, "the six-character tracked sample must be excluded by name"
+
+    def test_gift_mode_sweeps_them_before_writing_defaults(self):
+        body = (REPO_ROOT / "scripts" / "reset-setup.sh").read_text()
+        assert "env.sh.??????" in body, "the gift wipe does not sweep staging files"
+        idx = body.index("env.sh.??????")
+        wipe = body.index('atomic_write_env_sh "$INSTALL_DIR/env.sh" "$DEFAULTS"')
+        assert idx < wipe, "the sweep must run BEFORE the wipe, or the writer can stage a fresh one after it"
+
+    def test_the_gate_actually_fires_on_a_planted_staging_file(self, tmp_path):
+        """Executed, because a grep for the glob proves only that it was typed."""
+        install = tmp_path / "litclock"
+        install.mkdir()
+        (install / "env.sh").write_text("export WEATHER_ENABLED=true\n")
+        (install / "env.sh.A1b2C3").write_text("export OPENWEATHERMAP_APIKEY=leaked-key\n")
+        (install / "env.sh.sample").write_text("export WEATHER_ENABLED=true\n")
+        prog = f'''
+INSTALL_DIR={install}
+shopt -s nullglob
+_ENV_STAGING=("$INSTALL_DIR"/env.sh.??????)
+shopt -u nullglob
+_ENV_STAGING_REAL=()
+for _s in "${{_ENV_STAGING[@]}}"; do
+    [[ "$(basename "$_s")" == "env.sh.sample" ]] && continue
+    _ENV_STAGING_REAL+=("$_s")
+done
+echo "COUNT=${{#_ENV_STAGING_REAL[@]}}"
+printf 'FOUND=%s\\n' "${{_ENV_STAGING_REAL[@]}}"
+'''
+        r = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, timeout=30)
+        assert "COUNT=1" in r.stdout, f"expected exactly the planted staging file:\n{r.stdout}"
+        assert "env.sh.A1b2C3" in r.stdout, r.stdout
+        assert "env.sh.sample" not in r.stdout, f"the tracked sample must not be flagged:\n{r.stdout}"

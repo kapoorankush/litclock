@@ -1445,13 +1445,19 @@ def _block_keys(body):
     return out
 
 
-def env_sh_defaults(language=None):
+def _call(language, runtime_render):
+    if runtime_render is None:
+        return "env_sh_defaults" if language is None else f'env_sh_defaults "{language}"'
+    return f'env_sh_defaults "{language or ""}" "{runtime_render}"'
+
+
+def env_sh_defaults(language=None, runtime_render=None):
     """Run the REAL helper out of scripts/lib/state.sh and return its stdout.
 
     Executed, never parsed: the whole point of litclock-dev#840 is that there is one
     body, so every expectation in this module derives from running it.
     """
-    call = "env_sh_defaults" if language is None else f'env_sh_defaults "{language}"'
+    call = _call(language, runtime_render)
     r = subprocess.run(
         ["bash", "-c", f'. "{STATE_SH}"\n{call}'],
         capture_output=True,
@@ -1674,7 +1680,10 @@ def test_first_boot_fallback_heredoc_matches_the_helper():
     heredoc = next(body for _, kind, body in writes if kind == "heredoc")
     # The heredoc body is the file's lines up to the terminator; the helper
     # emits the same lines plus a trailing newline.
-    assert "\n".join(heredoc) + "\n" == env_sh_defaults(), (
+    # The heredoc is first-boot's OWN fallback, so it must match the call
+    # first-boot makes — `env_sh_defaults "" true` (litclock-dev#871 Stage B
+    # made the render default a parameter, and a fresh flash asks for text).
+    assert "\n".join(heredoc) + "\n" == env_sh_defaults("", "true"), (
         "first-boot.sh's state.sh-missing fallback heredoc has drifted from env_sh_defaults(). "
         "It is the one copy that cannot call the helper, so it must be kept in step by hand — "
         "paste the helper's exact body (litclock-dev#840)."
@@ -1749,7 +1758,7 @@ def test_first_boot_falls_back_when_state_sh_is_too_old(tmp_path):
     r = subprocess.run(["bash", "-c", harness], timeout=10, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     written = env_file.read_text()
-    assert written == env_sh_defaults(), (
+    assert written == env_sh_defaults("", "true"), (   # first-boot seeds a FRESH device
         "with an older lib/state.sh (atomic_write_env_sh but no env_sh_defaults) first-boot did "
         f"not fall back to the inline heredoc — it seeded:\n{written!r}"
     )
@@ -1760,7 +1769,7 @@ def test_first_boot_actually_writes_every_env_sample_key(tmp_path, with_state_li
     """Both first-boot arms must WRITE the full body, not merely contain it."""
     written = _run_first_boot_default_env(tmp_path, with_state_lib)
     arm = "flock writer" if with_state_lib else "state.sh-missing heredoc fallback"
-    assert written == env_sh_defaults(), (
+    assert written == env_sh_defaults("", "true"), (   # first-boot seeds a FRESH device
         f"first-boot's {arm} WROTE an env.sh that is not env_sh_defaults(). The source block may "
         f"look complete while the value handed to the writer is not — assert on the file, not the "
         f"literal (litclock-dev#783/litclock-dev#840).\n--- written ---\n{written}"

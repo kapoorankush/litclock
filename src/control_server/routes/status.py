@@ -89,7 +89,25 @@ DEFAULT_RUNTIME_VALIDATION_MEMO_FILE = os.environ.get(
 # its deferral (budget or scratch directory gone). Distinct tokens, so a
 # marker-bearing device whose validation passed is never reported as
 # "validation deferred" (litclock-dev#875 review).
-RUNTIME_VALIDATION_RESULTS = frozenset({"deferred", "timeout", "failed", "selftest-failed", "selftest-deferred"})
+# `migration-skipped` since litclock-dev#871 Stage B: the same memo file carries
+# the reason a device that COULD have migrated to runtime render did not — no
+# PNG fallback tier, a pass record that is missing or not for this release, a
+# locked env.sh, or a rewrite that did not complete. It was missing from this
+# set when Stage B first wrote it, which meant every refusal was parsed,
+# rejected here and reported as `null` — the same payload a healthy device
+# sends, on the one feature whose safety argument is that a refusal is visible
+# (/review 2026-09-23, adversarial). `tests/test_runtime_render_autostamp.py`
+# now extracts every token `update.sh` writes and asserts membership, so the
+# shell and this allowlist cannot drift apart again.
+#
+# `deferred` is LIVE: it is the marker-stamp validator's budget deferral,
+# written through the default `$2` of `_validation_fits_remaining_budget` /
+# `_defer_runtime_validation`. `selftest-deferred` is the self-test's own. An
+# earlier version of this comment called `deferred` dead, which invited
+# dropping it — and that device's memo would then reach the PWA as `null`.
+RUNTIME_VALIDATION_RESULTS = frozenset(
+    {"deferred", "timeout", "failed", "selftest-failed", "selftest-deferred", "migration-skipped"}
+)
 MAX_RUNTIME_VALIDATION_MEMO_BYTES = 8 * 1024
 
 # litclock-dev#274 follow-up — adversarial-review P1: budget for treating a
