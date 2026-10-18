@@ -115,13 +115,6 @@ case "$SHUTDOWN_ACTION" in
         # Gift mode: device was prepped via `reset-setup.sh --gift-mode` and is
         # being shipped to a recipient. Paint a friendly welcome — this persists
         # on the e-ink while powered off, so it's the recipient's first impression.
-        QUOTES=(
-            '"It was the best of times..." — Dickens'
-            '"Call me Ishmael." — Melville'
-            '"All happy families are alike." — Tolstoy'
-            '"It was a bright cold day in April." — Orwell'
-            '"Many years later, as he faced the firing squad..." — García Márquez'
-        )
         # litclock-dev#280: if the gifter wrote a personalized message via the PWA's
         # Prepare-for-Gifting flow (or via reset-setup.sh --message), it lives
         # at /etc/litclock/.welcome-message. Use it as the TITLE, falling back
@@ -143,54 +136,35 @@ case "$SHUTDOWN_ACTION" in
         if [[ -f "$WELCOME_MESSAGE_FILE" ]] && [[ ! -L "$WELCOME_MESSAGE_FILE" ]]; then
             WELCOME_TITLE="$(timeout 1 head -c 100 "$WELCOME_MESSAGE_FILE" 2>/dev/null | sed -e 's/[[:space:]]*$//')"
         fi
-        # litclock-dev#532 slice 2: title + instruction copy resolve from
-        # the catalog (shutdown.splash.welcome.*); a gifter's custom
-        # message overrides the title, and the farewell quote stays a
-        # curated literal (per-language sets are a registry-schema
-        # question — the scope audit's item 2 — not a translation).
+        # litclock-dev#532: title + instruction copy resolve from the catalog
+        # (shutdown.splash.welcome.*), and so — since T7 — does the farewell
+        # line, one of the device language's own shutdown.farewell.welcome.N
+        # chosen by the painter. A gifter's custom message overrides the title.
         PREFIX="shutdown.splash.welcome"
         TITLE_OVERRIDE="$WELCOME_TITLE"
-        MESSAGE_OVERRIDE=""
-        SUBMESSAGE_OVERRIDE="${QUOTES[$((RANDOM % ${#QUOTES[@]}))]}"
+        FAREWELL="welcome:submessage"
         ;;
     reboot)
         # Reboot: transient state, keep LitClock branding prominent
-        QUOTES=(
-            '"To sleep, perchance to dream." — Shakespeare'
-            '"I have promises to keep." — Robert Frost'
-            '"Not all those who wander are lost." — Tolkien'
-            '"Be back before the next chapter begins."'
-            '"And miles to go before I sleep." — Robert Frost'
-        )
         PREFIX="shutdown.splash.reboot"
         TITLE_OVERRIDE=""
-        MESSAGE_OVERRIDE=""
-        SUBMESSAGE_OVERRIDE="${QUOTES[$((RANDOM % ${#QUOTES[@]}))]}"
+        FAREWELL="reboot:submessage"
         ;;
     *)
         # Shutdown: final state — this persists on screen while powered off.
         # Designed to look intentional if the device is shipped or displayed.
-        QUOTES=(
-            '"The rest is silence." — Shakespeare'
-            '"And so it goes." — Kurt Vonnegut'
-            '"After all, tomorrow is another day." — Margaret Mitchell'
-            '"So we beat on, boats against the current." — Fitzgerald'
-            '"A far, far better rest that I go to." — Dickens'
-        )
         PREFIX="shutdown.splash.poweroff"
         TITLE_OVERRIDE=""
-        MESSAGE_OVERRIDE="${QUOTES[$((RANDOM % ${#QUOTES[@]}))]}"
-        SUBMESSAGE_OVERRIDE=""
+        FAREWELL="poweroff:message"
         ;;
 esac
 
 if [[ -f "$INSTALL_DIR/src/eink_display.py" ]]; then
     cd "$INSTALL_DIR" || exit 0
-    # --catalog-prefix fills the parts not explicitly overridden; the quote
-    # (and a custom gift title) ride as explicit literals.
-    SPLASH_ARGS=(--catalog-prefix "$PREFIX")
-    [[ -n "$MESSAGE_OVERRIDE" ]] && SPLASH_ARGS+=(--message "$MESSAGE_OVERRIDE")
-    [[ -n "$SUBMESSAGE_OVERRIDE" ]] && SPLASH_ARGS+=(--submessage "$SUBMESSAGE_OVERRIDE")
+    # --catalog-prefix fills the copy; --farewell has the painter pick one of
+    # the device language's farewell lines for this screen (a language ships
+    # 1..N of its own, litclock-dev#532 T7); a custom gift title rides as a literal.
+    SPLASH_ARGS=(--catalog-prefix "$PREFIX" --farewell "$FAREWELL")
     # Title LAST, behind the `--` end-of-options separator: the custom gift
     # title is user-typed (80 chars, PWA) and a space-free leading-dash
     # value like "-Mom-" would otherwise be parsed as an unknown OPTION —
@@ -201,5 +175,16 @@ if [[ -f "$INSTALL_DIR/src/eink_display.py" ]]; then
     # catalog adds file reads to a paint that runs while the system is
     # unwinding — a wedged read must not eat the whole TimeoutStopSec
     # budget and leave stale e-ink.
-    timeout 20 $PYTHON src/eink_display.py status "${SPLASH_ARGS[@]}" || true
+    rc=0
+    timeout 20 $PYTHON src/eink_display.py status "${SPLASH_ARGS[@]}" || rc=$?
+    # Exit 2 is argparse refusing an option before anything is painted: a
+    # painter older than this script (a half-applied tree) does not know
+    # --farewell. Paint the screen without the line rather than nothing —
+    # this frame stays on the glass while the clock is off (litclock-dev#923 review).
+    if [[ "$rc" -eq 2 ]]; then
+        echo "shutdown splash: painter refused --farewell; painting without it"
+        PLAIN_ARGS=(--catalog-prefix "$PREFIX")
+        [[ -n "$TITLE_OVERRIDE" ]] && PLAIN_ARGS+=(-- "$TITLE_OVERRIDE")
+        timeout 20 $PYTHON src/eink_display.py status "${PLAIN_ARGS[@]}" || true
+    fi
 fi

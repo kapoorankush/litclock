@@ -166,7 +166,7 @@ def _pil_font(name: str, ptsize: int) -> ImageFont.FreeTypeFont:
 def _width(name: str, ptsize: int, seg: bytes) -> int:
     """GD-exact advance width of a byte segment. A UnicodeDecodeError here
     means a bold-span offset cut a multibyte char — a real bug; let it
-    raise (stristr alignment guarantees char-boundary offsets)."""
+    raise (both passes of find_timestring_span return char-boundary offsets)."""
     return gd_text_width(_font_path(name), ptsize, seg.decode("utf-8"))
 
 
@@ -203,6 +203,56 @@ def find_timestring(quote_bytes: bytes, timestring_bytes: bytes) -> int:
     return quote_bytes.lower().find(timestring_bytes.lower())
 
 
+def find_timestring_span(quote_bytes: bytes, timestring_bytes: bytes) -> tuple[int, int] | None:
+    """Where the timestring sits in the quote, as a ``(start, end)`` BYTE
+    span of the ORIGINAL quote, or ``None`` (litclock-dev#532 T5).
+
+    Two passes, in order. First the PHP ``stristr`` mirror above — exactly
+    what the GD pipeline did, so every row it matches (every English row:
+    CI renders the whole corpus) keeps its byte-identical span and layout.
+    Only a row that pass misses gets the second: a Unicode case-insensitive
+    match (``str.casefold``), so a Spanish row whose timestring is
+    capitalized differently from the quote ("Única" in the row, "única" in
+    the quote) still finds its phrase instead of failing as NOSTRING — the
+    ASCII-only fold cannot see that "Ú" and "ú" are one letter.
+
+    The span is returned whole because folding can change length (``ß`` and
+    ``ẞ`` fold to "ss"): ``start + len(timestring)`` would bold the wrong
+    bytes. A folded match must also start and end on whole original
+    characters — half of a character's fold is not a match."""
+    idx = find_timestring(quote_bytes, timestring_bytes)
+    if idx >= 0:
+        return idx, idx + len(timestring_bytes)
+    try:
+        quote = quote_bytes.decode("utf-8")
+        target = timestring_bytes.decode("utf-8").casefold()
+    except UnicodeDecodeError:
+        return None
+    if not target:
+        return None
+    # Fold char by char, remembering where each original character's fold
+    # begins (folded index -> original char index) and ends.
+    begins: dict[int, int] = {}
+    ends: dict[int, int] = {}
+    parts: list[str] = []
+    offset = 0
+    for i, ch in enumerate(quote):
+        part = ch.casefold()
+        begins[offset] = i
+        offset += len(part)
+        ends[offset] = i + 1
+        parts.append(part)
+    folded = "".join(parts)
+    pos = folded.find(target)
+    while pos >= 0:
+        first, after = begins.get(pos), ends.get(pos + len(target))
+        if first is not None and after is not None:
+            start_byte = len(quote[:first].encode("utf-8"))
+            return start_byte, start_byte + len(quote[first:after].encode("utf-8"))
+        pos = folded.find(target, pos + 1)
+    return None
+
+
 # ---- Corpus-quality helpers (NOT part of rendering — litclock-dev#540) ----
 # The renderer bolds EXACTLY the matched timestring span (owner decision
 # 2026-07-26, litclock-dev#540): the CSV row IS the bold spec, so bolding errors are
@@ -230,15 +280,15 @@ def timestring_midword_edge(quote: str, timestring: str) -> str | None:
     word, e.g. 'noon' vs 'noonday', '230' vs '0230'). Fix the row, never
     the renderer."""
     qb = quote.encode("utf-8")
-    tsb = timestring.encode("utf-8")
-    idx = find_timestring(qb, tsb)
-    if idx < 0:
+    span = find_timestring_span(qb, timestring.encode("utf-8"))
+    if span is None:
         return None
+    idx, end = span
     prev = idx - 1
     while prev > 0 and 0x80 <= qb[prev] < 0xC0:  # back up over UTF-8 continuation bytes
         prev -= 1
     start_mid = idx > 0 and _word_char_at(qb, idx) and _word_char_at(qb, prev)
-    end_mid = _word_char_at(qb, idx + len(tsb))
+    end_mid = _word_char_at(qb, end)
     if start_mid and end_mid:
         return "both"
     if start_mid:
@@ -340,10 +390,10 @@ def fitted_font_size(quote: str, timestring: str) -> int | None:
     # PHP_TRIM_CHARS, and Python's strip also eats NBSP-class whitespace
     # that production preserves (review finding).
     tsb = timestring.strip(PHP_TRIM_CHARS).encode("utf-8")
-    idx = find_timestring(qb, tsb)
-    if idx < 0:
+    span = find_timestring_span(qb, tsb)
+    if span is None:
         return None
-    fitted = fit(qb.split(b" "), idx, idx + len(tsb))
+    fitted = fit(qb.split(b" "), *span)
     return None if fitted is None else fitted[1]
 
 
@@ -361,12 +411,13 @@ def render_quote(quote: str, timestring: str) -> tuple[Image.Image, int, Layout]
     Returns (image, font_size, layout); raises RenderError on the two
     production failure classes."""
     qb = quote.encode("utf-8")
-    tsb = timestring.encode("utf-8")
-    idx = find_timestring(qb, tsb)
-    if idx < 0:
+    span = find_timestring_span(qb, timestring.encode("utf-8"))
+    if span is None:
         raise RenderError("nostring", f"timestring {timestring!r} not in quote")
-    # Exact-span bolding (litclock-dev#540): the matched CSV timestring, nothing more.
-    ts_start, ts_end = idx, idx + len(tsb)
+    # Exact-span bolding (litclock-dev#540): the matched timestring, nothing more —
+    # its span in the QUOTE, which a Unicode fold can make a different
+    # length from the CSV field (litclock-dev#532 T5).
+    ts_start, ts_end = span
 
     fitted = fit(qb.split(b" "), ts_start, ts_end)
     if fitted is None:

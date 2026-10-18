@@ -41,7 +41,7 @@ _SRC = Path(__file__).resolve().parents[1]
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from control_server import create_app  # noqa: E402
+from control_server import MAX_REQUEST_BODY_BYTES, create_app  # noqa: E402
 from control_url import CONTROL_PORT as PORT  # noqa: E402  # single source of truth (litclock-dev#343)
 
 THREADS = int(os.environ.get("LITCLOCK_CONTROL_THREADS", "4"))
@@ -92,7 +92,7 @@ def main() -> int:
     handoff.kickoff(app)
     print(f"control_server: HTTP on {BIND}:{PORT} (threads={THREADS})")
     try:
-        serve(app, host=BIND, port=PORT, threads=THREADS)
+        serve(app, host=BIND, port=PORT, threads=THREADS, max_request_body_size=MAX_REQUEST_BODY_BYTES)
     except PermissionError:
         # litclock-dev#343: binding a privileged port (80) needs the
         # net.ipv4.ip_unprivileged_port_start=80 sysctl. If it hasn't applied

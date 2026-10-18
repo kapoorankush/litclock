@@ -82,7 +82,7 @@ _locked_set_env_key() {
         rm -f "$tmp"
         return 1
     fi
-    _atomic_write_env_sh_finalize "$tmp" "$ENV_FILE"
+    _atomic_write_env_sh_finalize "$tmp" "$ENV_FILE" || { rm -f "$tmp"; return 1; }
 }
 
 set_env_key() {

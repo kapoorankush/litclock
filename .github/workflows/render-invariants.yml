@@ -21,10 +21,14 @@ name: Render invariants
 #      committed tools/gd-expected-measurements.json.gz still matches live
 #      PHP-GD reality, so a font swap fails here and not on the Pi.
 #
-#   3. Render invariants: tools/render_invariants.py renders every corpus
-#      row through src/quote_renderer.py and enforces I1-I5 (coverage,
-#      fit sanity, litclock-dev#530 QR-notch clearance, credits collision, filename
-#      identity). The per-quote report is published as an artifact; the
+#   3. Render invariants: tools/render_invariants.py renders every row of
+#      EVERY language's corpus — registered (--language, litclock-dev#532 T4)
+#      and unregistered at languages/<code>/quotes.csv (T8) — through
+#      src/quote_renderer.py and enforces I1-I5 (coverage, fit sanity, litclock-dev#530
+#      QR-notch clearance, credits collision, filename identity) plus L1-L8
+#      (mature flag, time field, glyph coverage, empty phrase, row shape,
+#      quotation marks, and the strings bundle's fonts once registered).
+#      The per-quote reports are published as an artifact; the
 #      rendered images are NOT a shipping artifact (releases still come
 #      from corpus_edit ship until the Stage-2 flip).
 #
@@ -41,12 +45,26 @@ on:
       # quote_corpus owns the corpus walk (litclock-dev#590) and, since litclock-dev#870,
       # decides WHICH corpus the renderer reads from languages.json
       - 'src/quote_corpus.py'
+      # strings_catalog resolves which corpus a --language run reads
+      - 'src/strings_catalog.py'
       - 'languages.json'
+      # Every translated corpus (litclock-dev#532 T4). Corpus files only — a
+      # strings-only change does not need a full re-render of every
+      # corpus. tests/test_strings_catalog.py pins every non-English corpus
+      # under languages/<code>/, so this glob cannot miss one.
+      - 'languages/**/*.csv'
       - 'src/gd_measure.py'
       # render_invariants derives notch geometry from literary_clock's QR
       # constants — a geometry-only change must re-run this gate
       - 'src/literary_clock.py'
       - 'tools/render_invariants.py'
+      # decides which corpora the language step renders (litclock-dev#532 T8)
+      - 'tools/language_corpora.py'
+      # The font checks (litclock-dev#532 DT8) and the fonts they read. A
+      # strings-only change runs them through tests/test_pwa_glyphs.py on
+      # every push instead.
+      - 'tools/pwa_glyphs.py'
+      - 'src/control_server/static/fonts/**'
       - 'tools/validate_measurement.py'
       - 'tools/gd_measure_dump.php'
       - 'tools/gd-expected-measurements.json.gz'
@@ -127,13 +145,41 @@ jobs:
         # on the Pi at Stage-2 flip time.
         run: python3 tools/validate_measurement.py check
 
-      - name: Render invariants (full corpus)
-        run: python3 tools/render_invariants.py check --report render-invariants-report.json
+      # Every REGISTERED language, English included (litclock-dev#532 T4: the
+      # same checks for every language), through the device's own registry
+      # resolution — incubating languages too — PLUS every unregistered
+      # corpus at languages/<code>/quotes.csv (T8): a volunteer's pull request
+      # adds only that file, and the maintainer registers the language later,
+      # so registry-only would check nothing on exactly that PR. The list
+      # comes from tools/language_corpora.py, which FAILS on any CSV under
+      # languages/ it would not cover (another file name, a stray beside a
+      # registered language, a directory that is not a language code) — each
+      # of those used to trigger this step and pass it green unread (litclock-dev#926
+      # review). Its codes are tag-shaped, so the unquoted for-list below
+      # cannot word-split one. One report per language; the step fails if
+      # any fails, after running them all.
+      - name: Render invariants (every language, full corpus)
+        run: |
+          # Assigned first so a failing discovery fails the step (set -e does
+          # not see a command substitution inside a for-list), and refused when
+          # empty or without English — a loop that runs zero times would
+          # report green with nothing checked (litclock-dev#914 review).
+          codes=$(python3 tools/language_corpora.py)
+          if [ -z "$codes" ] || ! printf '%s\n' "$codes" | grep -qx en; then
+            echo "::error::languages.json lists no languages, or not English"; exit 1
+          fi
+          rc=0
+          for code in $codes; do
+            echo "::group::render invariants: $code"
+            python3 tools/render_invariants.py --language "$code" check --report "render-invariants-report-$code.json" || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
 
-      - name: Publish per-quote report
+      - name: Publish per-quote reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: render-invariants-report
-          path: render-invariants-report.json
+          path: render-invariants-report-*.json
           if-no-files-found: ignore

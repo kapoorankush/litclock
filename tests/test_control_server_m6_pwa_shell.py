@@ -79,7 +79,24 @@ class TestServiceWorkerRoute:
         """Cache name must include the resolved version so update.sh-driven
         deploys land a fresh cache without manual bumping."""
         body = client.get("/sw.js").data.decode()
-        assert "CACHE_NAME = 'litclock-v0.test-m6'" in body, "D1 contract: CACHE_NAME bumps via {{ version }} stamp"
+        assert "CACHE_NAME = 'litclock-v0.test-m6-en'" in body, (
+            "D1 contract: CACHE_NAME bumps via {{ version }} stamp (and, since litclock-dev#532 RT5, the page language)"
+        )
+
+    def test_sw_cache_name_carries_the_serving_language(self, client, monkeypatch) -> None:
+        """litclock-dev#532 RT5: a language change must install a fresh worker, whose
+        activate drops the old language's cached pages — so the stamp is the
+        language the pages are WRITTEN in (the request snapshot's serving
+        language, the fleet default when the bundle is unusable), not the
+        configured code."""
+        from types import SimpleNamespace
+
+        from control_server.routes import sw
+
+        monkeypatch.setattr(sw, "request_snapshot", lambda: SimpleNamespace(language="es", requested="es"))
+        assert "CACHE_NAME = 'litclock-v0.test-m6-es'" in client.get("/sw.js").data.decode()
+        monkeypatch.setattr(sw, "request_snapshot", lambda: SimpleNamespace(language="en", requested="es"))
+        assert "CACHE_NAME = 'litclock-v0.test-m6-en'" in client.get("/sw.js").data.decode()
 
     def test_sw_lifecycle_directives(self, client) -> None:
         """D3: skipWaiting() in install + clients.claim() in activate so

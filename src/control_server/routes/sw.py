@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from flask import Blueprint, current_app, send_from_directory
 
+from .._strings import request_snapshot
 from ..version import get_version
 
 bp = Blueprint("sw", __name__)
@@ -33,7 +34,14 @@ bp = Blueprint("sw", __name__)
 @bp.route("/sw.js")
 def service_worker() -> tuple[str, int, dict[str, str]]:
     version = get_version(current_app.config.get("VERSION_OVERRIDE"))
-    body = current_app.jinja_env.get_template("sw.js.j2").render(version=version)
+    # litclock-dev#532 RT5 (D11, re-review D3): the cache is per LANGUAGE too
+    # — the language the pages are actually written in (the fleet default
+    # when the device's bundle is unusable), so a language change installs a
+    # fresh worker whose activate clears the old language's cached pages, and
+    # a bundle repaired in place does the same. Registry codes are
+    # [A-Za-z0-9_-], safe inside the JS string.
+    language = request_snapshot().language
+    body = current_app.jinja_env.get_template("sw.js.j2").render(version=version, language=language)
     return (
         body,
         200,

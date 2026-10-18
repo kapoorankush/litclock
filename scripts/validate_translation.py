@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
-"""Validate a LitClock translation bundle before opening a PR (litclock-dev#532).
+"""Validate a LitClock strings bundle (litclock-dev#532).
 
-A volunteer translator runs this on their own ``languages/<code>/strings.json``
-and sees, per key, exactly what CI will check — WITHOUT installing pytest or
-knowing the repo internals. It is the SAME rules the CI gate runs: both import
+The maintainer writes every language's UI strings (design D12); this is the
+check they run on ``languages/<code>/strings.json``, and the one a volunteer
+reviewing those strings can run too — WITHOUT installing pytest or knowing the
+repo internals. It is the SAME rules the CI gate runs: both import
 ``src/catalog_lint.py``, so a green run here means a green gate there.
 
     python3 scripts/validate_translation.py es
     python3 scripts/validate_translation.py --file /path/to/es/strings.json es
+    python3 scripts/validate_translation.py --all
+
+``--all`` checks every ``languages/*/strings.json`` in the checkout,
+registered or not (T8) — by hand what tests/test_translator_kit.py's
+TestEveryBundleInTheTree runs in CI through ``validate_all()``, so a bundle
+cannot dodge the gate by not being listed in ``languages.json`` yet.
+
+Its OUTPUT is read by people outside this repository, so it names no
+private issue: point at translations/README.md instead.
 
 Exit code 0 = conformant, 1 = findings, 2 = usage/IO error. Checks:
   - key-set parity with English (missing keys, unknown keys)
@@ -25,6 +35,10 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT / "src"))
+# At import, from the script's own checkout — not inside validate(), where
+# _REPO_ROOT may name a bundle tree with no tools/ (the tests repoint it) and
+# the font check would quietly skip itself.
+sys.path.insert(0, str(_REPO_ROOT / "tools"))
 
 import catalog_lint  # noqa: E402
 
@@ -109,14 +123,16 @@ def validate(code: str, bundle_file: str | None) -> list[str]:
     extra_cats = _CLDR_EXTRA_CATEGORIES.get(code)
     if extra_cats and not _registry_entry(code):
         findings.append(
-            f"NOTE  {code} needs plural forms {extra_cats} that this kit can't generate yet "
-            "(it only has English's one/other). Finish the other strings, but coordinate the "
-            "plural keys with the maintainer — litclock-dev#532."
+            f"NOTE  {code} needs plural forms {extra_cats} that the catalog does not support yet "
+            "(English's one/other only), so its count strings cannot be completed — see "
+            "translations/README.md."
         )
 
     # Key-set parity (Stage 3).
-    missing = set(en) - set(data)
-    unknown = set(data) - set(en)
+    # The numbered farewell lines are optional past the first, and a language
+    # may supply more than English's five (litclock-dev#532 T7).
+    missing = {k for k in set(en) - set(data) if not catalog_lint.is_optional_key(k)}
+    unknown = {k for k in set(data) - set(en) if not catalog_lint.is_farewell_key(k)}
     for k in sorted(missing):
         findings.append(f"MISSING KEY  {k}  (English: {en[k]!r})")
     for k in sorted(unknown):
@@ -126,6 +142,8 @@ def validate(code: str, bundle_file: str | None) -> list[str]:
     for k, v in data.items():
         if not isinstance(v, str):
             findings.append(f"NOT A STRING {k}  (must be a text value)")
+        elif not v.strip() and catalog_lint.is_optional_key(k):
+            continue  # an optional farewell line left blank is simply not supplied (litclock-dev#532 T7)
         elif not v.strip():
             findings.append(f"EMPTY        {k}  (translate it, or drop the key if English has no such part)")
 
@@ -138,10 +156,47 @@ def validate(code: str, bundle_file: str | None) -> list[str]:
             if key not in data:
                 findings.append(f"MISSING PLURAL {key}  ({code} needs every category: {', '.join(forms)})")
 
+    # The control app's web fonts are Latin-1 subsets (design D16): a letter
+    # they lack is drawn mid-word in a fallback font. fontTools is a dev
+    # dependency; without it the check is skipped with a note, not failed.
+    try:
+        import pwa_glyphs  # noqa: PLC0415
+
+        cmaps = pwa_glyphs.pwa_cmaps()
+        faces = pwa_glyphs.eink_cmaps()
+    except Exception as exc:  # noqa: BLE001 — no fontTools/brotli, or an unreadable font: skip, say so
+        findings.append(
+            f"NOTE  font check skipped ({type(exc).__name__}: {exc}); "
+            "pip install 'fonttools[woff]' to check your text against the clock's and the app's fonts"
+        )
+        cmaps = None
+    if cmaps is not None:
+        for key in sorted(data):
+            value = data[key]
+            if key.startswith("_") or not isinstance(value, str):
+                continue
+            gaps = pwa_glyphs.pwa_missing_letters(value, cmaps)
+            if gaps:
+                chars = sorted({ch for chars in gaps.values() for ch in chars})
+                findings.append(
+                    f"FONT         {key}  the control app's fonts can't draw {''.join(chars)!r} — "
+                    "your language needs a font change first (see translations/README.md)"
+                )
+            if key.split(".", 1)[0] in pwa_glyphs.EINK_NAMESPACES:
+                missing = pwa_glyphs.eink_missing_chars(value, faces)
+                if missing:
+                    chars = sorted({ch for found in missing.values() for ch in found})
+                    findings.append(
+                        f"FONT         {key}  the clock's screen can't draw {''.join(chars)!r} — "
+                        "it would show an empty box; use a plain character instead"
+                    )
+
     # Per-value content lint (Stage 4) — the shared rules.
     capable = catalog_lint.rich_capable_keys(_REPO_ROOT)
     forms_set = set(forms)
-    for key in sorted(set(data) & set(en)):
+    # Extra farewell lines past English's count get the same content lint
+    # (their English value is absent, so they may carry no slot): litclock-dev#923 review.
+    for key in sorted((set(data) & set(en)) | {k for k in data if catalog_lint.is_farewell_key(k)}):
         value = data[key]
         if not isinstance(value, str) or not value.strip():
             # Non-strings and empties are already reported above; running the
@@ -161,22 +216,71 @@ def validate(code: str, bundle_file: str | None) -> list[str]:
     return findings
 
 
+def _is_note(finding: str) -> bool:
+    # Classified on the bare finding, BEFORE validate_all() adds its code
+    # prefix: a prefix such as `NOTE: ` (a directory named NOTE) would
+    # otherwise read as a note and hide that bundle's failures (litclock-dev#926 review).
+    return finding.startswith("NOTE")
+
+
+def bundle_files() -> dict[str, Path]:
+    """Every ``languages/<dir>/strings.json`` in the checkout, by directory
+    name — from the TREE, not the registry, so an unregistered bundle is
+    found too."""
+    return {p.parent.name: p for p in sorted((_REPO_ROOT / "languages").glob("*/strings.json"))}
+
+
+def validate_all() -> list[tuple[str, str]]:
+    """``(code, finding)`` for every bundle in the tree, NOTE lines included
+    (the caller decides what fails). A directory whose name is not a language
+    code is a finding of its own. Fails closed on a tree with no English: a
+    gate that checked nothing must not read as a pass."""
+    import language_corpora  # noqa: PLC0415 — tools/, on sys.path above
+
+    bundles = bundle_files()
+    if "en" not in bundles:
+        return [("en", f"no languages/en/strings.json under {_REPO_ROOT} — nothing was checked")]
+    findings: list[tuple[str, str]] = []
+    for code, path in bundles.items():
+        if not language_corpora.CODE.fullmatch(code):
+            findings.append((code, f"languages/{code}/ is not a language code (lower-case, like es or pt-BR)"))
+            continue
+        findings.extend((code, f) for f in validate(code, str(path)))
+    return findings
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate a LitClock translation bundle.")
-    parser.add_argument("code", help="language code, e.g. es")
+    parser = argparse.ArgumentParser(description="Validate a LitClock strings bundle.")
+    parser.add_argument("code", nargs="?", help="language code, e.g. es")
     parser.add_argument("--file", help="path to the strings.json (default: the registry path for <code>)")
+    parser.add_argument("--all", action="store_true", help="check every languages/*/strings.json, registered or not")
     args = parser.parse_args(argv)
+    if args.all == bool(args.code) or (args.all and args.file):
+        parser.error("give a language code, or --all on its own")
 
     try:
-        findings = validate(args.code, args.file)
+        if args.all:
+            tagged = validate_all()
+        else:
+            tagged = [(args.code, f) for f in validate(args.code, args.file)]
     except (OSError, KeyError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    label = "every bundle" if args.all else args.code
 
+    # NOTE lines are information, not failures: a skipped optional check must
+    # not fail a conformant bundle (litclock-dev#925 review).
+    def shown(code: str, f: str) -> str:
+        return f"{code}: {f}" if args.all else f
+
+    notes = [shown(c, f) for c, f in tagged if _is_note(f)]
+    findings = [shown(c, f) for c, f in tagged if not _is_note(f)]
+    for n in notes:
+        print(f"  {n}")
     if not findings:
-        print(f"✓ {args.code}: conformant — every check the CI gate runs passes.")
+        print(f"✓ {label}: conformant — every check the CI gate runs passes.")
         return 0
-    print(f"✗ {args.code}: {len(findings)} finding(s) — fix these before opening a PR:\n")
+    print(f"✗ {label}: {len(findings)} finding(s) — fix these before opening a PR:\n")
     for f in findings:
         print(f"  {f}")
     print("\n(This is the same lint CI runs. Green here = green there.)")

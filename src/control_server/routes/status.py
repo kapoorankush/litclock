@@ -106,7 +106,15 @@ DEFAULT_RUNTIME_VALIDATION_MEMO_FILE = os.environ.get(
 # earlier version of this comment called `deferred` dead, which invited
 # dropping it — and that device's memo would then reach the PWA as `null`.
 RUNTIME_VALIDATION_RESULTS = frozenset(
-    {"deferred", "timeout", "failed", "selftest-failed", "selftest-deferred", "migration-skipped"}
+    {
+        "deferred",
+        "timeout",
+        "failed",
+        "selftest-failed",
+        "selftest-deferred",
+        "selftest-no-corpus",  # litclock-dev#532 R10
+        "migration-skipped",
+    }
 )
 MAX_RUNTIME_VALIDATION_MEMO_BYTES = 8 * 1024
 
@@ -123,6 +131,15 @@ MAX_RUNTIME_VALIDATION_MEMO_BYTES = 8 * 1024
 # under systemd has its banner cleared as stale — tests/test_sudoers_m5.py
 # pins that against systemd/litclock-update.service.
 UPDATE_RUNNING_TIMEOUT_S = 2700
+
+# litclock-dev#532 D8/R14: the painter counts consecutive FAILURE frames (a
+# render error, a corpus that will not load — never a corpus gap) in the
+# status file it publishes every minute; the Status tab warns from this many.
+# Mirrors literary_clock.CONSECUTIVE_FAILURES_WARN_AT (pinned by a test —
+# the control server does not import the painter).
+QUOTE_FAILURE_WARN_AT = 3
+# The painter's FALLBACK_GAP / FALLBACK_FAILURE (pinned by the same test).
+FALLBACK_REASONS = frozenset({"gap", "failure"})
 
 # Stale threshold (litclock-dev#245 D2). Banner appears in the PWA when picked_at_age_s
 # exceeds this; corresponds to ~90 seconds of dead clock-tick service.
@@ -547,6 +564,20 @@ def collect_status(
     # uses this to render the ochre warning banner (DESIGN.md D2).
     stale = quote_payload is None or (picked_at_age_s is not None and picked_at_age_s >= STALE_THRESHOLD_S)
 
+    consecutive_failures = (quote_payload or {}).get("consecutive_failures")
+    if isinstance(consecutive_failures, bool) or not isinstance(consecutive_failures, int) or consecutive_failures < 0:
+        consecutive_failures = 0
+    # Why the frame on the panel has no quote (D8), allowlisted: the hero shows
+    # the same line the panel does instead of the "Starting up…" copy, which
+    # only fits a clock that has published nothing yet. None on a quote frame.
+    fallback_reason = (quote_payload or {}).get("fallback_reason")
+    if (
+        not isinstance(fallback_reason, str)
+        or fallback_reason not in FALLBACK_REASONS
+        or (quote_payload or {}).get("quote")
+    ):
+        fallback_reason = None
+
     appliance_uptime_s = _appliance_uptime_s()
     service_uptime_s = _service_uptime_s()
     last_update_at, last_update_version = _resolve_last_update(
@@ -602,6 +633,18 @@ def collect_status(
         # does not render it yet — a Diagnostics/Status surface is the
         # follow-up; the payload is the contract.
         "runtime_render_validation": runtime_render_validation,
+        # litclock-dev#532 D8/R14: the run of failed quote frames ending with
+        # the one on the panel (0 for a quote or a corpus gap), and whether it
+        # is long enough for the Status tab's warning. Tmpfs-backed, so a
+        # reboot resets it; a still-broken clock re-warns within minutes.
+        # fallback_reason: "gap" | "failure" when the panel shows the plain
+        # time, else null.
+        "consecutive_failures": consecutive_failures,
+        # Not while stale: the count describes the last frame published, and a
+        # stale file is the stale banner's to explain — two ochre bars for one
+        # cause, one of them about a frame no longer current, helps nobody.
+        "quote_failure": not stale and consecutive_failures >= QUOTE_FAILURE_WARN_AT,
+        "fallback_reason": fallback_reason,
     }
 
 

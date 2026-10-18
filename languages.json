@@ -9,7 +9,7 @@
       "curator": "kapoorankush",
       "corpus": {
         "path": "image-gen/litclock_annotated.csv",
-        "rows": 4808,
+        "rows": 4803,
         "sfw_coverage_pct": 100.0
       },
       "min_coverage_pct": 80,

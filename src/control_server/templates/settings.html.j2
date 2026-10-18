@@ -30,6 +30,7 @@
   'settings.js.save_failed.weather',
   'settings.js.save_failed.units',
   'settings.js.save_failed.language',
+  'settings.language.switching',
 ]) | tojson }}</script>
   <script src="{{ url_for('static', filename='js/settings.js') }}" defer></script>
 {% endblock %}
@@ -398,7 +399,7 @@
 
     <fieldset class="settings-row settings-row--pill">
       <legend class="settings-visually-hidden">{{ t('settings.language.legend') }}</legend>
-      <div class="settings-segmented" role="radiogroup" aria-label="{{ t('settings.language.legend') }}" data-language-pill>
+      <div class="settings-segmented settings-segmented--rows" role="radiogroup" aria-label="{{ t('settings.language.legend') }}" data-language-pill>
         {#- current_language() degrades unknown codes to "en", but a
             registry whose ACTIVE set omits en would then check no radio at
             all (adversarial /review F2) — fall back to the first choice so
@@ -409,7 +410,7 @@
         {%- endif -%}
         {% for code in language_choices | sort %}
         <label class="settings-segmented__opt{% if current_code == code %} is-selected{% endif %}"
-               data-language-opt="{{ code }}">
+               data-language-opt="{{ code }}" lang="{{ code }}">
           <input type="radio"
                  class="settings-segmented__input"
                  name="LITCLOCK_LANGUAGE"

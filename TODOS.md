@@ -85,3 +85,26 @@
   limit for the litclock-dev#436 PR; this is the fuller fix. The new per-unit endpoint from litclock-dev#436 is the natural
   place to surface the sentinel (HTTP status or an `ok:false` field).
 - **Depends on / blocked by:** ~~litclock-dev#436 (the per-unit endpoint) landing first.~~ **UNBLOCKED** — litclock-dev#436/litclock-dev#475 shipped in v0.216.0 (2026-07-07); the `GET /api/diagnostics/journal?unit=` endpoint now exists as the natural place to surface the failure sentinel. Available to pick up (still P3).
+
+## From /plan-eng-review 2026-10-08 (litclock-dev#532 D7–D11 re-review)
+
+### Version-stamp the PWA's static URLs — P3 follow-up to the litclock-dev#532 re-review (R18)
+
+- **What:** One template helper appends `?v=<release version>` to every static CSS/JS URL
+  (`url_for('static', filename='css/settings.css')` today renders `/static/css/settings.css`; after,
+  `/static/css/settings.css?v=0.232.0`), and `sw.js.j2`'s `PRECACHE_URLS` uses the same stamped URLs.
+  Then raise the static `max-age` well above 15 minutes.
+- **Why:** Static URLs are identical across releases, so for up to 15 minutes after an OTA a phone runs
+  fresh HTML against the previous release's CSS/JS (`src/control_server/__init__.py:45-56` documents the
+  compromise). A stamped URL changes every release, so the first load after an update fetches matching
+  files, and the cache can then be long, which matters on iOS where no service worker runs.
+- **Pros:** Closes the stale-asset window for good; makes the PWA's English `tr()` literal fallbacks
+  key-only (the litclock-dev#532 R18 residual); enables a long cache on iOS.
+- **Cons:** Touches ~55 static references across the templates plus the SW precache list (human ~4h /
+  CC ~25min); a missed reference keeps the old behaviour for that file only.
+- **Context:** Raised by Codex in the litclock-dev#532 D7–D11 eng re-review (Outside Voice O5). R18 chose to keep
+  the literals for litclock-dev#532 because the language-side exposure was measured at 0 of 75 tags (no release
+  ever removed a key that older JS used). This is the general fix that reasoning set aside.
+- **Effort:** M
+- **Priority:** P3
+- **Depends on / blocked by:** None.

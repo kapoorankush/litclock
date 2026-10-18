@@ -20,7 +20,7 @@
 
 LitClock is built for people who want a literary clock on their shelf and never want to think about it again: setup is a two-minute, phone-only affair, and after that the clock configures, updates, and heals itself. **The defaults are the product.**
 
-**[Build one](#build-one)** · **[Living with it](#living-with-it)** · **[Give one away](#give-one-away)** · **[Under the hood](#under-the-hood)** · **[Credits](#credits)**
+**[Build one](#build-one)** · **[Living with it](#living-with-it)** · **[Give one away](#give-one-away)** · **[Your language](#your-language)** · **[Under the hood](#under-the-hood)** · **[Credits](#credits)**
 
 ### One-minute tour
 
@@ -346,6 +346,14 @@ LitClock is designed to be gifted to someone who will never open a terminal:
 
 To produce several clocks, see **[SD Card Cloning](docs/sd-card-cloning.md)** for duplicating pre-configured cards. (If *you* received a pre-configured card: just insert it and power on — setup starts at the LitClock-Setup step.)
 
+## Your language
+
+LitClock speaks English today, and is built to speak others. A new language
+needs its own time-telling quotes from its own literature — that is the part a
+reader of that literature can give, and the interface is written for you.
+[translations/README.md](translations/README.md) explains what to send and how
+to check it.
+
 ## Under the hood
 
 ### Philosophy
@@ -441,7 +449,7 @@ See [NOTICE.md](NOTICE.md) for full license details on third-party components.
 
 ## Disclaimer
 
-LitClock is a hobbyist, open-source project provided free of charge. The **code** is released under the [MIT License](LICENSE). The **quote database** (`image-gen/litclock_annotated.csv`) and the quote **images** derived from it are not MIT — they are distributed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/), which prohibits commercial use. See [NOTICE.md](NOTICE.md).
+LitClock is a hobbyist, open-source project provided free of charge. The **code** is released under the [MIT License](LICENSE). The **quote database** (`image-gen/litclock_annotated.csv`), every other language's quote corpus (`languages/<code>/*.csv`), and the quote **images** derived from them are not MIT — they are distributed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/), which prohibits commercial use. See [NOTICE.md](NOTICE.md).
 
 **THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED**, including but not limited to warranties of merchantability, fitness for a particular purpose, non-infringement, or that the software is free of defects, errors, or vulnerabilities.
 

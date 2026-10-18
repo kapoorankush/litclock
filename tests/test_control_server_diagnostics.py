@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import re
 import sys
 import textwrap
 import time
@@ -1522,3 +1523,213 @@ class TestDiagnosticsFieldsAreActuallyRendered:
         root = Path(__file__).resolve().parent.parent / "src" / "control_server"
         assert "render_mode" in (root / "routes" / "diagnostics" / "_copy_payload.py").read_text()
         assert "render_mode" in (root / "templates" / "diagnostics.html.j2").read_text()
+
+
+class TestPlainTimeFrameInTheSupportPayload:
+    """litclock-dev#532 D8/R14: when the panel shows the plain time, the copy
+    payload says which kind and how long failures have run — the one
+    distinction the Status-tab warning draws."""
+
+    def test_a_failure_frame_is_described(self, diag_env):
+        with diag_env.app_context():
+            values = diagnostics.collect_diagnostics()
+        values.update(quote=None, render_mode="time-only", fallback_reason="failure", consecutive_failures=4,
+                      time="12:04")
+        payload = diagnostics.build_copy_payload(values)
+        assert "## Last frame" in payload
+        assert "Plain time (failure) at 12:04" in payload
+        assert "Failed quote frames in a row: 4" in payload
+
+    def test_a_quote_frame_has_no_last_frame_block(self, diag_env):
+        with diag_env.app_context():
+            values = diagnostics.collect_diagnostics()
+        values.update(quote="It was a dark night.", fallback_reason=None)
+        assert "## Last frame" not in diagnostics.build_copy_payload(values)
+
+    def test_the_collector_reads_both_fields_from_the_status_file(self, diag_env, tmp_path):
+        status = tmp_path / "current-quote.json"  # the fixture's status file
+        status.write_text(
+            json.dumps({"time": "12:04", "picked_at": time.time(), "render_mode": "time-only",
+                        "fallback_reason": "gap", "consecutive_failures": 2}),
+            encoding="utf-8",
+        )
+        with diag_env.app_context():
+            values = diagnostics.collect_diagnostics()
+        assert values["fallback_reason"] == "gap" and values["consecutive_failures"] == 2
+
+
+class TestUnusableLanguageBundleWarning:
+    """litclock-dev#532 R12: when the set language's bundle is unusable, every
+    PWA page is in the fleet default — this is where the owner is told why."""
+
+    def test_the_build_section_warns_when_the_shown_language_differs(self):
+        from control_server.routes.diagnostics import _anomalies
+
+        assert "build-version" in _anomalies._compute_anomalies({"language": "es", "language_shown": "en"})
+
+    @pytest.mark.parametrize(
+        "values",
+        [{"language": "en", "language_shown": "en"}, {"language": "es", "language_shown": "es"},
+         {"language": None, "language_shown": None}, {}],
+        ids=["en", "es-healthy", "uncollected", "absent"],
+    )
+    def test_no_warning_otherwise(self, values):
+        from control_server.routes.diagnostics import _anomalies
+
+        assert "build-version" not in _anomalies._compute_anomalies(values)
+
+    def test_the_rows_are_collected(self, diag_env):
+        with diag_env.app_context():
+            values = diagnostics.collect_diagnostics()
+        assert values["language"] == "en" and values["language_shown"] == "en"
+
+    def test_a_raising_catalog_does_not_take_the_page_down(self, diag_env, monkeypatch):
+        import strings_catalog
+
+        def boom(lang=None):
+            raise RuntimeError("catalog exploded")
+
+        monkeypatch.setattr(strings_catalog, "snapshot", boom)
+        from control_server.routes.diagnostics import _collectors
+
+        assert _collectors._language_rows() == {"language": None, "language_shown": None}
+
+
+class TestUnusableLanguageBundleEndToEnd:
+    """litclock-dev#913 review: drive a REAL unusable bundle and a REAL unreadable registry
+    through the collector, the anomaly rule and the rendered page."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_catalog(self, monkeypatch):
+        """Requests monkeypatch first, so this tears down BEFORE it: the tmp
+        registry and bundles are dropped from strings_catalog's process-wide
+        caches while the paths still point at them, never leaking into the
+        next test (the registry is positive-cached for the process)."""
+        import strings_catalog
+
+        yield
+        strings_catalog.reset_cache()
+
+    def _fleet(self, tmp_path, monkeypatch, xx_bundle):
+        import strings_catalog
+
+        repo = Path(__file__).resolve().parents[1]
+        (tmp_path / "languages" / "en").mkdir(parents=True)
+        (tmp_path / "languages" / "xx").mkdir(parents=True)
+        en = (repo / "languages" / "en" / "strings.json").read_text(encoding="utf-8")
+        (tmp_path / "languages" / "en" / "strings.json").write_text(en, encoding="utf-8")
+        (tmp_path / "languages" / "xx" / "strings.json").write_text(json.dumps(xx_bundle), encoding="utf-8")
+        reg = tmp_path / "languages.json"
+        reg.write_text(
+            json.dumps(
+                {
+                    "fleet_default": "en",
+                    "languages": {
+                        "en": {"code": "en", "status": "active", "strings": "languages/en/strings.json"},
+                        "xx": {"code": "xx", "status": "active", "strings": "languages/xx/strings.json"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", reg)
+        monkeypatch.setattr(strings_catalog, "_REPO_ROOT", tmp_path)
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        strings_catalog.reset_cache()
+        return reg
+
+    def test_an_incomplete_bundle_opens_build_and_version(self, diag_env, tmp_path, monkeypatch):
+        self._fleet(tmp_path, monkeypatch, {"status.relative.just_now": "XX"})
+        with diag_env.app_context():
+            values = diagnostics.collect_diagnostics()
+        assert (values["language"], values["language_shown"]) == ("xx", "en")
+        assert "build-version" in diagnostics._compute_anomalies(values)
+        html = diag_env.test_client().get("/diagnostics").get_data(as_text=True)
+        assert re.search(r'data-diag-section="build-version"[^>]*\bopen\b', html), "the section must render open"
+
+    def test_an_unreadable_registry_reports_the_configured_language(self, diag_env, tmp_path, monkeypatch):
+        """Codex + red team: snapshot().requested is already degraded to en
+        here, which hid the one case the painter refuses quotes in."""
+        reg = self._fleet(tmp_path, monkeypatch, {})
+        reg.write_text("{broken", encoding="utf-8")
+        import strings_catalog
+
+        strings_catalog.reset_cache()
+        with diag_env.app_context():
+            values = diagnostics.collect_diagnostics()
+        assert (values["language"], values["language_shown"]) == ("xx", "en")
+        assert "build-version" in diagnostics._compute_anomalies(values)
+
+
+def test_the_shown_language_row_describes_the_page_it_is_on(diag_env, monkeypatch):
+    """Codex litclock-dev#913 round 3: collection runs BEFORE the template renders, so the
+    row's snapshot must be the one the page then reads — a switch landing in
+    between must not produce a page in one language claiming another."""
+    import strings_catalog
+    from control_server._strings import request_snapshot
+
+    with diag_env.test_request_context("/diagnostics"):
+        values = diagnostics.collect_diagnostics()
+        first = request_snapshot()
+        def again(lang=None):
+            raise AssertionError("re-resolved within one request")
+
+        monkeypatch.setattr(strings_catalog, "snapshot", again)
+        assert request_snapshot() is first
+        assert values["language_shown"] == first.language
+
+
+class TestLastUpdateErrorRow:
+    """litclock-dev#532 T10: the Updates banner shows catalog copy in the
+    device language, not update.sh's English `error`. The cause (pip vs
+    revert vs smoke, and the sha) must still reach support, so it is a row."""
+
+    def _status(self, tmp_path, monkeypatch, payload):
+        path = tmp_path / "update.status"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        monkeypatch.setenv("LITCLOCK_UPDATE_STATUS_FILE", str(path))
+
+    @pytest.mark.parametrize("state", ["failed_reverted", "failed_unrecovered"])
+    def test_a_terminal_failure_reaches_the_row_and_the_payload(self, diag_env, tmp_path, monkeypatch, state):
+        cause = "pip install failed AND git revert failed; manual recovery required."
+        self._status(tmp_path, monkeypatch, {"state": state, "error": cause})
+        with diag_env.app_context():
+            values = diagnostics.collect_diagnostics()
+            payload = diagnostics.build_copy_payload(values)
+        assert values["last_update_error"] == cause
+        assert f"- **Last update failure:** {cause}" in payload
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"state": "complete", "error": None},
+            {"state": "running", "error": "leftover"},
+            {"state": "failed_reverted", "error": ""},
+            {"state": "failed_reverted", "error": ["not", "text"]},
+        ],
+    )
+    def test_no_row_value_without_a_terminal_failure_cause(self, diag_env, tmp_path, monkeypatch, payload):
+        self._status(tmp_path, monkeypatch, payload)
+        with diag_env.app_context():
+            assert diagnostics.collect_diagnostics()["last_update_error"] is None
+
+    def test_an_absent_or_junk_status_file_is_none(self, diag_env, tmp_path, monkeypatch):
+        monkeypatch.setenv("LITCLOCK_UPDATE_STATUS_FILE", str(tmp_path / "absent"))
+        with diag_env.app_context():
+            assert diagnostics.collect_diagnostics()["last_update_error"] is None
+        junk = tmp_path / "junk"
+        junk.write_text("{", encoding="utf-8")
+        monkeypatch.setenv("LITCLOCK_UPDATE_STATUS_FILE", str(junk))
+        with diag_env.app_context():
+            assert diagnostics.collect_diagnostics()["last_update_error"] is None
+
+    def test_the_page_renders_the_row(self, diag_env, tmp_path, monkeypatch):
+        cause = "Smoke test failed; reverted to abc1234."
+        self._status(tmp_path, monkeypatch, {"state": "failed_reverted", "error": cause})
+        resp = diag_env.test_client().get("/diagnostics")
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        # The row itself, not the copy-payload <pre> that also carries it.
+        row = re.search(r'<div class="diag-row" data-diag-row="last_update_error">(.*?)</div>', body, re.S)
+        assert row, "no Last update failure row on the page"
+        assert "<dt>Last update failure</dt>" in row.group(1) and cause in row.group(1)

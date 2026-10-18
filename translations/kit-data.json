@@ -685,6 +685,764 @@
       "plural": null
     },
     {
+      "key": "clock.day.1",
+      "english": "01",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.10",
+      "english": "10",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.11",
+      "english": "11",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.12",
+      "english": "12",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.13",
+      "english": "13",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.14",
+      "english": "14",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.15",
+      "english": "15",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.16",
+      "english": "16",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.17",
+      "english": "17",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.18",
+      "english": "18",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.19",
+      "english": "19",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.2",
+      "english": "02",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.20",
+      "english": "20",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.21",
+      "english": "21",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.22",
+      "english": "22",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.23",
+      "english": "23",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.24",
+      "english": "24",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.25",
+      "english": "25",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.26",
+      "english": "26",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.27",
+      "english": "27",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.28",
+      "english": "28",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.29",
+      "english": "29",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.3",
+      "english": "03",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.30",
+      "english": "30",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.31",
+      "english": "31",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.4",
+      "english": "04",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.5",
+      "english": "05",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.6",
+      "english": "06",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.7",
+      "english": "07",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.8",
+      "english": "08",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.day.9",
+      "english": "09",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.fallback.failure",
+      "english": "Book quotes are unavailable right now.",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 38,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.fallback.gap",
+      "english": "No book quote for this minute yet.",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 34,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.masthead.date",
+      "english": "{weekday}, {month} {day}",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 24,
+      "slots": [
+        {
+          "name": "day",
+          "count": 1,
+          "note": "a value the software fills in"
+        },
+        {
+          "name": "month",
+          "count": 1,
+          "note": "a value the software fills in"
+        },
+        {
+          "name": "weekday",
+          "count": 1,
+          "note": "a value the software fills in"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.month.apr",
+      "english": "April",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 5,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.month.aug",
+      "english": "August",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 6,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.month.dec",
+      "english": "December",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 8,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.month.feb",
+      "english": "February",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 8,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.month.jan",
+      "english": "January",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 7,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.month.jul",
+      "english": "July",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 4,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.month.jun",
+      "english": "June",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 4,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.month.mar",
+      "english": "March",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 5,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.month.may",
+      "english": "May",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 3,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.month.nov",
+      "english": "November",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 8,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.month.oct",
+      "english": "October",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 7,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.month.sep",
+      "english": "September",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 9,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.weekday.fri",
+      "english": "Fri",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 3,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.weekday.mon",
+      "english": "Mon",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 3,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.weekday.sat",
+      "english": "Sat",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 3,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.weekday.sun",
+      "english": "Sun",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 3,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.weekday.thu",
+      "english": "Thu",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 3,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.weekday.tue",
+      "english": "Tue",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 3,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "clock.weekday.wed",
+      "english": "Wed",
+      "surface": "E-ink clock face",
+      "surface_note": "The line under the time when the clock has no book quote to show — width-limited.",
+      "length_sensitive": true,
+      "en_length": 3,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
       "key": "common.alert.http_status",
       "english": "Request failed (HTTP {status}).",
       "surface": "Control app",
@@ -1471,6 +2229,20 @@
       "plural": null
     },
     {
+      "key": "diag.row.consecutive_failures",
+      "english": "Failed quote frames in a row",
+      "surface": "Control app",
+      "surface_note": "The control app's diagnostics view.",
+      "length_sensitive": false,
+      "en_length": 28,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
       "key": "diag.row.cpu_temp_c",
       "english": "CPU temp °C",
       "surface": "Control app",
@@ -1491,6 +2263,20 @@
       "surface_note": "The control app's diagnostics view.",
       "length_sensitive": false,
       "en_length": 11,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "diag.row.fallback_reason",
+      "english": "No-quote reason",
+      "surface": "Control app",
+      "surface_note": "The control app's diagnostics view.",
+      "length_sensitive": false,
+      "en_length": 15,
       "slots": [],
       "rich": {
         "allowed": [],
@@ -1611,6 +2397,34 @@
       "plural": null
     },
     {
+      "key": "diag.row.language",
+      "english": "Language",
+      "surface": "Control app",
+      "surface_note": "The control app's diagnostics view.",
+      "length_sensitive": false,
+      "en_length": 8,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "diag.row.language_shown",
+      "english": "Language shown",
+      "surface": "Control app",
+      "surface_note": "The control app's diagnostics view.",
+      "length_sensitive": false,
+      "en_length": 14,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
       "key": "diag.row.last_dhcp_at",
       "english": "Last DHCP",
       "surface": "Control app",
@@ -1645,6 +2459,20 @@
       "surface_note": "The control app's diagnostics view.",
       "length_sensitive": false,
       "en_length": 11,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "diag.row.last_update_error",
+      "english": "Last update failure",
+      "surface": "Control app",
+      "surface_note": "The control app's diagnostics view.",
+      "length_sensitive": false,
+      "en_length": 19,
       "slots": [],
       "rich": {
         "allowed": [],
@@ -2192,6 +3020,587 @@
       "length_sensitive": false,
       "en_length": 3,
       "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.bottom_almost",
+      "english": "Quotes start once your timezone is set.",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 39,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.bottom_ready",
+      "english": "Quotes start shortly.",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 21,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.caveat",
+      "english": "Scan with your phone on:",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 24,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.cta_almost",
+      "english": "Scan the QR to set your timezone.",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 33,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.cta_ready",
+      "english": "To change anything, scan the QR.",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 32,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.heading_almost",
+      "english": "Almost ready.",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 13,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.heading_ready",
+      "english": "Ready to read.",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 14,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.not_detected",
+      "english": "Not detected",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 12,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.row_location",
+      "english": "Location",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 8,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.row_mature",
+      "english": "Mature quotes",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 13,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.row_timezone",
+      "english": "Timezone",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 8,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.row_units",
+      "english": "Units",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 5,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.settings_label",
+      "english": "Your settings — auto-detected:",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 30,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.tip_1",
+      "english": "Tip: this QR lives in the corner of every",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 41,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.tip_2",
+      "english": "quote — scan it any time to return to settings.",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 47,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.units_imperial",
+      "english": "Imperial (°F)",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 13,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.units_metric",
+      "english": "Metric (°C)",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 11,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.value_off",
+      "english": "Off",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 3,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.handoff.value_on",
+      "english": "On",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 2,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.first_1",
+      "english": "1. Scan the QR code to join {ssid}",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 34,
+      "slots": [
+        {
+          "name": "ssid",
+          "count": 1,
+          "note": "the WiFi network name"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.first_2",
+      "english": "2. Wait about 20 seconds for a setup page",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 41,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.first_3",
+      "english": "3. No page? Join {ssid} in your WiFi settings",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 45,
+      "slots": [
+        {
+          "name": "ssid",
+          "count": 1,
+          "note": "the WiFi network name"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.first_4",
+      "english": "4. Then open a browser: {host_url} or {ip_url}",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 46,
+      "slots": [
+        {
+          "name": "host_url",
+          "count": 1,
+          "note": "a value the software fills in"
+        },
+        {
+          "name": "ip_url",
+          "count": 1,
+          "note": "a value the software fills in"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.framing",
+      "english": "The clock makes its own WiFi for setup.",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 39,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.label_network",
+      "english": "LitClock's WiFi network:",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 24,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.label_password",
+      "english": "LitClock's WiFi password:",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 25,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.retry_connect_1",
+      "english": "1. Rescan the QR code to rejoin {ssid}",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 38,
+      "slots": [
+        {
+          "name": "ssid",
+          "count": 1,
+          "note": "the WiFi network name"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.retry_connect_2",
+      "english": "2. Check your WiFi is 2.4GHz and in range of the clock",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 54,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.retry_connect_3",
+      "english": "3. On the setup page, pick your network and try again",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 53,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.retry_connect_4",
+      "english": "4. No page? Open a browser: {host_url} or {ip_url}",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 50,
+      "slots": [
+        {
+          "name": "host_url",
+          "count": 1,
+          "note": "a value the software fills in"
+        },
+        {
+          "name": "ip_url",
+          "count": 1,
+          "note": "a value the software fills in"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.retry_password_1",
+      "english": "1. Rescan the QR code to rejoin {ssid}",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 38,
+      "slots": [
+        {
+          "name": "ssid",
+          "count": 1,
+          "note": "the WiFi network name"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.retry_password_2",
+      "english": "2. Select your internet WiFi network, type your WiFi password",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 61,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.retry_password_3",
+      "english": "3. No page? Open a browser: {host_url} or {ip_url}",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 50,
+      "slots": [
+        {
+          "name": "host_url",
+          "count": 1,
+          "note": "a value the software fills in"
+        },
+        {
+          "name": "ip_url",
+          "count": 1,
+          "note": "a value the software fills in"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.title",
+      "english": "WiFi Setup",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 10,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.hotspot.title_retry",
+      "english": "Couldn't Join Your WiFi",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 23,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.splash.connecting.message",
+      "english": "This can take up to a minute.",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 29,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "firstboot.splash.connecting.title",
+      "english": "Connecting to {ssid}…",
+      "surface": "E-ink splash",
+      "surface_note": "First-boot screens on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 21,
+      "slots": [
+        {
+          "name": "ssid",
+          "count": 1,
+          "note": "the WiFi network name"
+        }
+      ],
       "rich": {
         "allowed": [],
         "help": []
@@ -3156,6 +4565,26 @@
       "plural": null
     },
     {
+      "key": "settings.language.switching",
+      "english": "The clock is switching to {language} now.",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 41,
+      "slots": [
+        {
+          "name": "language",
+          "count": 1,
+          "note": "a value the software fills in"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
       "key": "settings.language.title",
       "english": "Language",
       "surface": "Control app",
@@ -3664,6 +5093,162 @@
       "plural": null
     },
     {
+      "key": "setup.cause.bad_password",
+      "english": "Incorrect WiFi password",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 23,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.cause.connect_failed",
+      "english": "Connection failed: {detail}",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 27,
+      "slots": [
+        {
+          "name": "detail",
+          "count": 1,
+          "note": "a value the software fills in"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.cause.control_chars",
+      "english": "WiFi passwords can't contain line breaks or control characters — re-type the password and try again.",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 100,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.cause.no_ip",
+      "english": "Connected but could not obtain IP address",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 41,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.cause.not_found",
+      "english": "Network '{ssid}' not found",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 26,
+      "slots": [
+        {
+          "name": "ssid",
+          "count": 1,
+          "note": "the WiFi network name"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.cause.not_found_hidden",
+      "english": "Couldn't find '{ssid}'. If it's a hidden network, make sure it's 2.4GHz and in range, then try again. Also double-check the exact spelling — network names are case-sensitive.",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 174,
+      "slots": [
+        {
+          "name": "ssid",
+          "count": 1,
+          "note": "the WiFi network name"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.cause.setup_error",
+      "english": "Setup error: {detail}",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 21,
+      "slots": [
+        {
+          "name": "detail",
+          "count": 1,
+          "note": "a value the software fills in"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.cause.signal_failed",
+      "english": "Setup completed but signal file write failed",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 44,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.cause.timeout",
+      "english": "Couldn't reach '{ssid}' — the network didn't answer in time. Check that it's a 2.4GHz network and in range, then try again.",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 123,
+      "slots": [
+        {
+          "name": "ssid",
+          "count": 1,
+          "note": "the WiFi network name"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
       "key": "setup.cna.body",
       "english": "Tap below to continue setting up your clock.",
       "surface": "WiFi setup page",
@@ -3835,20 +5420,6 @@
       "plural": null
     },
     {
-      "key": "setup.language.label",
-      "english": "Language for quotes and settings",
-      "surface": "WiFi setup page",
-      "surface_note": "The hotspot page a phone opens to join WiFi.",
-      "length_sensitive": false,
-      "en_length": 32,
-      "slots": [],
-      "rich": {
-        "allowed": [],
-        "help": []
-      },
-      "plural": null
-    },
-    {
       "key": "setup.language.title",
       "english": "Language",
       "surface": "WiFi setup page",
@@ -3925,6 +5496,78 @@
       "surface_note": "The hotspot page a phone opens to join WiFi.",
       "length_sensitive": false,
       "en_length": 31,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.success.footer",
+      "english": "Watch the clock’s screen. Within a couple of minutes it will show a QR code. Switch your phone back to {ssid}, then scan the QR code to finish setup. If you miss scanning it and the clock is showing quotes now, don’t worry. If the screen says it couldn’t join, scan its QR code to try again. If the screen hasn’t changed after a few minutes, unplug the clock and plug it back in.",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 379,
+      "slots": [
+        {
+          "name": "ssid",
+          "count": 1,
+          "note": "the WiFi network name"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.success.heading",
+      "english": "Joining your WiFi",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 17,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.success.subtitle",
+      "english": "Your clock is connecting to {b}{ssid}{/b}. Your phone will lose this page in a moment; that’s expected.",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 103,
+      "slots": [
+        {
+          "name": "ssid",
+          "count": 1,
+          "note": "the WiFi network name"
+        }
+      ],
+      "rich": {
+        "allowed": [
+          "b"
+        ],
+        "help": [
+          "{b}…{/b} = bold"
+        ]
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.success.wifi_label",
+      "english": "WiFi",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 4,
       "slots": [],
       "rich": {
         "allowed": [],
@@ -4023,6 +5666,56 @@
       "plural": null
     },
     {
+      "key": "setup.wifi.option",
+      "english": "{ssid} ({strength})",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 19,
+      "slots": [
+        {
+          "name": "ssid",
+          "count": 1,
+          "note": "the WiFi network name"
+        },
+        {
+          "name": "strength",
+          "count": 1,
+          "note": "a value the software fills in"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.wifi.option_open",
+      "english": "{ssid} ({strength} [Open])",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 26,
+      "slots": [
+        {
+          "name": "ssid",
+          "count": 1,
+          "note": "the WiFi network name"
+        },
+        {
+          "name": "strength",
+          "count": 1,
+          "note": "a value the software fills in"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
       "key": "setup.wifi.password_help",
       "english": "Use the password for the WiFi you just picked above — not the password shown on the clock’s screen. Leave blank for open networks.",
       "surface": "WiFi setup page",
@@ -4113,6 +5806,76 @@
       "surface_note": "The hotspot page a phone opens to join WiFi.",
       "length_sensitive": false,
       "en_length": 7,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.wifi.scan_failed",
+      "english": "Scan failed - tap Refresh",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 25,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.wifi.scanning",
+      "english": "Scanning...",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 11,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.wifi.strength_medium",
+      "english": "Medium",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 6,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.wifi.strength_strong",
+      "english": "Strong",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 6,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "setup.wifi.strength_weak",
+      "english": "Weak",
+      "surface": "WiFi setup page",
+      "surface_note": "The hotspot page a phone opens to join WiFi.",
+      "length_sensitive": false,
+      "en_length": 4,
       "slots": [],
       "rich": {
         "allowed": [],
@@ -4413,6 +6176,216 @@
       "plural": null
     },
     {
+      "key": "shutdown.farewell.poweroff.1",
+      "english": "“The rest is silence.” — Shakespeare",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 36,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "shutdown.farewell.poweroff.2",
+      "english": "“And so it goes.” — Kurt Vonnegut",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 33,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "shutdown.farewell.poweroff.3",
+      "english": "“After all, tomorrow is another day.” — Margaret Mitchell",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 57,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "shutdown.farewell.poweroff.4",
+      "english": "“So we beat on, boats against the current.” — Fitzgerald",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 56,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "shutdown.farewell.poweroff.5",
+      "english": "“A far, far better rest that I go to.” — Dickens",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 48,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "shutdown.farewell.reboot.1",
+      "english": "“To sleep, perchance to dream.” — Shakespeare",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 45,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "shutdown.farewell.reboot.2",
+      "english": "“I have promises to keep.” — Robert Frost",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 41,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "shutdown.farewell.reboot.3",
+      "english": "“Not all those who wander are lost.” — Tolkien",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 46,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "shutdown.farewell.reboot.4",
+      "english": "“Be back before the next chapter begins.”",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 41,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "shutdown.farewell.reboot.5",
+      "english": "“And miles to go before I sleep.” — Robert Frost",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 48,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "shutdown.farewell.welcome.1",
+      "english": "“It was the best of times…” — Dickens",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 37,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "shutdown.farewell.welcome.2",
+      "english": "“Call me Ishmael.” — Melville",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 29,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "shutdown.farewell.welcome.3",
+      "english": "“All happy families are alike.” — Tolstoy",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 41,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "shutdown.farewell.welcome.4",
+      "english": "“It was a bright cold day in April.” — Orwell",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 45,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "shutdown.farewell.welcome.5",
+      "english": "“Many years later, as he faced the firing squad…” — García Márquez",
+      "surface": "E-ink splash",
+      "surface_note": "Shutdown screen on the physical panel — width-limited.",
+      "length_sensitive": true,
+      "en_length": 66,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
       "key": "shutdown.splash.poweroff.submessage",
       "english": "LitClock",
       "surface": "E-ink splash",
@@ -4601,6 +6574,20 @@
       "surface_note": "The control app's Status view.",
       "length_sensitive": false,
       "en_length": 64,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "status.quote_failure",
+      "english": "Your clock hasn’t been able to show a book quote for the last few minutes. If this continues, restart it from the System tab.",
+      "surface": "Control app",
+      "surface_note": "The control app's Status view.",
+      "length_sensitive": false,
+      "en_length": 125,
       "slots": [],
       "rich": {
         "allowed": [],

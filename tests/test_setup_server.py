@@ -1,5 +1,6 @@
 """Tests for setup_server module — IP-geo resolver, timezone helper, captive portal API."""
 
+import json
 import pathlib
 import re
 import subprocess
@@ -814,10 +815,11 @@ class TestWifiScanCaching:
         assert was_empty is True
         assert setup_server._WIFI_SCAN_SSIDS == frozenset({"homewifi"})
 
-    def test_scan_exception_returns_empty_flag_and_touches_nothing(self, monkeypatch):
-        """The except branch (nmcli dying) merges into the empty path today;
-        pin that it stays flagged empty and leaves cache + evidence alone
-        (/review on litclock-dev#614 — this branch had no direct test)."""
+    def test_scan_exception_says_failed_not_empty_and_touches_nothing(self, monkeypatch):
+        """A scan that FAILS is not a scan that found nothing (litclock-dev#908
+        gap 1): the picker says "Scan failed - tap Refresh", is NOT flagged
+        empty (which would force the type-it-yourself box open), and leaves
+        cache + evidence alone (/review on litclock-dev#614)."""
         import sys
         from unittest.mock import MagicMock
 
@@ -831,7 +833,13 @@ class TestWifiScanCaching:
         monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
 
         result, was_empty = setup_server._wifi_network_options()
-        assert was_empty is True
+        assert was_empty is False
+        assert "Scan failed - tap Refresh" in result
+        assert "No networks found" not in result
+        # The placeholder stays the selection; the manual option is offered
+        # but not pre-selected — Refresh is the next step, not typing.
+        assert re.search(r'<option value="" selected disabled>Scan failed', result)
+        assert re.search(r'data-manual="1"(?! selected)', result)
         assert setup_server._WIFI_SCAN_NETWORKS is None
         assert setup_server._WIFI_SCAN_SSIDS == frozenset({"homewifi"})
 
@@ -2525,7 +2533,7 @@ class TestWifiPickerReviewHardening:
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", "Incorrect WiFi password")
         html = setup_server._build_setup_html()
         assert 'value="MyHiddenNet"' in html
-        assert '<details id="manual-ssid" style="margin-bottom:14px;" open>' in html
+        assert '<details id="manual-ssid" open>' in html
 
     def test_echoed_ssid_is_html_escaped(self):
         """It round-trips through an HTML attribute, and it is attacker-typed."""
@@ -2550,12 +2558,12 @@ class TestWifiPickerReviewHardening:
         monkeypatch.setitem(sys.modules, "wifi_provision", mock_wifi)
         html = setup_server._build_setup_html()
         assert setup_server._wifi_placeholder_empty_text() in html
-        assert '<details id="manual-ssid" style="margin-bottom:14px;" open>' in html
+        assert '<details id="manual-ssid" open>' in html
 
     def test_disclosure_stays_shut_on_a_clean_first_render(self):
         """The 95% case must not pay for the retry case with extra clutter."""
         html = setup_server._build_setup_html()
-        assert '<details id="manual-ssid" style="margin-bottom:14px;">' in html
+        assert '<details id="manual-ssid">' in html
 
     # ── Byte budget, stated in bytes ──
 
@@ -2745,9 +2753,18 @@ class TestNoHotspotJargonAcrossSurfaces:
     def test_eink_splash_copy_is_clean(self):
         import eink_display
 
-        surfaces = [eink_display.SETUP_LABEL_NETWORK, eink_display.SETUP_LABEL_PASSWORD]
-        for is_retry in (False, True):
-            surfaces += eink_display.setup_instruction_lines("10.42.0.1", is_retry=is_retry)
+        # Every string on the setup splashes, from the catalog since
+        # litclock-dev#532 T6 (title, labels, framing, every step variant,
+        # the connecting splash) — plus the RESOLVED step lines, so a key
+        # the code reads but the prefix sweep missed is still vetted.
+        en = json.loads((self.REPO / "languages" / "en" / "strings.json").read_text("utf-8"))
+        prefixes = ("firstboot.hotspot.", "firstboot.splash.connecting.", "firstboot.handoff.")
+        surfaces = [v for k, v in en.items() if k.startswith(prefixes)]
+        assert len(surfaces) >= 30, "the sweep found almost nothing — did the keys move?"
+        for reason in (None, eink_display.HOTSPOT_RETRY_WIFI_PASSWORD, eink_display.HOTSPOT_RETRY_CONNECT_FAILED):
+            surfaces += eink_display.setup_instruction_lines(
+                "10.42.0.1", is_retry=reason is not None, retry_reason=reason
+            )
         for text in surfaces:
             assert "hotspot" not in text.lower(), text
 
@@ -2980,6 +2997,15 @@ def _picker_registry(tmp_path, monkeypatch, de_status="active"):
     return reg
 
 
+def _canonical_strings() -> dict:
+    """English's strings bundle, the canonical key set (minus `_` keys)."""
+    import json as _json
+
+    path = pathlib.Path(__file__).resolve().parents[1] / "languages" / "en" / "strings.json"
+    en = _json.loads(path.read_text("utf-8"))
+    return {k: v for k, v in en.items() if not k.startswith("_")}
+
+
 class TestWifiCopyResolvesPerRequest:
     """litclock-dev#532 follow-up (Stage-4 gates /review): the picker's
     manual option and placeholders resolved at MODULE IMPORT, so a language
@@ -2996,6 +3022,10 @@ class TestWifiCopyResolvesPerRequest:
         de_strings.write_text(
             _json.dumps(
                 {
+                    # A COMPLETE bundle: since litclock-dev#532 RT1 one
+                    # missing canonical key makes the whole bundle unusable
+                    # and the page renders wholly in the fleet default.
+                    **_canonical_strings(),
                     "setup.wifi.manual_option": "DE-MANUAL",
                     "setup.wifi.placeholder": "DE-PLACEHOLDER",
                     "setup.wifi.placeholder_empty": "DE-EMPTY",
@@ -3099,6 +3129,10 @@ class TestWifiCopyResolvesPerRequest:
         de_strings.write_text(
             _json.dumps(
                 {
+                    # A COMPLETE bundle: since litclock-dev#532 RT1 one
+                    # missing canonical key makes the whole bundle unusable
+                    # and the page renders wholly in the fleet default.
+                    **_canonical_strings(),
                     "setup.wifi.manual_option": "DE-MANUAL",
                     "setup.wifi.placeholder": "DE-PLACEHOLDER",
                     "setup.wifi.placeholder_empty": "DE-EMPTY",
@@ -3123,16 +3157,19 @@ class TestWifiCopyResolvesPerRequest:
 
 
 class TestLanguagePicker:
-    """litclock-dev#532 pickers, hotspot arm: the no-JS <select> renders only
-    on a multi-language fleet (a one-option select is pure friction), defaults
-    from the gift marker, then Accept-Language, then English."""
+    """litclock-dev#532 pickers, hotspot arm (D6/RT3): a row of language links
+    at the top renders only on a multi-language fleet (one entry is pure
+    friction); the page's language — gift marker, then Accept-Language, then
+    English — is the unlinked one, and rides into the POST as a hidden field."""
 
-    def test_single_language_fleet_renders_no_picker(self, monkeypatch):
+    def test_single_language_fleet_renders_no_picker(self, monkeypatch, english_only_registry):
         monkeypatch.setattr(setup_server, "PROVISIONING_MODE", True)
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_IN_FLIGHT", False)
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", None)
         html_out = setup_server._build_setup_html(accept_language="de-DE,de;q=0.9")
+        assert '<select id="wifi-ssid"' in html_out  # a real page, not an error (litclock-dev#927 review)
         assert 'name="litclock_language"' not in html_out
+        assert 'class="lang-links"' not in html_out
 
     def test_multilang_fleet_renders_picker_with_negotiated_default(self, tmp_path, monkeypatch):
         _picker_registry(tmp_path, monkeypatch)
@@ -3141,9 +3178,11 @@ class TestLanguagePicker:
         monkeypatch.setattr(setup_server, "WIFI_CONNECT_ERROR", None)
         monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(tmp_path / "absent-marker"))
         html_out = setup_server._build_setup_html(accept_language="de-DE,de;q=0.9,en;q=0.5")
-        assert 'name="litclock_language"' in html_out
-        assert '<option value="de" selected>Deutsch</option>' in html_out
-        assert '<option value="en">English</option>' in html_out
+        assert '<input type="hidden" name="litclock_language" value="de">' in html_out
+        assert '<span lang="de" aria-current="true">Deutsch</span>' in html_out
+        assert '<a href="/setup?lang=en" lang="en" hreflang="en">English</a>' in html_out
+        # The row sits above the heading, outside the form.
+        assert html_out.index('class="lang-links"') < html_out.index("<h1>") < html_out.index("<form")
 
     def test_gift_marker_overrides_negotiation(self, tmp_path, monkeypatch):
         _picker_registry(tmp_path, monkeypatch)
@@ -3156,7 +3195,8 @@ class TestLanguagePicker:
         # English phone, German gift: the recipient's clock defaults to the
         # gifter's choice.
         html_out = setup_server._build_setup_html(accept_language="en-US,en;q=0.9")
-        assert '<option value="de" selected>Deutsch</option>' in html_out
+        assert '<span lang="de" aria-current="true">Deutsch</span>' in html_out
+        assert '<input type="hidden" name="litclock_language" value="de">' in html_out
 
     def test_marker_with_inactive_code_is_ignored(self, tmp_path, monkeypatch):
         _picker_registry(tmp_path, monkeypatch, de_status="incubating")
@@ -3184,7 +3224,7 @@ class TestLanguageRetryPrecedence:
         marker.write_text("de")
         monkeypatch.setattr(setup_server, "ENV_FILE", str(env))
         monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(marker))
-        monkeypatch.setattr(setup_server, "SUBMITTED_LANGUAGE", "")
+        monkeypatch.setattr(setup_server, "SESSION_LANGUAGE", "")
         assert setup_server._default_language("de-DE") == "en"
 
     def test_persisted_env_value_beats_accept_language(self, tmp_path, monkeypatch):
@@ -3193,7 +3233,7 @@ class TestLanguageRetryPrecedence:
         env.write_text("export LITCLOCK_LANGUAGE=de\n")
         monkeypatch.setattr(setup_server, "ENV_FILE", str(env))
         monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(tmp_path / "absent"))
-        monkeypatch.setattr(setup_server, "SUBMITTED_LANGUAGE", "")
+        monkeypatch.setattr(setup_server, "SESSION_LANGUAGE", "")
         assert setup_server._default_language("en-US,en;q=0.9") == "de"
 
     def test_session_submission_beats_the_marker(self, tmp_path, monkeypatch):
@@ -3203,7 +3243,7 @@ class TestLanguageRetryPrecedence:
         marker = tmp_path / ".gift-language"
         marker.write_text("de")
         monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(marker))
-        monkeypatch.setattr(setup_server, "SUBMITTED_LANGUAGE", "en")
+        monkeypatch.setattr(setup_server, "SESSION_LANGUAGE", "en")
         assert setup_server._default_language("de-DE") == "en"
 
     def test_marker_symlink_is_refused(self, tmp_path, monkeypatch):
@@ -3213,7 +3253,7 @@ class TestLanguageRetryPrecedence:
         link = tmp_path / ".gift-language"
         link.symlink_to(target)
         monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(link))
-        monkeypatch.setattr(setup_server, "SUBMITTED_LANGUAGE", "")
+        monkeypatch.setattr(setup_server, "SESSION_LANGUAGE", "")
         monkeypatch.setattr(setup_server, "ENV_FILE", str(tmp_path / "no-env"))
         # O_NOFOLLOW refuses the symlink → falls through to negotiation.
         assert setup_server._default_language("de-DE") == "de"  # via Accept-Language
@@ -3253,7 +3293,7 @@ class TestNegotiationReachableFromFreshBoot:
         env.write_text("export LITCLOCK_LANGUAGE=\n")  # the heredoc seed, verbatim
         monkeypatch.setattr(setup_server, "ENV_FILE", str(env))
         monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(tmp_path / "absent"))
-        monkeypatch.setattr(setup_server, "SUBMITTED_LANGUAGE", "")
+        monkeypatch.setattr(setup_server, "SESSION_LANGUAGE", "")
         assert setup_server._default_language("de-DE,de;q=0.9,en;q=0.5") == "de", (
             "a fresh default env must leave negotiation reachable — a seeded "
             "concrete code is indistinguishable from a user choice"
@@ -3328,13 +3368,13 @@ class TestNegotiationReachableFromFreshBoot:
 
     def test_persisted_choice_still_survives_a_server_restart(self, tmp_path, monkeypatch):
         # The env step's real job: first-boot's crash-restart loop loses
-        # SUBMITTED_LANGUAGE, but the POSTed choice lives in env.sh.
+        # SESSION_LANGUAGE, but the POSTed choice lives in env.sh.
         _picker_registry(tmp_path, monkeypatch)
         env = tmp_path / "env.sh"
         env.write_text("export LITCLOCK_LANGUAGE=de\n")
         monkeypatch.setattr(setup_server, "ENV_FILE", str(env))
         monkeypatch.setattr(setup_server, "GIFT_LANGUAGE_MARKER", str(tmp_path / "absent"))
-        monkeypatch.setattr(setup_server, "SUBMITTED_LANGUAGE", "")  # fresh process
+        monkeypatch.setattr(setup_server, "SESSION_LANGUAGE", "")  # fresh process
         assert setup_server._default_language("en-US") == "de"
 
 
@@ -3420,12 +3460,17 @@ const window = {
   addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
 };
 let fetchCalls = 0;
+let refreshReturned;  // the no-JS Refresh's cancel signal (litclock-dev#908)
 function fetch() {
   fetchCalls += 1;
   const f = scenario.fetch;
   if (!f) return Promise.reject(new Error('fetch was not expected in this scenario'));
   if (f.reject) return Promise.reject(new Error('scan failed'));
-  return Promise.resolve({ json: () => Promise.resolve(f.networks) });
+  // A Response-shaped stub: `ok`/`status` matter since a failed scan is a 503
+  // the page must route to "Scan failed" (litclock-dev#908 gap 1).
+  const status = f.status || 200;
+  const body = f.body !== undefined ? f.body : f.networks;
+  return Promise.resolve({ ok: status < 400, status, json: () => Promise.resolve(body) });
 }
 const ctx = vm.createContext({ document, window, fetch, setTimeout, clearTimeout, AbortController, console });
 vm.runInContext(script, ctx);  // the load-time pass runs here
@@ -3435,11 +3480,12 @@ function snapshot(label) {
   const sel = selectedOption();
   return {
     label, select: select.value, options: select.children.map((o) => o.value),
+    labels: select.children.map((o) => o.textContent),
     manualOptions: select.children.filter((o) => o.dataset.manual).length,
     selectedIsManual: !!(sel && sel.dataset.manual),
     hidden: details.hidden, open: details.open, input: input.value,
     required: input.required, focusCalls: input.focusCalls, fetchCalls,
-    listeners: Object.keys(listeners),
+    listeners: Object.keys(listeners), refreshReturned,
   };
 }
 (async () => {
@@ -3449,7 +3495,7 @@ function snapshot(label) {
     else if (op === 'selectIndex') select.children[arg].selected = true;
     else if (op === 'change') ctx.onSsidChange();
     else if (op === 'type') input.value = arg;
-    else if (op === 'refresh') ctx.refreshNetworks();
+    else if (op === 'refresh') refreshReturned = ctx.refreshNetworks();
     else if (op === 'fire') (listeners[arg] || []).forEach((fn) => fn());
     else if (op === 'settle') await new Promise((r) => setTimeout(r, 20));
     else if (op === 'snapshot') out.push(snapshot(arg));
@@ -3459,8 +3505,8 @@ function snapshot(label) {
 })().catch((e) => { console.error(e.stack); process.exit(1); });
 """
 
-_DETAILS_SHUT = '<details id="manual-ssid" style="margin-bottom:14px;">'
-_DETAILS_OPEN = '<details id="manual-ssid" style="margin-bottom:14px;" open>'
+_DETAILS_SHUT = '<details id="manual-ssid">'
+_DETAILS_OPEN = '<details id="manual-ssid" open>'
 
 
 def _js_function(script, name):

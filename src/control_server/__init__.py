@@ -23,6 +23,9 @@ from datetime import timedelta
 
 from flask import Flask
 
+# See create_app: the request-body ceiling shared by Flask and waitress.
+MAX_REQUEST_BODY_BYTES = 64 * 1024
+
 
 def create_app(test_config: dict | None = None) -> Flask:
     """Build and return the Flask app. ``test_config`` is merged on top of the
@@ -62,6 +65,16 @@ def create_app(test_config: dict | None = None) -> Flask:
     # ``no-store``); ``/sw.js`` and ``/manifest.webmanifest`` set their own
     # explicit headers.
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = timedelta(minutes=15)
+
+    # Request-body ceiling. werkzeug 3.1.9 stopped capping URL-encoded form
+    # bodies at max_form_memory_size (500 kB) — it now reads them whole — and
+    # this app never set its own limit, so with waitress's 1 GiB default one
+    # LAN request could run the 512 MB Pi out of memory, and form parsing
+    # happens before the CSRF token is checked. The largest legitimate body is
+    # a settings form (the gift message caps at 80 chars; there are no
+    # uploads), so 64 KiB is generous. Oversized requests get 413
+    # (errors.py "payload_too_large"). waitress gets the same cap in app.py.
+    app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BODY_BYTES
 
     # Defaults. Anything that comes from the environment lives here so tests
     # can override via test_config.
@@ -111,10 +124,20 @@ def create_app(test_config: dict | None = None) -> Flask:
     # NOTE: this import is a HARD dependency on the litclock-dev#532 file
     # chain (strings_catalog + languages.json + languages/) — a port that
     # carries this line without the chain kills create_app at boot.
+    # litclock-dev#532 O4: ONE catalog resolution per request, so a language
+    # save or a bundle recovering mid-render cannot mix a page — every t()
+    # and catalog_subset() in the render reads the same snapshot. Outside a
+    # request (a template rendered by a test or a background job) each call
+    # resolves on its own, as before.
     import strings_catalog as _strings_catalog  # noqa: PLC0415
 
-    app.jinja_env.globals["t"] = _strings_catalog.get
-    app.jinja_env.globals["catalog_subset"] = _strings_catalog.get_many
+    from ._strings import request_snapshot as _snapshot
+
+    app.jinja_env.globals["t"] = lambda key, /, **slots: _snapshot().get(key, **slots)
+    app.jinja_env.globals["catalog_subset"] = lambda keys: _snapshot().get_many(keys)
+    # The language the page is actually written in — the device's, or the
+    # fleet default's when its bundle is unusable (R12) — for <html lang>.
+    app.jinja_env.globals["page_language"] = lambda: _snapshot().language
     # litclock-dev#532 pickers 5b: the Settings Language section (and,
     # once the gift-language write path lands, the System tab's gift
     # field) renders ONLY on a multi-language fleet. Registered as
@@ -168,7 +191,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         # conversion — so a slot value can never assemble a whitelist
         # token or markup (the tokens are already spent, the value is
         # escaped). Mirrors system.js's esc-then-splice exactly.
-        text = str(_escape(_strings_catalog.get(key)))
+        text = str(_escape(_snapshot().get(key)))
         for token, tag in _RICH_TOKENS:
             text = text.replace(token, tag)
         for name, value in slots.items():

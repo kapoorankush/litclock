@@ -71,6 +71,25 @@ HOTSPOT_PASSWORD = None  # Original hotspot password, used to restore after fail
 _WIFI_SCAN_NETWORKS = None
 _WIFI_SCAN_TIME = 0  # time.monotonic() when cache was populated
 _WIFI_SCAN_TTL = 30  # seconds before cache expires
+# The last scan the reader was SHOWN found nothing (litclock-dev#532 RT3
+# review) — a page scan or the Refresh button's /scan-wifi. An empty scan is
+# deliberately NOT cached (the next ordinary load retries, and an older list
+# may still sit in the cache), but a language switch re-renders what the
+# reader last saw: neither 2-20s of radio for the same empty list, nor an
+# older list resurrected in its place.
+_WIFI_SCAN_LAST_EMPTY = False
+# time.monotonic() when the last scan FINISHED, whatever it found — unlike
+# _WIFI_SCAN_TIME, which only a non-empty scan moves. A request that asks for
+# a scan newer than itself (the no-JS Refresh, /scan-wifi) and waited on
+# _SCAN_CACHE_LOCK behind one takes that scan's result, empty included, rather
+# than holding the radio for another 2-27s (litclock-dev#908 review).
+_WIFI_SCAN_ATTEMPT_TIME = 0
+# True when the LAST scan failed outright (litclock-dev#908 gap 1). Kept apart
+# from the cache on purpose — a failure must not overwrite what earlier scans
+# found — but a language switch (stale_ok) has to re-render the "Scan failed"
+# the reader is looking at without a 2-27s rescan (litclock-dev#532 D10), and must not
+# swap it for a stale "No networks found" from an older empty scan.
+_WIFI_SCAN_LAST_FAILED = False
 # SSIDs from the same scan that produced _WIFI_SCAN_NETWORKS. Kept alongside
 # so a hand-typed name can be checked against what the radio actually saw —
 # see the `hidden` decision in do_POST (litclock-dev#554).
@@ -83,7 +102,46 @@ _WIFI_SCAN_SSIDS = frozenset()
 # never-raise contract means a broken catalog degrades this page to visible
 # dotted keys, not a dead hotspot. MANUAL_SSID_VALUE stays a literal: it is
 # a POST sentinel, not copy.
-from strings_catalog import get as _catalog_get  # noqa: E402
+import strings_catalog as _strings_catalog  # noqa: E402
+
+# litclock-dev#532 RT3: ONE catalog resolution per page (the PWA's per-request
+# snapshot, control_server/_strings.py, done for this server). A request sets
+# it for its thread in the page's language (the setup session's, D10); every
+# lookup below reads it, so a page cannot mix two languages and the
+# eighty-odd lookups need no language argument each. Outside a request — the
+# connect thread, a test calling a builder directly — a lookup resolves the
+# device language afresh, as it always did.
+_RENDER = threading.local()
+
+
+def _catalog():
+    snap = getattr(_RENDER, "snap", None)
+    return snap if snap is not None else _strings_catalog.snapshot()
+
+
+def _catalog_get(key, /, **slots):
+    return _catalog().get(key, **slots)
+
+
+class _page:
+    """``with _page(accept_language):`` — resolve the catalog once for one page
+    in the setup session's language. Re-entrant: a builder called inside a
+    request's scope reuses the request's resolution."""
+
+    def __init__(self, accept_language=None):
+        self.accept_language = accept_language
+        self.owner = False
+
+    def __enter__(self):
+        if getattr(_RENDER, "snap", None) is None:
+            _RENDER.snap = _strings_catalog.snapshot(_default_language(self.accept_language))
+            self.owner = True
+        return _RENDER.snap
+
+    def __exit__(self, *_exc):
+        if self.owner:
+            _RENDER.snap = None
+        return False
 
 # litclock-dev#532 pickers: a gifted clock carries the gifter's language
 # choice across the reset via this root-owned marker (the .welcome-message
@@ -93,10 +151,13 @@ from strings_catalog import get as _catalog_get  # noqa: E402
 GIFT_LANGUAGE_MARKER = os.environ.get("LITCLOCK_GIFT_LANGUAGE_MARKER", "/etc/litclock/.gift-language")
 
 
-# The language the CURRENT session's POST persisted — highest precedence on
-# a retry re-render so a failed WiFi join never silently resets the picker
-# to Accept-Language (/review litclock-dev#742). Cleared by reset_state().
-SUBMITTED_LANGUAGE = ""
+# The setup session's language (litclock-dev#532 D10/R13): the last EXPLICIT
+# choice this process saw — a language link (GET ?lang=xx) or the WiFi POST.
+# Highest precedence, so a link click re-renders every later page in that
+# language and a failed WiFi join never silently resets it to Accept-Language
+# (/review litclock-dev#742). Only the POST writes env.sh; a link never does. Process-wide
+# on purpose: setup is one phone at a time. Cleared by reset_state().
+SESSION_LANGUAGE = ""
 
 
 def _read_marker_code():
@@ -127,6 +188,12 @@ def _persisted_language():
     file (duplicates, trailing comments) is exactly the drift class this
     workstream removes (/review litclock-dev#742 follow-up F4).
     """
+    # The process environment first — strings_catalog's own precedence, so
+    # the page and the device agree on what "saved" means (litclock-dev#532
+    # RT3; first-boot does not export it, so on a device this is env.sh).
+    explicit = os.environ.get("LITCLOCK_LANGUAGE", "").strip()
+    if explicit:
+        return explicit
     if not ENV_FILE:
         return ""
     import strings_catalog  # noqa: PLC0415
@@ -144,7 +211,7 @@ def _persisted_language():
 
 
 def _default_language(accept_language):
-    """This session's submission > persisted env value > gift marker >
+    """This session's choice (link or POST) > persisted env value > gift marker >
     Accept-Language negotiation > English (litclock-dev#532, /review litclock-dev#742:
     without the session/env steps, a failed-WiFi retry silently reset a
     picked language back to the phone's locale).
@@ -161,8 +228,8 @@ def _default_language(accept_language):
     import strings_catalog  # noqa: PLC0415
 
     active = strings_catalog.active_codes()
-    if SUBMITTED_LANGUAGE and SUBMITTED_LANGUAGE in active:
-        return SUBMITTED_LANGUAGE
+    if SESSION_LANGUAGE and SESSION_LANGUAGE in active:
+        return SESSION_LANGUAGE
     persisted = _persisted_language()
     if persisted and persisted in active:
         return persisted
@@ -172,36 +239,81 @@ def _default_language(accept_language):
     return strings_catalog.negotiate(accept_language)
 
 
-def _language_section(accept_language):
-    """The no-JS language picker — rendered ONLY on a multi-language fleet.
-
-    A <select> with one option is pure friction (the owner's zero-friction
-    rule), so a single-active-language registry renders nothing and the POST
-    default applies. Native names label the options: a reader who wants
-    Español may not know the word "Spanish".
-    """
-    import strings_catalog  # noqa: PLC0415
-
-    active = strings_catalog.active_languages()
+def _language_links():
+    """D6: a row of links at the very top, one per active language, each in
+    its own language and tagged ``lang``/``hreflang``; the page's language
+    unlinked. Clicking one reloads the page in that language (GET ?lang=xx)
+    without saving anything. Rendered ONLY on a multi-language fleet — a row
+    with one entry is pure friction (the owner's zero-friction rule)."""
+    active = _strings_catalog.active_languages()
     if len(active) < 2:
         return ""
-    default = _default_language(accept_language)
-    options = []
+    current = _catalog().requested
+    items = []
     for code in sorted(active):
+        attr = html.escape(code, quote=True)
         native = html.escape(str(active[code].get("native_name") or code))
-        selected = " selected" if code == default else ""
-        options.append(f'<option value="{html.escape(code)}"{selected}>{native}</option>')
-    return f"""
-            <!-- Language Section (litclock-dev#532) -->
-            <div class="section">
-                <div class="section-title"><span class="icon">{_catalog_get("setup.language.title")}</span></div>
-                <label for="litclock-language">{_catalog_get("setup.language.label")}</label>
-                <select id="litclock-language" name="litclock_language"
-                    style="width:100%; padding:12px; font-size:16px; border:2px solid #ddd; border-radius:8px;">
-                    {''.join(options)}
-                </select>
-            </div>
-"""
+        if code == current:
+            items.append(f'<span lang="{attr}" aria-current="true">{native}</span>')
+        else:
+            href = f"/setup?lang={urllib.parse.quote(code)}"
+            items.append(f'<a href="{href}" lang="{attr}" hreflang="{attr}">{native}</a>')
+    label = _page_text("setup.language.title")
+    return f'        <nav class="lang-links" aria-label="{label}">{" ".join(items)}</nav>\n'
+
+
+def _rescan_request(query):
+    """The no-JS Refresh (litclock-dev#908): ``?rescan=1`` asks for a scan
+    newer than this request. Returns that request's monotonic stamp, or None.
+
+    Ignored while a join is in flight: the radio is busy joining the owner's
+    network, a rescan there contends with the join it is waiting on, and the
+    page in that state is a progress banner, not a picker anyone is using."""
+    import time  # noqa: PLC0415
+
+    if WIFI_CONNECT_IN_FLIGHT or urllib.parse.parse_qs(query).get("rescan", [""])[0] != "1":
+        return None
+    return time.monotonic()
+
+
+def _apply_language_link(query, accept_language=None):
+    """A language link (GET ?lang=xx, D6/D10): make an ACTIVE code the
+    session's language, and report whether that SWITCHED the page's language
+    — only a switch may reuse a stale scan, so a no-JS reader reloading the
+    same link still gets fresh networks (RT3 review). Anything else — no
+    parameter, an unknown or inactive code — keeps the current language.
+    Never writes env.sh: only the WiFi POST saves the device language (R13)."""
+    global SESSION_LANGUAGE
+    code = urllib.parse.parse_qs(query).get("lang", [""])[0].strip()
+    if code and code in _strings_catalog.active_codes():
+        switched = code != _default_language(accept_language)
+        SESSION_LANGUAGE = code
+        return switched
+    return False
+
+
+def _adopt_posted_language(params, accept_language=None):
+    """The WiFi POST's language becomes the session's — the hidden field the
+    page carried, if it is an active code; else the same default the page
+    was rendered in (a tampered or stale field never fails a join). The
+    device setting is written later in do_POST, best-effort (R13); the
+    session follows the submit whether or not that write lands."""
+    global SESSION_LANGUAGE
+    code = params.get("litclock_language", [""])[0].strip()
+    if code not in _strings_catalog.active_codes():
+        code = _default_language(accept_language)
+    SESSION_LANGUAGE = code
+    return code
+
+
+def _language_field():
+    """The page's language rides into the WiFi POST, which is what saves it
+    (R13: on submit, never on a link click)."""
+    if len(_strings_catalog.active_languages()) < 2:
+        return ""
+    value = html.escape(_catalog().requested, quote=True)
+    return f'            <input type="hidden" name="litclock_language" value="{value}">'
+
 
 # Sentinel <option> value meaning "I'll type the network name myself"
 # (litclock-dev#554). Deliberately not a plausible SSID: an access point could
@@ -258,6 +370,69 @@ def _wifi_placeholder_text():
 
 def _wifi_placeholder_empty_text():
     return _catalog_get("setup.wifi.placeholder_empty")
+
+
+def _page_language():
+    """The language the setup page is actually written in, for ``<html
+    lang>`` (litclock-dev#532 T6): the page's resolution — the session's
+    language, or the fleet default when that bundle is unusable — what screen
+    readers and translation prompts should be told, never just "en"."""
+    try:
+        return html.escape(_catalog().language, quote=True)
+    except Exception:
+        return "en"
+
+
+def _strength_text(signal):
+    """The picker's signal word, from the catalog (litclock-dev#532 T6). The
+    JS rescan path applies the same thresholds to the same three keys."""
+    if signal >= 70:
+        return _catalog_get("setup.wifi.strength_strong")
+    if signal >= 40:
+        return _catalog_get("setup.wifi.strength_medium")
+    return _catalog_get("setup.wifi.strength_weak")
+
+
+class _ServerFailure(str):
+    """A connect-flow failure raised by THIS server rather than by
+    wifi_provision, shaped like wifi_provision.WifiFailure: the str is the
+    catalog's English for the journal, ``key``/``slots`` what the page shows.
+    Its own type, not an import: the retry-flow tests replace wifi_provision
+    with a bare fake."""
+
+    __slots__ = ("key", "slots")
+    failure_class = "other"
+
+    def __new__(cls, key, **slots):
+        # Built inside the connect thread's except arms, so it must not raise
+        # itself: an exception here would skip the hotspot restore after it.
+        try:
+            import strings_catalog  # noqa: PLC0415
+
+            message = strings_catalog.get(key, lang=strings_catalog.CANONICAL_LANGUAGE, **slots)
+        except Exception:
+            message = key
+        if message == key:
+            # The catalog's never-raise floor is the bare key; the values are
+            # what the journal needs to diagnose the failure, so keep them.
+            message = " ".join([key, *(str(value) for value in slots.values())])
+        obj = super().__new__(cls, message)
+        obj.key = key
+        obj.slots = slots
+        return obj
+
+    def __getnewargs_ex__(self):
+        return (self.key,), self.slots
+
+
+def _connect_error_text(error):
+    """The connect failure in the page's language: its catalog sentence when
+    it names one (a WifiFailure from wifi_provision or this server), else the
+    text as given. The str form stays English for the journal."""
+    key = getattr(error, "key", None)
+    if key:
+        return _catalog_get(key, **getattr(error, "slots", {}))
+    return str(error)
 
 
 # Last SSID typed into the manual field, echoed back on a retry render. Only
@@ -413,10 +588,15 @@ def reset_state(wait_for_inflight: float = 2.0) -> tuple[str, ...]:
 
     Not used by production code paths; safe to call from any test fixture.
     """
-    global WIFI_CONNECT_ERROR, WIFI_CONNECT_IN_FLIGHT, WIFI_LAST_MANUAL_SSID, SUBMITTED_LANGUAGE
+    global WIFI_CONNECT_ERROR, WIFI_CONNECT_IN_FLIGHT, WIFI_LAST_MANUAL_SSID, SESSION_LANGUAGE
 
-    SUBMITTED_LANGUAGE = ""
-    global _WIFI_SCAN_NETWORKS, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS
+    SESSION_LANGUAGE = ""
+    # EVERY _WIFI_SCAN_* global must be named here, or the reset below binds a
+    # local and the module keeps its value — _WIFI_SCAN_ATTEMPT_TIME shipped
+    # exactly that way (litclock-dev#932). test_reset_state_clears_every_scan_global
+    # checks the whole family by name.
+    global _WIFI_SCAN_NETWORKS, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS, _WIFI_SCAN_LAST_EMPTY
+    global _WIFI_SCAN_ATTEMPT_TIME, _WIFI_SCAN_LAST_FAILED
 
     import time
 
@@ -511,6 +691,9 @@ def reset_state(wait_for_inflight: float = 2.0) -> tuple[str, ...]:
         _WIFI_SCAN_NETWORKS = None
         _WIFI_SCAN_TIME = 0
         _WIFI_SCAN_SSIDS = frozenset()
+        _WIFI_SCAN_LAST_EMPTY = False
+        _WIFI_SCAN_ATTEMPT_TIME = 0
+        _WIFI_SCAN_LAST_FAILED = False
 
     # Reported, not raised. A raise here would fail whichever test happened to
     # be finishing rather than the one that leaked, and would turn a diagnostic
@@ -590,7 +773,7 @@ def _selected_attr(flag):
     return ""
 
 
-def _build_wifi_options(networks, placeholder=None, select_manual=False):
+def _build_wifi_options(networks, placeholder=None, select_manual=False, scan_failed=False):
     """Convert a list of network dicts into HTML <option> tags.
 
     Three things beyond the obvious (litclock-dev#554):
@@ -625,11 +808,17 @@ def _build_wifi_options(networks, placeholder=None, select_manual=False):
     would have to pass the flag and the one that forgot would render a page
     whose only usable control is gated off. One rule, at the site that knows.
 
+    Except when ``scan_failed`` (litclock-dev#908 gap 1): the list is empty
+    because the radio never answered, not because nothing is there, so the
+    owner's network is almost certainly in range and the right next step is
+    Refresh — not a type-it-yourself box opened as if typing were the only
+    way forward. The manual option still trails the list for a hidden network.
+
     The option is marked ``data-manual`` as well. The script selects it by
     that attribute rather than by value, because a scanned AP can broadcast
     the sentinel name and would sort ahead of it (see MANUAL_SSID_VALUE).
     """
-    select_manual = select_manual or not networks
+    select_manual = select_manual or (not networks and not scan_failed)
     placeholder = html.escape(placeholder or _wifi_placeholder_text())
     # Through the helper, not two inline conditionals. The natural shape for
     # the first of them — an empty-string branch written before the `if` —
@@ -643,16 +832,22 @@ def _build_wifi_options(networks, placeholder=None, select_manual=False):
     options = [f'<option value=""{placeholder_selected} disabled>{placeholder}</option>']
     for net in sorted(networks, key=_net_signal, reverse=True):
         ssid = html.escape(net["ssid"])
-        signal = _net_signal(net)
-        if signal >= 70:
-            bars = "Strong"
-        elif signal >= 40:
-            bars = "Medium"
-        else:
-            bars = "Weak"
         security = net.get("security", "")
-        lock = " [Open]" if not security or security == "--" else ""
-        options.append(f'<option value="{ssid}">{ssid} ({bars}{lock})</option>')
+        is_open = not security or security == "--"
+        # The whole label is a catalog template (litclock-dev#532 T6), so a
+        # translation orders name and strength as its language needs; the
+        # SSID is escaped above and filled in one pass.
+        # Filled with the RAW values and escaped WHOLE, so a translation's
+        # own "<" or "&" is escaped like every other page string (litclock-dev#918
+        # review); the one-pass fill means a value is never re-read.
+        label = html.escape(
+            _catalog_get(
+                "setup.wifi.option_open" if is_open else "setup.wifi.option",
+                ssid=net["ssid"],
+                strength=_strength_text(_net_signal(net)),
+            )
+        )
+        options.append(f'<option value="{ssid}">{label}</option>')
     options.append(
         f'<option value="{MANUAL_SSID_VALUE}" data-manual="1"{manual_selected}>'
         f"{html.escape(_manual_ssid_text())}</option>"
@@ -678,7 +873,14 @@ def _filter_own_hotspot(networks):
     return [n for n in networks if n.get("ssid") != HOTSPOT_SSID]
 
 
-def _wifi_network_options(select_manual=False):
+def _scan_failed_options(select_manual):
+    """The picker after a failed scan (litclock-dev#908 gap 1)."""
+    return _build_wifi_options(
+        [], placeholder=_catalog_get("setup.wifi.scan_failed"), select_manual=select_manual, scan_failed=True
+    )
+
+
+def _wifi_network_options(select_manual=False, stale_ok=False, fresh_after=None):
     """Generate <option> tags for scanned WiFi networks, with 30s SCAN caching.
 
     The scan RESULT is cached; the <option> HTML renders per call so the
@@ -693,8 +895,16 @@ def _wifi_network_options(select_manual=False):
     ``select_manual`` is forwarded to :func:`_build_wifi_options`, which
     forces it on for an empty scan regardless (litclock-dev#848): on that
     page the manual option is the only one ``required`` will accept, and the
-    text input is gated on it being selected."""
-    global _WIFI_SCAN_NETWORKS, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS
+    text input is gated on it being selected.
+
+    ``fresh_after`` (a ``time.monotonic()`` stamp) is the no-JS Refresh
+    (litclock-dev#908): the cache counts only if a scan COMPLETED after that
+    instant. A stamp rather than a plain "force" flag, so a second Refresh
+    that queued on the lock behind the first one's scan takes that scan's
+    result — empty included, via _WIFI_SCAN_ATTEMPT_TIME — instead of keeping
+    the radio busy for another 2-27s."""
+    global _WIFI_SCAN_NETWORKS, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS, _WIFI_SCAN_LAST_EMPTY, _WIFI_SCAN_ATTEMPT_TIME
+    global _WIFI_SCAN_LAST_FAILED
     import time
 
     # Take _SCAN_CACHE_LOCK across the whole cache-miss path, exactly like
@@ -716,7 +926,22 @@ def _wifi_network_options(select_manual=False):
     # cache on the recheck and skips its own scan entirely.
     with _SCAN_CACHE_LOCK:
         now = time.monotonic()
-        if _WIFI_SCAN_NETWORKS is not None and (now - _WIFI_SCAN_TIME) < _WIFI_SCAN_TTL:
+        if fresh_after is not None and _WIFI_SCAN_ATTEMPT_TIME >= fresh_after:
+            # A scan finished after this request asked: show what it found.
+            if _WIFI_SCAN_LAST_EMPTY or _WIFI_SCAN_NETWORKS is None:
+                return _build_wifi_options([], placeholder=_wifi_placeholder_empty_text()), True
+            return _build_wifi_options(_WIFI_SCAN_NETWORKS, select_manual=select_manual), False
+        if stale_ok and _WIFI_SCAN_LAST_FAILED:
+            return _scan_failed_options(select_manual), False
+        if stale_ok and _WIFI_SCAN_LAST_EMPTY:
+            return _build_wifi_options([], placeholder=_wifi_placeholder_empty_text()), True
+        # stale_ok: a language switch re-renders the networks already on
+        # the reader's screen rather than block 2-20s on the radio
+        # (litclock-dev#532 D10, eng re-review Section 1 #1).
+        fresh = fresh_after is None and (
+            _WIFI_SCAN_NETWORKS is not None and (stale_ok or (now - _WIFI_SCAN_TIME) < _WIFI_SCAN_TTL)
+        )
+        if fresh:
             # Render fresh from the cached scan — no radio contention, and
             # the picker copy follows a language switched since the scan.
             return _build_wifi_options(_WIFI_SCAN_NETWORKS, select_manual=select_manual), False
@@ -725,10 +950,19 @@ def _wifi_network_options(select_manual=False):
             from wifi_provision import scan_wifi_networks
 
             networks = scan_wifi_networks()
-        except Exception:
-            networks = []
+        except Exception as exc:
+            # A FAILED scan, not an empty one (litclock-dev#908 gap 1): say so,
+            # and touch none of the scan state. Nothing is cached, the
+            # evidence set and LAST_EMPTY keep what earlier scans found, and
+            # the attempt stamp does not move, so a request queued behind
+            # this one tries the radio again rather than inheriting a failure.
+            print(f"WiFi scan failed: {exc}", flush=True)
+            _WIFI_SCAN_LAST_FAILED = True
+            return _scan_failed_options(select_manual), False
 
         networks = _filter_own_hotspot(networks)
+        _WIFI_SCAN_ATTEMPT_TIME = time.monotonic()
+        _WIFI_SCAN_LAST_FAILED = False
 
         if not networks:
             # Don't cache empty results — let the next call retry. Still built via
@@ -742,8 +976,10 @@ def _wifi_network_options(select_manual=False):
             # do_POST; litclock-dev#605 item 7, refined to UNION by litclock-dev#615).
             # select_manual is not passed: _build_wifi_options forces it on
             # for an empty list, which is exactly this branch.
+            _WIFI_SCAN_LAST_EMPTY = True
             return _build_wifi_options([], placeholder=_wifi_placeholder_empty_text()), True
 
+        _WIFI_SCAN_LAST_EMPTY = False
         _WIFI_SCAN_NETWORKS = networks
         # UNION, not replace (litclock-dev#615): accumulate every SSID seen this
         # provisioning session. Scans flicker — a network that is genuinely
@@ -775,6 +1011,276 @@ def _wifi_network_options(select_manual=False):
 CNA_PATH = "/cna"
 CNA_URL = f"http://{HOTSPOT_GATEWAY_IP}{CNA_PATH}"
 
+# ── Page styling (litclock-dev#909) ─────────────────────────────────────────
+#
+# The setup pages are the first thing a new owner or gift recipient sees, so
+# they wear the PWA's design system (DESIGN.md): paper, ink, foxed amber,
+# Fraunces headings, Instrument Sans body, no cards or shadows. The hotspot
+# has no internet, so the fonts are the PWA's own self-hosted woff2 files,
+# served by this server from SETUP_FONT_DIR under /fonts/.
+#
+# The CSS is INLINED into every page rather than linked: a render-blocking
+# stylesheet request is one more fetch a captive-portal WebView can stall on,
+# and the bridge must stay JS-free and tiny (test_bridge_is_small). Fonts are
+# the one external fetch, and font-display:swap means the page paints at once
+# in the fallback stack and never waits on them.
+#
+# The colour values duplicate src/control_server/static/css/tokens.css by
+# necessity (that file is not served here); test_setup_page_style pins them
+# to it so a palette change cannot leave the setup pages behind.
+SETUP_FONT_DIR = Path(__file__).resolve().parent / "control_server" / "static" / "fonts"
+# Allowlist, not a directory listing: /fonts/<name> serves exactly these.
+SETUP_FONTS = (
+    "fraunces-wght-normal.woff2",
+    "fraunces-wght-italic.woff2",
+    "instrument-sans-wght-normal.woff2",
+)
+SETUP_FONT_PATH = "/fonts/"
+
+
+def _font_name(path):
+    """The allowlisted font a /fonts/ request names, or "" — an exact match
+    against SETUP_FONTS, so no path the client sends reaches the filesystem."""
+    if path.startswith(SETUP_FONT_PATH):
+        name = path[len(SETUP_FONT_PATH):]
+        if name in SETUP_FONTS:
+            return name
+    return ""
+
+
+def _font_face(family, filename, weight, style="normal"):
+    return (
+        f'@font-face{{font-family:"{family}";src:url({SETUP_FONT_PATH}{filename}) format("woff2");'
+        f"font-style:{style};font-weight:{weight};font-display:swap}}"
+    )
+
+
+# DESIGN.md colour tokens, light and dark (dark is designed, not inverted).
+# One table so the bridge can take a subset and the parity test can read it.
+SETUP_TOKENS = {
+    "bg": ("#FBF6EC", "#14110D"),
+    "surface": ("#F4ECDC", "#1F1A14"),
+    "ink": ("#1A1410", "#F0E6D2"),
+    "ink-muted": ("#6B5C4A", "#9A8B73"),
+    "hairline": ("rgba(26,20,16,.08)", "rgba(240,230,210,.1)"),
+    "accent": ("#B85C20", "#D88150"),
+    "accent-muted": ("#8C4318", "#B85C20"),
+    "success": ("#4F6E3A", "#8FAB6B"),
+    "error": ("#9A2E22", "#C26E5E"),
+}
+_SERIF_STACK = '"Fraunces","Iowan Old Style","Apple Garamond",Georgia,serif'
+_SANS_STACK = '"Instrument Sans",-apple-system,BlinkMacSystemFont,system-ui,sans-serif'
+
+
+def _tokens_css(names):
+    light = ";".join(f"--{n}:{SETUP_TOKENS[n][0]}" for n in names)
+    dark = ";".join(f"--{n}:{SETUP_TOKENS[n][1]}" for n in names)
+    return (
+        f"html{{color-scheme:light dark}}:root{{{light}}}"
+        f"@media(prefers-color-scheme:dark){{:root{{{dark}}}}}"
+    )
+
+
+# The body/heading base both the bridge and the full pages use — minified,
+# because the bridge carries it inside its size budget.
+_BASE_RULES_CSS = (
+    "*{box-sizing:border-box}"
+    f"body{{margin:0;background:var(--bg);color:var(--ink);font-family:{_SANS_STACK};"
+    "font-size:clamp(15px,1rem,20px);line-height:1.5;-webkit-text-size-adjust:100%}"
+    f"h1{{font-family:{_SERIF_STACK};font-weight:400;font-size:clamp(26px,1.9375rem,38px);"
+    "line-height:1.15;margin:0 0 8px}"
+)
+
+# Everything the full pages share: all three faces, every token, the base.
+_SETUP_BASE_CSS = (
+    _font_face("Fraunces", SETUP_FONTS[0], "100 900")
+    + _font_face("Fraunces", SETUP_FONTS[1], "100 900", "italic")
+    + _font_face("Instrument Sans", SETUP_FONTS[2], "400 700")
+    + _tokens_css(SETUP_TOKENS)
+    + _BASE_RULES_CSS
+    + "a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,"
+    "summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+)
+
+# The bridge's subset: only the tokens it paints with, and NO @font-face.
+# The bridge is also served under captive.apple.com (_serve_apple_probe), where
+# a relative /fonts/ URL resolves to Apple's host and lands back in the probe
+# handler — two extra bridge renders per sheet open, logged as if the sheet had
+# loaded three times. It has been subresource-free since litclock-dev#175 for exactly this
+# kind of reason; the bridge is iOS-only, so the stacks' "Iowan Old Style" and
+# system fallbacks are what it shows, and the families are named first so an
+# installed copy still wins. Also keeps translated copy inside the 2 KB budget.
+_BRIDGE_BASE_CSS = _tokens_css(("bg", "ink", "ink-muted", "accent")) + _BASE_RULES_CSS
+
+# The full pages' rules (setup, success, error). Readable, not minified:
+# these pages have no size budget, and this is the CSS people will edit.
+_SETUP_PAGE_CSS = """
+        main {
+            max-width: 480px;
+            margin: 0 auto;
+            padding: 48px 16px 32px;
+        }
+        .lang-links {
+            font-size: clamp(13px, 0.875rem, 17px);
+            color: var(--ink-muted);
+            margin: -24px 0 32px;
+        }
+        .lang-links a { color: var(--ink); }
+        .lang-links [aria-current] { font-weight: 600; }
+        .subtitle {
+            color: var(--ink-muted);
+            margin: 0 0 32px;
+        }
+        .banner {
+            background: var(--surface);
+            border-top: 2px solid var(--accent);
+            border-radius: 10px;
+            padding: 12px 16px;
+            margin: 0 0 24px;
+            font-size: clamp(13px, 0.875rem, 17px);
+        }
+        .banner--error { border-top-color: var(--error); }
+        .section { margin-bottom: 24px; }
+        .eyebrow {
+            font-size: clamp(11px, 0.75rem, 18px);
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--ink-muted);
+            margin: 0 0 8px;
+        }
+        label {
+            display: block;
+            font-size: clamp(13px, 0.875rem, 17px);
+            font-weight: 500;
+            color: var(--ink-muted);
+            margin: 0 0 4px;
+        }
+        input[type="text"], input[type="password"], select {
+            font: inherit;
+            font-size: max(16px, 1rem);
+            color: var(--ink);
+            background: var(--surface);
+            /* --ink-muted, not the PWA's --hairline: an 8% edge on a fill
+               1.09:1 off the page fails WCAG's 3:1 for a control outline, and
+               this is the one form a first-time owner fills in unaided
+               (litclock-dev#909 review). */
+            border: 1px solid var(--ink-muted);
+            border-radius: 4px;
+            padding: 12px;
+            min-height: 48px;
+            width: 100%;
+            margin: 0 0 16px;
+        }
+        select {
+            appearance: none;
+            -webkit-appearance: none;
+            padding-right: 36px;
+            background-image: linear-gradient(45deg, transparent 50%, var(--ink-muted) 50%),
+                linear-gradient(135deg, var(--ink-muted) 50%, transparent 50%);
+            background-position: calc(100% - 20px) 50%, calc(100% - 15px) 50%;
+            background-size: 5px 5px;
+            background-repeat: no-repeat;
+        }
+        input::placeholder { color: var(--ink-muted); opacity: 0.7; }
+        .picker {
+            display: flex;
+            gap: 8px;
+            margin: 0 0 16px;
+        }
+        .picker select { flex: 1; min-width: 0; margin: 0; }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font: inherit;
+            font-weight: 600;
+            min-height: 48px;
+            padding: 8px 16px;
+            border-radius: 10px;
+            border: 1px solid transparent;
+            cursor: pointer;
+            text-decoration: none;
+            transition: background 100ms ease-out, color 100ms ease-out;
+        }
+        .btn-primary {
+            width: 100%;
+            min-height: 52px;
+            font-size: clamp(18px, 1.25rem, 25px);
+            background: var(--accent);
+            color: var(--bg);
+        }
+        .btn-primary:hover, .btn-primary:active { background: var(--accent-muted); }
+        /* Text in --accent-muted on light paper: --accent at this size is
+           4.25:1, under AA's 4.5:1. Dark mode's --accent already clears it
+           (and its --accent-muted would not), so it keeps --accent. */
+        .btn-secondary {
+            background: transparent;
+            color: var(--accent-muted);
+            border-color: var(--accent);
+        }
+        .btn-secondary:hover, .btn-secondary:active { color: var(--ink); }
+        @media (prefers-color-scheme: dark) {
+            .btn-secondary { color: var(--accent); }
+        }
+        .help-text {
+            font-size: clamp(13px, 0.875rem, 17px);
+            color: var(--ink-muted);
+            margin: 0 0 16px;
+        }
+        .help-text--after { text-align: center; margin: 12px 0 0; }
+        details { margin: 0 0 16px; }
+        summary {
+            cursor: pointer;
+            font-size: clamp(13px, 0.875rem, 17px);
+            color: var(--ink-muted);
+            /* display stays list-item: Chromium and Gecko draw the
+               disclosure triangle only on a list-item summary, and with JS
+               off that triangle is the only cue the line can be tapped. */
+            padding: 12px 0;
+        }
+        details .help-text { margin: 0 0 8px; }
+        .rows { margin: 0 0 24px; border-top: 1px solid var(--hairline); }
+        /* The success page's one instruction — what to do once the phone
+           loses this page — so it reads at body size in ink, not as help. */
+        .next-step { margin: 0; }
+        .row {
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--hairline);
+            font-size: clamp(13px, 0.875rem, 17px);
+        }
+        .row__label { color: var(--ink-muted); }
+        .row__value { overflow-wrap: anywhere; text-align: end; }
+        .rule-error {
+            border: 0;
+            border-top: 2px solid var(--error);
+            width: 48px;
+            margin: 0 0 16px;
+        }
+        h1.h1--quiet { font-style: italic; }
+        .is-loading { pointer-events: none; opacity: 0.45; }
+        @media (prefers-reduced-motion: reduce) {
+            .btn { transition: none; }
+        }
+"""
+
+def _setup_head_css():
+    """The <style> element the full setup pages share."""
+    return "<style>" + _SETUP_BASE_CSS + _SETUP_PAGE_CSS + "    </style>"
+
+
+# theme-color tints the phone's status bar to --bg in either scheme.
+_SETUP_HEAD_META = (
+    '<meta name="theme-color" content="#FBF6EC" media="(prefers-color-scheme: light)">\n'
+    '    <meta name="theme-color" content="#14110D" media="(prefers-color-scheme: dark)">\n'
+    f'    <link rel="preload" href="{SETUP_FONT_PATH}{SETUP_FONTS[0]}" as="font" type="font/woff2" crossorigin>\n'
+    f'    <link rel="preload" href="{SETUP_FONT_PATH}{SETUP_FONTS[2]}" as="font" type="font/woff2" crossorigin>'
+)
+
+
 # Built PER REQUEST since the litclock-dev#532 final-slice review — the copy
 # must follow a mid-session language switch, and the ~1 KB rebuild is cheap
 # even in iOS CNA probe bursts.
@@ -799,20 +1305,18 @@ def _cna_bridge_html():
     return (
 
     "<!DOCTYPE html>"
-    '<html lang="en"><head>'
+    '<html lang="' + _page_language() + '"><head>'
     '<meta charset="utf-8">'
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
     f"<title>{title_text}</title>"
-    "<style>"
-    "body{font-family:-apple-system,system-ui,sans-serif;"
-    "margin:0;padding:32px 24px;background:#f8fafc;color:#1e293b;"
-    "text-align:center;}"
-    "h1{font-size:26px;margin:8px 0 12px;}"
-    "p{font-size:16px;line-height:1.5;color:#475569;margin:0 0 24px;}"
-    "a.btn{display:inline-block;background:#2563eb;color:#fff;"
-    "font-size:18px;font-weight:600;padding:16px 36px;border-radius:10px;"
-    "text-decoration:none;}"
-    "small{display:block;margin-top:24px;color:#94a3b8;font-size:13px;}"
+    # The shared tokens and faces, plus the bridge's own few rules — all
+    # inside the ~2 KB budget (litclock-dev#909).
+    "<style>" + _BRIDGE_BASE_CSS +
+    "body{padding:48px 16px}"
+    "p{color:var(--ink-muted);margin:0 0 24px}"
+    "a.btn{display:block;background:var(--accent);color:var(--bg);font-size:18px;"
+    "font-weight:600;padding:14px 16px;border-radius:10px;text-align:center;text-decoration:none}"
+    "small{display:block;margin-top:24px;color:var(--ink-muted);font-size:13px}"
     "</style>"
     "</head><body>"
     f"<h1>{title_text}</h1>"
@@ -832,12 +1336,27 @@ def _cna_bridge_html():
 
 def _build_cna_bridge_html():
     """Return the iOS CNA bridge HTML (built per request since the
-    litclock-dev#532 final-slice review — see _cna_bridge_html)."""
-    return _cna_bridge_html()
+    litclock-dev#532 final-slice review — see _cna_bridge_html), in the
+    session's language (RT3)."""
+    with _page():
+        return _cna_bridge_html()
 
 
-def _build_setup_html(accept_language=None):
+def _build_setup_html(accept_language=None, *, stale_scan_ok=False, rescan_after=None):
+    """The setup page, resolved once in the setup session's language
+    (litclock-dev#532 RT3). ``stale_scan_ok`` renders from the cached scan
+    whatever its age — a language switch must cost one render, not a 2-20s
+    radio scan (eng re-review Section 1 #1)."""
+    with _page(accept_language):
+        return _setup_html_body(accept_language, stale_scan_ok=stale_scan_ok, rescan_after=rescan_after)
+
+
+def _setup_html_body(accept_language, *, stale_scan_ok=False, rescan_after=None):
     """Build the setup page HTML.
+
+    Every state this page (and the flow around it) can be in is specified in
+    docs/setup-portal-states.md (litclock-dev#908) — update it with any change
+    to what the owner sees.
 
     Branches on three pieces of module state:
 
@@ -877,8 +1396,7 @@ def _build_setup_html(accept_language=None):
     wifi_error_banner = ""
     if WIFI_CONNECT_IN_FLIGHT:
         wifi_error_banner = (
-            '<div style="background:#eff6ff; border:2px solid #3b82f6; border-radius:8px;'
-            ' padding:12px 16px; margin-bottom:16px; color:#1e40af;">'
+            '<div class="banner" role="status">'
             + _rich("setup.banner.connecting") +
             "</div>"
             '<meta http-equiv="refresh" content="10;url=/setup">'
@@ -906,9 +1424,8 @@ def _build_setup_html(accept_language=None):
         else:
             advice = _rich("setup.banner.advice_neutral")
         wifi_error_banner = (
-            '<div style="background:#fef2f2; border:2px solid #ef4444; border-radius:8px;'
-            ' padding:12px 16px; margin-bottom:16px; color:#991b1b;">'
-            + _rich("setup.banner.error_lead", error=connect_error) + "<br>"
+            '<div class="banner banner--error" role="alert">'
+            + _rich("setup.banner.error_lead", error=_connect_error_text(connect_error)) + "<br>"
             + advice
             + _rich("setup.banner.error_tail") + "</div>"
         )
@@ -926,7 +1443,18 @@ def _build_setup_html(accept_language=None):
     else:
         subtitle_text = _page_text("setup.subtitle.default")
 
-    language_section = _language_section(accept_language) if PROVISIONING_MODE else ""
+    # The no-JS Refresh's own form (litclock-dev#908). Empty of fields on
+    # purpose: a GET carries everything in the URL, so it must never be the
+    # form holding the password. The session language rides on the server
+    # side (SESSION_LANGUAGE), so it needs no hidden field either.
+    rescan_form = (
+        '        <form id="rescan-form" method="get" action="/setup">'
+        '<input type="hidden" name="rescan" value="1"></form>\n'
+        if PROVISIONING_MODE
+        else ""
+    )
+    language_links = _language_links() if PROVISIONING_MODE else ""
+    language_field = _language_field() if PROVISIONING_MODE else ""
     wifi_section = ""
     if PROVISIONING_MODE:
         # A retry that echoes a hand-typed name also pre-selects the manual
@@ -943,7 +1471,9 @@ def _build_setup_html(accept_language=None):
         # placeholder. Same reasoning as the connect_error snapshot above.
         with _WIFI_CONNECT_LOCK:
             last_manual = WIFI_LAST_MANUAL_SSID
-        network_options, scan_was_empty = _wifi_network_options(select_manual=bool(last_manual))
+        network_options, scan_was_empty = _wifi_network_options(
+            select_manual=bool(last_manual), stale_ok=stale_scan_ok, fresh_after=rescan_after
+        )
         # Source the hotspot SSID from the runtime constant rather than
         # hardcoding "LitClock-Setup" — branded builds set this via the
         # --hotspot-ssid CLI flag, and the disambiguating cue ("Not the
@@ -971,23 +1501,24 @@ def _build_setup_html(accept_language=None):
         wifi_section = f"""
             <!-- WiFi Section -->
             <div class="section">
-                <div class="section-title">
-                    <span class="icon">{c['wifi_icon']}</span>
-                </div>
-                <p class="help-text" style="margin:0 0 14px 0; font-size:13px; color:#555;">
+                <p class="eyebrow">{c['wifi_icon']}</p>
+                <p class="help-text">
                     {wifi_help_html}
                 </p>
 
-                <label>{c['pick_label']}</label>
-                <div style="display:flex; gap:8px; margin-bottom:10px;">
+                <label for="wifi-ssid">{c['pick_label']}</label>
+                <div class="picker">
                     <select id="wifi-ssid" name="wifi_ssid" required
-                        onchange="onSsidChange()"
-                        style="flex:1; padding:12px; font-size:16px; border:2px solid #ddd; border-radius:8px;">
+                        onchange="onSsidChange()">
                         {network_options}
                     </select>
-                    <button type="button" class="btn btn-secondary"
-                        style="width:auto; margin-bottom:0; padding:12px 16px;"
-                        onclick="refreshNetworks()">{c['refresh']}</button>
+                    <!-- A real submit for #rescan-form (outside this form,
+                         so no password ever rides a GET): with JS off it
+                         reloads /setup?rescan=1, which rescans server-side
+                         (litclock-dev#908). With JS on, refreshNetworks()
+                         rescans in place and returns false to cancel it. -->
+                    <button type="submit" form="rescan-form" class="btn btn-secondary"
+                        onclick="return refreshNetworks()">{c['refresh']}</button>
                 </div>
 
                 <!-- Hidden-SSID path. A <details> rather than a JS-revealed
@@ -1009,20 +1540,21 @@ def _build_setup_html(accept_language=None):
                      instructions folded inside a disclosure the user has to
                      discover for themselves is how a hidden-network owner gets
                      stuck in a loop (/review, litclock-dev#580). -->
-                <details id="manual-ssid" style="margin-bottom:14px;"{manual_open}>
-                    <summary style="cursor:pointer; font-size:13px; color:#555;">
+                <details id="manual-ssid"{manual_open}>
+                    <summary>
                         {manual_summary}
                     </summary>
-                    <p class="help-text" style="margin:8px 0;">
+                    <p class="help-text">
                         {manual_help_html}
                     </p>
                     <input type="text" id="wifi-ssid-manual" name="{MANUAL_SSID_FIELD}"
+                        aria-label="{c['manual_placeholder']}"
                         placeholder="{c['manual_placeholder']}" autocomplete="off"
                         autocapitalize="none" autocorrect="off" spellcheck="false"
                         value="{manual_value}" maxlength="{SSID_MAX_BYTES}">
                 </details>
 
-                <label>{c['password_label']}</label>
+                <label for="wifi-password">{c['password_label']}</label>
                 <input type="password" id="wifi-password" name="wifi_password"
                     placeholder="{c['password_placeholder']}" autocomplete="off">
                 <p class="help-text">
@@ -1038,138 +1570,49 @@ def _build_setup_html(accept_language=None):
     placeholder_js = json.dumps(_wifi_placeholder_text())
     placeholder_empty_js = json.dumps(_wifi_placeholder_empty_text())
     manual_text_js = json.dumps(_manual_ssid_text())
+    # litclock-dev#532 T6: the rescan path's copy, in the page's language. The
+    # JS fills an option template as the server does — {strength} first and
+    # the SSID LAST, so a network name that reads like a slot is never filled
+    # again (the one-pass rule strings_catalog._fill keeps).
+    scanning_js = json.dumps(_catalog_get("setup.wifi.scanning"))
+    scan_failed_js = json.dumps(_catalog_get("setup.wifi.scan_failed"))
+    option_js = json.dumps(_catalog_get("setup.wifi.option"))
+    option_open_js = json.dumps(_catalog_get("setup.wifi.option_open"))
+    strength_js = json.dumps(
+        [
+            _catalog_get("setup.wifi.strength_strong"),
+            _catalog_get("setup.wifi.strength_medium"),
+            _catalog_get("setup.wifi.strength_weak"),
+        ]
+    )
 
     return f"""<!DOCTYPE html>
-<html>
+<html lang="{_page_language()}">
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta charset="UTF-8">
     <title>{c['title']}</title>
-    <style>
-        * {{
-            box-sizing: border-box;
-        }}
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            max-width: 500px;
-            margin: 0 auto;
-            padding: 20px;
-            background: #f5f5f5;
-            color: #333;
-        }}
-        .container {{
-            background: white;
-            padding: 25px;
-            border-radius: 12px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }}
-        h1 {{
-            font-size: 24px;
-            margin: 0 0 5px 0;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }}
-        .subtitle {{
-            color: #666;
-            font-size: 14px;
-            margin-bottom: 25px;
-        }}
-        .section {{
-            margin-bottom: 25px;
-            padding-bottom: 20px;
-            border-bottom: 1px solid #eee;
-        }}
-        .section:last-of-type {{
-            border-bottom: none;
-            margin-bottom: 15px;
-        }}
-        .section-title {{
-            font-size: 16px;
-            font-weight: 600;
-            margin-bottom: 12px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }}
-        .section-title .icon {{
-            font-size: 20px;
-        }}
-        label {{
-            display: block;
-            font-size: 14px;
-            color: #555;
-            margin-bottom: 6px;
-        }}
-        input[type="text"], input[type="number"], input[type="password"] {{
-            width: 100%;
-            padding: 12px;
-            font-size: 16px;
-            border: 2px solid #ddd;
-            border-radius: 8px;
-            margin-bottom: 10px;
-        }}
-        input:focus {{
-            border-color: #4CAF50;
-            outline: none;
-        }}
-        .btn {{
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            padding: 12px 20px;
-            font-size: 16px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            text-decoration: none;
-            transition: background 0.2s;
-        }}
-        .btn-primary {{
-            width: 100%;
-            background: #4CAF50;
-            color: white;
-            font-size: 18px;
-            padding: 15px;
-        }}
-        .btn-primary:hover {{
-            background: #45a049;
-        }}
-        .btn-secondary {{
-            background: #e3f2fd;
-            color: #1565c0;
-            width: 100%;
-            margin-bottom: 10px;
-        }}
-        .btn-secondary:hover {{
-            background: #bbdefb;
-        }}
-        .help-text {{
-            font-size: 12px;
-            color: #666;
-            margin-top: 5px;
-        }}
-    </style>
+    {_SETUP_HEAD_META}
+    {_setup_head_css()}
 </head>
 <body>
-    <div class="container">
-        <h1>{c['title']}</h1>
+    <main>
+{language_links}        <h1>{c['title']}</h1>
         <p class="subtitle">{subtitle_text}</p>
 
 {wifi_error_banner}
         <form id="setup-form" method="POST" action="/setup">
-{language_section}
+{language_field}
 {wifi_section}
             <!-- Submit -->
             <button type="submit" class="btn btn-primary" id="submit-btn">
                 {c['submit']}
             </button>
-            <p class="help-text" style="text-align:center; margin-top:12px;">
+            <p class="help-text help-text--after">
                 {c['submit_help']}
             </p>
         </form>
-    </div>
+{rescan_form}    </main>
 
     <script>
         var MANUAL_SSID_VALUE = {manual_value_js};
@@ -1282,7 +1725,13 @@ def _build_setup_html(accept_language=None):
         // link is exactly the link that drops: with no timeout a hung scan
         // leaves the picker reading "Scanning..." forever, inside a captive
         // portal WebView that often has no visible reload control.
-        var SCAN_TIMEOUT_MS = 20000;
+        //
+        // 30s, not 20s (litclock-dev#908): the server's own worst case is
+        // rescan (SCAN_RESCAN_TIMEOUT 10s) + a 2s settle + list
+        // (SCAN_LIST_TIMEOUT 15s) = 27s, so a 20s abort reported "Scan failed"
+        // on slow scans that were about to succeed — and the retry then queued
+        // on the lock behind the scan still running. test_setup_rescan pins it.
+        var SCAN_TIMEOUT_MS = 30000;
 
         // Keep the manual option selected across a Refresh if it was selected
         // before (litclock-dev#848): the rebuild resets the dropdown to its
@@ -1307,9 +1756,12 @@ def _build_setup_html(accept_language=None):
             return select.value === MANUAL_SSID_VALUE;
         }}
 
+        // Returns false so the Refresh button's no-JS fallback (a GET to
+        // /setup?rescan=1) does not ALSO fire; with no picker on the page it
+        // returns true and lets that server-side rescan happen instead.
         function refreshNetworks() {{
             var select = document.getElementById('wifi-ssid');
-            if (!select) return;
+            if (!select) return true;
             // Sampled twice on purpose. A scan runs 2-20s, the dropdown stays
             // live throughout, and a user who taps Refresh from the
             // placeholder and then picks "type it myself" and starts typing
@@ -1319,7 +1771,7 @@ def _build_setup_html(accept_language=None):
             // the manual selection if it held EITHER when the scan started or
             // when it finished.
             var wasManual = isManualSelected(select);
-            resetSsidOptions(select, 'Scanning...');
+            resetSsidOptions(select, {scanning_js});
             finishRebuild(select, wasManual);
 
             var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
@@ -1328,7 +1780,13 @@ def _build_setup_html(accept_language=None):
             }}, SCAN_TIMEOUT_MS);
 
             fetch('/scan-wifi', ctrl ? {{signal: ctrl.signal}} : undefined)
-                .then(function(r) {{ return r.json(); }})
+                // A failed scan is a 503 (litclock-dev#908 gap 1): route it to
+                // the "Scan failed" branch below, never into the networks
+                // handler, where its JSON body would read as a result.
+                .then(function(r) {{
+                    if (!r.ok) throw new Error('scan failed: ' + r.status);
+                    return r.json();
+                }})
                 .then(function(networks) {{
                     var keepManual = wasManual || isManualSelected(select);
                     if (networks.length === 0) {{
@@ -1348,9 +1806,13 @@ def _build_setup_html(accept_language=None):
                         networks.forEach(function(net) {{
                             var opt = document.createElement('option');
                             opt.value = net.ssid;
-                            var strength = net.signal >= 70 ? 'Strong' : net.signal >= 40 ? 'Medium' : 'Weak';
-                            var lock = (!net.security || net.security === '--') ? ' [Open]' : '';
-                            opt.textContent = net.ssid + ' (' + strength + lock + ')';
+                            var strengths = {strength_js};
+                            var strength = net.signal >= 70 ? strengths[0]
+                                : net.signal >= 40 ? strengths[1] : strengths[2];
+                            var open = !net.security || net.security === '--';
+                            opt.textContent = (open ? {option_open_js} : {option_js})
+                                .split('{{strength}}').join(strength)
+                                .split('{{ssid}}').join(net.ssid);
                             select.appendChild(opt);
                         }});
                         finishRebuild(select, keepManual);
@@ -1358,12 +1820,13 @@ def _build_setup_html(accept_language=None):
                 }})
                 .catch(function() {{
                     var keepManual = wasManual || isManualSelected(select);
-                    resetSsidOptions(select, 'Scan failed - tap Refresh');
+                    resetSsidOptions(select, {scan_failed_js});
                     finishRebuild(select, keepManual);
                 }})
                 .then(function() {{
                     clearTimeout(timer);
                 }});
+            return false;
         }}
 
         // Load-time pass (litclock-dev#848): the server always renders the
@@ -1385,150 +1848,64 @@ def _build_setup_html(accept_language=None):
 
 
 HTML_SUCCESS = """<!DOCTYPE html>
-<html>
+<html lang="{lang}">
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     {meta_refresh}<meta charset="UTF-8">
     <title>{heading}</title>
-    <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            max-width: 500px;
-            margin: 0 auto;
-            padding: 20px;
-            background: #f5f5f5;
-        }}
-        .container {{
-            background: white;
-            padding: 40px 30px;
-            border-radius: 12px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            text-align: center;
-        }}
-        .checkmark {{
-            width: 80px;
-            height: 80px;
-            background: #4CAF50;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 20px;
-            font-size: 40px;
-            color: white;
-        }}
-        h1 {{
-            color: #333;
-            font-size: 24px;
-            margin-bottom: 10px;
-        }}
-        p {{
-            color: #666;
-            line-height: 1.6;
-            margin-bottom: 20px;
-        }}
-        .summary {{
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 8px;
-            text-align: left;
-            font-size: 14px;
-        }}
-        .summary-item {{
-            display: flex;
-            justify-content: space-between;
-            padding: 8px 0;
-            border-bottom: 1px solid #eee;
-        }}
-        .summary-item:last-child {{
-            border-bottom: none;
-        }}
-        .summary-label {{
-            color: #666;
-        }}
-        .summary-value {{
-            font-weight: 500;
-        }}
-    </style>
+    {head_meta}
+    {style}
 </head>
 <body>
-    <div class="container">
-        <div class="checkmark">OK</div>
+    <main>
         <h1>{heading}</h1>
-        <p>{subtitle}</p>
+        <p class="subtitle">{subtitle}</p>
 
-        <div class="summary">
-            <div class="summary-item">
-                <span class="summary-label">WiFi</span>
-                <span class="summary-value">{wifi}</span>
+        <div class="rows">
+            <div class="row">
+                <span class="row__label">{wifi_label}</span>
+                <span class="row__value">{wifi}</span>
             </div>
         </div>
 
-        <p style="margin-top: 25px; font-size: 14px; color: #999;">
+        <p class="next-step">
             {footer}
         </p>
-    </div>
+    </main>
 </body>
 </html>
 """
 
 
 HTML_ERROR = """<!DOCTYPE html>
-<html>
+<html lang="{ERROR_LANG}">
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8">
     <title>{ERROR_TITLE_TEXT}</title>
-    <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            max-width: 500px;
-            margin: 40px auto;
-            padding: 20px;
-            background: #f5f5f5;
-        }}
-        .container {{
-            background: white;
-            padding: 30px;
-            border-radius: 12px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            text-align: center;
-        }}
-        h1 {{
-            color: #c62828;
-            font-size: 22px;
-        }}
-        p {{
-            color: #666;
-        }}
-        a {{
-            color: #1565c0;
-        }}
-        a.loading {{
-            pointer-events: none;
-            color: #999;
-        }}
-    </style>
+    {ERROR_HEAD}
 </head>
 <body>
-    <div class="container">
-        <h1>{ERROR_TITLE_TEXT}</h1>
-        <p>{error}</p>
-        <p><a href="/" id="retry-link">{ERROR_RETRY_TEXT}</a></p>
-    </div>
+    <main>
+        <hr class="rule-error">
+        <h1 class="h1--quiet">{ERROR_TITLE_TEXT}</h1>
+        <p class="subtitle">{error}</p>
+        <a href="/" id="retry-link" class="btn btn-primary">{ERROR_RETRY_TEXT}</a>
+    </main>
     <script>
-    (function() {{
+    (function() {
         var link = document.getElementById('retry-link');
-        if (link) {{
-            link.addEventListener('click', function() {{
+        if (link) {
+            link.addEventListener('click', function() {
                 link.textContent = {loading_js};
-                link.className = 'loading';
-                setTimeout(function() {{
+                link.classList.add('is-loading');
+                setTimeout(function() {
                     link.textContent = {retry_js};
-                    link.className = '';
-                }}, 10000);
-            }});
-        }}
-    }})();
+                    link.classList.remove('is-loading');
+                }, 10000);
+            });
+        }
+    })();
     </script>
 </body>
 </html>
@@ -1537,16 +1914,60 @@ HTML_ERROR = """<!DOCTYPE html>
 # and fills every field via .replace — never .format, so a translation
 # carrying stray braces can neither KeyError the render nor splice the
 # runtime error into the wrong field. The CSS braces in the template are
-# untouched by construction. The two inline-JS literals go through
+# untouched by construction — which is why the template's CSS and JS are
+# written with SINGLE braces: before litclock-dev#909 they were still doubled
+# from the .format era and shipped verbatim, so the page's styles and its
+# retry script were both dead. The two inline-JS literals go through
 # json.dumps so apostrophes/non-ASCII stay valid JS.
 _HTML_ERROR_TEMPLATE = HTML_ERROR
 del HTML_ERROR
 
 
-def _error_page(error):
+def _success_page(wifi_ssid, accept_language=None):
+    """The confirmation page a provisioning POST returns while the hotspot is
+    still up (see do_POST). Copy from the catalog (litclock-dev#532 T6), in
+    the session's language (RT3); the network name is escaped into the
+    subtitle by _rich."""
+    with _page(accept_language):
+        return _success_page_body(wifi_ssid)
+
+
+def _success_page_body(wifi_ssid):
+    return HTML_SUCCESS.format(
+        lang=_page_language(),
+        head_meta=_SETUP_HEAD_META,
+        style=_setup_head_css(),
+        wifi_label=_page_text("setup.success.wifi_label"),
+        wifi=html.escape(wifi_ssid),
+        heading=_page_text("setup.success.heading"),
+        subtitle=_rich("setup.success.subtitle", ssid=wifi_ssid),
+        meta_refresh='<meta http-equiv="refresh" content="15;url=/setup">\n    ',
+        # The owner's own network, named where they must switch back to it;
+        # _page_text escapes after filling, so the SSID cannot inject markup.
+        footer=_page_text("setup.success.footer", ssid=wifi_ssid),
+    )
+
+
+def _error_page(error, accept_language=None):
+    with _page(accept_language):
+        return _error_page_body(error)
+
+
+def _error_page_key(key, accept_language=None, /, **slots):
+    """An error page whose MESSAGE is a catalog key, resolved in the same
+    page scope as the rest of the page — a message translated before the
+    scope opened came out in the device language on a session-language page
+    (RT3 review)."""
+    with _page(accept_language):
+        return _error_page_body(_catalog_get(key, **slots))
+
+
+def _error_page_body(error):
     retry_text = _catalog_get("setup.error.retry")
     return (
-        _HTML_ERROR_TEMPLATE.replace("{ERROR_TITLE_TEXT}", _page_text("setup.error.title"))
+        _HTML_ERROR_TEMPLATE.replace("{ERROR_HEAD}", _SETUP_HEAD_META + "\n    " + _setup_head_css())
+        .replace("{ERROR_LANG}", _page_language())
+        .replace("{ERROR_TITLE_TEXT}", _page_text("setup.error.title"))
         .replace("{ERROR_RETRY_TEXT}", html.escape(retry_text, quote=True))
         .replace("{loading_js}", json.dumps(_catalog_get("setup.error.loading")))
         .replace("{retry_js}", json.dumps(retry_text))
@@ -1698,6 +2119,24 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content.encode("utf-8"))
 
+    def send_font(self, name):
+        """Serve one allowlisted woff2 (litclock-dev#909). Unlike the pages,
+        a font is static and identical every boot, so it may be cached —
+        the no-store rule above is about provisioning STATE, and a re-fetch
+        per page would cost every render ~110 KB over the hotspot."""
+        try:
+            data = (SETUP_FONT_DIR / name).read_bytes()
+        except OSError:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-type", "font/woff2")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(data)
+
     def send_json(self, data, status=200):
         self.send_response(status)
         self.send_header("Content-type", "application/json")
@@ -1799,7 +2238,8 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                 self._redirect_cna_probe()
                 _probe_log("cna-302" + suffix, 302, 0)
             else:
-                body = _build_cna_bridge_html()
+                with _page(self.headers.get("Accept-Language")):
+                    body = _build_cna_bridge_html()
                 self.send_html(body)
                 _probe_log("cna-bridge" + suffix, 200, len(body.encode()))
 
@@ -1843,14 +2283,21 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         # would otherwise fall through to _build_setup_html() and re-trigger
         # the exact iOS CNA bug we're trying to fix.
         if PROVISIONING_MODE:
-            is_app_path = parsed.path in ("/", "/setup", "/scan-wifi", CNA_PATH)
+            is_app_path = parsed.path in ("/", "/setup", "/scan-wifi", CNA_PATH) or _font_name(parsed.path)
             is_probe_host = host.split(":")[0].lower() in CAPTIVE_PORTAL_HOSTS
             if is_probe_host or not is_app_path:
                 if self._handle_captive_portal_probe(parsed.path, host):
                     return
 
         if parsed.path == "/" or parsed.path == "/setup":
-            self.send_html(_build_setup_html(self.headers.get("Accept-Language")))
+            switched = _apply_language_link(parsed.query, self.headers.get("Accept-Language"))
+            self.send_html(
+                _build_setup_html(
+                    self.headers.get("Accept-Language"),
+                    stale_scan_ok=switched,
+                    rescan_after=_rescan_request(parsed.query),
+                )
+            )
 
         elif parsed.path == CNA_PATH and PROVISIONING_MODE:
             # Target of the detection-probe 302 (and the WISPr LoginURL):
@@ -1859,33 +2306,58 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
             # Provisioning-only — outside provisioning there is no
             # hotspot and litclock.setup doesn't resolve, so the page
             # would be a dead end; it 404s like any other unknown path.
-            self.send_html(_build_cna_bridge_html())
+            with _page(self.headers.get("Accept-Language")):
+                self.send_html(_build_cna_bridge_html())
+
+        elif _font_name(parsed.path):
+            self.send_font(_font_name(parsed.path))
 
         elif parsed.path == "/scan-wifi":
-            global _WIFI_SCAN_NETWORKS, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS
+            global _WIFI_SCAN_NETWORKS, _WIFI_SCAN_TIME, _WIFI_SCAN_SSIDS, _WIFI_SCAN_LAST_EMPTY
+            global _WIFI_SCAN_ATTEMPT_TIME, _WIFI_SCAN_LAST_FAILED
             import time
 
+            # Stamped BEFORE the lock: a scan that finishes while this request
+            # waits is newer than the Refresh tap, so it is the answer — a
+            # second back-to-back scan would push the page past its own 30s
+            # abort and read as "Scan failed" (litclock-dev#908 review).
+            asked = time.monotonic()
             # Serialize scans — multiple phones hitting /scan-wifi concurrently
             # would otherwise each trigger their own nmcli rescan, fighting
             # over the radio and taking much longer than a single rescan.
             with _SCAN_CACHE_LOCK:
+                if _WIFI_SCAN_ATTEMPT_TIME >= asked:
+                    networks = [] if _WIFI_SCAN_LAST_EMPTY else list(_WIFI_SCAN_NETWORKS or [])
+                    self.send_json(networks)
+                    return
                 try:
                     from wifi_provision import scan_wifi_networks
 
                     networks = scan_wifi_networks()
-                except Exception:
-                    networks = []
+                except Exception as exc:
+                    # 503, not an empty list (litclock-dev#908 gap 1): the
+                    # page's Refresh shows "Scan failed - tap Refresh" for a
+                    # non-OK response and "No networks found" only for a real
+                    # []. Scan state is left untouched, as in
+                    # _wifi_network_options.
+                    print(f"WiFi scan failed: {exc}", flush=True)
+                    _WIFI_SCAN_LAST_FAILED = True
+                    self.send_json({"error": "scan_failed"}, status=503)
+                    return
                 # Filter before BOTH caching and send_json — the client rebuilds
                 # the dropdown from this JSON, and the cache feeds the
                 # server-rendered dropdown. Leaving either unfiltered re-exposes
                 # the clock's own hotspot SSID.
                 networks = _filter_own_hotspot(networks)
+                _WIFI_SCAN_ATTEMPT_TIME = time.monotonic()
+                _WIFI_SCAN_LAST_FAILED = False
                 # An empty rescan updates NOTHING — same policy as
                 # _wifi_network_options: no caching of empties (next call
                 # retries), and _WIFI_SCAN_SSIDS keeps the evidence an
                 # earlier scan gathered (litclock-dev#605 item 7 — see the
                 # wifi_hidden decision in do_POST for why stale visibility
                 # evidence beats none).
+                _WIFI_SCAN_LAST_EMPTY = not networks
                 if networks:
                     _WIFI_SCAN_NETWORKS = networks
                     # UNION, not replace — accumulate seen SSIDs so a flickered
@@ -1966,13 +2438,16 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
             wifi_ssid = wifi_ssid_manual
             wifi_typed = True
 
+        accept_language = self.headers.get("Accept-Language")
+        if PROVISIONING_MODE:
+            # The session follows the submit BEFORE anything can answer with
+            # a page, so every page this POST returns — a validation error
+            # included — is in the language the reader chose (RT3 review).
+            posted_language = _adopt_posted_language(params, accept_language)
+
         if PROVISIONING_MODE and not wifi_ssid:
-            error = (
-                _catalog_get("setup.error.type_or_pick")
-                if wifi_typed
-                else _catalog_get("setup.error.pick_network")
-            )
-            self.send_html(_error_page(error))
+            key = "setup.error.type_or_pick" if wifi_typed else "setup.error.pick_network"
+            self.send_html(_error_page_key(key, accept_language))
             return
 
         # litclock-dev#532: persist the device language BEFORE the connect
@@ -1983,16 +2458,13 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         # Best-effort by contract: a language that doesn't persist costs a
         # Settings visit later; a join that fails costs the whole setup.
         if PROVISIONING_MODE:
-            submitted_language = params.get("litclock_language", [""])[0].strip()
             import config as _config  # noqa: PLC0415
-            import strings_catalog  # noqa: PLC0415
 
-            if submitted_language not in strings_catalog.active_codes():
-                submitted_language = _default_language(self.headers.get("Accept-Language"))
             try:
-                _config.atomic_update({"LITCLOCK_LANGUAGE": submitted_language}, ENV_FILE)
-                global SUBMITTED_LANGUAGE
-                SUBMITTED_LANGUAGE = submitted_language
+                # The local, not the shared global: another phone's link
+                # landing between adopt and here must not decide what THIS
+                # submit saves (RT3 round-2 review).
+                _config.atomic_update({"LITCLOCK_LANGUAGE": posted_language}, ENV_FILE)
             except (ValueError, OSError) as exc:
                 print(f"Warning: could not persist LITCLOCK_LANGUAGE: {exc}")
 
@@ -2001,7 +2473,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         # forges lines in a journal that ships Storage=persistent and gets
         # collected into support bundles.
         if PROVISIONING_MODE and SSID_FORBIDDEN.intersection(wifi_ssid):
-            self.send_html(_error_page(_catalog_get("setup.error.bad_ssid_chars")))
+            self.send_html(_error_page_key("setup.error.bad_ssid_chars", accept_language))
             return
 
         # 802.11 caps the SSID at 32 bytes. Rejected here so an over-long
@@ -2009,7 +2481,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         # "bytes", not "characters" — see SSID_MAX_BYTES.
         if PROVISIONING_MODE and len(wifi_ssid.encode("utf-8")) > SSID_MAX_BYTES:
             self.send_html(
-                _error_page(_catalog_get("setup.error.ssid_too_long", n=SSID_MAX_BYTES))
+                _error_page_key("setup.error.ssid_too_long", accept_language, n=SSID_MAX_BYTES)
             )
             return
 
@@ -2027,7 +2499,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         # text box; "litclock-setup" must not slip through (/review, litclock-dev#580).
         if PROVISIONING_MODE and HOTSPOT_SSID and wifi_ssid.casefold() == HOTSPOT_SSID.casefold():
             self.send_html(
-                _error_page(_catalog_get("setup.error.own_network"))
+                _error_page_key("setup.error.own_network", accept_language)
             )
             return
 
@@ -2067,21 +2539,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
         # validations above return early on every empty/invalid SSID, so a
         # POST reaching here is a provisioning join. (The retired
         # normal-mode arm rendered "Setup Complete!" here.)
-        wifi_display = wifi_ssid
-        heading = "Settings Saved!"
-        subtitle = f"Connecting to <strong>{html.escape(wifi_ssid)}</strong>..."
-        meta_refresh = '<meta http-equiv="refresh" content="15;url=/setup">\n    '
-        footer = "This page will automatically check the connection status."
-
-        self.send_html(
-            HTML_SUCCESS.format(
-                wifi=html.escape(wifi_display),
-                heading=heading,
-                subtitle=subtitle,
-                meta_refresh=meta_refresh,
-                footer=footer,
-            )
-        )
+        self.send_html(_success_page(wifi_ssid, accept_language))
 
         # Connect to WiFi (provisioning only) + resolve location from IP +
         # signal completion + teardown. Runs in a background thread AFTER the
@@ -2175,10 +2633,13 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
                         # clears IN_FLIGHT and does NOT SIGTERM. firstboot.sh
                         # will time out; on next reboot it re-enters AP mode
                         # for re-provisioning. User can power-cycle to recover.
-                        WIFI_CONNECT_ERROR = "Setup completed but signal file write failed"
+                        WIFI_CONNECT_ERROR = _ServerFailure("setup.cause.signal_failed")
                         print("Warning: signal_completion failed; setup server staying up, no SIGTERM scheduled")
                 except Exception as e:
-                    WIFI_CONNECT_ERROR = f"Setup error: {e}"
+                    # str(e), never the exception: a held exception keeps its
+                    # traceback, whose frames hold the submitted WiFi password
+                    # for as long as the error is on show (litclock-dev#918 review).
+                    WIFI_CONNECT_ERROR = _ServerFailure("setup.cause.setup_error", detail=str(e))
                     print(f"Post-setup error: {e}")
                     try:
                         from wifi_provision import create_hotspot as _create_hp
@@ -2295,6 +2756,7 @@ def _restore_hotspot(create_hotspot_fn, failure_class=None):
             HOTSPOT_PASSWORD,
             HOTSPOT_GATEWAY_IP,
             retry_reason=retry_reason,
+            lang=_default_language(None),  # the session's (RT3)
         )
         logging.info("E-ink refreshed with retry instructions")
     except (ImportError, OSError, RuntimeError):
@@ -2310,9 +2772,18 @@ def _show_connecting_splash(ssid):
     above — a dev-machine import miss or an SPI hiccup must never abort the
     connect flow that's already underway."""
     try:
-        from eink_display import display_status
+        from eink_display import _splash_catalog, display_status
 
-        display_status(f"Connecting to {ssid}…", "This can take up to a minute.")
+        # litclock-dev#532 T6: one resolution, so title and message are one
+        # language — the device's, which the WiFi submit just saved (R13).
+        # The painter's own helper, so a catalog that will not even load
+        # shows key names here too instead of escaping this narrow except
+        # into the connect flow. Explicitly the session's language (RT3).
+        catalog = _splash_catalog(_default_language(None))
+        display_status(
+            catalog.get("firstboot.splash.connecting.title", ssid=ssid),
+            catalog.get("firstboot.splash.connecting.message"),
+        )
         logging.info("E-ink refreshed with connecting splash")
     except (ImportError, OSError, RuntimeError):
         logging.warning("Could not refresh e-ink with connecting state", exc_info=True)

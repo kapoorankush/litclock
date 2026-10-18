@@ -308,6 +308,56 @@ class TestValidatorMatchesTheGate:
         (es_dir / "strings.json").write_text(json.dumps(conforming, ensure_ascii=False), encoding="utf-8")
         assert _validate.validate("es", None) == []
 
+    def _unregistered_es(self, tmp_path: Path, overrides: dict) -> None:
+        """An es bundle in the TREE that languages.json does not list."""
+        es = self._write_es(tmp_path, overrides)
+        reg = json.loads((tmp_path / "languages.json").read_text(encoding="utf-8"))
+        del reg["languages"]["es"]
+        (tmp_path / "languages.json").write_text(json.dumps(reg), encoding="utf-8")
+        (tmp_path / "languages" / "es").mkdir()
+        es.rename(tmp_path / "languages" / "es" / "strings.json")
+
+    def test_all_finds_an_unregistered_bundle_and_fails_it(self, tmp_path, capsys):
+        """T8's verify line: an unregistered broken es bundle fails CI. The
+        registry-driven gate (catalog_lint.registry_errors) never sees it."""
+        self._unregistered_es(tmp_path, {"setup.banner.error_lead": "No se pudo <b>conectar</b>. {error}"})
+        assert catalog_lint.registry_errors(tmp_path, source_root=REPO_ROOT) == []  # the gap T8 closes
+        findings = _validate.validate_all()
+        assert any(c == "es" and f.startswith("setup.banner.error_lead") and "markup" in f for c, f in findings)
+        assert _validate.main(["--all"]) == 1
+        assert "es: setup.banner.error_lead" in capsys.readouterr().out
+
+    def test_all_passes_a_conforming_unregistered_bundle(self, tmp_path):
+        self._unregistered_es(tmp_path, {"status.relative.minutes.one": "hace un minuto"})
+        assert set(_validate.bundle_files()) == {"en", "es"}
+        assert [f for _c, f in _validate.validate_all() if not _validate._is_note(f)] == []
+
+    def test_all_fails_closed_on_a_tree_with_no_english(self, tmp_path):
+        (tmp_path / "languages").mkdir()
+        assert _validate.validate_all() and _validate.main(["--all"]) == 1
+
+    def test_a_directory_named_note_cannot_hide_its_failures(self, tmp_path, capsys):
+        """Claude + Codex (litclock-dev#926 review): `NOTE: <finding>` read as a note,
+        so a bundle under languages/NOTE/ passed whatever it held."""
+        self._unregistered_es(tmp_path, {})
+        (tmp_path / "languages" / "es").rename(tmp_path / "languages" / "NOTE")
+        (tmp_path / "languages" / "NOTE" / "strings.json").write_text("[]", encoding="utf-8")
+        assert _validate.main(["--all"]) == 1
+        assert "NOTE: languages/NOTE/ is not a language code" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("name", ["pt_BR", "ES", "es "])
+    def test_a_directory_that_is_not_a_language_code_fails(self, tmp_path, name):
+        self._unregistered_es(tmp_path, {"status.relative.minutes.one": "hace un minuto"})
+        (tmp_path / "languages" / "es").rename(tmp_path / "languages" / name)
+        findings = [f for c, f in _validate.validate_all() if c == name]
+        assert findings and "is not a language code" in findings[0]
+
+    @pytest.mark.parametrize("argv", [[], ["es", "--all"], ["--all", "--file", "x.json"]])
+    def test_all_and_a_code_are_exclusive(self, argv):
+        with pytest.raises(SystemExit) as exc:
+            _validate.main(argv)
+        assert exc.value.code == 2
+
     def test_bom_and_non_object_root(self, tmp_path):
         es = self._write_es(tmp_path, {})
         # A BOM must be REPORTED (CI reads plain utf-8 and would reject it),
@@ -320,3 +370,74 @@ class TestValidatorMatchesTheGate:
         es.write_text("[]", encoding="utf-8")
         out = _validate.validate("es", str(es))
         assert out and "must be a JSON object" in out[0]
+
+
+_ROUND_TRIP_HARNESS = r'''
+import fs from "fs";
+const html = fs.readFileSync(process.argv[2], "utf8");
+const DATA = JSON.parse(html.match(/const DATA = (\{.*?\});\nconst values/s)[1]);
+const jsSrc = html.slice(html.indexOf("const TOKEN_RE"), html.indexOf("function refresh"));
+const {importBundle, exportBundle} = new Function("DATA", jsSrc + "\nreturn {importBundle, exportBundle};")(DATA);
+const values = {}, extra = {};
+importBundle(JSON.parse(fs.readFileSync(process.argv[3], "utf8")), values, extra);
+values["setup.page.title"] = "Configuración";  // an edit in between
+process.stdout.write(JSON.stringify(exportBundle("es", values, extra)));
+'''
+
+
+def test_the_tool_keeps_extra_farewell_lines_on_a_round_trip(tmp_path):
+    """litclock-dev#923 review: a translator's sixth and seventh farewell lines have no
+    row in the tool (English has five); import then export must keep them,
+    and must still drop keys that are genuinely unknown."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    bundle = {"shutdown.farewell.reboot.1": "«uno»", "shutdown.farewell.reboot.6": "«seis»",
+              "shutdown.farewell.poweroff.7": "«siete»", "not.a.real.key": "x"}  # fmt: skip
+    (tmp_path / "in.json").write_text(json.dumps(bundle, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "h.mjs").write_text(_ROUND_TRIP_HARNESS, encoding="utf-8")
+    html = REPO_ROOT / "translations" / "tool" / "index.html"
+    result = subprocess.run(
+        [node, str(tmp_path / "h.mjs"), str(html), str(tmp_path / "in.json")],
+        capture_output=True, text=True, timeout=30,
+    )  # fmt: skip
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    assert out["shutdown.farewell.reboot.1"] == "«uno»"
+    assert out["shutdown.farewell.reboot.6"] == "«seis»" and out["shutdown.farewell.poweroff.7"] == "«siete»"
+    assert out["setup.page.title"] == "Configuración"
+    assert "not.a.real.key" not in out
+
+
+class TestEveryBundleInTheTree:
+    """The CI gate (litclock-dev#532 T8): every ``languages/*/strings.json``
+    in the checkout, registered or not, passes the validator — so a bundle
+    cannot reach master unchecked by simply not being listed yet."""
+
+    def test_every_bundle_passes(self):
+        findings = _validate.validate_all()
+        failures = [f"{c}: {f}" for c, f in findings if not _validate._is_note(f)]
+        assert failures == [], "\n".join(failures)
+        # The font check is part of the gate here: a skipped one is a NOTE to
+        # a volunteer, but CI has fontTools (requirements-dev.txt) and must run it.
+        assert not [f for _c, f in findings if "font check skipped" in f], findings
+        assert _validate.main(["--all"]) == 0  # the hand-run form agrees
+
+    def test_the_tree_scan_includes_english(self):
+        assert "en" in _validate.bundle_files()
+
+    def test_output_names_no_private_issue(self, tmp_path):
+        """Volunteers outside this repository read the validator's output and
+        the kit's README: neither may point at an issue they cannot open."""
+        import re
+
+        readme = (REPO_ROOT / "translations" / "README.md").read_text(encoding="utf-8")
+        assert not re.findall(r"dev#|#\d{2,}|issue \d{2,}", readme)
+        ru = tmp_path / "ru.json"
+        ru.write_text('{"clock.title": "Часы"}', encoding="utf-8")
+        findings = _validate.validate("ru", str(ru))
+        assert any("plural forms" in f for f in findings), findings  # the NOTE that used to name one
+        assert not [f for f in findings if "dev#" in f], [f for f in findings if "dev#" in f]

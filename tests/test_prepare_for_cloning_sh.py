@@ -2282,6 +2282,99 @@ echo "REACHED_BANNER"
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
 
 
+class TestClonesInheritTheMastersRuntimeRenderTier:
+    """A clone keeps the master's runtime-render tier (owner decision 2026-10-14).
+
+    Every card cut from this flow used to be seeded `LITCLOCK_RUNTIME_RENDER=false`,
+    so a master already rendering text produced clones that painted PNGs until
+    each recipient's first weekly update tick migrated it. Now the master's
+    effective value carries over, while every OWNER key is still wiped. A master
+    on images still yields `false` clones, which Stage B migrates as before.
+
+    EXECUTED: the shipped `DEFAULTS=` span (with its `_ENV_OWNER_KEYS`
+    derivation) runs against a real env.sh in a temp INSTALL_DIR; the real
+    `atomic_write_env_sh` writes it; then the REAL end-of-run credential gate
+    re-reads the result, so a carried-over `true` cannot trip the gate either.
+    """
+
+    def _prepare(self, tmp_path, old_env, *, load_reader=True):
+        install = tmp_path / "litclock"
+        install.mkdir()
+        if old_env is not None:
+            (install / "env.sh").write_text(old_env)
+        span = _extract_defaults_and_owner_keys()
+        assert "env_sh_current_runtime_render" in span, "the clone flow no longer reads the master's tier"
+        drop = "" if load_reader else "unset -f env_sh_current_runtime_render\n"
+        # The span opens with `. state.sh`; the reader is dropped AFTER that.
+        state_line, rest = span.split("\n", 1)
+        script = (
+            f"{state_line}\n{drop}INSTALL_DIR={shlex.quote(str(install))}\n{rest}\n"
+            'atomic_write_env_sh "$INSTALL_DIR/env.sh" "$DEFAULTS" || exit 9\n'
+        )
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, f"rc={r.returncode}\n{r.stdout}{r.stderr}"
+        return r, (install / "env.sh").read_text()
+
+    def test_a_text_master_yields_text_clones_with_owner_data_wiped(self, tmp_path):
+        from tests.test_first_boot_flow import env_sh_defaults
+
+        master = env_sh_defaults("", "true")
+        for key, value in (("WEATHER_LOCATION_NAME", "'Austin, Texas'"), ("WEATHER_LATITUDE", "30.27")):
+            master = master.replace(f"export {key}=\n", f"export {key}={value}\n")
+        assert "Austin" in master, "fixture did not plant owner data"
+        _, written = self._prepare(tmp_path, master)
+        assert written == env_sh_defaults("", "true"), f"clone env.sh:\n{written}"
+
+    def test_the_credential_gate_lets_a_text_clone_through(self, tmp_path):
+        from tests.test_first_boot_flow import env_sh_defaults
+
+        _, written = self._prepare(tmp_path, env_sh_defaults("", "true"))
+        assert "export LITCLOCK_RUNTIME_RENDER=true\n" in written
+        gate_dir = tmp_path / "gate"
+        gate_dir.mkdir()
+        r = _run_env_gate(gate_dir, env_sh=written)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "REACHED_BANNER" in r.stdout, "the tier is not owner data and must not fail the gate"
+
+    def test_an_image_master_yields_image_clones(self, tmp_path):
+        from tests.test_first_boot_flow import env_sh_defaults
+
+        _, written = self._prepare(tmp_path, env_sh_defaults("", "false"))
+        assert written == env_sh_defaults("", "false")
+
+    def test_a_bare_true_is_not_inherited(self, tmp_path):
+        """A bare assignment never reached the master's painter, so the master
+        was on images; its clones must be too."""
+        from tests.test_first_boot_flow import env_sh_defaults
+
+        _, written = self._prepare(tmp_path, "LITCLOCK_RUNTIME_RENDER=true\n")
+        assert written == env_sh_defaults("", "false")
+
+    def test_no_env_sh_seeds_false(self, tmp_path):
+        from tests.test_first_boot_flow import env_sh_defaults
+
+        _, written = self._prepare(tmp_path, None)
+        assert written == env_sh_defaults("", "false")
+
+    def test_an_older_state_sh_without_the_reader_seeds_false_silently(self, tmp_path):
+        from tests.test_first_boot_flow import env_sh_defaults
+
+        r, written = self._prepare(tmp_path, env_sh_defaults("", "true"), load_reader=False)
+        assert written == env_sh_defaults("", "false")
+        assert "not found" not in r.stderr and "not true/false" not in r.stderr, r.stderr
+
+    def test_the_tier_is_read_after_the_writers_are_stopped(self):
+        """PR litclock-dev#929 review (both reviewers): read before Step 1 and a Stage B
+        flip committed in between is overwritten with the stale `false`, so
+        every clone of a master that had just migrated starts on PNGs. The
+        lifted-line tests above cannot see the ordering; this pins it."""
+        body = PREPARE_SH.read_text()
+        read = re.search(r"^DEFAULTS=.*env_sh_current_runtime_render", body, re.M).start()
+        for unit in ("litclock-control.service", "litclock-update.service", "litclock-update.timer"):
+            stop = body.index(f"systemctl stop {unit}")
+            assert stop < read, f"prepare-for-cloning.sh reads the tier before stopping {unit}"
+
+
 class TestEnvCredentialGate:
     """litclock-dev#821 — a bad env.sh must not reach the success banner.
 

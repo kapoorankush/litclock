@@ -61,13 +61,13 @@ timezonefinder==8.3.0
     # via -r requirements.in
 timezonefinder-data==1.2026.3
     # via timezonefinder
-urllib3==2.7.0
+urllib3==2.8.0
     # via
     #   -r requirements.in
     #   requests
 waitress==3.0.2
     # via -r requirements.in
-werkzeug==3.1.8
+werkzeug==3.1.9
     # via flask
 
 # The following packages are considered to be unsafe in a requirements file:

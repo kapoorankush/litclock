@@ -229,9 +229,11 @@ class TestBucketEntriesParity:
             "0000x|zero|second|T|A|NO\n",
             encoding="utf-8",
         )
-        monkeypatch.setattr(quote_corpus, "_CORPUS_PATH", csv)
         quote_corpus.reset_cache()
-        entries = quote_corpus.bucket_entries("000x")  # time[:2]+time[3:5] of "0000x"
+        # By explicit path: as the DEVICE corpus a file of nothing but
+        # malformed times is unavailable (litclock-dev#532 R9); the walk's
+        # idx semantics are what this pins.
+        entries = quote_corpus.bucket_entries("000x", csv)  # time[:2]+time[3:5] of "0000x"
         assert [e["idx"] for e in entries] == [0, 1]
 
     def test_noncontiguous_key_resets_counter_and_lookup_is_last_wins(self, tmp_path, monkeypatch):
@@ -313,10 +315,14 @@ class TestCacheInvalidation:
         csv = tmp_path / "corpus.csv"
         monkeypatch.setattr(quote_corpus, "_CORPUS_PATH", csv)
         quote_corpus.reset_cache()
-        assert quote_corpus.bucket_entries("0000") == ()
+        # litclock-dev#532 R9: the DEVICE corpus being absent is a failure the
+        # painter must hear about, not an empty pool that reads as a gap.
+        with pytest.raises(quote_corpus.CorpusUnavailable):
+            quote_corpus.bucket_entries("0000")
         assert quote_corpus.lookup_by_filename("quote_0000_0.png") is None
         self._write(csv, "born late")
         assert quote_corpus.lookup_by_filename("quote_0000_0.png")["quote"] == "born late"
+        assert [e["quote_raw"] for e in quote_corpus.bucket_entries("0000")] == ["born late"]
 
     def test_bucket_entries_returns_immutable_container(self, tmp_path, monkeypatch):
         """The cached bucket cannot be reordered/extended by callers — a
@@ -455,6 +461,15 @@ def _author(hhmm="0000"):
     return quote_corpus.bucket_entries(hhmm)[0]["author"]
 
 
+def _assert_unavailable():
+    """litclock-dev#532 R9: the device corpus is refused AND the refusal
+    reaches the row selection the painter uses — never English rows."""
+    with pytest.raises(quote_corpus.CorpusUnavailable):
+        quote_corpus.corpus_path()
+    with pytest.raises(quote_corpus.CorpusUnavailable):
+        quote_corpus.bucket_entries("0000")
+
+
 class TestCorpusFollowsTheActiveLanguage:
     def test_default_is_the_english_registry_corpus(self, two_language_registry):
         assert quote_corpus.corpus_path() == two_language_registry["en"]
@@ -494,9 +509,11 @@ class TestCorpusFollowsTheActiveLanguage:
         monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
         assert quote_corpus.corpus_path() == two_language_registry["en"]
 
-    def test_a_registry_corpus_missing_on_disk_falls_back_to_english_with_one_warning(
+    def test_a_registry_corpus_missing_on_disk_is_unavailable_never_english_with_one_warning(
         self, two_language_registry, monkeypatch, caplog
     ):
+        """litclock-dev#532 R9: this used to fall back to the ENGLISH corpus,
+        painting English quotes under a non-English masthead."""
         import logging
 
         _rewrite_registry(
@@ -505,18 +522,72 @@ class TestCorpusFollowsTheActiveLanguage:
         )
         monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
         with caplog.at_level(logging.WARNING, logger="strings_catalog"):
-            assert quote_corpus.corpus_path() == two_language_registry["en"]
-            assert _author() == "Author EN"
-            quote_corpus.corpus_path()
+            _assert_unavailable()
+            _assert_unavailable()
         hits = [r for r in caplog.records if "corpora/gone.csv" in r.getMessage()]
         assert len(hits) == 1, "the missing-corpus warning must fire once, not per lookup"
 
-    def test_an_empty_corpus_does_not_shadow_english(self, two_language_registry, monkeypatch):
-        """litclock-dev#874 review: existence alone let a zero-byte translation win over a
-        healthy English corpus and paint nothing."""
+    def test_an_empty_corpus_is_unavailable_not_english(self, two_language_registry, monkeypatch):
+        """litclock-dev#874 review: existence alone let a zero-byte translation win and
+        paint nothing; R9: refusing it must not hand the minute to English."""
         two_language_registry["xx"].write_text("", encoding="utf-8")
         monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
-        assert quote_corpus.corpus_path() == two_language_registry["en"]
+        _assert_unavailable()
+
+    def test_a_corpus_of_junk_lines_is_unavailable_not_a_gap(self, two_language_registry, monkeypatch):
+        """R9 'unparseable': a non-empty file with no five-field row would
+        otherwise read as an uncovered gap every minute, and the owner would
+        never be told the corpus is broken."""
+        two_language_registry["xx"].write_text("not|a|row\njunk\n", encoding="utf-8")
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        assert quote_corpus.corpus_path() == two_language_registry["xx"]
+        with pytest.raises(quote_corpus.CorpusUnavailable):
+            quote_corpus.bucket_entries("0000")
+
+    @pytest.mark.parametrize(
+        "body",
+        ["time|timestring|quote|title|author\n", "0:00|midnight|q|T|A\n", "24:00|x|q|T|A\n"],
+        ids=["header-only", "unpadded", "hour-24"],
+    )
+    def test_rows_that_name_no_real_minute_are_unavailable(self, two_language_registry, monkeypatch, body):
+        """Review: the parser keys any time field, so a header row or unpadded
+        times built an index of keys no minute ever asks for — every minute a
+        gap, nobody told."""
+        two_language_registry["xx"].write_text(body, encoding="utf-8")
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        with pytest.raises(quote_corpus.CorpusUnavailable):
+            quote_corpus.bucket_entries("0000")
+
+    @pytest.mark.parametrize("text", ["{not json", '{"languages": ["en", "xx"]}'], ids=["unparseable", "list"])
+    def test_a_damaged_registry_never_hands_a_non_english_device_the_english_corpus(
+        self, two_language_registry, monkeypatch, text
+    ):
+        import strings_catalog
+
+        (two_language_registry["root"] / "languages.json").write_text(text, encoding="utf-8")
+        strings_catalog.reset_cache()
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+        _assert_unavailable()
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "en")  # control: English keeps its shipped default
+        assert quote_corpus.corpus_path() == quote_corpus._DEFAULT_CORPUS_PATH
+
+    def test_the_same_junk_file_asked_about_by_path_answers_empty(self, two_language_registry):
+        """Tooling and tests name a file explicitly; only the DEVICE corpus
+        raises (the control for the test above)."""
+        two_language_registry["xx"].write_text("junk\n", encoding="utf-8")
+        assert quote_corpus.bucket_entries("0000", two_language_registry["xx"]) == ()
+
+    def test_the_fleet_default_still_reads_its_shipped_corpus_when_its_registry_entry_is_unusable(
+        self, two_language_registry, monkeypatch
+    ):
+        """The English rung is the file the registry names for English anyway,
+        so it is not a borrowed language — the control for the refusals here."""
+        shipped = two_language_registry["root"] / "shipped.csv"
+        _one_row(shipped, "Author SHIPPED")
+        monkeypatch.setattr(quote_corpus, "_DEFAULT_CORPUS_PATH", shipped)
+        _rewrite_registry(two_language_registry, {"en": _lang_entry("en", "corpora/gone-en.csv")})
+        assert quote_corpus.corpus_path() == shipped
+        assert _author() == "Author SHIPPED"
 
     @pytest.mark.parametrize("rel", ["../outside.csv", "/etc/passwd"])
     def test_a_corpus_path_outside_the_checkout_is_refused(self, two_language_registry, monkeypatch, caplog, rel):
@@ -532,14 +603,15 @@ class TestCorpusFollowsTheActiveLanguage:
         )
         monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
         with caplog.at_level(logging.WARNING, logger="strings_catalog"):
-            assert quote_corpus.corpus_path() == two_language_registry["en"]
+            _assert_unavailable()
         assert any("outside the checkout" in r.getMessage() for r in caplog.records)
 
     def test_a_symlink_loop_is_unusable_not_fatal(self, two_language_registry, monkeypatch):
         """litclock-dev#874 red team: resolve() raises RuntimeError on a loop, which the
         first guard (OSError only) let escape — and the runtime tier's broad
         except would then have dropped to PNGs every minute instead of
-        falling through to English."""
+        being refused. (Refused since litclock-dev#532 R9 means unavailable,
+        not English.)"""
         loop = two_language_registry["root"] / "corpora" / "loop.csv"
         loop.symlink_to(loop)
         _rewrite_registry(
@@ -547,7 +619,7 @@ class TestCorpusFollowsTheActiveLanguage:
             {"en": _lang_entry("en", "corpora/en.csv"), "xx": _lang_entry("xx", "corpora/loop.csv")},
         )
         monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
-        assert quote_corpus.corpus_path() == two_language_registry["en"]
+        _assert_unavailable()
 
     def test_a_symlink_out_of_the_checkout_is_refused(self, two_language_registry, monkeypatch):
         outside = two_language_registry["root"].parent / "outside2.csv"
@@ -559,11 +631,11 @@ class TestCorpusFollowsTheActiveLanguage:
             {"en": _lang_entry("en", "corpora/en.csv"), "xx": _lang_entry("xx", "corpora/link.csv")},
         )
         monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
-        assert quote_corpus.corpus_path() == two_language_registry["en"]
+        _assert_unavailable()
 
-    def test_both_registry_corpora_missing_lands_on_the_shipped_default_with_two_warnings(
-        self, two_language_registry, monkeypatch, caplog
-    ):
+    def test_a_non_english_device_never_reaches_the_shipped_default(self, two_language_registry, monkeypatch, caplog):
+        """Pre-R9 this landed on the shipped ENGLISH file after two warnings.
+        Now only the device language's own rung is consulted."""
         import logging
 
         shipped = two_language_registry["root"] / "shipped.csv"
@@ -575,11 +647,9 @@ class TestCorpusFollowsTheActiveLanguage:
         )
         monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
         with caplog.at_level(logging.WARNING, logger="strings_catalog"):
-            assert quote_corpus.corpus_path() == shipped
-            assert _author() == "Author SHIPPED"
-            quote_corpus.corpus_path()
-        hits = [r for r in caplog.records if "gone-" in r.getMessage()]
-        assert len(hits) == 2, "one warning per missing rung, each once"
+            _assert_unavailable()
+        hits = [r.getMessage() for r in caplog.records if "gone-" in r.getMessage()]
+        assert len(hits) == 1 and "gone-xx" in hits[0], "only the device language's rung is consulted"
 
     def test_the_env_override_wins_over_the_registry_for_both_tiers(self, two_language_registry, monkeypatch):
         override = two_language_registry["root"] / "override.csv"
@@ -658,7 +728,7 @@ class TestRegistryCorpusAccessors:
         _rewrite_registry(two_language_registry, {"en": _lang_entry("en", "corpora/en.csv"), "xx": xx})
         assert strings_catalog.corpus_relpath("xx") is None
         monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
-        assert quote_corpus.corpus_path() == two_language_registry["en"]
+        _assert_unavailable()  # litclock-dev#532 R9: unavailable, never English
 
     def test_unknown_code_has_no_corpus(self):
         import strings_catalog

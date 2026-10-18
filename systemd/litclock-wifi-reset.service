@@ -20,9 +20,33 @@ Type=oneshot
 # what owns the elevated work.
 User=root
 ExecStart=/usr/local/bin/litclock-wifi-reset.sh
-# Cap the run — on a Pi Zero 2W the whole sequence (stop service + nmcli
-# delete loop + rm + restart firstboot) finishes in ~5s. 60s gives generous
-# headroom without leaving a stuck unit pinning systemd's job queue.
+# litclock-dev#938 review — failsafe for a reset that dies partway. systemd
+# runs ExecStopPost= after ExecStart ends for ANY reason: the TimeoutStartSec
+# kill below (a hung nmcli), an early `exit 1` after the control server was
+# stopped, a Conflicts=litclock-update.service or manual stop. Without it such
+# a clock was left with a frozen quote, no PWA, no hotspot, and wifi-watchdog
+# standing down because the setup marker was already gone.
+#   - The script's own `exit 0` does nothing: either the reset finished (its
+#     Step 4 has queued first-boot) or its double-fire guard found a setup
+#     already running. Both must be left alone. Gate on EXIT_CODE/EXIT_STATUS,
+#     never SERVICE_RESULT: a stop reports "signal" (measured on systemd 255,
+#     the dev box; the Pi's Bookworm ships 252) or "success" with
+#     EXIT_CODE=killed (systemd.exec(5)), not "exit-code". Out of reach by
+#     design: a first-boot job queued by Step 4 that then fails at once (the
+#     script already exited 0). The next boot retries, first-boot is enabled.
+#   - Marker present: the reset never got to remove it; bring the PWA back.
+#   - Marker gone: `restart` first-boot, not `start`. It is RemainAfterExit=yes,
+#     so after any setup this boot it sits "active" and `start` is a no-op. But
+#     never while it is "activating": a setup is running and must not be cut.
+# `$$` is systemd's escape for a literal `$`. Inline rather than a script mode
+# on purpose: a hand-deployed unit calling an older litclock-wifi-reset.sh would
+# have it ignore the argument and run a second full reset. The leading `-`
+# keeps a failure here from marking the unit failed on top of what already did.
+ExecStopPost=-/bin/sh -c 'if [ "$$EXIT_CODE" = exited ] && [ "$$EXIT_STATUS" = 0 ]; then exit 0; fi; if [ -e /etc/litclock/.setup-complete ]; then systemctl start --no-block litclock-control.service; elif [ "$$(systemctl is-active litclock-firstboot.service)" != activating ]; then systemctl restart --no-block litclock-firstboot.service; fi'
+# Cap the run — on a Pi Zero 2W the whole sequence (enable firstboot + stop
+# control + rm markers + nmcli delete loop + restart firstboot) finishes in
+# ~5s. 60s gives generous headroom without leaving a stuck unit pinning
+# systemd's job queue.
 TimeoutStartSec=60
 StandardOutput=journal
 StandardError=journal

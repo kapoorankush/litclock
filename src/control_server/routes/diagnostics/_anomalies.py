@@ -151,7 +151,9 @@ def _compute_anomalies(values: dict[str, Any]) -> list[str]:
 
     Anomaly conditions per section:
 
-    - ``build-version`` — NEVER (info-only).
+    - ``build-version`` — info-only, EXCEPT when the set language differs
+      from the one the screens are shown in (an unusable strings bundle, an
+      inactive code or an unreadable registry — litclock-dev#532 R12).
     - ``system`` — CPU > 78 °C OR disk < 10 % free OR memory < 50 MB free.
     - ``network`` — signal < -75 dBm OR (LAN IP missing AND uptime past the
       settling grace). DHCP age was a third trigger until litclock-dev#552; it fired on
@@ -314,6 +316,13 @@ def _compute_anomalies(values: dict[str, Any]) -> list[str]:
     # the section.
     if _recent_logs_contain_error(values):
         anomalies.append("recent-log-entries")
+
+    # Build & version — info-only, with ONE exception (litclock-dev#532 R12):
+    # the set language's strings bundle is unusable, so every screen is in
+    # the fleet default instead. The owner sees English with no explanation
+    # anywhere else; this is the warning.
+    if values.get("language") and values.get("language_shown") and values["language"] != values["language_shown"]:
+        anomalies.append("build-version")
 
     return anomalies
 

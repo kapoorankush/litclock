@@ -411,6 +411,26 @@ def _read_last_update(env_settings: dict[str, str]) -> tuple[str | None, str | N
     return _resolve_last_update()
 
 
+def _read_last_update_error() -> str | None:
+    """update.sh's own words for why the last update failed, or None.
+
+    litclock-dev#532 T10: the Updates banner now shows the catalog's copy in
+    the device language rather than this English string, so this row is
+    where the cause still reaches support (pip vs revert vs smoke, and the
+    sha it reverted to). Only a terminal failure carries one worth showing.
+    """
+    try:
+        from ...update_state import read_status_file  # noqa: PLC0415
+
+        status = read_status_file()
+    except Exception:
+        return None
+    if status.get("state") not in ("failed_reverted", "failed_unrecovered"):
+        return None
+    error = status.get("error")
+    return error if isinstance(error, str) and error else None
+
+
 def _read_appliance_uptime_s() -> int | None:
     path = current_app.config.get("DIAG_PROC_UPTIME_PATH", DEFAULT_PROC_UPTIME_PATH)
     try:
@@ -808,6 +828,30 @@ def _read_recent_log_entries(n: int = 4) -> list[dict[str, Any]]:
 # --- The main builder ------------------------------------------------------
 
 
+def _language_rows() -> dict[str, str | None]:
+    """``language`` / ``language_shown`` for the Build & version section.
+    Never raises: a diagnostics page that dies over the catalog is no help
+    diagnosing the catalog."""
+    try:
+        import strings_catalog  # noqa: PLC0415
+
+        # The CONFIGURED code, not snapshot().requested: that has already been
+        # degraded to English for an inactive code or an unreadable registry,
+        # which would hide exactly the cases this warning exists for (litclock-dev#913
+        # review, Codex + red team).
+        # The REQUEST's snapshot — created here if collection runs before the
+        # template, and then reused by it — so "Language shown" describes the
+        # page it sits on (Codex, litclock-dev#913 round 3).
+        from ..._strings import request_snapshot  # noqa: PLC0415
+
+        return {
+            "language": strings_catalog.configured_language(),
+            "language_shown": request_snapshot().language,
+        }
+    except Exception:
+        return {"language": None, "language_shown": None}
+
+
 def collect_diagnostics() -> dict[str, Any]:
     """Build the diagnostics value dict.
 
@@ -838,10 +882,16 @@ def collect_diagnostics() -> dict[str, Any]:
     return {
         # Build & version
         "app_version": _read_app_version(),
+        # litclock-dev#532 R12: the language the clock is set to, and the one
+        # its screens are actually written in. They differ only when the set
+        # language's strings bundle is unusable (missing or incomplete) and
+        # every surface is showing the fleet default instead.
+        **_language_rows(),
         "git_head": _read_git_head(),
         "images_version": _read_images_version(),
         "last_update_at": last_update_at,
         "last_update_version": last_update_version,
+        "last_update_error": _read_last_update_error(),
         # System
         "kernel": _read_text_once("kernel", _read_kernel_release),
         "os_release": _read_text_once("os_release", _read_os_release_pretty),
@@ -882,6 +932,11 @@ def collect_diagnostics() -> dict[str, Any]:
         # pre-runtime-render clocks -> None, which reads as "old firmware",
         # not as a fallback event.
         "render_mode": quote_payload.get("render_mode") or None,
+        # litclock-dev#532 D8/R14: on a plain-time frame, why ("gap" or
+        # "failure"), and the run of failure frames the PWA warns on. The
+        # one distinction the banner draws, so support can see it too.
+        "fallback_reason": quote_payload.get("fallback_reason") or None,
+        "consecutive_failures": quote_payload.get("consecutive_failures"),
         # Setup markers
         "setup_complete": setup_complete,
         "handoff_complete": handoff_complete,

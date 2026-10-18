@@ -444,3 +444,83 @@ def test_validation_digest_raises_on_missing_input(tmp_path):
     never silently hash an empty proof."""
     with pytest.raises(OSError):
         qr.runtime_validation_digest(tmp_path / "missing.gz")
+
+
+# ---------- litclock-dev#532 T5: Unicode-aware time-phrase span ----------
+
+
+class TestFindTimestringSpan:
+    def _span(self, quote: str, ts: str):
+        qb = quote.encode()
+        span = qr.find_timestring_span(qb, ts.encode())
+        return None if span is None else qb[span[0] : span[1]].decode()
+
+    @pytest.mark.parametrize(
+        ("quote", "ts", "want"),
+        [
+            ("It was Midnight, then.", "midnight", "Midnight"),
+            ("Era la única hora.", "Única", "única"),
+            ("ÚNICA vez a las diez", "única", "ÚNICA"),
+            ("Die Straße um zwölf", "STRASSE", "Straße"),
+            ("Er sah die STRASSE um zwölf", "straße", "STRASSE"),
+            ("a ẞ b", "ss", "ẞ"),
+            ("café crème", "CAFÉ CRÈME", "café crème"),
+            # The first folded hit starts inside ß's fold; the search must go
+            # on to the whole-character one after it.
+            ("ßá Sá", "SÁ", "Sá"),
+        ],
+        ids=[
+            "ascii",
+            "accent-lower",
+            "accent-upper",
+            "sharp-s",
+            "upper-ss",
+            "capital-sharp-s",
+            "accents-both",
+            "retry-after-half-char-hit",
+        ],
+    )
+    def test_the_span_is_the_text_in_the_quote(self, quote, ts, want):
+        assert self._span(quote, ts) == want
+
+    @pytest.mark.parametrize(
+        ("quote", "ts"),
+        [("xyz", "abc"), ("İstanbul", "i"), ("aß", "s")],
+        ids=["absent", "half-of-dotted-capital-i", "half-a-fold"],
+    )
+    def test_no_match(self, quote, ts):
+        assert qr.find_timestring_span(quote.encode(), ts.encode()) is None
+
+    def test_the_stristr_pass_wins_whenever_it_matches(self):
+        """GD parity: a row the PHP-equivalent byte search matches keeps that
+        exact span, even where a Unicode match would land elsewhere."""
+        qb = "Straße and strasse".encode()
+        idx = qr.find_timestring(qb, b"strasse")
+        assert qr.find_timestring_span(qb, b"strasse") == (idx, idx + len(b"strasse"))
+
+    def test_an_empty_phrase_keeps_the_stristr_answer(self):
+        """(0, 0), as PHP's stristr gives — the corpus check (T4's L4)
+        rejects empty phrases, the matcher does not reinterpret them."""
+        assert qr.find_timestring_span("Straße".encode(), b"") == (0, 0)
+
+    def test_the_midword_probe_reads_the_quote_span_not_the_row_length(self):
+        """'STRAẞE' is 8 bytes in the row, 'Strasse' 7 in the quote: a probe
+        using the row's length would see a mid-word end."""
+        assert qr.timestring_midword_edge("Die Strasse ist", "STRAẞE") is None
+
+    @needs_freetype
+    def test_the_bold_run_is_the_quote_text(self):
+        # Two ẞ: the row is 2 bytes longer than the quote's span, so a span
+        # taken from the row's length would bold the "u" of "um" too (one
+        # extra byte only reaches the undrawn space).
+        _, _, lay = qr.render_quote("Er sah die Grosse Strasse um zwölf.", "GROẞE STRAẞE")
+        assert b"".join(sb for *_, sb, bold in lay.ops if bold) == b"GrosseStrasse"
+
+    @needs_freetype
+    def test_a_folded_match_renders(self):
+        """The point of T5: a row whose phrase differs from the quote only in a
+        non-ASCII capital used to fail as NOSTRING."""
+        quote, ts = "Era la única hora de la noche.", "Única"
+        assert qr.find_timestring(quote.encode(), ts.encode()) == -1, "the ASCII pass alone misses it"
+        image, font_size, _layout = qr.render_quote(quote, ts)
+        assert image is not None and font_size > 0

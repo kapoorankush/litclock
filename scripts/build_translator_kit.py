@@ -42,6 +42,11 @@ _SURFACES: dict[str, tuple[str, str, bool]] = {
     "shutdown": ("E-ink splash", "Shutdown screen on the physical panel — width-limited.", True),
     "bootcheck": ("E-ink splash", "Recovery screen on the physical panel — width-limited.", True),
     "reset": ("E-ink splash", "Factory-reset screen on the physical panel — width-limited.", True),
+    "clock": (
+        "E-ink clock face",
+        "The line under the time when the clock has no book quote to show — width-limited.",
+        True,
+    ),
     "setup": ("WiFi setup page", "The hotspot page a phone opens to join WiFi.", False),
     "system": ("Control app", "The phone/desktop control app (System tab).", False),
     "settings": ("Control app", "The control app's Settings tab.", False),
@@ -181,8 +186,8 @@ def render_worksheet(data: dict) -> str:
         "Generated from the English catalog — do not hand-edit; run "
         "`python3 scripts/build_translator_kit.py`.",
         "",
-        "Fill in a translation for every key. Read **README.md** first for the "
-        "rules (they are also checked automatically). Copy every `{slot}` "
+        "Fill in a translation for every key. Read README.md's **Writing the "
+        "strings bundle** first for the rules (they are also checked automatically). Copy every `{slot}` "
         "exactly — never translate the word inside the braces or change how "
         "many times it appears.",
         "",
@@ -294,6 +299,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
 <script>
 const DATA = /*__KIT_DATA__*/null;
 const values = {};
+const extra = {};
 const TOKEN_RE = /\{(\/?)(b|em|code)\}/g;
 const SLOT_RE = /\{([a-z][a-z0-9_]*)\}/g;
 const CONFUSABLE = [..."｛｝❴❵⦃⦄"];
@@ -359,6 +365,22 @@ function lint(entry, val) {
   if (/[{}]/.test(residue)) out.push("stray { or } — check your placeholders");
   return out;
 }
+// Farewell lines are each language's own, any number per screen (litclock-dev#532 T7):
+// lines past English's count have no row here, so an imported file's extras
+// are kept aside and written back on export — never dropped.
+const FAREWELL_RE = /^shutdown\.farewell\.(welcome|reboot|poweroff)\.([1-9][0-9]?)$/;
+function importBundle(o, values, extra) {
+  const known = new Set(DATA.keys.map(e => e.key));
+  for (const k of Object.keys(extra)) delete extra[k];
+  for (const entry of DATA.keys) if (typeof o[entry.key] === "string") values[entry.key] = o[entry.key];
+  for (const [k, v] of Object.entries(o)) if (!known.has(k) && FAREWELL_RE.test(k) && typeof v === "string") extra[k] = v;
+}
+function exportBundle(code, values, extra) {
+  const obj = { _comment: "LitClock " + code + " translation. Validate: python3 scripts/validate_translation.py " + code + " --file <this file>" };
+  for (const entry of DATA.keys) obj[entry.key] = values[entry.key] || "";
+  for (const [k, v] of Object.entries(extra)) obj[k] = v;
+  return obj;
+}
 function refresh() {
   let done = 0, errs = 0;
   for (const entry of DATA.keys) {
@@ -402,8 +424,7 @@ function build() {
 function escapeHtml(s){return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 document.getElementById("export").addEventListener("click", () => {
   const code = (document.getElementById("code").value || "xx").trim();
-  const obj = { _comment: "LitClock " + code + " translation. Validate: python3 scripts/validate_translation.py " + code + " --file <this file>" };
-  for (const entry of DATA.keys) obj[entry.key] = values[entry.key] || "";
+  const obj = exportBundle(code, values, extra);
   const blob = new Blob([JSON.stringify(obj, null, 2) + "\n"], {type:"application/json"});
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "strings.json"; a.click();
 });
@@ -411,7 +432,7 @@ document.getElementById("import").addEventListener("change", (ev) => {
   const file = ev.target.files[0]; if (!file) return;
   const r = new FileReader();
   r.onload = () => { try { const o = JSON.parse(r.result);
-    for (const entry of DATA.keys) if (typeof o[entry.key] === "string") values[entry.key] = o[entry.key];
+    importBundle(o, values, extra);
     document.querySelectorAll("#rows .key").forEach(row => { const k = row.id.slice(4); const ta = row.querySelector("textarea"); if (ta) ta.value = values[k] || ""; });
     refresh();
   } catch (e) { alert("Could not read that file: " + e.message); } };

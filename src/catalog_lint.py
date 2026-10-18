@@ -55,6 +55,26 @@ ENTITY_RE: Final[re.Pattern[str]] = re.compile(r"&(?:[a-zA-Z][a-zA-Z0-9]*|#[0-9]
 SINGLE_VALUED_CATEGORIES: Final[frozenset[str]] = frozenset({"one", "two"})
 
 
+# litclock-dev#532 R5 / T7: the farewell lines on the shutdown, reboot and
+# gift screens are a NUMBERED OPTIONAL key class. Each language's curator
+# picks their own lines from their own literature (translating the English
+# ones is a copyright problem, not a translation), so a language supplies any
+# number per screen from 1 up: ``.1`` is required, every higher number is
+# optional, and a language may go past English's count.
+FAREWELL_SETS: Final = ("welcome", "reboot", "poweroff")
+FAREWELL_KEY_RE: Final[re.Pattern[str]] = re.compile(r"^shutdown\.farewell\.(welcome|reboot|poweroff)\.([1-9][0-9]?)$")
+
+
+def is_farewell_key(key: str) -> bool:
+    return FAREWELL_KEY_RE.match(key) is not None
+
+
+def is_optional_key(key: str) -> bool:
+    """A key a language may leave out: every farewell line after the first."""
+    m = FAREWELL_KEY_RE.match(key)
+    return m is not None and m.group(2) != "1"
+
+
 def slot_counts(value: str) -> dict[str, int]:
     """Per-slot occurrence COUNTS (not a set: four templates split-render a
     slot exactly once — base/settings/diagnostics/_handoff-banner `.split(
@@ -229,6 +249,8 @@ def registry_errors(strings_root: Path, source_root: Path | None = None) -> list
         for key, value in data.items():
             if key.startswith("_") or not isinstance(value, str):
                 continue
+            if not value.strip() and is_optional_key(key):
+                continue  # an optional farewell left blank is simply not supplied (litclock-dev#532 T7)
             sibling = plural_sibling_slots(key, forms, en_data)
             category = key.rpartition(".")[2]
             relax = {"n"} if sibling is not None and category in SINGLE_VALUED_CATEGORIES else None

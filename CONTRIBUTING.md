@@ -14,6 +14,12 @@ under whichever one covers the material it touches:
   other corpus-derived material** — [CC BY-NC-SA
   4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/), because the corpus
   derives from CC BY-NC-SA material and ShareAlike carries forward.
+- **Every other language's quote corpus (`languages/<code>/*.csv`)** — the same
+  CC BY-NC-SA 4.0. A new language's corpus is not derived from the English one,
+  so this is a project rule rather than ShareAlike: one licence for every quote
+  the clock shows, and the NonCommercial terms the project already lives
+  under. By contributing a corpus you license your selection and arrangement
+  under it; the excerpts themselves remain their authors' and translators'.
 - **Bundled third-party assets keep the license they arrived with** — the case
   case print files in `3d-models/` (CC BY), the weather icons in `icons/` (CC BY-SA 4.0),
   the fonts (OFL-1.1), and documentation that reproduces material from those
@@ -32,12 +38,32 @@ Translations are welcome — the corpus is built to be localized, and
 you start, because both are cheap to check once and effectively unauditable
 across thousands of rows later.
 
-A translated corpus is a CSV of its own: point the language's `corpus.path` in
-`languages.json` at it and the clock's text renderer reads that file for the
-device's active language (litclock-dev#870) — no per-language image set is
-needed. The pre-rendered PNGs under `images/` stay English (the registry's
-`fleet_default`), which is why a second language needs on-device text
-rendering (litclock-dev#871) before it can be activated.
+**What a new language needs from you is its quotes** — the time-telling
+lines from its own literature — plus a few farewell lines for the clock's
+gift, restart and power-off screens. The interface (setup page, app, screen
+messages) is written by the maintainer for every language, so there is no UI
+text to translate. [translations/README.md](translations/README.md) is the
+full guide: the file format, what the check enforces, and how a language goes
+from a volunteer's file to a selectable choice on a clock.
+
+A corpus is a CSV of its own at `languages/<code>/quotes.csv`, one row per
+line as `HH:MM|time phrase|quote|title|author|flag`. The clock's text renderer
+draws it on the device, so no per-language image set is needed; the
+pre-rendered PNGs under `images/` stay English. Check it locally before
+opening the pull request:
+
+    python3 tools/render_invariants.py check --language <code>
+
+It works before the language is registered in `languages.json` (the
+maintainer does that), and CI runs the same command on every corpus,
+registered or not. Beyond rendering every row, it rejects a mature flag other
+than exactly `YES`, `NO` or empty, a time that is not `HH:MM` in ASCII digits,
+an empty time phrase, a line with other than 5 or 6 fields, quotation marks the
+clock's CSV reader would silently drop (see translations/README.md), and any character
+the clock's Literata fonts cannot draw — including non-ASCII spaces such as
+the narrow no-break space French puts before `;:!?`, which the panel would show
+as an empty box. It also prints the language's coverage: the share of the
+day's minutes with a safe quote, and the longest stretch without one.
 
 **Name the edition you took a quote from, in the pull request.** Which edition
 a row came from is the one fact nobody can recover from a CSV diff.

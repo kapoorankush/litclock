@@ -1039,6 +1039,11 @@ class TestRuntimeRenderSelftestExecutes:
         selftest_timeout_s=SELFTEST_TIMEOUT_DEFAULT_S,
         mktemp_fails=False,
         pass_record_exists=False,
+        record_body=None,
+        flag_line="export LITCLOCK_RUNTIME_RENDER=false",
+        language_line=None,
+        marker_text="freetype=2.13.2 digest=abc\n",
+        remove_fails=False,
         preseed_result=None,
         env_extra="",
     ):
@@ -1068,10 +1073,16 @@ class TestRuntimeRenderSelftestExecutes:
         install = tmp_path / "install"
         install.mkdir(exist_ok=True)
         (install / "env.sh").write_text(
-            f"export LITCLOCK_LANGUAGE={language}\nexport LITCLOCK_RUNTIME_RENDER=false\nexport WEATHER_ENABLED=true\n"
+            (language_line if language_line is not None else f"export LITCLOCK_LANGUAGE={language}")
+            + f"\n{flag_line}\nexport WEATHER_ENABLED=true\n"
             + env_extra
         )
         memo = tmp_path / "memo.json"
+        marker = tmp_path / "marker"
+        if marker_text is None:
+            marker.unlink(missing_ok=True)
+        else:
+            marker.write_text(marker_text)
         # A test may call this twice in one tmp_path: start each run clean, or
         # the second run's assertions read the first run's log and memo.
         log.unlink(missing_ok=True)
@@ -1092,9 +1103,14 @@ class TestRuntimeRenderSelftestExecutes:
             'log_info() { echo "[INFO] $1"; }\n'
             'log_warn() { echo "[WARN] $1"; }\n'
             'log_error() { echo "[ERROR] $1"; }\n'
-            'atomic_remove_file() { [ "$1" = /dev/null ] || rm -f "$1"; }\n'
-            'atomic_write_file() { [ "$1" = /dev/null ] || printf "%s" "$2" > "$1"; }\n'
+            + (
+                "atomic_remove_file() { :; }\n"  # an unlink that silently does nothing
+                if remove_fails
+                else 'atomic_remove_file() { [ "$1" = /dev/null ] || rm -f "$1"; }\n'
+            )
+            + 'atomic_write_file() { [ "$1" = /dev/null ] || printf "%s" "$2" > "$1"; }\n'
             f"PYTHON={fake_py}\nINSTALL_DIR={install}\nRUNTIME_VALIDATION_MEMO_FILE={memo}\n"
+            f"RUNTIME_MARKER={marker}\n"
             f"RUNTIME_SELFTEST_RECORD_FILE={tmp_path / 'selftest.json'}\n"
             f"{h._budget_helpers()}"
             # AFTER the lifted helpers, which carry the script's own constants:
@@ -1105,6 +1121,10 @@ class TestRuntimeRenderSelftestExecutes:
             f"{stub}"
             + ("mktemp() { return 1; }\n" if mktemp_fails else "")
             + (f"RUNTIME_SELFTEST_RESULT={preseed_result}\n" if preseed_result else "")
+            + f"{self._lift('_selftest_env')}"
+            + f"{self._lift('_selftest_language')}"
+            + f"{self._lift('_selftest_marker_digest')}"
+            + f"{self._lift('_runtime_selftest_already_passed')}"
             + f"{self._record_fn()}"
             + f"{self._selftest_fn()}"
             "_runtime_render_selftest\n"
@@ -1116,9 +1136,21 @@ class TestRuntimeRenderSelftestExecutes:
         record.unlink(missing_ok=True)
         if pass_record_exists:
             record.write_text('{"result": "passed", "duration_s": 1.0, "sha": null, "at_unix": 1}')
+        if record_body is not None:
+            record.write_text(record_body)
         r = subprocess.run(["bash", "-c", program], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
         painter = log.read_text() if log.exists() else ""
         return r, painter, (json.loads(memo.read_text()) if memo.exists() else None)
+
+    @staticmethod
+    def _lift(name):
+        """One shell function from update.sh, verbatim. Every helper the
+        self-test calls must be lifted: an unlifted one is `command not found`
+        under this harness, which reads exactly like the helper saying no."""
+        body = UPDATE_SH.read_text()
+        assert body.count(f"\n{name}() {{") == 1, name
+        start = body.index(f"\n{name}() {{") + 1
+        return body[start : body.index("\n}\n", start) + len("\n}\n")]
 
     def _record_fn(self):
         body = UPDATE_SH.read_text()
@@ -1190,6 +1222,113 @@ class TestRuntimeRenderSelftestExecutes:
         assert isinstance(rec["duration_s"], (int, float)) and 0 <= rec["duration_s"] < 5, rec
         assert rec["sha"] and rec["at_unix"] > 0
 
+    # ---------- litclock-dev#532 R10 + TODOS T1 ----------
+
+    MARKER = "freetype=2.13.2 digest=abc\n"
+    MIGRATED = "export LITCLOCK_RUNTIME_RENDER=true"
+
+    @staticmethod
+    def _head():
+        r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True)
+        return r.stdout.strip()
+
+    @staticmethod
+    def _digest(text):
+        import hashlib
+
+        return hashlib.sha256(text.encode()).hexdigest()
+
+    def _passed(self, sha=None, language="xx", marker=None):
+        return json.dumps(
+            {
+                "result": "passed",
+                "duration_s": 1.0,
+                "sha": sha or self._head(),
+                "language": language,
+                "marker": self._digest(self.MARKER) if marker is None else marker,
+                "at_unix": 1,
+            }
+        )
+
+    def test_the_selftest_samples_a_covered_minute(self, tmp_path):
+        _r, painter, _memo = self._run(tmp_path, painter_rc=0)
+        assert "--sample-quote" in painter and "--require-runtime-render" in painter
+
+    def test_a_pass_records_its_sha_language_and_marker(self, tmp_path):
+        r, _painter, _memo = self._run(tmp_path, painter_rc=0, language="xx")
+        rec = self._record(tmp_path)
+        assert rec is not None, r.stdout + r.stderr
+        assert (rec["sha"], rec["language"], rec["marker"]) == (self._head(), "xx", self._digest(self.MARKER))
+
+    @pytest.mark.parametrize(
+        ("line", "want"),
+        [("", "en"), ("export LITCLOCK_LANGUAGE=", "en"), ("LITCLOCK_LANGUAGE=es", "es"),
+         # Re-assigning keeps the export attribute: the painter sees "es".
+         ("export LITCLOCK_LANGUAGE=de\nLITCLOCK_LANGUAGE=es", "es")],
+        ids=["absent", "empty", "unexported", "reassigned-stays-exported"],
+    )
+    def test_the_recorded_language_is_the_one_the_painter_sees(self, tmp_path, line, want):
+        """strings_catalog.configured_language(): the exported value, else the
+        env.sh LINE (export optional — the catalog reads the file), else en.
+        Round-2 review: a bare `LITCLOCK_LANGUAGE=es` does reach the painter."""
+        self._run(tmp_path, painter_rc=0, language_line=line)
+        assert self._record(tmp_path)["language"] == want
+
+    def test_a_migrated_device_skips_a_release_it_already_passed(self, tmp_path):
+        r, painter, memo = self._run(tmp_path, painter_rc=3, flag_line=self.MIGRATED, record_body=self._passed())
+        assert painter == "", "the painter ran although this release already passed in this language"
+        assert "RESULT=pass\n" in r.stdout and memo is None
+        assert "already PASSED" in r.stdout
+        assert self._record(tmp_path)["sha"] == self._head(), "the skip must leave the record Stage B reads"
+
+    @pytest.mark.parametrize(
+        "flag_line",
+        ["export LITCLOCK_RUNTIME_RENDER=false", "LITCLOCK_RUNTIME_RENDER=true", ""],
+        ids=["false", "unexported-true", "absent"],
+    )
+    def test_a_device_stage_b_may_still_migrate_always_runs_it(self, tmp_path, flag_line):
+        """Review P2: Stage B's contract is a pass on THIS run, so only a device
+        the painter already sees as migrated may skip."""
+        _r, painter, _memo = self._run(tmp_path, painter_rc=0, flag_line=flag_line, record_body=self._passed())
+        assert "--sample-quote" in painter
+
+    @pytest.mark.parametrize(
+        "record",
+        ["other-sha", "other-language", "other-marker", "no-marker", "failed", "garbage-after", "not-json",
+         "no-language"],
+    )
+    def test_anything_short_of_a_matching_pass_runs_it(self, tmp_path, record):
+        body = {
+            "other-sha": self._passed(sha="0" * 40),
+            "other-language": self._passed(language="en"),
+            "other-marker": self._passed(marker=self._digest("freetype=2.13.2 digest=OLD\n")),
+            "no-marker": json.dumps({"result": "passed", "sha": self._head(), "language": "xx"}),
+            "failed": json.dumps({"result": "selftest-failed", "sha": self._head(), "language": "xx"}),
+            "garbage-after": self._passed() + " trailing",
+            "not-json": "{nope",
+            "no-language": json.dumps({"result": "passed", "duration_s": 1.0, "sha": self._head(), "at_unix": 1}),
+        }[record]
+        _r, painter, _memo = self._run(tmp_path, painter_rc=0, flag_line=self.MIGRATED, record_body=body)
+        assert "--sample-quote" in painter, f"a {record} record skipped the self-test"
+
+    def test_no_marker_never_skips(self, tmp_path):
+        _r, painter, _memo = self._run(
+            tmp_path, painter_rc=0, flag_line=self.MIGRATED, record_body=self._passed(marker=""), marker_text=None
+        )
+        assert "--sample-quote" in painter
+
+    def test_a_record_that_will_not_delete_is_retired_by_overwrite(self, tmp_path):
+        """Review P3: atomic_remove_file reports nothing; a surviving pass must
+        not be readable as one after a failure."""
+        _r, _painter, _memo = self._run(tmp_path, painter_rc=3, record_body=self._passed(), remove_fails=True)
+        assert self._record(tmp_path)["result"] != "passed"
+
+    def test_nothing_to_sample_is_its_own_memo(self, tmp_path):
+        r, _painter, memo = self._run(tmp_path, painter_rc=4, pass_record_exists=True)
+        assert memo is not None and memo["result"] == "selftest-no-corpus" and memo["rc"] == 4, memo
+        assert "RESULT=fail\n" in r.stdout
+        assert self._record(tmp_path) is None, "a corpus with nothing to sample retires an earlier pass"
+
     def test_a_fail_retires_an_earlier_pass_record(self, tmp_path):
         _, _, memo = self._run(tmp_path, painter_rc=3, pass_record_exists=True)
         assert memo is not None and memo["result"] == "selftest-failed"
@@ -1203,7 +1342,7 @@ class TestRuntimeRenderSelftestExecutes:
     def test_a_fallback_is_memoed_as_selftest_failed_with_rc_3(self, tmp_path):
         r, _, memo = self._run(tmp_path, painter_rc=3)
         assert "REACHED_END rc=0" in r.stdout, "a failed self-test is not an update failure"
-        assert "fell back to pre-rendered images" in r.stdout
+        assert "the painter fell back (pre-rendered images, or the plain time)" in r.stdout
         assert memo is not None and memo["result"] == "selftest-failed" and memo["rc"] == 3, memo
         assert "fell back" in memo["reason"]
 
@@ -1966,14 +2105,23 @@ class TestStageBMigrationExecutes:
         # A caller that passes nonsense gets the safe value, not the nonsense.
         assert "export LITCLOCK_RUNTIME_RENDER=false" in seed("", "yes")
 
-    def test_the_reset_and_cloning_callers_take_the_conservative_default(self):
-        """Neither may start asking for `true`: both run on an existing device
-        whose self-test may have failed, and update.sh migrates it properly on
-        the next tick if it can render."""
+    def test_the_reset_and_cloning_callers_carry_the_current_tier_never_a_literal_true(self):
+        """Neither may ask for `true` outright: both run on an existing device
+        whose self-test may have failed. What they pass instead is the device's
+        CURRENT value (owner decision, 2026-10-14): a clock already on text keeps
+        it, one on images stays for Stage B. The executed proof that the value
+        actually reaches the written env.sh lives in test_reset_setup_sh.py and
+        test_prepare_for_cloning_sh.py; this pins the shape both lines share."""
         for name in ("reset-setup.sh", "prepare-for-cloning.sh"):
             body = (REPO_ROOT / "scripts" / name).read_text()
-            for call in re.findall(r"env_sh_defaults[^\n)]*", body):
-                assert "true" not in call, f"{name} must not seed runtime render on an existing device: {call!r}"
+            calls = re.findall(r"^\s*DEFAULTS=\$\(env_sh_defaults .*$", body, re.M)
+            assert len(calls) == 1, f"{name}: expected one DEFAULTS=$(env_sh_defaults ...) line, got {calls!r}"
+            call = calls[0]
+            assert re.search(r"\btrue\b", call) is None, f"{name} seeds a literal true on an existing device: {call!r}"
+            assert 'env_sh_current_runtime_render "$INSTALL_DIR/env.sh"' in call, (
+                f"{name} must pass the device's current tier, read from its own env.sh: {call!r}"
+            )
+            assert "|| echo false" in call, f"{name} must fall back to false when the helper is missing: {call!r}"
 
     def test_first_boot_asks_for_true_in_both_of_its_seeders(self):
         """first-boot has two: the helper call and the state.sh-missing heredoc.
@@ -2061,6 +2209,158 @@ class TestStageBMigrationExecutes:
         assert fn.index('chmod "$mode"') < fn.index('chown "$owner"'), (
             "mode must be set while pi still owns the staging file"
         )
+
+
+class TestCurrentRuntimeRenderReader:
+    """`env_sh_current_runtime_render FILE` (lib/state.sh) — the reader the reset
+    and cloning paths use to keep a device's tier. It must say `true` exactly
+    when the PAINTER would render text, and `false` for anything else: the
+    fail-safe direction, and the value these callers seeded before it existed.
+
+    The painter's rule, which this mirrors: runtheclock.sh `source`s env.sh
+    without `set -a`, so only an EXPORTED assignment reaches literary_clock.py,
+    which accepts `1`/`true` case-insensitively. Executed against the real
+    helper, never grepped.
+    """
+
+    STATE_SH = REPO_ROOT / "scripts" / "lib" / "state.sh"
+
+    def _read(self, tmp_path, content):
+        env_sh = tmp_path / "env.sh"
+        if content is not None:
+            env_sh.write_text(content)
+        r = subprocess.run(
+            ["bash", "-c", f'. "{self.STATE_SH}"\nenv_sh_current_runtime_render "$1"', "_", str(env_sh)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert r.returncode == 0, f"the reader must always exit 0: rc={r.returncode} {r.stderr}"
+        assert r.stderr == "", f"the reader must be silent: {r.stderr!r}"
+        return r.stdout
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "export LITCLOCK_RUNTIME_RENDER=true\n",
+            "export LITCLOCK_RUNTIME_RENDER=TRUE\n",
+            "export LITCLOCK_RUNTIME_RENDER=1\n",
+            'export LITCLOCK_RUNTIME_RENDER="true"\n',
+            "export LITCLOCK_RUNTIME_RENDER='true'\n",
+            "  export   LITCLOCK_RUNTIME_RENDER=true   \n",
+            # The shape every seeder actually writes: a full body, the knob mid-file.
+            "export WEATHER_ENABLED=true\nexport LITCLOCK_LANGUAGE=\nexport LITCLOCK_RUNTIME_RENDER=true\n"
+            "# export LITCLOCK_RENDER_LEAD_S=4\n",
+            # A commented assignment is documentation, not a second assignment.
+            "# export LITCLOCK_RUNTIME_RENDER=false\nexport LITCLOCK_RUNTIME_RENDER=true\n",
+            # No trailing newline (a hand edit).
+            "export LITCLOCK_RUNTIME_RENDER=true",
+            # The shapes the env.sh writer really emits (config.py shlex.quote):
+            # 4-decimal coordinates as the IP-geo resolver writes them, a quoted place with a comma, a
+            # negative longitude, an ISO stamp with `+`, an empty value, and an
+            # apostrophe in shlex's '"'"' form. A reader too strict for these
+            # would leave every real device on the old `false` behaviour.
+            "export WEATHER_LATITUDE=30.2672\nexport WEATHER_LONGITUDE=-97.7431\n"
+            "export WEATHER_LOCATION_NAME='Austin, Texas'\n"
+            "export WEATHER_LAST_IP_GEO_AT=2026-10-14T06:05:25+00:00\nexport LITCLOCK_LANGUAGE=\n"
+            "export GIFT_MODE_MESSAGE='Don'\"'\"'t forget to water the plants'\n"
+            "export LITCLOCK_RUNTIME_RENDER=true\n# export LOG_LEVEL=WARNING\n",
+            # A sibling variable is a different name, not a second mention.
+            "export LITCLOCK_RUNTIME_RENDER_DIR=/tmp/rr\nexport LITCLOCK_RUNTIME_RENDER=true\n",
+        ],
+    )
+    def test_an_effective_true_reads_true(self, tmp_path, content):
+        assert self._read(tmp_path, content) == "true\n"
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "export LITCLOCK_RUNTIME_RENDER=false\n",
+            "export LITCLOCK_RUNTIME_RENDER=\n",
+            "export LITCLOCK_RUNTIME_RENDER=0\n",
+            "export LITCLOCK_RUNTIME_RENDER=yes\n",
+            "export LITCLOCK_RUNTIME_RENDER=truex\n",
+            # A bare assignment never reaches the painter (no `set -a`).
+            "LITCLOCK_RUNTIME_RENDER=true\n",
+            # Last assignment wins when sourced: the bare `=0` turns it off.
+            "export LITCLOCK_RUNTIME_RENDER=true\nLITCLOCK_RUNTIME_RENDER=0\n",
+            # Two exports: refuse to guess, like Stage B.
+            "export LITCLOCK_RUNTIME_RENDER=false\nexport LITCLOCK_RUNTIME_RENDER=true\n",
+            "export LITCLOCK_RUNTIME_RENDER=true\nexport LITCLOCK_RUNTIME_RENDER=true\n",
+            # A trailing comment: sourced it is true, but this reader does not
+            # parse shell, and the conservative answer costs only a week on PNGs.
+            "export LITCLOCK_RUNTIME_RENDER=true # on\n",
+            "# export LITCLOCK_RUNTIME_RENDER=true\n",
+            # Variable names are case-sensitive in the shell.
+            "export litclock_runtime_render=true\n",
+            # ...and the one place that matters: the real line is false, and a
+            # lowercase line must not be taken for it (the count sees one line).
+            "export LITCLOCK_RUNTIME_RENDER=false\nexport litclock_runtime_render=true\n",
+            "export LITCLOCK_RUNTIME_RENDER_DIR=true\n",
+            "export WEATHER_ENABLED=true\n",
+            "",
+            # PR litclock-dev#929 review (Claude adversarial + Codex, each reproduced against
+            # the painter after a real `source`): shapes a line COUNTER called
+            # true while the painter saw false. Each one must read false.
+            "export LITCLOCK_RUNTIME_RENDER=true\r\n",  # CRLF: the painter reads `true\r`
+            "export WEATHER_ENABLED=true\r\nexport LITCLOCK_RUNTIME_RENDER=true\n",  # a CR anywhere
+            "export LITCLOCK_RUNTIME_RENDER=true\nunset LITCLOCK_RUNTIME_RENDER\n",
+            "export LITCLOCK_RUNTIME_RENDER=true\nexport -n LITCLOCK_RUNTIME_RENDER\n",
+            "readonly LITCLOCK_RUNTIME_RENDER=false\nexport LITCLOCK_RUNTIME_RENDER=true\n",
+            "export LITCLOCK_RUNTIME_RENDER=true\nreadonly LITCLOCK_RUNTIME_RENDER=false\n",
+            "export LITCLOCK_RUNTIME_RENDER=true\nexport A=1 LITCLOCK_RUNTIME_RENDER=0\n",
+            "export LITCLOCK_RUNTIME_RENDER=true\ndeclare -x LITCLOCK_RUNTIME_RENDER=0\n",
+            "return\nexport LITCLOCK_RUNTIME_RENDER=true\n",
+            "cat <<EOF\nexport LITCLOCK_RUNTIME_RENDER=true\nEOF\n",
+            "if false; then\nexport LITCLOCK_RUNTIME_RENDER=true\nfi\n",
+            # Obfuscated so no line names the variable: still not a flat
+            # assignment (`;`, eval), so still false.
+            "export X=1; eval 'unset LITCLOCK_RUN''TIME_RENDER'\nexport LITCLOCK_RUNTIME_RENDER=true\n",
+            # Command substitution or expansion in ANOTHER key's value runs when sourced.
+            "export X=$(touch /tmp/x)\nexport LITCLOCK_RUNTIME_RENDER=true\n",
+            'export X="$HOME"\nexport LITCLOCK_RUNTIME_RENDER=true\n',
+            "export X=`id`\nexport LITCLOCK_RUNTIME_RENDER=true\n",
+            # PR litclock-dev#929 re-review: a flat line can still set a name bash or Python
+            # treat specially. POSIX mode makes the readonly-UID error fatal, so
+            # the source ends before the export; PYTHONIOENCODING kills the
+            # painter at startup. Only the writers' key families are trusted.
+            "POSIXLY_CORRECT=1\nUID=x\nexport LITCLOCK_RUNTIME_RENDER=true\n",
+            "export PYTHONIOENCODING=x\nexport LITCLOCK_RUNTIME_RENDER=true\n",
+            "export PATH=/nonexistent\nexport LITCLOCK_RUNTIME_RENDER=true\n",
+            # An owner's own extra key is not something a writer emits: false.
+            "export MY_CUSTOM=1\nexport LITCLOCK_RUNTIME_RENDER=true\n",
+        ],
+    )
+    def test_anything_else_reads_false(self, tmp_path, content):
+        assert self._read(tmp_path, content) == "false\n"
+
+    def test_a_missing_file_reads_false(self, tmp_path):
+        assert self._read(tmp_path, None) == "false\n"
+
+    def test_an_unreadable_file_reads_false(self, tmp_path):
+        if os.geteuid() == 0:
+            pytest.skip("root reads a mode-000 file")
+        env_sh = tmp_path / "env.sh"
+        env_sh.write_text("export LITCLOCK_RUNTIME_RENDER=true\n")
+        env_sh.chmod(0)
+        try:
+            assert self._read(tmp_path, None) == "false\n"
+        finally:
+            env_sh.chmod(0o644)
+
+    def test_a_directory_reads_false(self, tmp_path):
+        (tmp_path / "env.sh").mkdir()
+        assert self._read(tmp_path, None) == "false\n"
+
+    def test_it_never_executes_the_file(self, tmp_path):
+        """reset-setup.sh runs it as ROOT over a pi-writable file. A `source`
+        would run whatever the file holds."""
+        canary = tmp_path / "canary"
+        content = f"touch {canary}\nexport LITCLOCK_RUNTIME_RENDER=true\n"
+        # `false`: a command line is not a flat assignment. The point here is
+        # the canary, which a `source` would have created.
+        assert self._read(tmp_path, content) == "false\n"
+        assert not canary.exists(), "the reader executed env.sh"
 
 
 class TestMemoTokensRoundTripToThePWA:
@@ -2436,45 +2736,99 @@ class TestAbandonedEnvStagingFilesAreNotShipped:
             "env.sh.sample must be explicitly re-included, not left to tracked-status luck:\n" + r.stdout
         )
 
+    @pytest.mark.parametrize("name", [".env.sh.tmp.abc12345", "env.sh.tmp.4242"])
+    def test_the_other_writers_staging_shapes_are_gitignored(self, name):
+        """src/config.py stages as `.env.sh.tmp.*`, and the shell writers fall
+        back to `env.sh.tmp.<pid>` without mktemp — both full copies (litclock-dev#893)."""
+        r = subprocess.run(
+            ["git", "check-ignore", "--no-index", name],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
+        )
+        assert r.returncode == 0, f"{name} must be gitignored; it holds the owner's credentials"
+
     def test_clone_prep_refuses_rather_than_certifying_the_card(self):
         body = (REPO_ROOT / "scripts" / "prepare-for-cloning.sh").read_text()
-        assert "env.sh.??????" in body, "the clone-prep credential gate does not look for staging files"
-        idx = body.index("env.sh.??????")
-        after = body[idx : idx + 1200]
+        call = 'env_staging_files "$INSTALL_DIR"'
+        assert call in body, "the clone-prep credential gate does not look for staging files"
+        after = body[body.index(call) : body.index(call) + 600]
         assert "_abort_env_credentials" in after, (
             "clone prep must ABORT on a staging file, not delete it quietly: its job is to "
             "certify the card, and a staging file means a writer died mid-write"
         )
-        assert "env.sh.sample" in after, "the six-character tracked sample must be excluded by name"
 
     def test_gift_mode_sweeps_them_before_writing_defaults(self):
         body = (REPO_ROOT / "scripts" / "reset-setup.sh").read_text()
-        assert "env.sh.??????" in body, "the gift wipe does not sweep staging files"
-        idx = body.index("env.sh.??????")
+        call = 'env_staging_files "$INSTALL_DIR"'
+        assert call in body, "the gift wipe does not sweep staging files"
         wipe = body.index('atomic_write_env_sh "$INSTALL_DIR/env.sh" "$DEFAULTS"')
-        assert idx < wipe, "the sweep must run BEFORE the wipe, or the writer can stage a fresh one after it"
+        assert body.index(call) < wipe, (
+            "the sweep must run BEFORE the wipe, or the writer can stage a fresh one after it"
+        )
 
-    def test_the_gate_actually_fires_on_a_planted_staging_file(self, tmp_path):
-        """Executed, because a grep for the glob proves only that it was typed."""
+    @staticmethod
+    def _plant(tmp_path):
         install = tmp_path / "litclock"
         install.mkdir()
         (install / "env.sh").write_text("export WEATHER_ENABLED=true\n")
-        (install / "env.sh.A1b2C3").write_text("export OPENWEATHERMAP_APIKEY=leaked-key\n")
         (install / "env.sh.sample").write_text("export WEATHER_ENABLED=true\n")
-        prog = f'''
-INSTALL_DIR={install}
-shopt -s nullglob
-_ENV_STAGING=("$INSTALL_DIR"/env.sh.??????)
+        (install / "env.sh.lock").write_text("")
+        # `env.sh.tmp.42` (two-digit pid) matches BOTH shell globs.
+        planted = {"env.sh.A1b2C3", "env.sh.tmp.42", ".env.sh.tmp.abc12345"}
+        for name in planted:
+            (install / name).write_text("export OPENWEATHERMAP_APIKEY=leaked-key\n")
+        return install, planted
+
+    def test_the_helper_finds_every_writers_shape_once_under_set_e(self, tmp_path):
+        """Executed against the REAL helper under `set -e`, the clone gate's
+        mode — the first version died there on `shopt -p`'s exit status and
+        returned nothing, which a test without `-e` could not see (litclock-dev#893)."""
+        install, planted = self._plant(tmp_path)
+        state_sh = REPO_ROOT / "scripts" / "lib" / "state.sh"
+        prog = f"""set -e
+. '{state_sh}'
 shopt -u nullglob
-_ENV_STAGING_REAL=()
-for _s in "${{_ENV_STAGING[@]}}"; do
-    [[ "$(basename "$_s")" == "env.sh.sample" ]] && continue
-    _ENV_STAGING_REAL+=("$_s")
-done
-echo "COUNT=${{#_ENV_STAGING_REAL[@]}}"
-printf 'FOUND=%s\\n' "${{_ENV_STAGING_REAL[@]}}"
-'''
+env_staging_files '{install}' FOUND
+printf 'F=%s\\n' "${{FOUND[@]}}"
+shopt -p nullglob || true  # exits 1 when the option is off
+"""
         r = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, timeout=30)
-        assert "COUNT=1" in r.stdout, f"expected exactly the planted staging file:\n{r.stdout}"
-        assert "env.sh.A1b2C3" in r.stdout, r.stdout
-        assert "env.sh.sample" not in r.stdout, f"the tracked sample must not be flagged:\n{r.stdout}"
+        assert r.returncode == 0, r.stderr
+        found = [Path(line[2:]).name for line in r.stdout.splitlines() if line.startswith("F=")]
+        assert sorted(found) == sorted(planted), f"expected each staging shape exactly once:\n{r.stdout}"
+        assert r.stdout.splitlines()[-1] == "shopt -u nullglob", "the helper must restore the caller's nullglob"
+
+    @staticmethod
+    def _lift(script: str, first: str, last: str) -> str:
+        body = (REPO_ROOT / "scripts" / script).read_text()
+        start = body.index(first)
+        return body[start : body.index(last, start) + len(last)]
+
+    def test_the_gift_sweep_removes_them_through_the_real_script_code(self, tmp_path):
+        install, _ = self._plant(tmp_path)
+        block = self._lift(
+            "reset-setup.sh", '    env_staging_files "$INSTALL_DIR" _STALE_STAGING', "    unset _stale _STALE_STAGING"
+        )
+        state_sh = REPO_ROOT / "scripts" / "lib" / "state.sh"
+        prog = f"set -e\nINSTALL_DIR='{install}'\n. '{state_sh}'\n{block}\n"
+        r = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr
+        assert sorted(p.name for p in install.iterdir()) == ["env.sh", "env.sh.lock", "env.sh.sample"]
+
+    def test_the_clone_gate_refuses_through_the_real_script_code_under_set_e(self, tmp_path):
+        """prepare-for-cloning.sh runs `set -e`; the gate block is lifted and
+        run that way, with `_abort_env_credentials` recording its argument."""
+        install, planted = self._plant(tmp_path)
+        block = self._lift(
+            "prepare-for-cloning.sh", 'env_staging_files "$INSTALL_DIR" _ENV_STAGING', "unset _ENV_STAGING"
+        )
+        state_sh = REPO_ROOT / "scripts" / "lib" / "state.sh"
+        prog = (
+            f"set -e\nINSTALL_DIR='{install}'\n. '{state_sh}'\n"
+            '_abort_env_credentials() { echo "ABORT: $1"; exit 3; }\n'
+            f"{block}\necho CERTIFIED\n"
+        )
+        r = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, timeout=30)
+        assert "CERTIFIED" not in r.stdout, f"the gate passed a card carrying staging copies:\n{r.stdout}{r.stderr}"
+        assert r.returncode == 3, r.stderr
+        for name in planted:
+            assert name in r.stdout, f"{name} missing from the refusal:\n{r.stdout}"

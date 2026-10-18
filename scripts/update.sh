@@ -232,7 +232,7 @@ LAST_UPDATE_FILE="$STATE_DIR/last-update.json"
 # litclock-dev#847 item 1 — the NEGATIVE-RESULT MEMO for the litclock-dev#531
 # runtime-render validation — and, since litclock-dev#871 Stage A, the
 # runtime-render SELF-TEST's verdict (`selftest-failed` with the painter's rc,
-# or `selftest-deferred`). Phase 4.5's KEEP arm writes it when the check is
+# `selftest-no-corpus`, or `selftest-deferred`). Phase 4.5's KEEP arm writes it when the check is
 # DEFERRED (not enough of this run's systemd budget left), TIMES OUT or FAILS,
 # and removes it when the check passes or the marker is already present.
 # JSON, one object: {result, rc, reason, sha, at_unix}. Persistent (SD-backed,
@@ -245,8 +245,10 @@ LAST_UPDATE_FILE="$STATE_DIR/last-update.json"
 # device on the PNG tier until the next release.
 RUNTIME_VALIDATION_MEMO_FILE="$STATE_DIR/runtime-render-validation.json"
 # litclock-dev#871 Stage A — the POSITIVE record the memo above cannot carry:
-# {result: passed, duration_s, sha, at_unix}, written by the self-test on a
-# pass and removed on a fail. The journal is capped at 7 days (the weekly tick
+# {result: passed, duration_s, sha, language, marker, at_unix}, written by the
+# self-test on a pass and removed on a fail (language and marker since
+# litclock-dev#532: a record without them never satisfies the self-test's
+# same-release skip, which a MIGRATED device takes — Phase 4.5 still runs). The journal is capped at 7 days (the weekly tick
 # cadence), so a pass logged only there is gone before Stage B can read it —
 # the journal is the reason this file exists, NOT a no-op early-out: there is
 # none, and a tick with nothing new runs Phase 4.5 like any other (measured
@@ -992,7 +994,23 @@ fi
 
 # Snapshot own checksum BEFORE pull so we can detect self-modification
 SELF_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
-OLD_SELF_HASH=$(md5sum "$SELF_SCRIPT" | cut -d' ' -f1)
+# The fingerprint covers update.sh AND the lib/*.sh it sourced at startup
+# (litclock-dev#893 review). bash sources lib/ once, at the top, so with
+# update.sh alone in the hash a release that changed only lib/ skipped the
+# re-exec and ran the rest of its own install tick on the OLD helpers still in
+# memory — a lib-only fix took effect one tick (1-2 weeks) late, and litclock-dev#893
+# itself was lib-only. The same $_THIS_SCRIPT_DIR is read before and after the
+# reset, so a snapshot run (whose lib/ never changes) cannot loop.
+_self_hash() {
+    local f
+    {
+        md5sum "$SELF_SCRIPT"
+        for f in "$_THIS_SCRIPT_DIR"/lib/*.sh; do
+            [[ -f "$f" ]] && md5sum "$f"
+        done
+    } 2>/dev/null | md5sum | cut -d' ' -f1
+}
+OLD_SELF_HASH=$(_self_hash)
 
 # The runtime-render validation marker (see ANCHOR: runtime-marker-revoke for
 # what it proves). Resolved HERE, before the reset, because a bootcheck rollback
@@ -1077,12 +1095,11 @@ fi
 git submodule update --init --recursive
 
 # ANCHOR: reexec-guard
-# Re-exec if update.sh itself changed — bash holds a stale fd after
-# git replaces the file, which can cause it to read garbled content
-# from the new file at the old byte offset.
-NEW_SELF_HASH=$(md5sum "$SELF_SCRIPT" | cut -d' ' -f1)
+# Re-exec if update.sh or its lib/ changed — so the rest of this tick runs the
+# new code against the new tree (see _self_hash for why lib/ counts).
+NEW_SELF_HASH=$(_self_hash)
 if [[ "$OLD_SELF_HASH" != "$NEW_SELF_HASH" ]]; then
-    log_info "update.sh changed — re-executing with new version..."
+    log_info "update.sh or its lib/ changed — re-executing with new version..."
     if [[ "$ROLLBACK_MODE" -eq 1 && -n "$ROLLBACK_SELF_SNAPSHOT" && -f "$ROLLBACK_SELF_SNAPSHOT" ]]; then
         # Rollback: re-exec the pre-reset snapshot (has rollback logic), NOT the
         # on-disk LKG update.sh. rollback-target persists on disk, so the
@@ -1712,8 +1729,9 @@ if [[ -x "$PYTHON" ]]; then
     ) | sed 's/^/[smoke] /'
     smoke_rc="${PIPESTATUS[0]}"
     [[ -n "${smoke_render_dir:-}" && -d "$smoke_render_dir" ]] && rm -rf -- "$smoke_render_dir" 2>/dev/null
-    # litclock-dev#532 (/review litclock-dev#738): the dry-run never imports the string
-    # catalog, so a half-applied OTA missing languages/ passed smoke and
+    # litclock-dev#532 (/review litclock-dev#738): the dry-run once never imported the
+    # string catalog (since litclock-dev#532 Phase A it does, but only to resolve the
+    # device language — it reads no copy on a quote frame), so a half-applied OTA missing languages/ passed smoke and
     # shipped raw keys to /api/status and every catalog-get script. Probe a
     # known key and require the RESOLVED value. The exit code cannot
     # discriminate: catalog-get exits 0 by contract and degrades visibly
@@ -1812,8 +1830,9 @@ if [[ -x "$PYTHON" ]]; then
     # adds a string. tests/test_update_sh.py keeps it honest from the other
     # side — it fails if the floor drifts above the real count OR falls below
     # 75% of it, so a growing catalog forces a deliberate bump rather than
-    # letting the gate quietly go slack.
-    CATALOG_MIN_KEYS=400
+    # letting the gate quietly go slack. Raised 400 -> 500 with litclock-dev
+    # litclock-dev#532 T6 (the catalog reached 555 keys; 400 was under the 75% line).
+    CATALOG_MIN_KEYS=500
     if [[ "$smoke_rc" -eq 0 && "$catalog_probes" -eq 1 ]]; then
         catalog_count="$(LITCLOCK_LANGUAGE=en timeout 30 "$PYTHON" src/eink_display.py catalog-count 2>/dev/null)"
         if [[ "$catalog_count" =~ ^[0-9]+$ ]] && [[ "$catalog_count" -ge "$CATALOG_MIN_KEYS" ]]; then
@@ -1973,7 +1992,8 @@ _block_reverted_release() {
 
 # litclock-dev#847 item 1 — write the negative-result memo (see
 # RUNTIME_VALIDATION_MEMO_FILE). $1 result: deferred|timeout|failed, or
-# selftest-failed|selftest-deferred (litclock-dev#871 Stage A); $2 the
+# selftest-failed|selftest-deferred (litclock-dev#871 Stage A), or
+# selftest-no-corpus (litclock-dev#532), or migration-skipped (Stage B); $2 the
 # validator's or the self-test painter's rc, or empty when it never ran; $3
 # the reason, prose. src/control_server/routes/status.py's
 # RUNTIME_VALIDATION_RESULTS must list every token written here.
@@ -2084,9 +2104,13 @@ _validation_fits_remaining_budget() {
 # Why flipping is safe to do unattended, stated once: runtime render DEGRADES,
 # it does not blank. Every failure path in `literary_clock.py` returns False
 # with "using pre-rendered images" — missing marker, unusable freetype, digest
-# mismatch, empty corpus row, any other exception — so a device that cannot
-# render text keeps painting PNGs — and below THAT is the plain 144pt time
-# display, so losing the PNG tier costs the quote, not the clock. The
+# mismatch, any other exception — or reports a gap/failure for the minute, so
+# a device that cannot render text keeps painting PNGs — and below THAT is
+# the plain-time frame (the time plus a gap/failure line), so losing the PNG
+# tier costs the quote, not the clock. (The PNG rung exists for English only:
+# every other language always renders text and drops straight to the
+# plain-time frame — litclock-dev#532 R7. The flag this flip writes governs
+# English alone.) The
 # realistic worst case of this flip is "the device stays on images", which is
 # where it already is.
 #
@@ -2120,7 +2144,7 @@ _validation_fits_remaining_budget() {
 #      not `images/`, because that is the directory the painter's fallback
 #      actually globs — though a non-empty directory is not proof the PNGs in
 #      it are usable, only that the tier has not been removed. The tier below
-#      it is the plain 144pt time display, NOT a blank panel: losing images/
+#      it is the plain-time frame, NOT a blank panel: losing images/
 #      costs the quote, not the clock. It is still the rung worth keeping —
 #      a clock showing the time and no quote is the product failing quietly —
 #      but the earlier wording here overstated it.
@@ -2335,7 +2359,8 @@ _runtime_render_migrate() {
 # it does not say this device can paint a quote from text. Between the two sit
 # the corpus resolution (litclock-dev#870), the fonts on disk, the renderer's
 # own guards, and every reason `_runtime_render_enabled()` has to decline —
-# and today every one of them degrades SILENTLY to the PNG tier, so a fleet
+# and every one of them degrades SILENTLY (to the PNG tier for English, to
+# the plain-time frame for any other language — litclock-dev#532), so a fleet
 # device could carry a valid marker and still never render a line of text.
 # Stage B flips LITCLOCK_RUNTIME_RENDER on devices whose self-test passes and
 # whose other four guards hold — see `_runtime_render_migrate` above. This
@@ -2358,7 +2383,9 @@ _runtime_render_migrate() {
 # NEVER fails the update. A failed self-test means "stay on PNGs", which is
 # where the device already is. The verdict lands in the litclock-dev#847 memo:
 # `selftest-failed` with the painter's rc (3 = fell back, 124 = timed out,
-# anything else = the painter died), or `selftest-deferred` when the budget or
+# anything else = the painter died), `selftest-no-corpus` for rc 4 (the device
+# language's corpus has nothing to sample, litclock-dev#532), or
+# `selftest-deferred` when the budget or
 # the scratch directory is gone. A pass writes the POSITIVE record
 # (RUNTIME_SELFTEST_RECORD_FILE) with its DURATION: Stage B needs a durable
 # on-device pass, sha-matched — and Stage B does gate on this file, not just
@@ -2370,22 +2397,31 @@ _runtime_render_migrate() {
 # it either. A "renders inside the lead" threshold built on this number
 # would be measuring the wrong thing; deciding what such a gate should
 # actually measure is its own piece of work (litclock-dev#875 review + red team).
-# One sample, one minute, one random row: a corpus gap at that minute reads as
-# a fallback too, and the painter now says so in its own [selftest] line, so
-# a `selftest-failed` is "did not render text this time", never proof of
-# incapacity — Stage B acts only on a PASS.
+# One sample, one random row — but since litclock-dev#532 R10 not one random
+# MINUTE: `--sample-quote` renders the first minute from now that the device
+# language's corpus covers, so a fallback is a rendering verdict, never a
+# coverage one (an uncovered current minute used to fail it). A
+# `selftest-failed` is still "did not render text this time", never proof of
+# incapacity — Stage B acts only on a PASS. A migrated device skips the run
+# once its release, language and marker have passed (see
+# _runtime_selftest_already_passed).
 
 # The pass record (RUNTIME_SELFTEST_RECORD_FILE). $1 duration in seconds, one
-# decimal. Same jq/atomic/0644 shape as the memo writer; best-effort.
+# decimal; $2 the device language the sample rendered in; $3 the validation
+# marker's digest at the time (litclock-dev#532 — both bind the pass so the
+# same-release skip cannot outlive what it proved). Same jq/atomic/0644 shape
+# as the memo writer; best-effort.
 _runtime_selftest_record_write() {
-    local duration="$1" sha json
+    local duration="$1" language="${2:-}" marker="${3:-}" sha json
     if ! command -v jq >/dev/null 2>&1; then
         log_warn "jq missing — not recording the runtime-render self-test pass (litclock-dev#871)"
         return 0
     fi
     sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-    json=$(jq -nc --arg d "$duration" --arg sha "$sha" --arg at "$(date +%s 2>/dev/null || echo 0)" \
-        '{result: "passed", duration_s: ($d | tonumber), sha: ($sha | if . == "" then null else . end), at_unix: ($at | tonumber)}' 2>/dev/null) || json=""
+    json=$(jq -nc --arg d "$duration" --arg sha "$sha" --arg lang "$language" --arg marker "$marker" \
+        --arg at "$(date +%s 2>/dev/null || echo 0)" \
+        '{result: "passed", duration_s: ($d | tonumber), sha: ($sha | if . == "" then null else . end),
+          language: $lang, marker: $marker, at_unix: ($at | tonumber)}' 2>/dev/null) || json=""
     if [[ -z "$json" ]] || ! atomic_write_file "$RUNTIME_SELFTEST_RECORD_FILE" "$json"; then
         log_warn "Could not write $RUNTIME_SELFTEST_RECORD_FILE — Stage B will not see this pass (litclock-dev#871)"
         return 0
@@ -2395,11 +2431,78 @@ _runtime_selftest_record_write() {
     return 0
 }
 
+# One variable from env.sh AS THE PAINTER SEES IT: sourced in a subshell (so
+# env.sh cannot leak into this script) and read with printenv, because
+# runtheclock.sh sources env.sh without `set -a` and a bare assignment never
+# reaches the painter (the Stage B lesson). Empty when unset or unexported.
+_selftest_env() {
+    (
+        [[ -f "${INSTALL_DIR:-}/env.sh" ]] && source "${INSTALL_DIR:-}/env.sh" 2>/dev/null
+        printenv "$1" || true
+    )
+}
+
+# The device language the self-test samples in, resolved the way the painter
+# resolves it (strings_catalog.configured_language): the exported value, else
+# the LAST `LITCLOCK_LANGUAGE=` line of env.sh — export optional, because the
+# catalog reads the FILE too — else "en" (litclock-dev#532 R10 + review). The
+# sed mirrors strings_catalog._ENV_LINE_RE.
+_selftest_language() {
+    local language
+    language=$(_selftest_env LITCLOCK_LANGUAGE)
+    if [[ -z "$language" && -f "${INSTALL_DIR:-}/env.sh" ]]; then
+        language=$(sed -nE "s/^[[:space:]]*(export[[:space:]]+)?LITCLOCK_LANGUAGE[[:space:]]*=[[:space:]]*[\"']?([A-Za-z0-9_-]*).*/\2/p" \
+            "${INSTALL_DIR}/env.sh" 2>/dev/null | tail -n 1)
+    fi
+    printf '%s' "${language:-en}"
+}
+
+# The validation marker's digest, or empty when there is none. The marker is
+# gitignored, so no release pins it: a corrupted or re-stamped marker on the
+# same sha must invalidate an earlier pass (litclock-dev#532 review).
+_selftest_marker_digest() {
+    [[ -f "${RUNTIME_MARKER:-}" ]] || return 0
+    sha256sum < "$RUNTIME_MARKER" 2>/dev/null | cut -c1-64
+}
+
+# litclock-dev#532 (TODOS T1, with R10): may this tick skip the self-test?
+# Only when there is nothing left for it to decide. Its PASS is what lets
+# Stage B flip LITCLOCK_RUNTIME_RENDER, and Stage B's contract is a pass on
+# THIS run — so a device whose flag is not yet exported `true` always runs it
+# (review: a skip there would let a refusal last week plus a fixed cause this
+# week migrate on weeks-old evidence). On an already-migrated device the run
+# only re-proves the record, so it is skipped when the record says `passed`
+# for this sha (read here), this language ($1) and this marker ($2) — the three things a pass depends on that can change between
+# ticks. Anything else (a fail, a deferral, an unreadable, foreign-shaped or
+# pre-litclock-dev#532 record) runs it. `jq -e` with its status checked, because jq PRINTS
+# a matching value before failing on trailing garbage.
+_runtime_selftest_already_passed() {
+    local language="$1" marker="$2" sha rec flag
+    flag=$(_selftest_env LITCLOCK_RUNTIME_RENDER)
+    [[ "${flag,,}" == "true" || "$flag" == "1" ]] || return 1
+    [[ -n "$marker" && -f "$RUNTIME_SELFTEST_RECORD_FILE" ]] || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+    sha=$(git rev-parse HEAD 2>/dev/null) || return 1
+    [[ -n "$sha" ]] || return 1
+    rec=$(jq -e -r 'if .result == "passed" and ([.sha, .language, .marker] | all(type == "string"))
+        then "\(.sha) \(.language) \(.marker)" else empty end' "$RUNTIME_SELFTEST_RECORD_FILE" 2>/dev/null) || return 1
+    [[ "$rec" == "$sha $language $marker" ]]
+}
+
 _runtime_render_selftest() {
-    local rc dir t0 dur_ms duration
+    local rc dir t0 dur_ms duration language marker
     # Stage B reads this. Set on EVERY arm, including the early returns, so
     # no stale or unset value can be mistaken for a pass.
     RUNTIME_SELFTEST_RESULT=deferred
+    # Read ONCE, before the run: what the record says it proved must be what
+    # the run used, not what env.sh says a few seconds later.
+    language=$(_selftest_language)
+    marker=$(_selftest_marker_digest)
+    if _runtime_selftest_already_passed "$language" "$marker"; then
+        log_info "runtime-render self-test: already PASSED for this release, language ($language) and marker on a migrated device — skipping (litclock-dev#532; delete $RUNTIME_SELFTEST_RECORD_FILE to force a run)"
+        RUNTIME_SELFTEST_RESULT=pass
+        return 0
+    fi
     _validation_fits_remaining_budget "$SELFTEST_TIMEOUT_S" selftest-deferred "the runtime-render self-test" || return 0
     if ! dir=$(mktemp -d 2>/dev/null) || [[ -z "$dir" ]]; then
         log_info "deferring the runtime-render self-test to the next update: could not create a scratch directory (litclock-dev#871)"
@@ -2460,7 +2563,7 @@ _runtime_render_selftest() {
         # env(1), not `export`, for the reason the smoke gate gives: a
         # `readonly` in the sourced env.sh would defeat an export.
         env LITCLOCK_RUNTIME_RENDER=true LITCLOCK_RUNTIME_RENDER_DIR="$dir" WEATHER_ENABLED=false \
-            timeout "$SELFTEST_TIMEOUT_S" "$PYTHON" src/literary_clock.py --dry-run --require-runtime-render 2>&1
+            timeout "$SELFTEST_TIMEOUT_S" "$PYTHON" src/literary_clock.py --dry-run --require-runtime-render --sample-quote 2>&1
     ) | sed 's/^/[selftest] /'
     rc="${PIPESTATUS[0]}"
     dur_ms=$(( (${EPOCHREALTIME//[^0-9]/} - t0) / 1000 ))
@@ -2469,22 +2572,38 @@ _runtime_render_selftest() {
     [[ -n "$dir" && -d "$dir" ]] && rm -rf -- "$dir" 2>/dev/null
     if [[ "$rc" -eq 0 ]]; then
         log_info "runtime-render self-test PASSED in ${duration}s — this device composed a quote frame from text (litclock-dev#871; Stage B may now migrate LITCLOCK_RUNTIME_RENDER on an eligible device, and says so if it does; a device already on true normally logs nothing further)"
-        _runtime_selftest_record_write "$duration"
+        _runtime_selftest_record_write "$duration" "$language" "$marker"
         RUNTIME_SELFTEST_RESULT=pass
         return 0
     fi
-    # A fail retires any earlier pass: Stage B must never flip on a stale one.
+    # A fail retires any earlier pass: Stage B must never flip on a stale one,
+    # and since litclock-dev#532 the skip must never re-use one either. atomic_remove_file
+    # does not report failure, so a record that survives is overwritten with
+    # one that both readers reject.
     RUNTIME_SELFTEST_RESULT=fail
     atomic_remove_file "$RUNTIME_SELFTEST_RECORD_FILE"
+    if [[ -e "$RUNTIME_SELFTEST_RECORD_FILE" ]]; then
+        atomic_write_file "$RUNTIME_SELFTEST_RECORD_FILE" '{"result":"failed"}' \
+            || log_warn "Could not retire $RUNTIME_SELFTEST_RECORD_FILE after a failed self-test"
+    fi
     if [[ "$rc" -eq 124 ]]; then
         log_info "runtime-render self-test did not finish within ${SELFTEST_TIMEOUT_S}s (${duration}s elapsed) — staying as is (this is not an update failure)"
         _runtime_validation_memo_write selftest-failed "$rc" "the self-test did not finish within ${SELFTEST_TIMEOUT_S}s"
+    elif [[ "$rc" -eq 4 ]]; then
+        # litclock-dev#532 R10: no minute in the device language's corpus has
+        # a quote to sample — a corpus problem, not a renderer one, so its own
+        # token (allowlisted in routes/status.py) rather than selftest-failed.
+        log_info "runtime-render self-test could not run: the device language's corpus has no quote to sample — staying as is (this is not an update failure)"
+        _runtime_validation_memo_write selftest-no-corpus "$rc" "the device language's corpus has no quote to render"
     elif [[ "$rc" -eq 3 ]]; then
-        log_info "runtime-render self-test did not pass: the painter fell back to pre-rendered images after ${duration}s — staying as is (this is not an update failure; the [selftest] lines above say why)"
-        _runtime_validation_memo_write selftest-failed "$rc" "the painter fell back to pre-rendered images with the text renderer forced on"
+        # Tier-neutral since litclock-dev#532: English falls back to its PNGs,
+        # every other language to the plain-time frame (and the [selftest]
+        # dry-run line says which, and whether it was a gap or a failure).
+        log_info "runtime-render self-test did not pass: the painter fell back (pre-rendered images, or the plain time) after ${duration}s — staying as is (this is not an update failure; the [selftest] lines above say why)"
+        _runtime_validation_memo_write selftest-failed "$rc" "the painter fell back (pre-rendered images, or the plain time) with the text renderer forced on"
     else
         log_info "runtime-render self-test did not pass (rc=$rc) — staying as is (this is not an update failure)"
-        _runtime_validation_memo_write selftest-failed "$rc" "src/literary_clock.py --dry-run --require-runtime-render exited $rc"
+        _runtime_validation_memo_write selftest-failed "$rc" "src/literary_clock.py --dry-run --require-runtime-render --sample-quote exited $rc"
     fi
     return 0
 }

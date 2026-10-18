@@ -43,6 +43,48 @@ read_sha_file() {
     fi
 }
 
+# ─── Durability barriers (litclock-dev#893) ──────────────────────────
+#
+# rename(2) is atomic for concurrent READERS, not a durability barrier: after
+# `mv` returns the bytes can still be in page cache, and a power cut can bring
+# the file back zero-length. ext4's auto_da_alloc heuristic covers a rename
+# over an EXISTING file, which is why env.sh has not been seen doing it — but
+# not a brand-new file, which is what most /var/lib/litclock state is
+# (rollback-target, blocked-sha and the self-test pass record are all written
+# fresh). So every staged file is fsynced BEFORE its rename and its directory
+# after, the same two barriers src/config.py and src/wifi_provision.py use.
+#
+# `sync FILE` is fsync(2) in coreutils (>= 8.24; Pi OS ships 9.1). It REOPENS
+# the file rather than syncing the descriptor that wrote it, so a writeback
+# error from a failing card can in principle be lost if the kernel evicts the
+# inode in between (Codex, litclock-dev#893 review) — a known residual, accepted: closing it
+# means staging every body through `dd conv=fsync` instead of a redirect.
+# `sync` absent entirely (the busybox/CI sandboxes the no-flock fallback exists
+# for) degrades to the old unsynced write rather than refusing.
+
+# _sync_staged PATH — flush a staged file before it is renamed into place.
+# rc 1 means the flush FAILED and the caller must not rename: publishing bytes
+# the kernel just said it could not write is the zero-length hazard itself.
+_sync_staged() {
+    command -v sync >/dev/null 2>&1 || return 0
+    sync "$1" 2>/dev/null
+}
+
+# _sync_dir DIR — make a completed rename in DIR durable. Always rc 0: the new
+# file is already in place and its bytes are already on the card, so the worst
+# a lost rename brings back is the OLD file, whole (or, on a first write, no
+# file). Warns rather than fails —
+# an owner decision on the litclock-dev#893 review, which weighed it against gift/clone
+# prep: there "the old file" is the previous owner's env.sh, so a failure here
+# on a card that is already returning I/O errors is worth a line in the log,
+# but not worth a distinct return code threaded through every caller.
+_sync_dir() {
+    command -v sync >/dev/null 2>&1 || return 0
+    sync "$1" 2>/dev/null \
+        || echo "[WARN] could not sync directory $1 — the file just renamed into it may not survive a power cut (litclock-dev#893)" >&2
+    return 0
+}
+
 atomic_write_file() {
     # $1 = destination, $2 = content (may be empty for marker files)
     local dest="$1" content="${2-}"
@@ -66,11 +108,23 @@ atomic_write_file() {
         # the pi user doesn't yet own the state dir.
         tmp="${dest}.tmp.$$"
         printf "%s" "$content" | sudo tee "$tmp" >/dev/null 2>&1 || return 1
+        # Flush ONCE, with the privilege that wrote it (a restrictive sudo umask
+        # leaves it 0600 root, unopenable by pi). Never an unprivileged try then
+        # a sudo retry: a retried fsync can report success after the kernel has
+        # already dropped the failed pages, which would publish the very file a
+        # flush just said was bad (litclock-dev#893 review, Codex; reproduced).
+        if command -v sync >/dev/null 2>&1 && ! sudo sync "$tmp" 2>/dev/null; then
+            sudo rm -f "$tmp" 2>/dev/null
+            return 1
+        fi
         sudo mv "$tmp" "$dest" 2>/dev/null || return 1
+        _sync_dir "$parent"
         return 0
     }
     printf "%s" "$content" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+    _sync_staged "$tmp" || { rm -f "$tmp"; return 1; }
     mv "$tmp" "$dest" 2>/dev/null || { rm -f "$tmp"; return 1; }
+    _sync_dir "$parent"
     return 0
 }
 
@@ -272,8 +326,13 @@ env_sh_defaults() {
     # the marker). So a `true` default would hand a reset clock runtime render
     # with none of Stage B's five guards run — including a clock whose
     # self-test had FAILED, which is precisely the device the guards exist to
-    # hold back. Those callers take the default; a device that can render text
-    # is migrated properly by update.sh on its next tick, within a week.
+    # hold back. Those callers therefore never ask for `true` outright: they
+    # pass the device's CURRENT value, read by env_sh_current_runtime_render
+    # below. A clock already on text keeps it (a fresh flash seeded it, or
+    # Stage B migrated it through its guards); a clock still on images, or
+    # held back by a failed self-test, stays there for update.sh to migrate on
+    # its next tick. Before that, every reset and every clone dropped a text
+    # clock back to PNGs until its next weekly tick.
     # `first-boot.sh` passes `true` explicitly, because a fresh flash carries a
     # marker stamped at image-build time against the shipped renderer.
     local runtime_render="${2-false}"
@@ -308,6 +367,97 @@ export LITCLOCK_RUNTIME_RENDER=$runtime_render
 EOF
 }
 
+# env_sh_current_runtime_render FILE — print `true` if FILE turns runtime text
+# rendering on for the painter, else `false`. Always exits 0.
+#
+# reset-setup.sh and prepare-for-cloning.sh call it on the OLD env.sh just
+# before replacing it, and hand the answer to env_sh_defaults so the next owner
+# (or every clone of this card) keeps the tier this device had already earned.
+#
+# What the painter sees: runtheclock.sh does `source ./env.sh` with no
+# `set -a`, so only an EXPORTED assignment reaches it, and literary_clock.py
+# accepts `1`/`true` in any case. This is NOT a `source`: reset-setup.sh runs as
+# root and must not execute a pi-writable file. So instead of evaluating shell,
+# it answers `true` only for a file whose shape leaves no room for doubt, and
+# `false` for everything else (the value these callers seeded before it existed,
+# which costs at most a week on PNGs until Stage B migrates the device):
+#
+#   * EVERY active line is a comment, blank, or one flat `[export ]NAME=VALUE`
+#     with NAME in the key families the writers use (WEATHER_*, LITCLOCK_*, ...)
+#     (spaces and tabs only, so a CRLF line, which the painter reads as
+#     `true\r`, is not one) whose VALUE is built only from the shapes the
+#     writers emit: unquoted safe characters, '...' segments, and "..."
+#     segments without $ ` or \ (what config.py's shlex.quote and the
+#     seeders produce). An `if`, a heredoc, an
+#     `unset`, `export -n`, `readonly`, `declare`, `return`, `eval`, a `;` or a
+#     trailing comment is not such a line, and makes the answer `false`;
+#   * exactly ONE active line mentions the variable at all, and it is
+#     `export LITCLOCK_RUNTIME_RENDER=` true/1, optionally quoted.
+# (litclock-dev PR litclock-dev#929 review: a line counter alone said `true` for a CRLF
+# file, an `unset` after the export, or an assignment inside a heredoc.)
+env_sh_current_runtime_render() {
+    local file="${1-}" body
+    local var='LITCLOCK_RUNTIME_RENDER'
+    local value="([A-Za-z0-9_@%+=:,./-]|'[^']*'|\"[^\"\$\`\\\\]*\")*"
+    # Only the key families the writers emit (env.sh.sample, config.py, the
+    # seeders). Any other name may be one bash or Python treats specially
+    # (POSIXLY_CORRECT + a readonly UID ends the source early; PYTHONIOENCODING
+    # kills the painter at startup: PR litclock-dev#929 re-review), so it reads false.
+    local name='(WEATHER|LITCLOCK|OPENWEATHERMAP|ALLOW|SHOW|GIFT|DISPLAY|LOG|GH|GITHUB)_[A-Z0-9_]*'
+    local flat="^[ 	]*(#.*)?\$|^[ 	]*(export[ 	]+)?${name}=${value}[ 	]*\$"
+    local mention="(^|[^A-Za-z0-9_])${var}([^A-Za-z0-9_]|\$)"
+    local on="^[ 	]*export[ 	]+${var}=([Tt][Rr][Uu][Ee]|1|\"([Tt][Rr][Uu][Ee]|1)\"|'([Tt][Rr][Uu][Ee]|1)')[ 	]*\$"
+    if [[ -z "$file" || ! -f "$file" || ! -r "$file" ]]; then
+        echo false
+        return 0
+    fi
+    body=$(cat -- "$file" 2>/dev/null) || { echo false; return 0; }
+    if printf '%s\n' "$body" | grep -vqE "$flat" \
+        || [[ "$(printf '%s\n' "$body" | grep -vE '^[ 	]*(#|$)' | grep -cE "$mention" || true)" != "1" ]] \
+        || ! printf '%s\n' "$body" | grep -qE "$on"; then
+        echo false
+    else
+        echo true
+    fi
+    return 0
+}
+
+# env_staging_files DIR ARRAY — fill the caller's ARRAY (named, not printed)
+# with every abandoned staging copy of DIR/env.sh. Each is a full unredacted env.sh (API key, coordinates, city):
+# a writer died between staging and rename (SIGKILL, power loss — and since
+# litclock-dev#893 the staged bytes are fsynced, so a power-loss orphan comes
+# back FULL rather than mostly empty). Three shapes, one per writer:
+#   env.sh.XXXXXX     the shell writers' `mktemp "${dest}.XXXXXX"`
+#   env.sh.tmp.<pid>  their fallback when mktemp is unavailable
+#   .env.sh.tmp.*     src/config.py's `tempfile.mkstemp(prefix=".env.sh.tmp.")`
+# The third was missed by the litclock-dev#871 sweep, which matched only the
+# first. env.sh.sample is six characters too and is tracked, so it is excluded
+# by name. The single source for the gift wipe (reset-setup.sh) and the clone
+# gate (prepare-for-cloning.sh), so a fourth writer is added in one place.
+#
+# It fills an array in the CALLER's shell instead of printing into a pipe or a
+# `< <(...)`: a failure inside a process substitution is invisible to the
+# reader, and the first version of this helper died there under the clone
+# gate's `set -e` — on `shopt -p`, which exits 1 whenever the option is OFF —
+# so the gate read an empty list and certified a card carrying the previous
+# owner's key (litclock-dev#893 review, Codex; reproduced). Here a failure is the caller's.
+env_staging_files() {
+    local dir="$1" f restore
+    local -n _env_staging_out="$2"
+    local -A seen=()
+    _env_staging_out=()
+    restore=$(shopt -p nullglob) || true   # exit 1 just means "currently off"
+    shopt -s nullglob
+    for f in "$dir"/env.sh.?????? "$dir"/env.sh.tmp.* "$dir"/.env.sh.tmp.*; do
+        [[ "$(basename "$f")" == "env.sh.sample" ]] && continue
+        # `env.sh.tmp.NN` (a two-digit pid) matches the first glob too.
+        [[ -n "${seen[$f]:-}" ]] && continue
+        seen[$f]=1
+        _env_staging_out+=("$f")
+    done
+    eval "$restore"
+}
+
 # atomic_write_env_sh DEST CONTENT — overwrite env.sh atomically under
 # the sidecar flock. CONTENT is the full file body (used by
 # reset-setup.sh + prepare-for-cloning.sh). Preserves ownership + mode
@@ -318,7 +468,8 @@ EOF
 #   0   wrote successfully (or fallback wrote with warn).
 #   75  flock timed out — destination untouched. Wait defaults to 30s,
 #       overridable via $LITCLOCK_ENV_LOCK_WAIT (seconds, integer).
-#   1   any other failure (mktemp, printf, mv) — destination untouched.
+#   1   any other failure (mktemp, printf, the flush of the staged file,
+#       mv) — destination untouched.
 #
 # Callers MUST tolerate rc!=0 explicitly; we never abort the caller's
 # script.
@@ -348,7 +499,9 @@ atomic_write_env_sh() {
     if ! command -v flock >/dev/null 2>&1; then
         echo "[WARN] flock(1) unavailable — writing env.sh without lock (sandbox/CI fallback)" >&2
         _atomic_write_env_sh_finalize "$tmp" "$dest"
-        return $?
+        rc=$?
+        [[ $rc -ne 0 ]] && rm -f "$tmp" 2>/dev/null
+        return $rc
     fi
 
     # Subshell scope; fd 200 closes (and the flock releases) on `)`.
@@ -365,6 +518,13 @@ atomic_write_env_sh() {
 # atomically replace. Split out so both the locked and no-lock paths
 # share the same finalize semantics. ext4 rename(2) is atomic — readers
 # see either pre- or post-state, never a torn intermediate.
+#
+# Atomic is not DURABLE (litclock-dev#893): the staged bytes are fsynced
+# before the rename and the directory after it — see _sync_staged/_sync_dir.
+# The file sync runs FIRST, while this user still owns the staging file; after
+# a chown to a 0600 root:root destination's owner a pi caller could no longer
+# open it to sync it. A failed file sync aborts with the destination untouched,
+# as Python's raising fsync does; a failed directory sync warns and succeeds.
 #
 # Refuses to proceed when dest is a symlink: `stat -c '%a'` on a symlink
 # returns the symlink's own mode (always 0777), which would then be
@@ -387,6 +547,14 @@ atomic_write_env_sh() {
 _atomic_write_env_sh_finalize() {
     local tmp="$1" dest="$2"
     local owner mode
+    # Flush FIRST — see the barrier notes above _sync_staged — and before the
+    # symlink guard, so the guard stays adjacent to the `stat` it protects
+    # (an fsync between them would widen that check-to-use gap to an SD-card
+    # write, litclock-dev#893 review).
+    if ! _sync_staged "$tmp"; then
+        echo "[ERROR] atomic_write_env_sh: could not flush $tmp to disk; leaving $dest untouched" >&2
+        return 1
+    fi
     if [[ -L "$dest" ]]; then
         echo "[ERROR] atomic_write_env_sh: refusing to overwrite symlink at $dest" >&2
         return 1
@@ -427,6 +595,7 @@ _atomic_write_env_sh_finalize() {
         chmod 0644 "$tmp" 2>/dev/null || true
     fi
     mv -f "$tmp" "$dest" 2>/dev/null || return 1
+    _sync_dir "$(dirname "$dest")"
     return 0
 }
 

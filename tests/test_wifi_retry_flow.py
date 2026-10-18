@@ -326,61 +326,35 @@ class TestWiFiBanners:
 
 
 class TestSuccessPageVariations:
-    """Test that HTML_SUCCESS renders differently for provisioning vs normal mode."""
+    """The confirmation page a provisioning POST returns (``_success_page``).
+
+    These used to call ``HTML_SUCCESS.format`` with hand-written English,
+    which tested str.format rather than the page; the retired normal-mode
+    variant they also covered no longer exists (litclock-dev#715). Since
+    litclock-dev#532 T6 the page's copy comes from the catalog."""
 
     def test_provisioning_mode_success_page(self):
-        """Provisioning mode: heading='Settings Saved!', has meta-refresh."""
-        result = setup_server.HTML_SUCCESS.format(
-            wifi="MyNetwork",
-            location="40.7, -74.0",
-            units="Fahrenheit",
-            timezone="America/New_York",
-            heading="Settings Saved!",
-            subtitle="Connecting to <strong>MyNetwork</strong>...",
-            meta_refresh='<meta http-equiv="refresh" content="15;url=/setup">\n    ',
-            footer="This page will automatically check the connection status.",
-        )
-        assert "Settings Saved!" in result
-        assert "Connecting to <strong>MyNetwork</strong>" in result
-        assert 'meta http-equiv="refresh"' in result
-        assert "check the connection status" in result
-
-    def test_normal_mode_success_page(self):
-        """Normal mode: heading='Setup Complete!', no meta-refresh."""
-        result = setup_server.HTML_SUCCESS.format(
-            wifi="Already connected",
-            location="40.7, -74.0",
-            units="Celsius",
-            timezone="Europe/London",
-            heading="Setup Complete!",
-            subtitle="Your LitClock is configured and ready to display literary quotes.",
-            meta_refresh="",
-            footer="You can close this page now. The clock will start displaying shortly.",
-        )
-        assert "Setup Complete!" in result
-        assert "ready to display literary quotes" in result
-        assert 'meta http-equiv="refresh"' not in result
-        assert "close this page" in result
+        result = setup_server._success_page("MyNetwork")
+        assert "<title>Joining your WiFi</title>" in result
+        assert "<h1>Joining your WiFi</h1>" in result
+        assert "Your clock is connecting to <strong>MyNetwork</strong>." in result
+        assert '<meta http-equiv="refresh" content="15;url=/setup">' in result
+        assert "Watch the clock’s screen." in result
+        # No success mark: nothing has succeeded when this page is sent.
+        assert "<svg" not in result
+        assert '<span class="row__label">WiFi</span>' in result
+        assert '<html lang="en">' in result
 
     def test_ssid_with_special_chars(self):
-        """WiFi SSIDs with HTML special chars are escaped in the success page."""
-        import html
-
+        """WiFi SSIDs with HTML special chars are escaped in EVERY place the
+        page shows them: the summary row, the subtitle and the next step."""
         ssid = 'My "Network" & <Friends>'
-        result = setup_server.HTML_SUCCESS.format(
-            wifi=html.escape(ssid),
-            location="0, 0",
-            units="C",
-            timezone="UTC",
-            heading="Settings Saved!",
-            subtitle=f"Connecting to <strong>{html.escape(ssid)}</strong>...",
-            meta_refresh="",
-            footer="footer",
-        )
-        assert "&amp;" in result
-        assert "&lt;Friends&gt;" in result
+        result = setup_server._success_page(ssid)
+        escaped = 'My &quot;Network&quot; &amp; &lt;Friends&gt;'
+        assert f'<span class="row__value">{escaped}</span>' in result
+        assert f"Switch your phone back to {escaped}, then scan" in result
+        assert f"connecting to <strong>{escaped}</strong>." in result
         assert "<Friends>" not in result
-
 
 # ── do_POST WiFi connect flow ───────────────────────────────────────
 
@@ -407,7 +381,7 @@ class TestDoPostWiFiFlow:
         return handler
 
     def test_provisioning_sends_settings_saved_heading(self, monkeypatch, tmp_env_file):
-        """In provisioning mode with WiFi SSID, response says 'Settings Saved!' not 'Setup Complete!'"""
+        """In provisioning mode with WiFi SSID, response says 'Joining your WiFi' not 'Setup Complete!'"""
         import sys
         import types
 
@@ -430,7 +404,7 @@ class TestDoPostWiFiFlow:
             handler = make_handler(req)
             response = post_setup(handler)
 
-            assert "Settings Saved!" in response
+            assert "Joining your WiFi" in response
             assert 'meta http-equiv="refresh"' in response
 
             # Wait for background thread to finish
@@ -454,7 +428,7 @@ class TestDoPostWiFiFlow:
         response = post_setup(handler)
 
         # Response still sent (success page) but no new thread spawned
-        assert "Settings Saved!" in response
+        assert "Joining your WiFi" in response
         # Give a moment to see if any new thread appeared
         time.sleep(0.1)
         assert threading.active_count() <= thread_count_before + 1
