@@ -15,6 +15,7 @@ the message still overflows.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -35,6 +36,8 @@ from eink_display import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# The English catalog: the splash copy's source since litclock-dev#532 T6.
+EN = json.loads((REPO_ROOT / "languages" / "en" / "strings.json").read_text(encoding="utf-8"))
 
 TITLE_MAX_WIDTH = DISPLAY_SIZE[0] - 2 * TITLE_SIDE_MARGIN
 
@@ -247,7 +250,7 @@ class TestHandoffSplashSsidCaveat:
             "has_location": True,
             "location_name": "San Francisco, CA",
             "timezone": "America/Los_Angeles",
-            "units_label": "Imperial (°F)",
+            "units": "imperial",
             "mature_enabled": False,
             "connected_ssid": ssid,
         }
@@ -566,7 +569,8 @@ class TestPanelTextClamps:
     def test_every_shipped_status_string_still_fits_unclamped(self):
         """Regression guard on the LAYOUTS, not the clamp.
 
-        Reads the strings out of the shell scripts that actually paint them
+        Reads the strings from where they actually live — the catalog's
+        farewell lines since litclock-dev#532 T7, the shell scripts before —
         rather than a hand-copied list. The first version of this test copied
         four literals and missed all 15 shutdown-splash quotes — including the
         widest shipped string on the device, which has 21px of headroom — so it
@@ -578,27 +582,23 @@ class TestPanelTextClamps:
         sub = ImageFont.truetype(eink_display.FONT_PATH, 20)
         budget = eink_display.DISPLAY_SIZE[0] - 2 * eink_display.STATUS_SIDE_MARGIN
 
-        shutdown = (REPO_ROOT / "scripts" / "shutdown-splash.sh").read_text()
-        # Parse the QUOTES=( ... ) arrays positionally: welcome, reboot,
-        # poweroff, in file order. Splitting on the case labels does NOT work —
-        # "reboot)" and "poweroff)" both appear first in the flag parser at the
-        # top of the script.
-        blocks = re.findall(r"QUOTES=\(\s*\n(.*?)^\s*\)", shutdown, re.MULTILINE | re.DOTALL)
-        assert len(blocks) == 3, f"expected 3 QUOTES arrays (welcome/reboot/poweroff), parsed {len(blocks)}"
-        # Poweroff quotes render as the 28pt MESSAGE; welcome and reboot as the
-        # 20pt SUBMESSAGE. Measure each at the font its own branch uses.
-        fonts = (sub, sub, msg)
+        # The farewell lines live in the catalog since litclock-dev#532 T7
+        # (shutdown.farewell.<screen>.N). Poweroff lines render as the 28pt
+        # MESSAGE; welcome and reboot as the 20pt SUBMESSAGE. Measure each at
+        # the font its own screen uses.
+        fonts = {"welcome": sub, "reboot": sub, "poweroff": msg}
         worst = (0.0, "")
         total = 0
-        for block, font in zip(blocks, fonts, strict=True):
-            quotes = re.findall(r"^\s*'(.+)'\s*$", block, re.MULTILINE)
-            assert quotes, "parsed a QUOTES array with no quotes in it"
-            total += len(quotes)
-            for q in quotes:
-                w = draw.textlength(q, font=font)
-                if w > worst[0]:
-                    worst = (w, q)
-                assert w <= budget, f"shipped quote no longer fits ({w:.0f}px > {budget}px): {q!r}"
+        for key, q in EN.items():
+            m = re.match(r"^shutdown\.farewell\.(welcome|reboot|poweroff)\.\d+$", key)
+            if not m:
+                continue
+            font = fonts[m.group(1)]
+            total += 1
+            w = draw.textlength(q, font=font)
+            if w > worst[0]:
+                worst = (w, q)
+            assert w <= budget, f"shipped quote no longer fits ({w:.0f}px > {budget}px): {q!r}"
         assert total >= 15, f"only parsed {total} shutdown quotes — the parser drifted, not the copy"
         assert worst[0] > 700, (
             f"expected the widest shipped quote near the limit, got {worst[0]:.0f}px — parser probably missed lines"
@@ -747,7 +747,7 @@ class TestHandoffRowsClearTheQrBlock:
         "has_location": True,
         "location_name": "Austin, Texas",
         "timezone": "America/Chicago",
-        "units_label": "Imperial (°F)",
+        "units": "imperial",
         "mature_enabled": False,
         "connected_ssid": "cooper-iot",
     }
@@ -821,11 +821,11 @@ class TestHandoffRowsClearTheQrBlock:
 
     def test_the_not_detected_variant_renders_and_stays_in_its_lane(self):
         """The failure splash uses the other branch of every row."""
-        nd = {"has_location": False, "units_label": "Imperial (°F)", "mature_enabled": False}
+        nd = {"has_location": False, "units": "imperial", "mature_enabled": False}
         img = eink_display.create_handoff_splash_image(nd, self.URL)
         # NOTE: an earlier version asserted `region.tobytes() == ... or True`,
         # which always passes. Every value on this branch is the fixed
-        # HANDOFF_NOT_DETECTED constant or a short label, so this branch can
+        # "Not detected" catalog value or a short label, so this branch can
         # only ever show that it renders and stays in its lane — it is
         # coverage, not a stress case. The stress lives in the tests above.
         strip = img.crop((eink_display.HANDOFF_RIGHT_COLUMN_X, 200, eink_display.HANDOFF_QR_X, 340))
@@ -906,7 +906,7 @@ class TestHandoffRowsClearTheQrBlock:
             "has_location": True,
             "location_name": "Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch, Anglesey",
             "timezone": "America/Argentina/Buenos_Aires",
-            "units_label": "Imperial (°F)",
+            "units": "imperial",
             "mature_enabled": True,
             "connected_ssid": "cooper-iot",
         }
@@ -939,10 +939,11 @@ class TestHandoffRowsClearTheQrBlock:
         """
         draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 255))
         small = ImageFont.truetype(eink_display.FONT_PATH, 18)
-        width = draw.textlength(eink_display.HANDOFF_CAVEAT_LABEL, font=small)
+        caveat = EN["firstboot.handoff.caveat"]
+        width = draw.textlength(caveat, font=small)
         left_edge = eink_display.HANDOFF_QR_X + (eink_display.HANDOFF_QR_SIZE - width) // 2
         assert left_edge >= eink_display.HANDOFF_RIGHT_COLUMN_X, (
-            f"caveat label {eink_display.HANDOFF_CAVEAT_LABEL!r} is {width:.0f}px and starts at "
+            f"caveat label {caveat!r} is {width:.0f}px and starts at "
             f"x={left_edge:.0f}, left of the lane boundary {eink_display.HANDOFF_RIGHT_COLUMN_X} — "
             f"widen the lane or shorten the copy"
         )
@@ -973,7 +974,7 @@ class TestHandoffRowsClearTheQrBlock:
                     "has_location": True,
                     "location_name": "Buenos Aires, Argentina",
                     "timezone": "America/Argentina/Buenos_Aires",
-                    "units_label": "Metric (°C)",
+                    "units": "metric",
                     "mature_enabled": False,
                     "connected_ssid": "cooper-iot",
                 },
@@ -1006,7 +1007,7 @@ class TestHandoffRowsClearTheQrBlock:
             "has_location": True,
             "location_name": "A‮BCD​\x00",
             "timezone": "Europe/‮London",
-            "units_label": "Metric (°C)",
+            "units": "metric",
             "mature_enabled": False,
             "connected_ssid": "cooper-iot",
         }
@@ -1014,11 +1015,15 @@ class TestHandoffRowsClearTheQrBlock:
             eink_display.DISPLAY_SIZE
         )
 
-    def test_a_hostile_or_non_string_units_label_cannot_break_the_splash(self):
-        """units_label reaches the rows from the same --settings-json payload as
-        location_name, but was the one row value left unsanitized. A non-string
-        (json.loads yields ints and dicts happily) raised TypeError out of
-        _collapse_newlines and killed the render; a bidi override rendered as-is.
+    def test_a_hostile_or_non_string_units_value_paints_the_imperial_default(self):
+        """units reaches the splash from the same --settings-json payload as
+        location_name. It used to arrive as a pre-made English LABEL, the one
+        row value left unsanitized: a non-string (json.loads yields ints and
+        dicts happily) raised TypeError out of _collapse_newlines and killed the
+        render, and a bidi override rendered as-is. Since litclock-dev#532 T6
+        the splash picks a catalog label by an exact match on "metric", so no
+        payload text reaches the panel at all: anything else paints exactly the
+        imperial frame.
         """
         base = {
             "has_location": True,
@@ -1027,9 +1032,13 @@ class TestHandoffRowsClearTheQrBlock:
             "mature_enabled": False,
             "connected_ssid": "cooper-iot",
         }
-        for hostile in (123, {"a": 1}, ["x"], None, "", "Imperial‮ (°F)", "Imperial\x00 (°F)"):
-            img = eink_display.create_handoff_splash_image({**base, "units_label": hostile}, "http://192.168.2.134")
-            assert img.size == eink_display.DISPLAY_SIZE, f"splash died on units_label={hostile!r}"
+        url = "http://192.168.2.134"
+        imperial = eink_display.create_handoff_splash_image({**base, "units": "imperial"}, url).tobytes()
+        metric = eink_display.create_handoff_splash_image({**base, "units": "metric"}, url).tobytes()
+        assert metric != imperial, "the metric label never reached the panel"
+        for hostile in (123, {"a": 1}, ["x"], None, "", "metric‮", "Metric (°C)", "METRIC", "Imperial\x00 (°F)"):
+            img = eink_display.create_handoff_splash_image({**base, "units": hostile}, url)
+            assert img.tobytes() == imperial, f"units={hostile!r} did not paint the imperial default"
 
         assert eink_display._sanitize_row_value("Imperial‮ (°F)") == "Imperial (°F)"
 
@@ -1045,7 +1054,7 @@ class TestHandoffRowsClearTheQrBlock:
             "has_location": True,
             "location_name": "Austin, Texas",
             "timezone": "America/Chicago",
-            "units_label": "Metric (°C)",
+            "units": "metric",
             "mature_enabled": False,
             "connected_ssid": "cooper-iot",
         }
@@ -1085,7 +1094,7 @@ class TestHandoffRowsClearTheQrBlock:
             "has_location": True,
             "location_name": "Austin, Texas",
             "timezone": "America/Chicago",
-            "units_label": "Metric (°C)",
+            "units": "metric",
             "connected_ssid": "cooper-iot",
         }
 

@@ -63,7 +63,7 @@ _THIS_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # knob and the gift language would be gone with nothing saying so, on a device
 # that is usually about to be shipped to someone. Fail loudly instead: nothing
 # destructive has run at this point, so exiting here is free.
-for _fn in atomic_write_env_sh env_sh_defaults clear_and_lock_bash_history; do
+for _fn in atomic_write_env_sh env_sh_defaults clear_and_lock_bash_history env_staging_files; do
     if ! declare -F "$_fn" >/dev/null 2>&1; then
         echo -e "${RED}ERROR: $_fn is not defined after sourcing lib/state.sh.${NC}" >&2
         echo "  $_THIS_SCRIPT_DIR/lib/state.sh is missing or too old for this script." >&2
@@ -871,7 +871,13 @@ if [[ -f "$INSTALL_DIR/env.sh" ]]; then
     # The `$'\n'` is REQUIRED, not decoration: command substitution strips
     # trailing newlines, and update.sh Phase 3 appends missing sample keys with
     # `>>`, which would otherwise splice the first one onto the last line.
-    DEFAULTS=$(env_sh_defaults "$GIFT_LANGUAGE_CODE")$'\n'
+    #
+    # The second argument keeps the device's runtime-render tier: a clock
+    # already on text stays on text for its next owner, one on images stays
+    # on images for update.sh's Stage B (see env_sh_current_runtime_render).
+    # `|| echo false` covers an older lib/state.sh without the helper: the
+    # conservative value, which is what this line seeded before it existed.
+    DEFAULTS=$(env_sh_defaults "$GIFT_LANGUAGE_CODE" "$(env_sh_current_runtime_render "$INSTALL_DIR/env.sh" 2>/dev/null || echo false)")$'\n'
     # litclock-dev#871 /review (adversarial) — sweep abandoned atomic-write
     # staging files FIRST. The writers stage through `mktemp "${dest}.XXXXXX"`
     # beside env.sh and remove it on every in-script failure arm; a SIGKILL or
@@ -880,15 +886,13 @@ if [[ -f "$INSTALL_DIR/env.sh" ]]; then
     # What survives is a full copy of the gifter's env.sh — API key, home
     # coordinates, city — which this wipe would leave untouched because it
     # writes `env.sh` only, and which then travels to the recipient.
-    # env.sh.sample is six characters too and is a tracked repo file, so it is
-    # excluded by name rather than by glob.
-    shopt -s nullglob
-    for _stale in "$INSTALL_DIR"/env.sh.??????; do
-        [[ "$(basename "$_stale")" == "env.sh.sample" ]] && continue
+    # The shapes (all three writers', incl. src/config.py's `.env.sh.tmp.*`,
+    # litclock-dev#893) live in env_staging_files in lib/state.sh.
+    env_staging_files "$INSTALL_DIR" _STALE_STAGING
+    for _stale in "${_STALE_STAGING[@]}"; do
         rm -f "$_stale" 2>/dev/null || sudo rm -f "$_stale" 2>/dev/null || true
     done
-    shopt -u nullglob
-    unset _stale
+    unset _stale _STALE_STAGING
     if atomic_write_env_sh "$INSTALL_DIR/env.sh" "$DEFAULTS"; then
         echo -e "${GREEN}done${NC}"
     else

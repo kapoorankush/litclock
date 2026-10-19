@@ -4,6 +4,8 @@ import json
 from unittest.mock import MagicMock
 from urllib.error import URLError
 
+import pytest
+
 import geocoding
 
 
@@ -262,6 +264,47 @@ class TestIpGeolocate:
         result = geocoding.ip_geolocate()
 
         assert result is None
+
+
+class TestIpApiLanguage:
+    """litclock-dev#532 T10: place names in the device language when ip-api
+    has it; English (no parameter) otherwise."""
+
+    def _url(self, mocker, monkeypatch, code):
+        import strings_catalog
+
+        monkeypatch.setattr(strings_catalog, "active_language", lambda: code)
+        opened = mocker.patch("geocoding.urllib.request.urlopen", return_value=_mock_urlopen({}))
+        geocoding.ip_geolocate()
+        return opened.call_args[0][0].full_url
+
+    def test_english_sends_no_language(self, mocker, monkeypatch):
+        assert "lang=" not in self._url(mocker, monkeypatch, "en")
+
+    # ip-api's documented `lang` values (https://ip-api.com/docs/api:json),
+    # keyed by the LitClock code that asks for each. Spelled out here rather
+    # than read from the map, so a typo or a dropped entry there fails.
+    IP_API_DOCUMENTED = {"de": "de", "es": "es", "fr": "fr", "ja": "ja", "pt": "pt-BR", "ru": "ru", "zh": "zh-CN"}
+
+    @pytest.mark.parametrize(("code", "value"), sorted(IP_API_DOCUMENTED.items()))
+    def test_a_language_ip_api_has_is_asked_for(self, mocker, monkeypatch, code, value):
+        assert self._url(mocker, monkeypatch, code).endswith("&lang=" + value)
+
+    def test_the_map_asks_only_for_documented_values(self):
+        assert geocoding._IP_API_LANG == self.IP_API_DOCUMENTED
+
+    def test_a_language_ip_api_lacks_falls_back_to_its_english(self, mocker, monkeypatch):
+        assert "lang=" not in self._url(mocker, monkeypatch, "pl")
+
+    def test_a_catalog_failure_never_costs_the_lookup(self, mocker, monkeypatch):
+        import strings_catalog
+
+        def boom():
+            raise RuntimeError("catalog exploded")
+
+        monkeypatch.setattr(strings_catalog, "active_language", boom)
+        mocker.patch("geocoding.urllib.request.urlopen", return_value=_mock_urlopen({"lat": 1, "lon": 2}))
+        assert geocoding.ip_geolocate()["lat"] == "1"
 
 
 # ── timezone_from_coords ──────────────────────────────────────────

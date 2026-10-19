@@ -218,6 +218,44 @@ class TestUpdateScriptStructure:
         assert "NEW_SELF_HASH" in update_sh_content
         assert 'exec "$SELF_SCRIPT"' in update_sh_content
 
+    def test_both_guard_hashes_use_the_lib_aware_fingerprint(self, update_sh_content):
+        """litclock-dev#893 review: with `md5sum "$SELF_SCRIPT"` alone, a
+        lib-only release ran its install tick on the old in-memory helpers."""
+        assert "OLD_SELF_HASH=$(_self_hash)" in update_sh_content
+        assert "NEW_SELF_HASH=$(_self_hash)" in update_sh_content
+
+    @pytest.mark.parametrize(
+        "change, differs",
+        [
+            (lambda d: None, False),
+            (lambda d: (d / "lib" / "state.sh").write_text("helper() { echo new; }\n"), True),
+            (lambda d: (d / "lib" / "extra.sh").write_text("x=1\n"), True),
+            (lambda d: (d / "lib" / "state.sh").unlink(), True),
+            (lambda d: (d / "update.sh").write_text("echo changed\n"), True),
+            (lambda d: (d / "lib" / "notes.txt").write_text("not sourced\n"), False),
+        ],
+        ids=["unchanged", "lib-edited", "lib-added", "lib-removed", "self-edited", "non-sh-ignored"],
+    )
+    def test_self_hash_sees_lib_changes(self, update_sh_content, tmp_path, change, differs):
+        """The REAL function, lifted and executed against a scratch tree."""
+        start = update_sh_content.index("_self_hash() {")
+        end = update_sh_content.index("\n}\n", start) + 3
+        fn = update_sh_content[start:end]
+        tree = tmp_path / "scripts"
+        (tree / "lib").mkdir(parents=True)
+        (tree / "update.sh").write_text("echo self\n")
+        (tree / "lib" / "state.sh").write_text("helper() { echo old; }\n")
+        prog = f"SELF_SCRIPT='{tree}/update.sh'\n_THIS_SCRIPT_DIR='{tree}'\n{fn}\n_self_hash\n"
+
+        def run():
+            r = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, timeout=30)
+            assert r.returncode == 0 and len(r.stdout.strip()) == 32, (r.stdout, r.stderr)
+            return r.stdout.strip()
+
+        before = run()
+        change(tree)
+        assert (run() != before) is differs
+
     def test_no_set_e(self, update_sh_content):
         """update.sh intentionally omits `set -e` — a single sudo/mkdir
         failure should not abort the whole update mid-phase."""
@@ -4592,6 +4630,7 @@ class TestSelfTestDurationSurvivesToTheRecord:
             atomic_remove_file() {{ :; }}
             _runtime_validation_memo_write() {{ echo "MEMO rc=$2"; }}
             _runtime_selftest_record_write() {{ echo "RECORDED=$1"; }}
+            _runtime_selftest_already_passed() {{ return 1; }}
         """)
             + cls._function_text()
             + "\n_runtime_render_selftest\n"

@@ -149,6 +149,104 @@ fi
         assert env_sh.read_text() == env_sh_defaults("")
 
 
+class TestResetKeepsTheRuntimeRenderTier:
+    """A reset keeps the device's runtime-render tier (owner decision 2026-10-14).
+
+    Before this, every reset seeded `LITCLOCK_RUNTIME_RENDER=false`, so a clock
+    already rendering text (a fresh v0.231.0+ flash, or one Stage B migrated)
+    dropped back to PNGs until its next weekly update tick re-migrated it. Now
+    the reset reads the OLD env.sh and passes its effective value on. A clock on
+    images, or one held back by a failed self-test, still gets `false`.
+
+    EXECUTED: the script's own `DEFAULTS=` line is lifted verbatim, run against
+    a real env.sh in a temp INSTALL_DIR, and written by the real
+    `atomic_write_env_sh` from lib/state.sh. What is asserted is the file the
+    next owner's first boot reads.
+    """
+
+    def _reset(self, reset_sh_content, tmp_path, old_env, *, gift_language="", load_reader=True):
+        install = tmp_path / "install"
+        install.mkdir()
+        if old_env is not None:
+            (install / "env.sh").write_text(old_env)
+        m = re.search(r"^\s*DEFAULTS=.*$", reset_sh_content, re.M)
+        assert m and "env_sh_current_runtime_render" in m.group(0), "the reset no longer reads the current tier"
+        # An OLDER lib/state.sh (no reader) is simulated by removing the function
+        # after sourcing the real file, so the writer and defaults stay real.
+        drop = "" if load_reader else "unset -f env_sh_current_runtime_render\n"
+        harness = (
+            f'. "{STATE_SH}"\n'
+            f"{drop}"
+            f"INSTALL_DIR={shlex.quote(str(install))}\n"
+            f"GIFT_LANGUAGE_CODE={shlex.quote(gift_language)}\n"
+            f"{m.group(0)}\n"
+            'atomic_write_env_sh "$INSTALL_DIR/env.sh" "$DEFAULTS" || exit 9\n'
+        )
+        r = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, f"rc={r.returncode}\n{r.stdout}{r.stderr}"
+        return r, (install / "env.sh").read_text()
+
+    def test_a_text_clock_stays_on_text(self, reset_sh_content, tmp_path):
+        from tests.test_first_boot_flow import env_sh_defaults
+
+        old = env_sh_defaults("", "true").replace("WEATHER_LOCATION_NAME=", "WEATHER_LOCATION_NAME='Austin, Texas'")
+        _, written = self._reset(reset_sh_content, tmp_path, old)
+        assert written == env_sh_defaults("", "true"), (
+            "a reset of a clock already on text must keep LITCLOCK_RUNTIME_RENDER=true and otherwise be "
+            f"the plain defaults (owner data wiped):\n{written}"
+        )
+
+    def test_an_image_clock_stays_on_images(self, reset_sh_content, tmp_path):
+        from tests.test_first_boot_flow import env_sh_defaults
+
+        _, written = self._reset(reset_sh_content, tmp_path, env_sh_defaults("", "false"))
+        assert written == env_sh_defaults("", "false")
+
+    def test_no_env_sh_seeds_false(self, reset_sh_content, tmp_path):
+        from tests.test_first_boot_flow import env_sh_defaults
+
+        _, written = self._reset(reset_sh_content, tmp_path, None)
+        assert written == env_sh_defaults("", "false")
+
+    def test_an_ambiguous_env_sh_seeds_false(self, reset_sh_content, tmp_path):
+        """Two assignments: the reader refuses to guess, as Stage B does."""
+        from tests.test_first_boot_flow import env_sh_defaults
+
+        old = "export LITCLOCK_RUNTIME_RENDER=true\nLITCLOCK_RUNTIME_RENDER=0\n"
+        _, written = self._reset(reset_sh_content, tmp_path, old)
+        assert written == env_sh_defaults("", "false")
+
+    def test_a_gift_reset_keeps_both_the_language_and_the_tier(self, reset_sh_content, tmp_path):
+        """The two arguments are independent: a gift language must not knock
+        the tier off, nor the tier the language."""
+        from tests.test_first_boot_flow import env_sh_defaults
+
+        _, written = self._reset(
+            reset_sh_content, tmp_path, "export LITCLOCK_RUNTIME_RENDER=true\n", gift_language="de"
+        )
+        assert written == env_sh_defaults("de", "true")
+
+    def test_an_older_state_sh_without_the_reader_seeds_false_silently(self, reset_sh_content, tmp_path):
+        """A new reset-setup.sh beside an old lib/state.sh (an interrupted
+        update, see TestTooOldStateSh). Missing reader: the old behaviour,
+        `false`, with no "command not found" and no warning from the defaults
+        helper about an empty argument."""
+        from tests.test_first_boot_flow import env_sh_defaults
+
+        r, written = self._reset(reset_sh_content, tmp_path, "export LITCLOCK_RUNTIME_RENDER=true\n", load_reader=False)
+        assert written == env_sh_defaults("", "false")
+        assert "not found" not in r.stderr and "not true/false" not in r.stderr, r.stderr
+
+    def test_the_tier_is_read_after_the_pwa_is_stopped(self, reset_sh_content):
+        """The lifted-line tests above cannot see WHERE the read sits. Read it
+        before the PWA (an env.sh writer) is stopped and a save landing in
+        between is lost (PR litclock-dev#929 review). The PWA-triggered reset itself runs
+        as litclock-reset.service, which Conflicts= the updater."""
+        stop = reset_sh_content.index("systemctl stop litclock-control.service")
+        read = re.search(r"^\s*DEFAULTS=.*env_sh_current_runtime_render", reset_sh_content, re.M).start()
+        assert stop < read, "reset-setup.sh reads the runtime-render tier before stopping the PWA"
+
+
 class TestResetSetupStructure:
     def test_requires_root(self, reset_sh_content):
         assert "$EUID -ne 0" in reset_sh_content

@@ -648,6 +648,100 @@ def test_atomic_update_no_temp_files_left_on_failure(tmp_path: Path, monkeypatch
     assert leftovers == [], f"tempfile leaked: {leftovers}"
 
 
+class TestAtomicUpdateIsDurable:
+    """litclock-dev#893. ``os.replace`` is atomic for readers but is not a
+    durability barrier: without an fsync of the staged file BEFORE the rename,
+    a power cut can commit the rename over an inode whose data never reached
+    the card — a zero-length env.sh, every setting gone. Without an fsync of
+    the directory AFTER it, the rename itself can be lost after the PWA said
+    "Saved.". A power cut cannot be staged in a unit test, so these pin the
+    barriers and their ORDER, which is the whole of the property: an fsync
+    after the replace, or of the wrong object, is the bug with a green test."""
+
+    @staticmethod
+    def _record(monkeypatch) -> list[tuple[str, str]]:
+        import stat as _stat
+
+        events: list[tuple[str, str]] = []
+        real_fsync, real_replace = os.fsync, os.replace
+
+        def fsync(fd):
+            st = os.fstat(fd)
+            if _stat.S_ISDIR(st.st_mode):
+                # By inode too, or `_fsync_dir("/")` would pass (litclock-dev#893 review).
+                kind = f"dir:{st.st_ino}"
+            else:
+                # Which file: the staged tmp, identified by its inode, which
+                # survives the rename. Compared after the fact below.
+                kind = f"file:{st.st_ino}"
+            events.append(("fsync", kind))
+            return real_fsync(fd)
+
+        def replace(src, dst, *a, **kw):
+            events.append(("replace", str(os.stat(src).st_ino)))
+            return real_replace(src, dst, *a, **kw)
+
+        monkeypatch.setattr(os, "fsync", fsync)
+        monkeypatch.setattr(os, "replace", replace)
+        return events
+
+    def test_staged_file_fsynced_before_replace_and_dir_after(self, tmp_path: Path, monkeypatch) -> None:
+        env = tmp_path / "env.sh"
+        env.write_text("export WEATHER_UNITS=imperial\n")
+        events = self._record(monkeypatch)
+
+        config.atomic_update({"WEATHER_UNITS": "metric"}, env)
+
+        assert env.read_text() == "export WEATHER_UNITS=metric\n"
+        replaced = [i for i, (op, _) in enumerate(events) if op == "replace"]
+        assert len(replaced) == 1, events
+        r = replaced[0]
+        staged_ino = events[r][1]
+        assert ("fsync", f"file:{staged_ino}") in events[:r], (
+            f"the staged file must be fsynced BEFORE os.replace publishes it: {events}"
+        )
+        assert ("fsync", f"dir:{tmp_path.stat().st_ino}") in events[r + 1 :], (
+            f"env.sh's own directory must be fsynced AFTER the rename: {events}"
+        )
+        assert env.stat().st_ino == int(staged_ino), "test bug: the fsynced inode is not the one now at env.sh"
+
+    def test_file_fsync_failure_leaves_env_untouched(self, tmp_path: Path, monkeypatch) -> None:
+        """A failed data flush must abort BEFORE the rename — publishing bytes
+        the kernel just said it could not write is the zero-length hazard."""
+        env = tmp_path / "env.sh"
+        original = "export WEATHER_UNITS=imperial\n"
+        env.write_text(original)
+
+        def boom(fd):
+            raise OSError(5, "simulated EIO")
+
+        monkeypatch.setattr(os, "fsync", boom)
+        with pytest.raises(OSError, match="EIO"):
+            config.atomic_update({"WEATHER_UNITS": "metric"}, env)
+        assert env.read_text() == original
+        assert [p for p in tmp_path.iterdir() if p.name.startswith(".env.sh.tmp.")] == []
+
+    def test_dir_fsync_failure_does_not_fail_a_landed_save(self, tmp_path: Path, monkeypatch, caplog) -> None:
+        """By the time the directory is synced the new bytes are durable and
+        in place, so a failure there must not report the save as failed."""
+        import stat as _stat
+
+        env = tmp_path / "env.sh"
+        env.write_text("export WEATHER_UNITS=imperial\n")
+        real_fsync = os.fsync
+
+        def dir_fails(fd):
+            if _stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(5, "simulated EIO on dir")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", dir_fails)
+        with caplog.at_level("WARNING"):
+            config.atomic_update({"WEATHER_UNITS": "metric"}, env)
+        assert env.read_text() == "export WEATHER_UNITS=metric\n"
+        assert any("Could not fsync" in r.getMessage() for r in caplog.records), "a failed barrier must not be silent"
+
+
 def test_atomic_update_rejects_path_traversal_in_units(tmp_path: Path) -> None:
     """Path-traversal regression: an attacker submitting `units=../../tmp/pwn`
     must be rejected by atomic_update's validator before any write. Units

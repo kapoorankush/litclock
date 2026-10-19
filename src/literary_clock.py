@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import sys
@@ -17,6 +18,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import config
 import quote_corpus
+import strings_catalog
 from control_url import control_base_url  # QR target — single source of truth (litclock-dev#343)
 from log import setup_logging
 
@@ -258,8 +260,8 @@ DIVIDER_WIDTH = 4
 # isn't baked into the QR image (QR_BORDER stays 0) — _composite_settings_qr
 # carves it out of the surroundings instead: it white-outs the strip's
 # top-right corner (which notches the divider under the QR) before pasting.
-# That yields 4 modules right (x=788..799), 4+ modules left (date text ends
-# ≤ x=682) and 4 modules below — the notch extends past the divider to
+# That yields 4 modules right (x=788..799), 4+ modules left (date ink ends
+# ≤ x=MASTHEAD_DATE_RIGHT, 693, held there by CI) and 4 modules below — the notch extends past the divider to
 # QR bottom + 12px (row 86), so the bottom quiet zone is STRUCTURAL, not
 # corpus-dependent. Today that carve is a no-op below row 80: the tallest
 # corpus glyphs (brackets above cap height) start at display y=87, measured
@@ -309,6 +311,50 @@ LOCKUP_MIN_X = 18  # stay clear of the update-failed glyph zone (ink x<=16)
 # "-40°C" tied the slot, then "100°C" beat it ("0" is wider than "9" in
 # Literata and °C wider than °F). ~600 textbbox probes, once per process.
 TEMP_BAND = (-99, 199)  # also the _format_temp acceptance band
+# litclock-dev#532 D3: the date's INK may end 8px short of the quiet-zone
+# carve (x=701, which _composite_settings_qr whites out AFTER the masthead is
+# drawn — the QR's own edge is 12px further right, and measuring to it let a
+# date that passed lose its last letter: litclock-dev#919 review). Measured with
+# textbbox, the WIDER of ink and advance, for the same reason: a final 'Q' or
+# 'c' inks past its advance. Every language's format is held to it at
+# DATE_FONT_SIZE by CI (tests/test_masthead_date.py, every weekday x month x
+# day); English's widest over that product, "Mon, September 0x", measures
+# 438px of the 443.
+MASTHEAD_DATE_RIGHT = QR_POSITION[0] - QR_QUIET_ZONE - 8
+MASTHEAD_DATE_BUDGET = MASTHEAD_DATE_RIGHT - DATE_X
+# The runtime backstop for a bundle CI never saw: shrink to this, then cut.
+MASTHEAD_DATE_FLOOR = 32
+# Nothing near this long fits the strip at any size; capping where the date is
+# made bounds every measure after it (and the log lines) for a pathological
+# bundle — Pillow is O(n) per measure and refuses a string past ~1M chars.
+MASTHEAD_DATE_MAX_CHARS = 120
+# datetime.weekday() order (Monday first) and month order: the catalog names.
+_WEEKDAY_KEYS = (
+    "clock.weekday.mon",
+    "clock.weekday.tue",
+    "clock.weekday.wed",
+    "clock.weekday.thu",
+    "clock.weekday.fri",
+    "clock.weekday.sat",
+    "clock.weekday.sun",
+)
+_MONTH_KEYS = (
+    "clock.month.jan",
+    "clock.month.feb",
+    "clock.month.mar",
+    "clock.month.apr",
+    "clock.month.may",
+    "clock.month.jun",
+    "clock.month.jul",
+    "clock.month.aug",
+    "clock.month.sep",
+    "clock.month.oct",
+    "clock.month.nov",
+    "clock.month.dec",
+)
+# The day is a name too: "05" in English, "5" in Spanish, "1er" for a French
+# first. A list rather than a padding switch keeps every slot fixed.
+_DAY_KEYS = tuple(f"clock.day.{n}" for n in range(1, 32))
 
 _masthead_cache: dict = {}
 
@@ -371,6 +417,66 @@ def _format_temp(value, degrees: str) -> str | None:
     return f"{round(n):d}{degrees}"
 
 
+def masthead_date(now: datetime, catalog=None) -> str:
+    """The masthead's date line in the device language (litclock-dev#532 D3).
+
+    The format is the catalog's ``clock.masthead.date`` with ``{weekday}``,
+    ``{month}`` and ``{day}`` filled from the catalog's name lists (the day
+    is a list too: "05" in English, "5" or "1er" elsewhere). English is
+    ``{weekday}, {month} {day}`` over "Wed" / "September" / "05" — exactly
+    the ``%a, %B %d`` it used to strftime, which also tied the date to the
+    process locale. ``catalog`` is a strings_catalog snapshot; None takes
+    the device's.
+
+    A bundle that is not usable, or a catalog that fails outright, gets the
+    language-neutral ISO date: a quote frame is never another language (R7),
+    so the fleet default's names are not an option here, and the date is a
+    REQUIRED part of the frame (D9), so it is not omitted either.
+    """
+    try:
+        snap = catalog if catalog is not None else strings_catalog.snapshot()
+        if snap.usable:
+            # get_present, not get: a missing or blank name must cost the
+            # whole localized date, never paint a raw key (litclock-dev#919 review — a
+            # truncated canonical bundle still counts as usable).
+            names = {
+                "weekday": snap.get_present(_WEEKDAY_KEYS[now.weekday()]),
+                "month": snap.get_present(_MONTH_KEYS[now.month - 1]),
+                "day": snap.get_present(_DAY_KEYS[now.day - 1]),
+            }
+            text = snap.get_present("clock.masthead.date", **names) if all(names.values()) else None
+            # One line: Pillow cannot measure a line break (see _fallback_line).
+            text = _LINE_BREAKS_RE.sub(" ", text).strip()[:MASTHEAD_DATE_MAX_CHARS] if text else ""
+            if text:
+                return text
+    except Exception as e:  # never raises by contract; the frame must not depend on that
+        logging.warning(f"masthead date: catalog lookup failed ({e}); using the ISO date")
+    return now.strftime("%Y-%m-%d")
+
+
+def _date_ink_width(draw, text: str, font) -> int:
+    """How far right of its origin the text reaches — the wider of its ink
+    and its advance (textbbox), what the budget limits."""
+    return draw.textbbox((0, 0), text, font=font)[2] if text else 0
+
+
+def _fit_masthead_date(draw, text: str):
+    """(text, font) for a date wider than MASTHEAD_DATE_BUDGET: the largest
+    size down to MASTHEAD_DATE_FLOOR that fits, else the floor size with the
+    text cut and an ellipsis. Only a bundle that skipped CI reaches this."""
+    for size in range(DATE_FONT_SIZE - 2, MASTHEAD_DATE_FLOOR - 1, -2):
+        font = ImageFont.truetype(FONT_PATH, size)
+        if _date_ink_width(draw, text, font) <= MASTHEAD_DATE_BUDGET:
+            logging.warning(f"masthead date {text!r} too wide at {DATE_FONT_SIZE}pt; drawn at {size}pt")
+            return text, font
+    font = ImageFont.truetype(FONT_PATH, MASTHEAD_DATE_FLOOR)
+    cut = text[:MASTHEAD_DATE_MAX_CHARS]
+    while cut and _date_ink_width(draw, cut + "…", font) > MASTHEAD_DATE_BUDGET:
+        cut = cut[:-1]
+    logging.warning(f"masthead date {text!r} too wide even at {MASTHEAD_DATE_FLOOR}pt; cut to fit")
+    return cut.rstrip() + "…", font
+
+
 def _compose_masthead(image, draw, date_text: str, temp_high: str | None, temp_low: str | None, icon_path: str | None):
     """Draw the top strip: date, weather lockup (when temps present), rules.
     Call AFTER the quote paste — the rule's bottom ink row (DIVIDER_Y+2 ==
@@ -397,17 +503,26 @@ def _compose_masthead(image, draw, date_text: str, temp_high: str | None, temp_l
         ):
             w = draw.textbbox((0, 0), line_text, font=mh["temp_font"])[2]
             draw.text((mh["slot_right"] - w, line_baseline - mh["temp_asc"]), line_text, font=mh["temp_font"], fill=0)
-    draw.text((DATE_X, mh["date_y"]), date_text, font=mh["date_font"], fill=0)
+    if _date_ink_width(draw, date_text, mh["date_font"]) <= MASTHEAD_DATE_BUDGET:
+        draw.text((DATE_X, mh["date_y"]), date_text, font=mh["date_font"], fill=0)
+    else:
+        # A smaller size sits on the same baseline, so the date still clears
+        # the rule by the measured margin.
+        fitted, font = _fit_masthead_date(draw, date_text)
+        draw.text((DATE_X, mh["baseline"]), fitted, font=font, anchor="ls", fill=0)
     draw.line([(0, DIVIDER_Y), (DISPLAY_SIZE[0], DIVIDER_Y)], fill=0, width=DIVIDER_WIDTH)
     if have_weather:
         draw.line([(WEATHER_DIVIDER_X, 0), (WEATHER_DIVIDER_X, DIVIDER_Y)], fill=0, width=DIVIDER_WIDTH)
 
 
-# Runtime quote rendering (litclock-dev#531 Stage 2). When LITCLOCK_RUNTIME_RENDER is
-# true, the clock renders the quote from the corpus CSV via
-# src/quote_renderer.py instead of opening a pre-rendered PNG. Fallback
-# order on ANY failure: pre-rendered PNG for this minute (right time, right
-# content) -> the existing 144pt time draw (right time, no quote). There is
+# Runtime quote rendering (litclock-dev#531 Stage 2). The clock renders the quote from
+# the corpus CSV via src/quote_renderer.py. For the PNG set's language
+# (English) it does so only when LITCLOCK_RUNTIME_RENDER is true and the
+# validation marker holds, with the fallback order on ANY failure: the
+# pre-rendered PNG for this minute (right time, right content) -> the
+# plain-time frame (right time, no quote). Every other language always
+# renders text and goes straight to the plain-time frame, never to English
+# PNGs (litclock-dev#532 R7 — see main()). There is
 # deliberately NO "last-good frame" tier: a stale frame shows the WRONG
 # minute's timestring, and on a clock a wrong time is worse than a plain
 # one. The rendered frame is persisted to tmpfs (best-effort, atomic) so
@@ -431,18 +546,184 @@ RUNTIME_VALIDATED_MARKER = os.environ.get(
 # --dry-run (smoke test) can render an image without touching /dev/spidev*.
 from weather_providers import open_meteo, openweathermap  # noqa: E402
 
+# litclock-dev#532 D8 — why a frame carries no quote. The two are told apart
+# because they mean different things to the owner: a GAP is the corpus having
+# nothing for this minute (normal; a partly covered language has many), a
+# FAILURE is the clock being unable to show a quote it should have (a render
+# error, a corpus that will not load, a PNG that will not open). Only failures
+# count toward the PWA warning (R14).
+FALLBACK_GAP = "gap"
+FALLBACK_FAILURE = "failure"
+# Catalog keys for the plain-time frame's one line, per reason (D8).
+FALLBACK_LINE_KEYS = {
+    FALLBACK_GAP: "clock.fallback.gap",
+    FALLBACK_FAILURE: "clock.fallback.failure",
+}
+# The PWA warns after this many consecutive FAILURE frames (R14).
+CONSECUTIVE_FAILURES_WARN_AT = 3
 
-def _draw_time_fallback(draw, now) -> None:
-    """The v0.1 plain-time frame: HH:MM in 144pt Literata. The last tier of
-    every degradation chain (corpus gap, unusable PNG, runtime-render
-    failure) — right time, no quote, never a stale quote. Was typed out in
-    both branches of main() (litclock-dev#605 item 13); one body means the
-    two failure paths cannot drift apart."""
-    time_font = ImageFont.truetype(FONT_PATH, 144)
-    draw.text((220, 150), now.strftime("%H:%M"), font=time_font, fill=0)
+# The plain-time frame (litclock-dev#532 D2, as in the approved mockup): the
+# time centred in Literata Regular 160pt, then one Literata SemiBold-italic
+# 30pt line in the device language. Baselines, not ink boxes, so the layout
+# does not jump between minutes whose digits differ; they reproduce the
+# mockup's ink rows (time 189..310, line 370..400) exactly. 24-hour for every
+# language (D18).
+FALLBACK_TIME_FONT_SIZE = 160
+FALLBACK_TIME_BASELINE_Y = 308
+FALLBACK_LINE_FONT_PATH = os.path.join(PROJECT_ROOT, "fonts", "Literata72pt-SemiBoldItalic.ttf")
+FALLBACK_LINE_FONT_SIZE = 30
+FALLBACK_LINE_MIN_FONT_SIZE = 22
+FALLBACK_LINE_BASELINE_Y = 393
+FALLBACK_LINE_MARGIN_X = 40
 
 
-def main():
+_LINE_BREAKS_RE = re.compile(r"[ \t]*[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]+[ \t]*")
+
+
+def _fallback_line(reason: str) -> str | None:
+    """The plain-time frame's line for ``reason`` in the device language, or
+    ``None`` to omit it. The line is the frame's one OPTIONAL part (D9): a
+    catalog that cannot supply it costs the line, never the time, and never
+    puts a raw key on the glass."""
+    key = FALLBACK_LINE_KEYS.get(reason)
+    if key is None:
+        return None
+    try:
+        # The device language's OWN bundle: get() would serve English for a
+        # bundle that lacks the key, and this line must never be another
+        # language (D9 — a missing translation costs the line).
+        text = strings_catalog.get_own(key)
+    except Exception as e:  # never raises by contract; the frame must not depend on that
+        logging.warning(f"plain-time frame: catalog lookup for {key} failed ({e}); omitting the line")
+        return None
+    if not isinstance(text, str):
+        return None
+    # One line, always: the catalog lint allows newlines, and Pillow cannot
+    # measure multiline text (ValueError) — a hand-wrapped translation must
+    # not be able to stop the painter (litclock-dev#532 review).
+    # Only the line breakers Pillow refuses: str.split() would also fold NBSP
+    # and U+202F, which French typography puts before ':;?!' (round-2 review).
+    text = _LINE_BREAKS_RE.sub(" ", text).strip()
+    return text or None
+
+
+def _draw_time_fallback(draw, now, reason: str) -> None:
+    """The plain-time frame: the last tier of every degradation chain —
+    right time, no quote, never a stale quote, and never another language's
+    quote (litclock-dev#532 R1/R7). One body for every cause (litclock-dev#605
+    item 13), so the failure paths cannot drift apart; ``reason`` only picks
+    the line under the time (D8)."""
+    centre_x = DISPLAY_SIZE[0] // 2
+    time_font = ImageFont.truetype(FONT_PATH, FALLBACK_TIME_FONT_SIZE)
+    draw.text(
+        (centre_x, FALLBACK_TIME_BASELINE_Y), now.strftime("%H:%M"), font=time_font, anchor="ms", fill=0
+    )
+    # Everything about the line is optional and guarded as ONE unit: its own
+    # font (the credits font, whose loss is also a reason the runtime tier
+    # failed), measuring it and drawing it. Whatever goes wrong costs the
+    # line, never the time already drawn (litclock-dev#532 review: an
+    # unguarded font load or a multiline translation used to escape main()
+    # and leave the previous minute on the panel).
+    try:
+        _draw_fallback_line(draw, centre_x, reason)
+    except Exception as e:
+        logging.warning(f"plain-time frame: {reason} line not drawn ({e}); time only")
+
+
+def _draw_fallback_line(draw, centre_x: int, reason: str) -> None:
+    line = _fallback_line(reason)
+    if line is None:
+        return
+    # Shrink to fit the panel width; a line that does not fit even at the
+    # floor is omitted rather than clipped (D7: never clip translated copy).
+    # Width scales with size, so one measurement at the design size predicts
+    # the fitting size and at most a couple of loads confirm it (instead of
+    # up to nine font loads on the per-minute path).
+    budget = DISPLAY_SIZE[0] - 2 * FALLBACK_LINE_MARGIN_X
+    font = ImageFont.truetype(FALLBACK_LINE_FONT_PATH, FALLBACK_LINE_FONT_SIZE)
+    width = draw.textlength(line, font=font)
+    size = FALLBACK_LINE_FONT_SIZE if width <= budget else int(FALLBACK_LINE_FONT_SIZE * budget / width)
+    while size >= FALLBACK_LINE_MIN_FONT_SIZE:
+        if size != FALLBACK_LINE_FONT_SIZE:
+            font = ImageFont.truetype(FALLBACK_LINE_FONT_PATH, size)
+        if draw.textlength(line, font=font) <= budget:
+            draw.text((centre_x, FALLBACK_LINE_BASELINE_Y), line, font=font, anchor="ms", fill=0)
+            return
+        size -= 1
+    logging.warning("plain-time frame %s line too wide for the panel; omitted", reason)
+
+
+def _png_set_present() -> bool:
+    """Whether the English PNG set is on disk at all. Tells an uncovered
+    minute (a GAP) from a device whose images/ is missing or quarantined
+    (a FAILURE) on the PNG tier, where both look like an empty glob."""
+    # A real quote PNG, not merely a non-empty directory: a leftover temp
+    # file or a .DS_Store must not make a missing set read as healthy.
+    try:
+        with os.scandir(os.path.join(PROJECT_ROOT, "images", "metadata")) as it:
+            return any(e.name.startswith("quote_") and e.name.endswith("_credits.png") for e in it)
+    except OSError:
+        return False
+
+
+# The dry-run's exit statuses beyond 0/1, which scripts/update.sh's self-test
+# branches on. 3: `--require-runtime-render` and the text renderer did not
+# produce the frame (litclock-dev#871). 4: `--sample-quote` and the device
+# language's corpus has no quote to sample at all (litclock-dev#532 R10) — a
+# corpus problem, not a renderer one, memoed under its own token.
+EXIT_NOT_RUNTIME = 3
+EXIT_NO_SAMPLE = 4
+
+
+def _render_target() -> datetime:
+    """The minute this run paints: now plus the render lead (litclock-dev#762).
+
+    AWARE arithmetic, not naive addition. `datetime.now() + timedelta` would
+    fabricate a minute that does not exist across a DST spring-forward: at
+    01:59:56 CST naive +4s gives 02:00, while the real local time four
+    seconds later is 03:00 CDT — and that fake minute would reach the panel,
+    the masthead and /api/status. Attaching the offset, adding, then
+    re-normalising resolves the zone at the TARGET instant and lands on 03:00.
+
+    It stays routed through datetime.now() ON PURPOSE. Every time-freezing
+    test in this repo subclasses datetime and overrides now(); an
+    implementation reading _time.time() instead escapes all of them, and
+    because the escape yields the REAL clock the resulting failure is
+    time-dependent — green locally, red in CI, or the reverse (/review)."""
+    return (datetime.now().astimezone() + timedelta(seconds=RENDER_LEAD_S)).astimezone().replace(tzinfo=None)
+
+
+def _sample_minute(start: datetime) -> datetime | None:
+    """The first minute at or after ``start`` (wrapping past 23:59) whose
+    device-language corpus has a non-mature row, or ``None`` when there is
+    none — a corpus that is unavailable, empty, or all mature.
+
+    litclock-dev#532 R10: the weekly self-test renders THIS minute rather than
+    the current one, so it checks rendering and never corpus coverage. On a
+    partly covered language the current minute is uncovered up to 20% of the
+    time at the 80% floor, and a plain-time frame there is the correct answer
+    — which would read as a failed self-test. English's corpus covers every
+    minute, so for English this is the current minute and nothing changes.
+    Non-mature regardless of ALLOW_NSFW_QUOTES: the sample must be renderable
+    on every device, and a mature-only minute would be a gap on most."""
+    try:
+        # Resolved once, not per minute (review: 1440 resolutions cost ~0.4s
+        # here and several seconds on a Pi Zero). Only corpus-shaped errors
+        # mean "nothing to sample": a bug in the indexer must surface as the
+        # dry-run's exit 1 (selftest-failed), not as a missing corpus.
+        index = quote_corpus.device_index()
+    except (quote_corpus.CorpusUnavailable, OSError, ValueError) as err:  # ValueError: UnicodeDecodeError
+        logging.warning(f"self-test sample: the device corpus is unavailable ({err})")
+        return None
+    base = start.replace(second=0, microsecond=0)
+    for offset in range(24 * 60):
+        minute = base + timedelta(minutes=offset)
+        if any(not row["is_nsfw"] for row in index.get(minute.strftime("%H%M"), ())):
+            return minute
+    return None
+
+
+def main(at: datetime | None = None):
     """Compose and return the current-minute image plus the metadata the
     __main__ block needs to publish the OV3 status file AFTER the e-ink
     hardware update confirms the new frame is on the panel.
@@ -455,8 +736,15 @@ def main():
     `picked_at` for the new quote — defeats the stale signal. Publishing
     after `epd.display()` returns successfully is the right contract.
 
-    Returns: (image, quote_meta, now) — quote_meta is None when no quote
-    PNG matched the current minute (caller already drew time-as-text)."""
+    ``at`` overrides the render target — only the self-test's
+    ``--sample-quote`` dry-run passes it (litclock-dev#532 R10); the painter
+    always renders _render_target().
+
+    Returns: (image, quote_meta, now, fallback_reason) — quote_meta is None
+    when no quote could be shown this minute (the plain-time frame is
+    already drawn), and fallback_reason then says why: FALLBACK_GAP or
+    FALLBACK_FAILURE (litclock-dev#532 D8). fallback_reason is None whenever
+    quote_meta is not."""
     logging.info("Starting main function")
 
     openweathermap_apikey = os.getenv("OPENWEATHERMAP_APIKEY")
@@ -527,43 +815,60 @@ def main():
     # nightly clear gate. Independent datetime.now() calls would disagree with
     # it — at 23:59:56 the masthead date must already be tomorrow's.
     #
-    # AWARE arithmetic, not naive addition. `datetime.now() + timedelta` would
-    # fabricate a minute that does not exist across a DST spring-forward: at
-    # 01:59:56 CST naive +4s gives 02:00, while the real local time four
-    # seconds later is 03:00 CDT — and that fake minute would reach the panel,
-    # the masthead and /api/status. Attaching the offset, adding, then
-    # re-normalising resolves the zone at the TARGET instant and lands on 03:00.
-    #
-    # It stays routed through datetime.now() ON PURPOSE. Every time-freezing
-    # test in this repo subclasses datetime and overrides now(); an
-    # implementation reading _time.time() instead escapes all of them, and
-    # because the escape yields the REAL clock the resulting failure is
-    # time-dependent — green locally, red in CI, or the reverse (/review).
-    now = (datetime.now().astimezone() + timedelta(seconds=RENDER_LEAD_S)).astimezone().replace(tzinfo=None)
+    # (Why aware arithmetic, and why datetime.now(): _render_target.)
+    now = at if at is not None else _render_target()
     quote_meta = None
-    runtime_attempted = _runtime_render_enabled()
+    fallback_reason: str | None = None
+    # litclock-dev#532 R7: the pre-rendered PNG set is ENGLISH-ONLY — the one
+    # standing English asymmetry, kept because those PNGs predate runtime
+    # render. Every other language always renders text: the flag, the
+    # validation marker, the self-test and Stage B decide text-vs-PNG for the
+    # PNG set's language only, and a non-English minute that cannot render
+    # paints the plain time in its own language (R1), never English PNGs.
+    #
+    # quote_language(), not active_language(): with the registry unreadable the
+    # latter calls every device English, and a Spanish clock would be back on
+    # English PNGs (None then — the text tier reports the failure). Guarded:
+    # resolving the language reads two files, and nothing here may stop the
+    # minute's paint (litclock-dev#532 review).
+    language_known = True
+    try:
+        png_tier = strings_catalog.quote_language() == strings_catalog.CANONICAL_LANGUAGE
+    except Exception as e:
+        # Neither tier: the PNGs are English-only, and the text tier without a
+        # known language would also skip English's validation gate. A failed
+        # minute, said plainly (round-2 review).
+        logging.error(f"could not resolve the device language ({e}); painting the plain time")
+        language_known = png_tier = False
+        fallback_reason = FALLBACK_FAILURE
+    runtime_attempted = language_known and ((not png_tier) or _runtime_render_enabled())
     if runtime_attempted:
-        quote_meta = get_current_quote_runtime(now=now, allow_nsfw=allow_nsfw)
-    if quote_meta is None:
-        quote_meta = get_current_quote(now=now, allow_nsfw=allow_nsfw)
-        if quote_meta is not None and runtime_attempted:
-            # "image" alone can't tell "runtime rendering is off on this
-            # device" from "runtime rendering is failing every minute" —
-            # and with the flag defaulting off, EVERY device reports the
-            # former today, which would make the fleet evidence useless
-            # (litclock-dev#543 review F3). Distinguish the alarm condition.
-            quote_meta["render_mode"] = "image-fallback"
+        quote_meta, fallback_reason = get_current_quote_runtime(now=now, allow_nsfw=allow_nsfw)
+    if quote_meta is None and png_tier:
+        png_meta = get_current_quote(now=now, allow_nsfw=allow_nsfw)
+        if png_meta is not None:
+            if runtime_attempted:
+                # "image" alone can't tell "runtime rendering is off on this
+                # device" from "runtime rendering is failing every minute" —
+                # and with the flag defaulting off, EVERY device reports the
+                # former today, which would make the fleet evidence useless
+                # (litclock-dev#543 review F3). Distinguish the alarm condition.
+                png_meta["render_mode"] = "image-fallback"
+            quote_meta, fallback_reason = png_meta, None
+        elif not runtime_attempted:
+            fallback_reason = FALLBACK_GAP if _png_set_present() else FALLBACK_FAILURE
+        # else: the runtime tier's own reason stands — a PNG miss after a
+        # runtime failure is still a failure, after a runtime gap still a gap.
 
     draw = ImageDraw.Draw(image)
 
     if quote_meta is None:
-        # No quote image for this minute — fall back to drawing the time.
-        # Existing behavior since v0.1; preserved for corpus gaps (e.g.,
-        # minutes without a literary match). Also the final tier of the
-        # runtime-render fallback chain: right time, no quote — never a
-        # stale quote.
-        _draw_time_fallback(draw, now)
-        logging.info("Time drawn on image")
+        # No quote for this minute — the plain-time frame, with the line that
+        # says why (D8). Right time, no quote — never a stale quote.
+        if fallback_reason is None:  # every path above sets one; never paint a reason-less frame silently
+            fallback_reason = FALLBACK_FAILURE
+        _draw_time_fallback(draw, now, fallback_reason)
+        logging.info(f"Time drawn on image ({fallback_reason})")
     elif "image" in quote_meta:
         image.paste(quote_meta["image"], (0, QUOTE_AREA_Y))
         logging.info(f"Runtime-rendered quote pasted (fs={quote_meta.get('font_size')})")
@@ -579,9 +884,10 @@ def main():
             # an exception here would void the "never crash-loop" contract.
             logging.error(f"quote PNG unusable ({quote_meta['image_path']}): {e}; drawing time")
             quote_meta = None
-            _draw_time_fallback(draw, now)
+            fallback_reason = FALLBACK_FAILURE
+            _draw_time_fallback(draw, now, fallback_reason)
 
-    _compose_masthead(image, draw, now.strftime("%a, %B %d"), temp_high, temp_low, icon_path)
+    _compose_masthead(image, draw, masthead_date(now), temp_high, temp_low, icon_path)
 
     _stamp_update_failed_glyph(image, draw)
     _composite_settings_qr(image)
@@ -589,7 +895,7 @@ def main():
     logging.info("Image drawing completed")
     # Status-file publication is __main__'s job, after the hardware
     # confirms the new frame reached the panel (codex /review M2 catch).
-    return image, quote_meta, now
+    return image, quote_meta, now, fallback_reason
 
 
 def _runtime_render_enabled() -> bool:
@@ -743,23 +1049,26 @@ def _persist_runtime_frame(frame) -> str | None:
 def get_current_quote_runtime(
     now: datetime | None = None,
     allow_nsfw: bool = False,
-) -> dict | None:
+) -> tuple[dict | None, str | None]:
     """Render the current-minute quote from the corpus (litclock-dev#531 Stage 2).
 
-    Returns the same metadata shape as get_current_quote() plus an
-    ``image`` key holding the ready-to-paste mode-"1" frame (converted
-    with dither=NONE — the renderer emits grey AA fringes, and default
-    Floyd-Steinberg would speckle them into black dots). Returns ``None``
-    on ANY failure — missing freetype-py, corpus read error, RenderError,
-    sanity rejection — and the caller falls back to the pre-rendered PNG
-    path, then the plain time draw. One bad row must degrade one minute,
-    never crash-loop the timer."""
+    Returns ``(meta, None)`` on success — the same metadata shape as
+    get_current_quote() plus an ``image`` key holding the ready-to-paste
+    mode-"1" frame (converted with dither=NONE — the renderer emits grey AA
+    fringes, and default Floyd-Steinberg would speckle them into black
+    dots) — or ``(None, reason)`` (litclock-dev#532 D8): FALLBACK_GAP when
+    the corpus has no usable row for this minute, FALLBACK_FAILURE on
+    anything else — missing freetype-py, a corpus that will not load
+    (``quote_corpus.CorpusUnavailable`` included), RenderError, sanity
+    rejection. Never raises: one bad row must degrade one minute, never
+    crash-loop the timer. What the caller does with a miss depends on the
+    language — only the PNG set's language has a PNG tier to try next."""
     now = now or datetime.now()
     try:
         import quote_renderer
-    except ImportError as e:
-        logging.warning(f"runtime render enabled but renderer unavailable ({e}); using images")
-        return None
+    except Exception as e:  # not just ImportError: a truncated module raises SyntaxError at import
+        logging.warning(f"runtime render wanted but renderer unavailable ({e!r})")
+        return None, FALLBACK_FAILURE
     try:
         # csv_path=None: quote_corpus.corpus_path() — the active language's
         # registry corpus (litclock-dev#870); LITCLOCK_CORPUS_CSV still
@@ -770,33 +1079,31 @@ def get_current_quote_runtime(
         rows = quote_renderer.rows_for_time(None, now.strftime("%H%M"))
     except Exception as e:
         logging.error(f"runtime render: corpus read failed: {e}")
-        return None
+        return None, FALLBACK_FAILURE
     if not allow_nsfw:
         rows = [r for r in rows if not r.is_nsfw]
     if not rows:
-        # Corpus gap — identical outcome to the PNG-glob miss. SAID, since
-        # litclock-dev#871: the self-test reads a fallback as "did not render
-        # text", and without this line the journal could not tell a gap at
-        # this minute from a renderer that cannot render at all.
-        logging.warning(
-            f"runtime render: no rows for {now.strftime('%H:%M')} after the NSFW filter; using pre-rendered images"
-        )
-        return None
+        # Corpus gap. SAID, since litclock-dev#871: the self-test reads a
+        # fallback as "did not render text", and without this line the journal
+        # could not tell a gap at this minute from a renderer that cannot
+        # render at all.
+        logging.warning(f"runtime render: no rows for {now.strftime('%H:%M')} after the NSFW filter")
+        return None, FALLBACK_GAP
     row = rows[randrange(len(rows))]
-    # ONE guard around render+validate+convert+persist: the "returns None
-    # on ANY failure" contract must hold for unexpected shapes too, not
-    # just RenderError (litclock-dev#537 review — a sanity-check or convert crash
-    # previously escaped and would have killed the whole render).
+    # ONE guard around render+validate+convert+persist: the "never raises"
+    # contract must hold for unexpected shapes too, not just RenderError
+    # (litclock-dev#537 review — a sanity-check or convert crash previously escaped
+    # and would have killed the whole render).
     try:
         _, credits_img, font_size, _ = quote_renderer.render_row(row)
         reason = _runtime_frame_ok(credits_img)
         if reason is not None:
             logging.error(f"runtime render rejected for {row.basename}: {reason}; falling back")
-            return None
+            return None, FALLBACK_FAILURE
         frame = credits_img.convert("1", dither=Image.Dither.NONE)
     except Exception as e:
         logging.error(f"runtime render failed for {row.basename}: {e}; falling back")
-        return None
+        return None, FALLBACK_FAILURE
     return {
         "quote": row.quote,
         "author": row.author,
@@ -807,16 +1114,16 @@ def get_current_quote_runtime(
         "image": frame,
         "font_size": font_size,
         "render_mode": "runtime",
-    }
+    }, None
 
 
 def get_current_quote(
     now: datetime | None = None,
     allow_nsfw: bool = False,
 ) -> dict | None:
-    """Return current-minute quote metadata, or ``None`` if no quote is
-    available for this HH:MM (caller falls back to drawing the time in
-    144pt Literata).
+    """Return current-minute quote metadata from the English PNG set, or
+    ``None`` if no PNG matches this HH:MM (the caller paints the plain-time
+    frame, a gap or a failure by ``_png_set_present()``).
 
     Pure function (litclock-dev#245 A7) — same selection logic feeds both the e-ink
     render path in main() and the /api/status response in
@@ -858,11 +1165,33 @@ def get_current_quote(
     }
 
 
-def _write_status_file(quote_meta: dict | None, now: datetime) -> None:
+def _previous_status() -> tuple[int, str | None]:
+    """The failure count and minute ("HH:MM") the LAST published frame
+    carried, or (0, None).
+
+    The painter is a fresh process every minute, so the run of failures
+    lives in the status file it already publishes (litclock-dev#532 R14 —
+    tmpfs, no SD writes, no new memo). A missing, unreadable, corrupt or
+    foreign-shaped file counts from 0: the warning is at worst delayed a few
+    minutes, and the painter must never fail over its own status file."""
+    try:
+        with open(STATUS_FILE, encoding="utf-8") as f:
+            payload = json.load(f)
+        value = payload.get("consecutive_failures", 0)
+        minute = payload.get("time")
+    except Exception:
+        return 0, None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        value = 0
+    return value, minute if isinstance(minute, str) else None
+
+
+def _write_status_file(quote_meta: dict | None, now: datetime, fallback_reason: str | None = None) -> None:
     """Atomically publish what's on the e-ink so /api/status can mirror it.
 
-    Uses the same tempfile + os.replace pattern as src/config.py for
-    crash-safety. Best-effort — a missing or unwritable target directory
+    tempfile + os.replace so a reader never sees a torn file — deliberately
+    WITHOUT config.py's fsync barriers (litclock-dev#893): the target is on
+    tmpfs, so there is nothing to make durable. Best-effort — a missing or unwritable target directory
     logs at WARN and the render proceeds. Path overrideable via
     ``LITCLOCK_STATUS_FILE`` for tests / dev boxes without /var/run.
 
@@ -882,6 +1211,27 @@ def _write_status_file(quote_meta: dict | None, now: datetime) -> None:
         )
         return
 
+    # litclock-dev#532 D8/R14: a quote frame resets the run and a failure
+    # frame extends it. A GAP neither counts nor resets: no row means the
+    # renderer never ran, so the frame says nothing either way — and resetting
+    # on it let a partly covered language with a broken renderer (every
+    # covered minute a failure, every uncovered one a gap) keep the warning
+    # off forever (litclock-dev#532 review, red team + adversarial). A repaint
+    # of the minute already published (an update's timer restart, a Settings
+    # save's ad-hoc tick) does not count again either, so "3 in a row" means
+    # three minutes. A no-quote frame with no stated reason is a failure:
+    # claiming a gap we cannot prove would hide a broken clock.
+    if quote_meta is not None:
+        fallback_reason = None
+    elif fallback_reason not in (FALLBACK_GAP, FALLBACK_FAILURE):
+        fallback_reason = FALLBACK_FAILURE
+    if fallback_reason is None:
+        consecutive_failures = 0
+    else:
+        previous, previous_minute = _previous_status()
+        repaint = previous_minute == now.strftime("%H:%M")
+        consecutive_failures = previous + (fallback_reason == FALLBACK_FAILURE and not repaint)
+
     payload: dict = {
         "time": now.strftime("%H:%M"),
         "picked_at": _time.time(),
@@ -893,12 +1243,20 @@ def _write_status_file(quote_meta: dict | None, now: datetime) -> None:
         #   "runtime"        rendered on-device from the corpus
         #   "image-fallback" runtime was ATTEMPTED and lost -> the alarm
         #   "image"          runtime not enabled here; PNG by design
-        #   "time-only"      no quote for this minute -> 144pt time drawn
+        #   "time-only"      no quote this minute -> plain-time frame drawn
         #   None             unknown (a meta without the field; never
         #                    claim a tier we can't prove — litclock-dev#543 F4)
         # Rendered in the diagnostics page + support bundle.
         "render_mode": "time-only" if quote_meta is None else quote_meta.get("render_mode"),
+        # Why a time-only frame has no quote: "gap" or "failure" (D8), absent
+        # on a quote frame. render_mode stays "time-only" for both, so the
+        # self-test, diagnostics and the support bundle are untouched.
+        # consecutive_failures is the run of failure frames ending with this
+        # one, gaps carried through (R14); the PWA warns at CONSECUTIVE_FAILURES_WARN_AT.
+        "consecutive_failures": consecutive_failures,
     }
+    if fallback_reason is not None:
+        payload["fallback_reason"] = fallback_reason
     if quote_meta:
         payload.update(
             {
@@ -1108,21 +1466,40 @@ if __name__ == "__main__":
             "silently fell back to a pre-rendered PNG must not count as 'this device renders text'."
         ),
     )
+    parser.add_argument(
+        "--sample-quote",
+        action="store_true",
+        help=(
+            "With --dry-run: render the first minute from now that the device language's corpus has a "
+            "non-mature quote for, instead of the current minute, so the check is about rendering and "
+            f"never about coverage. Exits {EXIT_NO_SAMPLE} when the corpus has nothing to sample "
+            "(litclock-dev#532 R10, the weekly self-test)."
+        ),
+    )
     args = parser.parse_args()
     if args.require_runtime_render and not args.dry_run:
         parser.error("--require-runtime-render only means something with --dry-run")
+    if args.sample_quote and not args.dry_run:
+        parser.error("--sample-quote only means something with --dry-run")
 
     if args.dry_run:
         # Smoke test path: exercise image composition end-to-end (fonts, corpus,
         # weather fallbacks) without importing display_driver (which binds GPIO
         # and opens /dev/spidev* on import). Any exception becomes a non-zero
         # exit with a traceback — update.sh reads that and reverts. main()
-        # returns (image, quote_meta, now) but doesn't publish the status
+        # returns (image, quote_meta, now, fallback_reason) but doesn't publish the status
         # file (that's __main__'s post-hardware job), so the smoke render
         # never touches /run/litclock/current-quote.json — OV3 lockstep
         # preserved (codex /review M2 catch).
+        sample = None
+        if args.sample_quote:
+            sample = _sample_minute(_render_target())
+            if sample is None:
+                print("dry-run: no quote to sample — the device language's corpus has none", flush=True)
+                sys.exit(EXIT_NO_SAMPLE)
+            print(f"dry-run: sampling {sample.strftime('%H:%M')}", flush=True)
         try:
-            result = main()
+            result = main() if sample is None else main(at=sample)
         except Exception:
             logging.exception("dry-run render failed")
             sys.exit(1)
@@ -1134,25 +1511,32 @@ if __name__ == "__main__":
             logging.error("dry-run: main() returned None image")
             sys.exit(1)
         # litclock-dev#871 Stage A: say WHICH tier produced the frame, and let
-        # the self-test insist on the text renderer. main() degrades to the
-        # PNG tier on every runtime failure (marker missing, freetype unusable,
-        # digest stale, corpus gap, render error) and returns a perfectly good
-        # image, so exit 0 alone cannot tell "this device renders text" from
-        # "this device fell back" — which is the whole question the self-test
-        # asks. `time-only` is the no-quote fallback (quote_meta None).
+        # the self-test insist on the text renderer. main() degrades on every
+        # runtime failure (marker missing, freetype unusable, digest stale,
+        # corpus gap, render error) — to the PNG tier for English, to the
+        # plain-time frame for every other language — and returns a perfectly
+        # good image, so exit 0 alone cannot tell "this device renders text"
+        # from "this device fell back", which is the whole question the
+        # self-test asks. `time-only` is the plain-time frame (quote_meta
+        # None), and the line then says whether it was a gap or a failure
+        # (litclock-dev#532 D8): only a failure is evidence against the device.
         render_mode = result[1].get("render_mode") if result[1] else "time-only"
+        reason = result[3] if len(result) > 3 and result[1] is None else None
         # stdout, not the log: setup_logging() defaults to WARNING unless
         # LOG_LEVEL is set, so an INFO line is normally invisible — and the
         # self-test's verdict is the one line of a dry-run anyone reads
         # (`[selftest] dry-run: render_mode=runtime` in the update journal).
-        print(f"dry-run: rendered {image.size[0]}x{image.size[1]} image, render_mode={render_mode}", flush=True)
+        suffix = f" ({reason})" if reason else ""
+        print(
+            f"dry-run: rendered {image.size[0]}x{image.size[1]} image, render_mode={render_mode}{suffix}", flush=True
+        )
         if args.require_runtime_render and render_mode != "runtime":
             logging.error(
                 "dry-run: --require-runtime-render but the frame came from render_mode=%s — "
                 "the text renderer did not produce it (see the warning above for why)",
                 render_mode,
             )
-            sys.exit(3)
+            sys.exit(EXIT_NOT_RUNTIME)
         sys.exit(0)
 
     # Register signal handlers for graceful shutdown
@@ -1183,7 +1567,7 @@ if __name__ == "__main__":
         # Hardware import is lazy — deferred until we actually need to talk to the display.
         from display_driver import epd7in5  # noqa: E402
 
-        image, quote_meta, now = main()
+        image, quote_meta, now, fallback_reason = main()
         display_clear_hour = _display_clear_hour()
     except BaseException:
         # traceback.print_exc() as well as logging: logging.exception is
@@ -1236,7 +1620,7 @@ if __name__ == "__main__":
         # raised, the status file stays stale and the PWA renders the
         # stale-quote banner — which is the right signal (codex /review
         # caught the M2 draft publishing pre-hardware).
-        _write_status_file(quote_meta, now)
+        _write_status_file(quote_meta, now, fallback_reason)
         epd.sleep()
         _write_heartbeat()
 

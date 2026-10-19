@@ -228,12 +228,12 @@
       updateRowStates(payload.phase_index || (payload.state === 'failed_reverted' ? 5 : 0), true);
       if (payload.state === 'failed_unrecovered') {
         showTerminal(
-          payload.error || tr('updates.terminal.unrecovered', 'Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab.'),
+          tr('updates.terminal.unrecovered', 'Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab.'),
           'error'
         );
       } else {
         showTerminal(
-          payload.error || tr('updates.terminal.reverted', 'Update failed verification — rolled back. Your clock is running normally.'),
+          tr('updates.terminal.reverted', 'Update failed verification — rolled back. Your clock is running normally.'),
           'reverted'
         );
       }
@@ -585,8 +585,12 @@
       updateRowStates(payload.phase_index || 5, true);
       // litclock-dev#348 codex finding 1+2 — terminal state cancels pending work.
       cancelPolling();
+      // litclock-dev#532 T10: always the catalog copy. payload.error is
+      // update.sh's English diagnostic ("Smoke test failed; reverted to
+      // <sha>") — it stays in /api/update/status and the journal, but the
+      // owner reads the sentence in their own language.
       showTerminal(
-        payload.error || tr('updates.terminal.reverted', 'Update failed verification — rolled back. Your clock is running normally.'),
+        tr('updates.terminal.reverted', 'Update failed verification — rolled back. Your clock is running normally.'),
         'reverted'
       );
       return;
@@ -596,7 +600,7 @@
       // litclock-dev#348 codex finding 1+2 — terminal state cancels pending work.
       cancelPolling();
       showTerminal(
-        payload.error || tr('updates.terminal.unrecovered', 'Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab.'),
+        tr('updates.terminal.unrecovered', 'Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab.'),
         'error'
       );
       return;
@@ -767,7 +771,7 @@
             consecutivePollFailures = 0;
             updateRowStates(statusBody.phase_index || 5, true);
             showTerminal(
-              statusBody.error || tr('updates.terminal.reverted', 'Update failed verification — rolled back. Your clock is running normally.'),
+              tr('updates.terminal.reverted', 'Update failed verification — rolled back. Your clock is running normally.'),
               'reverted'
             );
             return;
@@ -777,7 +781,7 @@
             consecutivePollFailures = 0;
             updateRowStates(statusBody.phase_index || 0, true);
             showTerminal(
-              statusBody.error || tr('updates.terminal.unrecovered', 'Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab.'),
+              tr('updates.terminal.unrecovered', 'Update did not finish. Try again in a few minutes; if it still fails, restart from the System tab.'),
               'error'
             );
             return;

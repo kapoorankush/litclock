@@ -76,6 +76,20 @@ class TestRegistryShape:
                 "deliberately not a thing (incomplete languages are unselectable)"
             )
 
+    def test_every_translated_corpus_lives_under_its_language_directory(self):
+        """The render-invariants workflow re-checks corpora on
+        `languages/**/*.csv` only (litclock-dev#532 T4, litclock-dev#914 review): a
+        translation registered anywhere else would change without the gate
+        running. English's corpus is the shipped PNG source, on its own path."""
+        for code, entry in _languages().items():
+            if code == "en":
+                continue
+            rel = entry["corpus"]["path"]
+            parts = Path(rel).parts
+            assert parts[:2] == ("languages", code) and ".." not in parts and rel.endswith(".csv"), (
+                f"{code}: corpus.path {rel!r} must be languages/{code}/<name>.csv"
+            )
+
     def test_strings_paths_resolve_and_parse(self):
         for code, entry in _languages().items():
             path = REPO_ROOT / entry["strings"]
@@ -91,8 +105,10 @@ class TestCanonicalKeySet:
             if code == "en":
                 continue
             keys = _catalog_keys(entry)
-            missing = en_keys - keys
-            extra = keys - en_keys
+            # The numbered farewell lines are the one optional class (litclock-dev#532
+            # T7): a language supplies 1..N of its own per screen.
+            missing = {k for k in en_keys - keys if not catalog_lint.is_optional_key(k)}
+            extra = {k for k in keys - en_keys if not catalog_lint.is_farewell_key(k)}
             assert not missing and not extra, (
                 f"{code} diverges from the canonical English key set — "
                 f"missing={sorted(missing)[:5]} extra={sorted(extra)[:5]}"
@@ -117,6 +133,8 @@ class TestCanonicalKeySet:
             for key, value in data.items():
                 if key.startswith("_"):
                     continue
+                if isinstance(value, str) and not value.strip() and catalog_lint.is_optional_key(key):
+                    continue  # an optional farewell left blank is not supplied (litclock-dev#532 T7)
                 assert isinstance(value, str) and value.strip(), f"{code}:{key} empty"
                 assert "{}" not in value, f"{code}:{key} uses a positional slot"
                 import re as _re  # noqa: PLC0415
@@ -203,11 +221,79 @@ class TestLoaderContract:
         strings_catalog.reset_cache()
         assert strings_catalog.get("status.relative.just_now") == "status.relative.just_now"
 
+    @pytest.mark.parametrize("languages", ['["en", "es"]', '"es"', "7"], ids=["list", "string", "int"])
+    def test_a_wrong_shaped_registry_degrades_never_raises(self, tmp_path, monkeypatch, languages):
+        """litclock-dev#532 review: valid JSON whose `languages` is not a
+        mapping used to raise AttributeError from every reader — and the
+        painter resolves the language every minute."""
+        reg = tmp_path / "languages.json"
+        reg.write_text(f'{{"fleet_default": "en", "languages": {languages}}}')
+        monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", reg)
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "es")
+        strings_catalog.reset_cache()
+        assert strings_catalog.active_language() == "en"
+        assert strings_catalog.active_codes() == {"en"}
+        assert strings_catalog.corpus_relpath("es") is None
+        assert strings_catalog.registry_readable() is False
+        assert strings_catalog.quote_language() is None
+
+    def test_an_unreadable_registry_does_not_log_using_english(self, tmp_path, monkeypatch, caplog):
+        """Round-2 review: the journal said "using English" just before the
+        painter refused English."""
+        import logging
+
+        monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", tmp_path / "nope.json")
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "es")
+        strings_catalog.reset_cache()
+        with caplog.at_level(logging.WARNING, logger="strings_catalog"):
+            assert strings_catalog.quote_language() is None
+            strings_catalog.get_own("clock.fallback.failure")  # what the failure frame does next
+        messages = " ".join(r.getMessage() for r in caplog.records)
+        assert "using English" not in messages and "painting no quotes" in messages
+
+    def test_quote_language_trusts_a_readable_registry(self, monkeypatch):
+        """The control: a readable registry rejecting the code is the
+        device-level rule (English), not the damaged case."""
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "zz")
+        strings_catalog.reset_cache()
+        assert strings_catalog.quote_language() == "en"
+
+    def test_get_own_never_serves_another_language(self, tmp_path, monkeypatch):
+        _multilang_registry(tmp_path, monkeypatch)
+        monkeypatch.setattr(strings_catalog, "_REPO_ROOT", tmp_path)
+        (tmp_path / "languages" / "en").mkdir(parents=True)
+        (tmp_path / "languages" / "de").mkdir(parents=True)
+        (tmp_path / "languages" / "en" / "strings.json").write_text('{"a": "English A", "b": "English B"}')
+        (tmp_path / "languages" / "de" / "strings.json").write_text('{"a": "Deutsch A"}')
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "de")
+        strings_catalog.reset_cache()
+        # Incomplete (lacks "b"): unusable WHOLE since RT1 — get() serves the
+        # fleet default for every key, never a mix, and get_own() nothing.
+        assert strings_catalog.get("a") == "English A"
+        assert strings_catalog.get("b") == "English B"
+        assert strings_catalog.get_own("a") is None
+        (tmp_path / "languages" / "de" / "strings.json").write_text('{"a": "Deutsch A", "b": "Deutsch B"}')
+        strings_catalog.reset_cache()
+        assert strings_catalog.get_own("a") == "Deutsch A"
+        assert strings_catalog.get("b") == "Deutsch B"
+
     def test_slot_fill_is_inert_to_braces_in_values(self):
         # The dumb-replace contract: a slot value containing braces must not
         # recurse or raise (the reason format() is not used).
         out = strings_catalog.get("status.relative.minutes.other", n="{n}{weird}")
         assert out == "{n}{weird} minutes ago"
+
+    def test_a_value_reading_like_a_later_slot_is_not_filled_again(self):
+        # litclock-dev#532 T6 review: slot-by-slot replacement re-filled a
+        # value that read like a slot filled AFTER it, so a setup SSID
+        # "My{ip_url}Net" became a different network name in the steps.
+        assert strings_catalog._fill("{ssid} / {ip_url}", {"ssid": "My{ip_url}Net", "ip_url": "http://x"}) == (
+            "My{ip_url}Net / http://x"
+        )
+        # Either order: a value reading like an EARLIER slot is safe too.
+        assert strings_catalog._fill("{a} {b}", {"b": "{a}", "a": "A"}) == "A {a}"
+        # A name with no value stays as written.
+        assert strings_catalog._fill("{b}x{/b} {gone}", {"n": 1}) == "{b}x{/b} {gone}"
 
     def test_stray_braces_in_template_never_raise(self):
         # A translated template with a literal unmatched brace must pass
@@ -1278,3 +1364,255 @@ class TestStage4GatesFireOnDefects:
     def test_conforming_translation_passes_clean(self):
         assert self._errs("Listo, {name} — ¡ya está!") == []
         assert self._errs("{b}Listo{/b}, {name}.", vocab=_RICH_VOCAB_SETUP) == []
+
+
+# ---------- litclock-dev#532 RT1 (R12/R15, O3/O4): one resolver ----------
+
+
+@pytest.fixture
+def xx_fleet(tmp_path, monkeypatch):
+    """English (the real bundle) plus an ACTIVE `xx` whose bundle the test
+    writes: complete by default (every canonical key, value prefixed XX)."""
+    en = json.loads((REPO_ROOT / "languages" / "en" / "strings.json").read_text(encoding="utf-8"))
+    canonical = {k: v for k, v in en.items() if not k.startswith("_")}
+    (tmp_path / "languages" / "en").mkdir(parents=True)
+    (tmp_path / "languages" / "xx").mkdir(parents=True)
+    (tmp_path / "languages" / "en" / "strings.json").write_text(json.dumps(en), encoding="utf-8")
+    bundle = tmp_path / "languages" / "xx" / "strings.json"
+
+    def write(data):
+        bundle.write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
+
+    write({k: f"XX {v}" for k, v in canonical.items()})
+    reg = tmp_path / "languages.json"
+    reg.write_text(
+        json.dumps(
+            {
+                "fleet_default": "en",
+                "languages": {
+                    "en": {"code": "en", "status": "active", "strings": "languages/en/strings.json"},
+                    "xx": {"code": "xx", "status": "active", "strings": "languages/xx/strings.json"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", reg)
+    monkeypatch.setattr(strings_catalog, "_REPO_ROOT", tmp_path)
+    monkeypatch.setenv("LITCLOCK_LANGUAGE", "xx")
+    strings_catalog.reset_cache()
+    yield {"write": write, "canonical": canonical}
+    strings_catalog.reset_cache()
+
+
+class TestOneResolver:
+    KEY = "status.relative.just_now"
+
+    def test_an_intact_bundle_serves_itself(self, xx_fleet):
+        snap = strings_catalog.snapshot()
+        assert (snap.requested, snap.language, snap.usable) == ("xx", "xx", True)
+        assert strings_catalog.get(self.KEY) == "XX just now"
+
+    @pytest.mark.parametrize("broken", ["{not json", "[]", "{}"], ids=["unparseable", "list", "empty"])
+    def test_an_unloadable_bundle_serves_the_fleet_default_whole(self, xx_fleet, broken):
+        xx_fleet["write"](broken)
+        strings_catalog.reset_cache()
+        snap = strings_catalog.snapshot()
+        assert (snap.requested, snap.language, snap.usable) == ("xx", "en", False)
+        assert strings_catalog.get(self.KEY) == "just now"
+
+    def test_one_missing_key_makes_the_whole_bundle_unusable_never_mixed(self, xx_fleet):
+        """R12: the old per-key fallback served this page half in xx, half
+        in English. Now every key comes from ONE language."""
+        data = {k: f"XX {v}" for k, v in xx_fleet["canonical"].items()}
+        del data["status.relative.never"]
+        xx_fleet["write"](data)
+        strings_catalog.reset_cache()
+        page = strings_catalog.get_many([self.KEY, "status.relative.never"])
+        assert page == {self.KEY: "just now", "status.relative.never": "—"}
+        assert strings_catalog.snapshot().language == "en"
+
+    @staticmethod
+    def _clock(monkeypatch):
+        clock = [1e9]
+        monkeypatch.setattr(strings_catalog.time, "monotonic", lambda: clock[0])
+        return clock
+
+    def test_an_incomplete_bundle_heals_in_process_after_the_ttl(self, xx_fleet, monkeypatch):
+        """O3: incomplete is a RETRYABLE failure (the module's own contract:
+        a transient OTA window must heal itself), not cached for life."""
+        clock = self._clock(monkeypatch)
+        data = {k: f"XX {v}" for k, v in xx_fleet["canonical"].items()}
+        missing = data.pop("status.relative.never")
+        xx_fleet["write"](data)
+        strings_catalog.reset_cache()
+        assert strings_catalog.snapshot().language == "en"
+        data["status.relative.never"] = missing
+        xx_fleet["write"](data)
+        assert strings_catalog.snapshot().language == "en", "still inside the TTL"
+        clock[0] += strings_catalog.NEGATIVE_CACHE_TTL_S + 1
+        assert strings_catalog.snapshot().language == "xx"
+        assert strings_catalog.get(self.KEY) == "XX just now"
+
+    def test_completeness_is_rejudged_after_a_canonical_load_failure(self, xx_fleet, monkeypatch):
+        """litclock-dev#913 review (three reviewers): an incomplete bundle first loaded
+        while English was unreadable was cached as COMPLETE for life and
+        served raw keys once English healed."""
+        clock = self._clock(monkeypatch)
+        en_path = strings_catalog._REPO_ROOT / "languages" / "en" / "strings.json"
+        good_en = en_path.read_text(encoding="utf-8")
+        en_path.write_text("{broken", encoding="utf-8")
+        data = {k: f"XX {v}" for k, v in xx_fleet["canonical"].items()}
+        del data["status.relative.never"]
+        xx_fleet["write"](data)
+        strings_catalog.reset_cache()
+        snap = strings_catalog.snapshot()
+        assert not snap.usable
+        assert snap.get(self.KEY) == "XX just now", "with no fallback loadable, the raw bundle beats keys"
+        assert strings_catalog.get_own("clock.fallback.gap") is None
+        en_path.write_text(good_en, encoding="utf-8")
+        clock[0] += strings_catalog.NEGATIVE_CACHE_TTL_S + 1
+        snap = strings_catalog.snapshot()
+        assert (snap.language, snap.usable) == ("en", False)
+        assert snap.get("status.relative.never") == "—", "never the raw key"
+
+    def test_an_unjudged_complete_bundle_is_judged_as_soon_as_english_is_back(self, xx_fleet, monkeypatch):
+        """litclock-dev#913 round 2: read while English was unreadable, a COMPLETE bundle
+        was held for its full TTL after English recovered, showing the
+        fallback (and logging a false 'unusable') in between."""
+        clock = self._clock(monkeypatch)
+        en_path = strings_catalog._REPO_ROOT / "languages" / "en" / "strings.json"
+        good_en = en_path.read_text(encoding="utf-8")
+        en_path.write_text("{broken", encoding="utf-8")
+        strings_catalog.reset_cache()
+        strings_catalog._catalog("en")  # English fails at t0
+        clock[0] += 20
+        strings_catalog._catalog("xx")  # xx read at t0+20: unjudged, not complete
+        en_path.write_text(good_en, encoding="utf-8")
+        clock[0] += 11  # English's retry is due; xx's own hold is only 11s old
+        strings_catalog._catalog("en")
+        assert strings_catalog.snapshot().language == "xx"
+
+    def test_a_blank_value_counts_as_missing(self, xx_fleet):
+        """A translator-kit export writes every key, filled or not."""
+        data = {k: f"XX {v}" for k, v in xx_fleet["canonical"].items()}
+        data["status.relative.never"] = "  "
+        xx_fleet["write"](data)
+        strings_catalog.reset_cache()
+        assert strings_catalog.snapshot().language == "en"
+
+    @pytest.mark.parametrize("status", ["incubating", "active-but-incomplete"])
+    def test_a_fleet_default_that_cannot_serve_is_passed_over(self, xx_fleet, monkeypatch, status):
+        reg = json.loads(strings_catalog.REGISTRY_PATH.read_text(encoding="utf-8"))
+        reg["fleet_default"] = "xx"
+        reg["languages"]["xx"]["status"] = "incubating" if status == "incubating" else "active"
+        strings_catalog.REGISTRY_PATH.write_text(json.dumps(reg), encoding="utf-8")
+        if status != "incubating":
+            xx_fleet["write"]({"a": "b"})
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "en")
+        strings_catalog.reset_cache()
+        assert strings_catalog.snapshot("zz").language == "en"
+
+    def test_lang_is_keyword_only(self, xx_fleet):
+        with pytest.raises(TypeError):
+            strings_catalog.get(self.KEY, "en")
+        with pytest.raises(TypeError):
+            strings_catalog.get_many([self.KEY], "en")
+
+    def test_no_canonical_value_uses_lang_as_a_slot(self):
+        """`lang` is the lookup keyword, so it can never be a slot name."""
+        en = json.loads((REPO_ROOT / "languages" / "en" / "strings.json").read_text(encoding="utf-8"))
+        assert not [k for k, v in en.items() if "{lang}" in str(v)]
+
+    def test_a_blank_part_stays_blank_when_the_canonical_bundle_is_broken(self, xx_fleet):
+        en_path = strings_catalog._REPO_ROOT / "languages" / "en" / "strings.json"
+        en_path.write_text("{broken", encoding="utf-8")
+        strings_catalog.reset_cache()
+        prefix = "boot.splash.starting"
+        assert prefix + ".submessage" not in xx_fleet["canonical"]
+        assert strings_catalog.get_triplet(prefix)[2] == ""
+
+    def test_catalog_size_stays_raw(self, xx_fleet):
+        """Section 2 #2: the OTA count probe must never see the fallback's
+        count for a broken bundle, and an incomplete one reports its own."""
+        full = len(xx_fleet["canonical"])
+        assert strings_catalog.catalog_size("xx") == full
+        xx_fleet["write"]({"a": "b", "c": "d"})
+        strings_catalog.reset_cache()
+        assert strings_catalog.catalog_size("xx") == 2
+        xx_fleet["write"]("{not json")
+        strings_catalog.reset_cache()
+        assert strings_catalog.catalog_size("xx") == 0
+
+    def test_an_explicit_language_overrides_the_device(self, xx_fleet):
+        assert strings_catalog.get(self.KEY, lang="en") == "just now"
+        monkeypatch_free = strings_catalog.get(self.KEY)  # the device language is untouched
+        assert monkeypatch_free == "XX just now"
+        assert strings_catalog.plural("status.relative.minutes", 2, lang="en") == "2 minutes ago"
+
+    @pytest.mark.parametrize("code", ["zz", "", "../en"])
+    def test_an_explicit_unknown_language_is_the_fleet_default(self, xx_fleet, code):
+        assert strings_catalog.snapshot(code).language == "en"
+
+    def test_an_explicit_incubating_language_is_the_fleet_default(self, xx_fleet, monkeypatch):
+        """A complete bundle is not enough: an incubating language is
+        unselectable by contract, explicitly asked for or not."""
+        reg = json.loads(strings_catalog.REGISTRY_PATH.read_text(encoding="utf-8"))
+        reg["languages"]["xx"]["status"] = "incubating"
+        strings_catalog.REGISTRY_PATH.write_text(json.dumps(reg), encoding="utf-8")
+        monkeypatch.setenv("LITCLOCK_LANGUAGE", "en")
+        strings_catalog.reset_cache()
+        assert strings_catalog.snapshot("xx").language == "en"
+        assert strings_catalog.get(self.KEY, lang="xx") == "just now"
+
+    def test_a_splash_is_wholly_one_language(self, xx_fleet):
+        """R15: a broken xx bundle paints the restart splash wholly in the
+        fleet default."""
+        assert strings_catalog.get_triplet("shutdown.splash.reboot")[1].startswith("XX ")
+        data = {k: f"XX {v}" for k, v in xx_fleet["canonical"].items()}
+        del data["shutdown.splash.reboot.title"]
+        xx_fleet["write"](data)
+        strings_catalog.reset_cache()
+        title, message, _ = strings_catalog.get_triplet("shutdown.splash.reboot")
+        assert (title, message) == ("LitClock", "Restarting...")
+
+    def test_an_optional_part_is_dropped_on_an_unusable_bundle(self, xx_fleet):
+        """R15/D9: the plain-time frame's line, read through get_own, is
+        omitted rather than served in the fleet default."""
+        assert strings_catalog.get_own("clock.fallback.gap") == "XX No book quote for this minute yet."
+        data = {k: f"XX {v}" for k, v in xx_fleet["canonical"].items()}
+        del data["status.relative.never"]
+        xx_fleet["write"](data)
+        strings_catalog.reset_cache()
+        assert strings_catalog.get_own("clock.fallback.gap") is None
+
+    def test_a_key_missing_everywhere_serves_the_key(self, xx_fleet):
+        assert strings_catalog.get("no.such.key") == "no.such.key"
+
+
+class TestThePwaReadsOneSnapshotPerPage:
+    def test_a_language_switch_mid_render_does_not_mix_the_page(self, xx_fleet, monkeypatch):
+        """O4: t() resolved the device language on EVERY call, so a save
+        landing mid-render could split one page across two languages."""
+        sys.path.insert(0, str(REPO_ROOT / "src"))
+        from control_server import create_app  # noqa: PLC0415
+
+        app = create_app(test_config={"VERSION_OVERRIDE": "v0.0.0-test"})
+        t = app.jinja_env.globals["t"]
+        with app.test_request_context("/"):
+            first = t(TestOneResolver.KEY)
+            monkeypatch.setenv("LITCLOCK_LANGUAGE", "en")  # the save lands
+            second = t(TestOneResolver.KEY)
+        assert first == second == "XX just now"
+        with app.test_request_context("/"):
+            assert t(TestOneResolver.KEY) == "just now", "the next request sees the new language"
+
+    def test_the_page_declares_the_language_it_is_written_in(self, xx_fleet):
+        sys.path.insert(0, str(REPO_ROOT / "src"))
+        from control_server import create_app  # noqa: PLC0415
+
+        app = create_app(test_config={"VERSION_OVERRIDE": "v0.0.0-test"})
+        assert '<html lang="xx">' in app.test_client().get("/").get_data(as_text=True)
+        xx_fleet["write"]("{not json")
+        strings_catalog.reset_cache()
+        assert '<html lang="en">' in app.test_client().get("/").get_data(as_text=True)

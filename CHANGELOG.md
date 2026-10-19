@@ -4,6 +4,23 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- The WiFi setup pages on your phone have a new look that matches the LitClock app, and the page after you tap Complete Setup now tells you what the clock is doing next.
+- The farewell lines shown when the clock restarts, powers off or is prepared as a gift now use proper curly quotation marks.
+- This update takes a few minutes longer than usual, because the clock re-checks that it can still draw its quotes correctly before resuming.
+
+### Fixed
+
+- If you use Reset WiFi and don't finish setting the clock up again, unplugging and replugging it now brings the setup network back, instead of leaving the clock stuck on "Starting…".
+- About forty quotes that had lost their quotation marks have them back, a typo in one noon quote and one book's author credit are corrected, and a few quotes that appeared at the wrong minute have been removed.
+- If the clock cannot show a book quote, it now shows the time in large type with a short line saying why, and the app warns you if this goes on for several minutes.
+- Resetting a clock or preparing an SD card for a friend no longer sends it back to the pre-made quote pictures for up to a week.
+- The setup page's Refresh button now works on phones with JavaScript turned off, and a failed WiFi scan says so instead of claiming no networks are nearby.
+- Saved settings and update records are now written safely enough to survive a power cut at the wrong moment.
+- If an update fails and is rolled back, the app now always shows the plain explanation, and the technical reason is kept under Diagnostics for support.
+- Security updates to two of the clock's software libraries, and the app now refuses oversized requests on your network.
+
 ## [v0.231.0] - 2026-09-28
 
 ### Changed

@@ -303,7 +303,7 @@ class TestQrComposite:
         ordering is load-bearing. The unit tests pre-draw their own divider
         and can't catch a reorder — this renders the real frame and asserts
         the quiet zone survived the full pipeline."""
-        image, _meta, _now = literary_clock.main()
+        image, _meta, _now, _reason = literary_clock.main()
 
         qx, qy = literary_clock.QR_POSITION
         quiet = literary_clock.QR_QUIET_ZONE
@@ -800,7 +800,7 @@ class TestRuntimeRender:
             return real_import(name, *a, **kw)
 
         monkeypatch.setattr(builtins, "__import__", failing_import)
-        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0)) is None
+        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0)) == (None, "failure")
 
     def test_flag_on_with_marker_but_broken_freetype(self, monkeypatch, tmp_path) -> None:
         """litclock-dev#605 item 2: the post-OTA-venv-rebuild state — flag on, marker
@@ -841,7 +841,7 @@ class TestRuntimeRender:
 
         fake.rows_for_time = boom
         monkeypatch.setitem(sys.modules, "quote_renderer", fake)
-        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0)) is None
+        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0)) == (None, "failure")
 
     def test_persist_runtime_frame_cleans_up_temp_on_write_failure(self, monkeypatch, tmp_path) -> None:
         """litclock-dev#605 item 4: a save() failure mid-write must unlink the mkstemp
@@ -889,7 +889,8 @@ class TestRuntimeRenderWithFreetype:
 
     def test_runtime_quote_renders_and_persists(self, monkeypatch, tmp_path) -> None:
         self._write_runtime_corpus(tmp_path, monkeypatch)
-        meta = literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0))
+        meta, reason = literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0))
+        assert reason is None
         assert meta is not None
         assert meta["image"].mode == "1"
         assert meta["image"].size == (800, literary_clock.QUOTE_AREA_H)
@@ -902,13 +903,13 @@ class TestRuntimeRenderWithFreetype:
         self._write_runtime_corpus(tmp_path, monkeypatch)
         seen = set()
         for _ in range(20):
-            meta = literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0), allow_nsfw=True)
+            meta, _reason = literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0), allow_nsfw=True)
             seen.add(meta["title"])
         assert seen == {"T1", "T2"}
 
     def test_runtime_quote_none_for_empty_bucket(self, monkeypatch, tmp_path) -> None:
         self._write_runtime_corpus(tmp_path, monkeypatch)
-        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 3, 7)) is None
+        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 3, 7)) == (None, "gap")
 
     def test_runtime_quote_none_on_render_failure(self, monkeypatch, tmp_path) -> None:
         self._write_runtime_corpus(tmp_path, monkeypatch)
@@ -918,7 +919,7 @@ class TestRuntimeRenderWithFreetype:
             raise quote_renderer.RenderError("nofit", "test")
 
         monkeypatch.setattr(quote_renderer, "render_row", boom)
-        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0)) is None
+        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0)) == (None, "failure")
 
     def test_runtime_quote_none_on_sanity_rejection(self, monkeypatch, tmp_path) -> None:
         self._write_runtime_corpus(tmp_path, monkeypatch)
@@ -932,7 +933,7 @@ class TestRuntimeRenderWithFreetype:
             return blank, blank, 20, None
 
         monkeypatch.setattr(quote_renderer, "render_row", blank_render)
-        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0)) is None
+        assert literary_clock.get_current_quote_runtime(now=datetime(2026, 1, 1, 0, 0)) == (None, "failure")
 
 
 class TestQuotePngFallback:
@@ -956,7 +957,7 @@ class TestQuotePngFallback:
                 "picked_at": 0.0,
             },
         )
-        image, quote_meta, _now = literary_clock.main()
+        image, quote_meta, _now, _reason = literary_clock.main()
         assert image is not None and image.size == literary_clock.DISPLAY_SIZE
         # meta cleared so the status file reports the honest time-only frame
         assert quote_meta is None
@@ -1006,7 +1007,7 @@ class TestMainRuntimeWiring:
 
     def test_main_uses_runtime_frame(self, monkeypatch, tmp_path) -> None:
         self._arm(monkeypatch, tmp_path)
-        image, quote_meta, _ = literary_clock.main()
+        image, quote_meta, _, _reason = literary_clock.main()
         assert quote_meta is not None and "image" in quote_meta
         # the producer must TAG it — deleting that line must fail a test
         assert quote_meta["render_mode"] == "runtime"
@@ -1016,7 +1017,7 @@ class TestMainRuntimeWiring:
 
     def test_main_falls_back_to_png_glob_when_runtime_none(self, monkeypatch, tmp_path) -> None:
         self._arm(monkeypatch, tmp_path)
-        monkeypatch.setattr(literary_clock, "get_current_quote_runtime", lambda **kw: None)
+        monkeypatch.setattr(literary_clock, "get_current_quote_runtime", lambda **kw: (None, "failure"))
         consulted = []
 
         def recording_glob(now=None, allow_nsfw=False):
@@ -1024,7 +1025,7 @@ class TestMainRuntimeWiring:
             return None
 
         monkeypatch.setattr(literary_clock, "get_current_quote", recording_glob)
-        image, quote_meta, _ = literary_clock.main()
+        image, quote_meta, _, _reason = literary_clock.main()
         assert consulted == [True]
         assert quote_meta is None  # PNG glob empty -> time draw
         assert image.size == literary_clock.DISPLAY_SIZE
@@ -1040,7 +1041,7 @@ class TestMainRuntimeWiring:
         'runtime rendering is simply off on this device'."""
         self._arm(monkeypatch, tmp_path)
         png = self._real_png(tmp_path)
-        monkeypatch.setattr(literary_clock, "get_current_quote_runtime", lambda **kw: None)
+        monkeypatch.setattr(literary_clock, "get_current_quote_runtime", lambda **kw: (None, "failure"))
         monkeypatch.setattr(
             literary_clock,
             "get_current_quote",
@@ -1054,7 +1055,7 @@ class TestMainRuntimeWiring:
                 "render_mode": "image",
             },
         )
-        _image, quote_meta, _now = literary_clock.main()
+        _image, quote_meta, _now, _reason = literary_clock.main()
         assert quote_meta["render_mode"] == "image-fallback"
 
     def test_runtime_disabled_stays_plain_image(self, monkeypatch, tmp_path) -> None:
@@ -1074,7 +1075,7 @@ class TestMainRuntimeWiring:
                 "render_mode": "image",
             },
         )
-        _image, quote_meta, _now = literary_clock.main()
+        _image, quote_meta, _now, _reason = literary_clock.main()
         assert quote_meta["render_mode"] == "image"
 
     def test_marker_freetype_mismatch_disables_runtime(self, monkeypatch, tmp_path) -> None:
@@ -1289,7 +1290,7 @@ class TestMainWeatherHardening:
         monkeypatch.delenv("LITCLOCK_RUNTIME_RENDER", raising=False)
         monkeypatch.setattr(open_meteo, "OpenMeteo", Stub)
         monkeypatch.setattr(literary_clock, "open_meteo", open_meteo)
-        image, _meta, _now = literary_clock.main()
+        image, _meta, _now, _reason = literary_clock.main()
         assert image is not None and image.size == literary_clock.DISPLAY_SIZE
         return image
 

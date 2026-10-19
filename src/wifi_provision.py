@@ -53,11 +53,17 @@ NMCLI_TIMEOUT_RC = 124
 # the whole scan to serialize radio access, so an UNBOUNDED nmcli here would let
 # a single wedged NetworkManager (D-Bus stall, brcmfmac hang) hold the lock
 # forever and freeze every setup-page render and rescan (litclock-dev#615). A
-# timeout synthesizes rc=124 and the scan degrades to an empty result the
-# callers already handle. Generous on a Pi Zero 2 W's weak 2.4GHz radio: a busy
-# band can make a rescan genuinely slow, so these only trip on a true wedge.
+# timeout synthesizes rc=124: on the RESCAN that is tolerated, on the LIST it
+# raises WifiScanError, which the page reports as "Scan failed" (litclock-dev#908
+# gap 1 — it used to degrade to an empty result, read as "No networks found").
+# Generous on a Pi Zero 2 W's weak 2.4GHz radio: a busy band can make a rescan
+# genuinely slow, so these only trip on a true wedge.
 SCAN_RESCAN_TIMEOUT = 10
 SCAN_LIST_TIMEOUT = 15
+# Pause between the rescan and the list, so the list reports what the rescan
+# found. Part of the scan's worst case, which the setup page's in-browser
+# abort (SCAN_TIMEOUT_MS) must exceed — test_setup_rescan reads it from here.
+SCAN_SETTLE_S = 2
 # litclock-dev#654. Bounds the profile-BUILDING nmcli calls only (add /
 # modify / edit / read-back): those are local D-Bus round trips that return
 # in milliseconds, so a wedged one is a wedged daemon, and hanging there
@@ -86,20 +92,46 @@ class WifiFailure(str):
     A str subclass so every existing consumer — html.escape at the web
     banner, equality and substring asserts, journald interpolation — keeps
     working byte-for-byte unchanged; ``failure_class`` rides along for the
-    retry surfaces (litclock-dev#603). Immutable like its base."""
+    retry surfaces (litclock-dev#603). Immutable like its base.
 
-    __slots__ = ("failure_class",)
+    ``key`` and ``slots`` (litclock-dev#532 T6) name the sentence in the
+    string catalog, so the setup page shows the cause in the page's language;
+    the str value is that sentence in English, for the journal and the CLI.
+    Build one with :func:`_failure`, which takes the English from the catalog
+    too, so the two can never disagree."""
 
-    def __new__(cls, message, failure_class):
+    __slots__ = ("failure_class", "key", "slots")
+
+    def __new__(cls, message, failure_class, key=None, slots=None):
         obj = super().__new__(cls, message)
         obj.failure_class = failure_class
+        obj.key = key
+        obj.slots = dict(slots or {})
         return obj
 
     def __getnewargs__(self):
         # str's default returns one arg; our __new__ demands two, so without
         # this, copy.copy / deepcopy / pickle all raise TypeError (/review on
         # litclock-dev#610 — e.g. a future QueueHandler pickling log args).
-        return (str(self), self.failure_class)
+        return (str(self), self.failure_class, self.key, self.slots)
+
+
+def _failure(failure_class, key, **slots):
+    """A WifiFailure whose English text is the catalog's canonical value for
+    ``key`` (litclock-dev#532 T6) — one source for the journal line and the
+    page. If the catalog cannot even load, the key and its values: still
+    diagnosable, and the failure class the retry surfaces branch on is intact."""
+    try:
+        import strings_catalog  # noqa: PLC0415
+
+        message = strings_catalog.get(key, lang=strings_catalog.CANONICAL_LANGUAGE, **slots)
+    except Exception:
+        message = key
+    if message == key:
+        # The catalog's never-raise floor is the bare key; the values (the
+        # SSID, nmcli's own error) are what the journal needs, so keep them.
+        message = " ".join([key, *(str(value) for value in slots.values())])
+    return WifiFailure(message, failure_class, key, slots)
 
 
 def _redact_nmcli(cmd):
@@ -1077,17 +1109,32 @@ def teardown_hotspot():
     logging.info("Hotspot torn down")
 
 
+class WifiScanError(RuntimeError):
+    """The scan itself failed — the list step errored or timed out — as
+    opposed to a scan that worked and found nothing (litclock-dev#908 gap 1).
+    The setup page says "Scan failed - tap Refresh" for this one and
+    "No networks found" only for a genuinely empty result."""
+
+
 def scan_wifi_networks():
     """
     Scan for available WiFi networks.
 
     Returns:
-        list of dicts with 'ssid', 'signal', 'security', 'in_use'
+        list of dicts with 'ssid', 'signal', 'security', 'in_use'. An EMPTY
+        list means the scan worked and saw nothing.
+
+    Raises:
+        WifiScanError: the list step failed (non-zero exit, or the
+        SCAN_LIST_TIMEOUT bound, which _run_nmcli reports as rc 124). A failed
+        RESCAN is tolerated on purpose: nmcli can refuse one while the radio
+        is hosting the setup hotspot, and the list then still reports what
+        the radio last saw.
     """
     # Trigger a rescan — sudo for consistency with other nmcli calls from systemd.
     # Bounded so a wedged NM can't hold _SCAN_CACHE_LOCK forever (litclock-dev#615).
     _run_nmcli(["device", "wifi", "rescan"], check=False, sudo=True, timeout=SCAN_RESCAN_TIMEOUT)
-    time.sleep(2)
+    time.sleep(SCAN_SETTLE_S)
 
     # Get results
     result = _run_nmcli(
@@ -1099,7 +1146,7 @@ def scan_wifi_networks():
 
     if result.returncode != 0:
         logging.error("WiFi scan failed")
-        return []
+        raise WifiScanError(f"nmcli device wifi list exited {result.returncode}")
 
     networks = []
     seen_ssids = set()
@@ -1441,10 +1488,7 @@ def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
     # 802.11 Annex H is printable ASCII); reject it before ANY nmcli
     # activity with the honest failure class (litclock-dev#599).
     if password and any(ord(ch) < 0x20 or ch == "\x7f" for ch in password):
-        return False, WifiFailure(
-            "WiFi passwords can't contain line breaks or control characters — re-type the password and try again.",
-            WIFI_FAIL_BAD_PASSWORD,
-        )
+        return False, _failure(WIFI_FAIL_BAD_PASSWORD, "setup.cause.control_chars")
 
     # litclock-dev#595 snapshot-and-diff: capture the profile UUID set BEFORE
     # the connect so every failure path below can tell what THIS attempt
@@ -1568,11 +1612,7 @@ def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
             # A reused pre-existing profile survives the delete above by
             # design — un-write the failed password from it (litclock-dev#613).
             _restore_ssid_psks(pre_psks, ssid, password)
-            return False, WifiFailure(
-                f"Couldn't reach '{ssid}' — the network didn't answer in time. "
-                "Check that it's a 2.4GHz network and in range, then try again.",
-                WIFI_FAIL_TIMEOUT,
-            )
+            return False, _failure(WIFI_FAIL_TIMEOUT, "setup.cause.timeout", ssid=ssid)
         # nmcli exited on its own — no activation left running, but the
         # profile this attempt created survives with autoconnect=yes and the
         # unverified password (litclock-dev#595 — hardware repro: a wrong PSK
@@ -1605,7 +1645,7 @@ def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
 
         # Parse common error messages for user-friendly messages
         if "Secrets were required" in error or "password" in error.lower():
-            return False, WifiFailure("Incorrect WiFi password", WIFI_FAIL_BAD_PASSWORD)
+            return False, _failure(WIFI_FAIL_BAD_PASSWORD, "setup.cause.bad_password")
         if "No network with SSID" in error:
             # litclock-dev#598 (hardware-established): for a TYPED name this
             # is usually NOT a typo — a hidden 5GHz-only network is invisible
@@ -1613,14 +1653,11 @@ def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
             # hidden 2.4GHz one can too until it enters the scan cache. Lead
             # with the likely causes; keep the spelling hint last.
             if hidden:
-                return False, WifiFailure(
-                    f"Couldn't find '{ssid}'. If it's a hidden network, make sure "
-                    "it's 2.4GHz and in range, then try again. Also double-check "
-                    "the exact spelling — network names are case-sensitive.",
-                    WIFI_FAIL_NOT_FOUND,
-                )
-            return False, WifiFailure(f"Network '{ssid}' not found", WIFI_FAIL_NOT_FOUND)
-        return False, WifiFailure(f"Connection failed: {error}", WIFI_FAIL_OTHER)
+                return False, _failure(WIFI_FAIL_NOT_FOUND, "setup.cause.not_found_hidden", ssid=ssid)
+            return False, _failure(WIFI_FAIL_NOT_FOUND, "setup.cause.not_found", ssid=ssid)
+        # nmcli's own words stay as the detail: technical, and English on
+        # every device — the sentence around them is what is translated.
+        return False, _failure(WIFI_FAIL_OTHER, "setup.cause.connect_failed", detail=error)
 
     # Verify connection - wait for IP address
     for _ in range(15):
@@ -1631,7 +1668,7 @@ def connect_to_wifi(ssid, password, hidden=False, connect_timeout=30):
             return True, None
         time.sleep(1)
 
-    return False, WifiFailure("Connected but could not obtain IP address", WIFI_FAIL_NO_IP)
+    return False, _failure(WIFI_FAIL_NO_IP, "setup.cause.no_ip")
 
 
 def _clear_wifi_watchdog_counter():
@@ -1740,7 +1777,11 @@ def main():
             sys.exit(1)
 
     elif args.command == "scan":
-        networks = scan_wifi_networks()
+        try:
+            networks = scan_wifi_networks()
+        except WifiScanError as exc:
+            print(f"Scan failed: {exc}", file=sys.stderr)
+            sys.exit(1)
         print(json.dumps(networks, indent=2))
 
     elif args.command == "connect":

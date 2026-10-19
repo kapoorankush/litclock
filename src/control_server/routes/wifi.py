@@ -6,9 +6,12 @@ directive gives systemd-native job-level interlock against running a reset
 mid-update; this route also pre-checks the same gate (D5/F7) so the user
 sees a 409 with a clear error message instead of an opaque systemd refusal.
 
-The actual reset work (stop control_server, wipe ALL wifi-type connections
-by UUID, rm /etc/litclock/.setup-complete, restart litclock-firstboot.service)
-runs inside the unit's ExecStart — see scripts/litclock-wifi-reset.sh.
+The actual reset work (skip if first-boot is already provisioning; refuse if
+nmcli is missing; enable litclock-firstboot.service, refusing the reset
+if that fails — litclock-dev#938; stop control_server; rm
+/etc/litclock/.setup-complete and .handoff-complete; wipe ALL wifi-type
+connections by UUID; restart litclock-firstboot.service) runs inside the
+unit's ExecStart — see scripts/litclock-wifi-reset.sh.
 This route just validates the request and kicks off the unit.
 
 env.sh is preserved verbatim across the reset (D1 — location, weather,
@@ -92,7 +95,17 @@ def reset() -> tuple[object, int]:
 
     On success: 200 with a "switching to setup mode" message so the PWA
     can render handoff copy ("Join LitClock-Setup from your phone's WiFi
-    list") before its LAN connection drops in ~2s.
+    list") before its LAN connection drops in ~2s. The 200 means the job
+    was QUEUED, not that the reset happened (litclock-dev#939). After it:
+    the script may refuse before changing anything (this server never goes
+    away); abort before the setup marker is removed (the unit's
+    ExecStopPost= failsafe brings this server back); or abort after that,
+    e.g. a WiFi-wipe timeout (the failsafe restarts first-boot: with no
+    WiFi profile left the device comes up as the LitClock-Setup hotspot;
+    if a profile survived a partial wipe, first-boot's pre-connected path
+    rejoins that network and this server returns on the handoff splash,
+    usually at the same origin).
+    litclock-dev#938.
     """
     rate_limit_response = _check_rate_limit()
     if rate_limit_response is not None:
@@ -147,12 +160,16 @@ def reset() -> tuple[object, int]:
         # does NOT strictly prove "no side effect" — narrow theoretical
         # window where systemd queues the job then a dbus reply glitch
         # causes the wrapper to exit non-zero. In that case, restoring the
-        # token lets the user double-fire wifi_reset. The unit's ExecStart
-        # is litclock-wifi-reset.sh, which wipes WiFi connections by UUID
-        # and re-arms litclock-firstboot.service — both idempotent (a
-        # second wipe targets already-removed UUIDs and no-ops; firstboot
-        # re-arming is unit-state-based). So double-fire today is
-        # harmless. If a future non-idempotent step is added to the
+        # token lets the user double-fire wifi_reset. A second run is
+        # harmless by design: once first-boot is running a setup (marker
+        # gone, unit activating), litclock-wifi-reset.sh exits 0 before
+        # touching anything, so it cannot delete the live LitClock-Setup
+        # hotspot or restart a running setup (litclock-dev#938 review). A
+        # second run that lands before that repeats every step (enable, stop
+        # control, rm -f, delete-by-UUID, restart first-boot) on a device that
+        # has not started provisioning yet. The guard starts at "activating",
+        # not at the moment Step 4 queues the job; a run in that gap is the
+        # same repeat. So double-fire today is harmless. If a future non-idempotent step is added to the
         # wifi-reset ExecStart, this restore must be narrowed to specific
         # pre-dispatch stderr patterns or removed.
         _store().restore("wifi_reset", token, expiry)

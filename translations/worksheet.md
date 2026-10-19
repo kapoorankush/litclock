@@ -2,7 +2,7 @@
 
 Generated from the English catalog — do not hand-edit; run `python3 scripts/build_translator_kit.py`.
 
-Fill in a translation for every key. Read **README.md** first for the rules (they are also checked automatically). Copy every `{slot}` exactly — never translate the word inside the braces or change how many times it appears.
+Fill in a translation for every key. Read README.md's **Writing the strings bundle** first for the rules (they are also checked automatically). Copy every `{slot}` exactly — never translate the word inside the braces or change how many times it appears.
 
 ## Control app
 _Screen-reader labels — describe the control's purpose._
@@ -308,12 +308,20 @@ _Screen-reader labels — describe the control's purpose._
 - **English:** Author
 - **Translation:** 
 
+### `diag.row.consecutive_failures`
+- **English:** Failed quote frames in a row
+- **Translation:** 
+
 ### `diag.row.cpu_temp_c`
 - **English:** CPU temp °C
 - **Translation:** 
 
 ### `diag.row.disk_free_pct`
 - **English:** Free disk %
+- **Translation:** 
+
+### `diag.row.fallback_reason`
+- **English:** No-quote reason
 - **Translation:** 
 
 ### `diag.row.gateway`
@@ -348,6 +356,14 @@ _Screen-reader labels — describe the control's purpose._
 - **English:** LAN IP
 - **Translation:** 
 
+### `diag.row.language`
+- **English:** Language
+- **Translation:** 
+
+### `diag.row.language_shown`
+- **English:** Language shown
+- **Translation:** 
+
 ### `diag.row.last_dhcp_at`
 - **English:** Last DHCP
 - **Translation:** 
@@ -358,6 +374,10 @@ _Screen-reader labels — describe the control's purpose._
 
 ### `diag.row.last_update_at`
 - **English:** Last update
+- **Translation:** 
+
+### `diag.row.last_update_error`
+- **English:** Last update failure
 - **Translation:** 
 
 ### `diag.row.last_update_version`
@@ -671,6 +691,11 @@ _Screen-reader labels — describe the control's purpose._
 - **English:** Device language
 - **Translation:** 
 
+### `settings.language.switching`
+- **English:** The clock is switching to {language} now.
+- **Placeholders (copy exactly):** `{language}` = a value the software fills in
+- **Translation:** 
+
 ### `settings.language.title`
 - **English:** Language
 - **Translation:** 
@@ -900,6 +925,10 @@ _Screen-reader labels — describe the control's purpose._
 
 ### `status.phase3_skip`
 - **English:** Last update skipped the env-vars merge — will retry next Sunday.
+- **Translation:** 
+
+### `status.quote_failure`
+- **English:** Your clock hasn’t been able to show a book quote for the last few minutes. If this continues, restart it from the System tab.
 - **Translation:** 
 
 ### `status.relative.days.one`
@@ -1344,6 +1373,275 @@ _Screen-reader labels — describe the control's purpose._
 - **English:** Updates
 - **Translation:** 
 
+## E-ink clock face
+_The line under the time when the clock has no book quote to show — width-limited._
+
+### `clock.day.1`
+- **English:** 01
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.10`
+- **English:** 10
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.11`
+- **English:** 11
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.12`
+- **English:** 12
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.13`
+- **English:** 13
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.14`
+- **English:** 14
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.15`
+- **English:** 15
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.16`
+- **English:** 16
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.17`
+- **English:** 17
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.18`
+- **English:** 18
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.19`
+- **English:** 19
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.2`
+- **English:** 02
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.20`
+- **English:** 20
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.21`
+- **English:** 21
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.22`
+- **English:** 22
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.23`
+- **English:** 23
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.24`
+- **English:** 24
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.25`
+- **English:** 25
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.26`
+- **English:** 26
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.27`
+- **English:** 27
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.28`
+- **English:** 28
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.29`
+- **English:** 29
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.3`
+- **English:** 03
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.30`
+- **English:** 30
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.31`
+- **English:** 31
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.4`
+- **English:** 04
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.5`
+- **English:** 05
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.6`
+- **English:** 06
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.7`
+- **English:** 07
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.8`
+- **English:** 08
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.day.9`
+- **English:** 09
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `clock.fallback.failure`
+- **English:** Book quotes are unavailable right now.
+- **Keep it short** — physical screen; English is 38 characters.
+- **Translation:** 
+
+### `clock.fallback.gap`
+- **English:** No book quote for this minute yet.
+- **Keep it short** — physical screen; English is 34 characters.
+- **Translation:** 
+
+### `clock.masthead.date`
+- **English:** {weekday}, {month} {day}
+- **Keep it short** — physical screen; English is 24 characters.
+- **Placeholders (copy exactly):** `{day}` = a value the software fills in; `{month}` = a value the software fills in; `{weekday}` = a value the software fills in
+- **Translation:** 
+
+### `clock.month.apr`
+- **English:** April
+- **Keep it short** — physical screen; English is 5 characters.
+- **Translation:** 
+
+### `clock.month.aug`
+- **English:** August
+- **Keep it short** — physical screen; English is 6 characters.
+- **Translation:** 
+
+### `clock.month.dec`
+- **English:** December
+- **Keep it short** — physical screen; English is 8 characters.
+- **Translation:** 
+
+### `clock.month.feb`
+- **English:** February
+- **Keep it short** — physical screen; English is 8 characters.
+- **Translation:** 
+
+### `clock.month.jan`
+- **English:** January
+- **Keep it short** — physical screen; English is 7 characters.
+- **Translation:** 
+
+### `clock.month.jul`
+- **English:** July
+- **Keep it short** — physical screen; English is 4 characters.
+- **Translation:** 
+
+### `clock.month.jun`
+- **English:** June
+- **Keep it short** — physical screen; English is 4 characters.
+- **Translation:** 
+
+### `clock.month.mar`
+- **English:** March
+- **Keep it short** — physical screen; English is 5 characters.
+- **Translation:** 
+
+### `clock.month.may`
+- **English:** May
+- **Keep it short** — physical screen; English is 3 characters.
+- **Translation:** 
+
+### `clock.month.nov`
+- **English:** November
+- **Keep it short** — physical screen; English is 8 characters.
+- **Translation:** 
+
+### `clock.month.oct`
+- **English:** October
+- **Keep it short** — physical screen; English is 7 characters.
+- **Translation:** 
+
+### `clock.month.sep`
+- **English:** September
+- **Keep it short** — physical screen; English is 9 characters.
+- **Translation:** 
+
+### `clock.weekday.fri`
+- **English:** Fri
+- **Keep it short** — physical screen; English is 3 characters.
+- **Translation:** 
+
+### `clock.weekday.mon`
+- **English:** Mon
+- **Keep it short** — physical screen; English is 3 characters.
+- **Translation:** 
+
+### `clock.weekday.sat`
+- **English:** Sat
+- **Keep it short** — physical screen; English is 3 characters.
+- **Translation:** 
+
+### `clock.weekday.sun`
+- **English:** Sun
+- **Keep it short** — physical screen; English is 3 characters.
+- **Translation:** 
+
+### `clock.weekday.thu`
+- **English:** Thu
+- **Keep it short** — physical screen; English is 3 characters.
+- **Translation:** 
+
+### `clock.weekday.tue`
+- **English:** Tue
+- **Keep it short** — physical screen; English is 3 characters.
+- **Translation:** 
+
+### `clock.weekday.wed`
+- **English:** Wed
+- **Keep it short** — physical screen; English is 3 characters.
+- **Translation:** 
+
 ## E-ink splash
 _Painted on the physical screen — width-limited, keep it short._
 
@@ -1370,6 +1668,199 @@ _Painted on the physical screen — width-limited, keep it short._
 ### `bootcheck.splash.gave_up.title`
 - **English:** Recovery failed
 - **Keep it short** — physical screen; English is 15 characters.
+- **Translation:** 
+
+### `firstboot.handoff.bottom_almost`
+- **English:** Quotes start once your timezone is set.
+- **Keep it short** — physical screen; English is 39 characters.
+- **Translation:** 
+
+### `firstboot.handoff.bottom_ready`
+- **English:** Quotes start shortly.
+- **Keep it short** — physical screen; English is 21 characters.
+- **Translation:** 
+
+### `firstboot.handoff.caveat`
+- **English:** Scan with your phone on:
+- **Keep it short** — physical screen; English is 24 characters.
+- **Translation:** 
+
+### `firstboot.handoff.cta_almost`
+- **English:** Scan the QR to set your timezone.
+- **Keep it short** — physical screen; English is 33 characters.
+- **Translation:** 
+
+### `firstboot.handoff.cta_ready`
+- **English:** To change anything, scan the QR.
+- **Keep it short** — physical screen; English is 32 characters.
+- **Translation:** 
+
+### `firstboot.handoff.heading_almost`
+- **English:** Almost ready.
+- **Keep it short** — physical screen; English is 13 characters.
+- **Translation:** 
+
+### `firstboot.handoff.heading_ready`
+- **English:** Ready to read.
+- **Keep it short** — physical screen; English is 14 characters.
+- **Translation:** 
+
+### `firstboot.handoff.not_detected`
+- **English:** Not detected
+- **Keep it short** — physical screen; English is 12 characters.
+- **Translation:** 
+
+### `firstboot.handoff.row_location`
+- **English:** Location
+- **Keep it short** — physical screen; English is 8 characters.
+- **Translation:** 
+
+### `firstboot.handoff.row_mature`
+- **English:** Mature quotes
+- **Keep it short** — physical screen; English is 13 characters.
+- **Translation:** 
+
+### `firstboot.handoff.row_timezone`
+- **English:** Timezone
+- **Keep it short** — physical screen; English is 8 characters.
+- **Translation:** 
+
+### `firstboot.handoff.row_units`
+- **English:** Units
+- **Keep it short** — physical screen; English is 5 characters.
+- **Translation:** 
+
+### `firstboot.handoff.settings_label`
+- **English:** Your settings — auto-detected:
+- **Keep it short** — physical screen; English is 30 characters.
+- **Translation:** 
+
+### `firstboot.handoff.tip_1`
+- **English:** Tip: this QR lives in the corner of every
+- **Keep it short** — physical screen; English is 41 characters.
+- **Translation:** 
+
+### `firstboot.handoff.tip_2`
+- **English:** quote — scan it any time to return to settings.
+- **Keep it short** — physical screen; English is 47 characters.
+- **Translation:** 
+
+### `firstboot.handoff.units_imperial`
+- **English:** Imperial (°F)
+- **Keep it short** — physical screen; English is 13 characters.
+- **Translation:** 
+
+### `firstboot.handoff.units_metric`
+- **English:** Metric (°C)
+- **Keep it short** — physical screen; English is 11 characters.
+- **Translation:** 
+
+### `firstboot.handoff.value_off`
+- **English:** Off
+- **Keep it short** — physical screen; English is 3 characters.
+- **Translation:** 
+
+### `firstboot.handoff.value_on`
+- **English:** On
+- **Keep it short** — physical screen; English is 2 characters.
+- **Translation:** 
+
+### `firstboot.hotspot.first_1`
+- **English:** 1. Scan the QR code to join {ssid}
+- **Keep it short** — physical screen; English is 34 characters.
+- **Placeholders (copy exactly):** `{ssid}` = the WiFi network name
+- **Translation:** 
+
+### `firstboot.hotspot.first_2`
+- **English:** 2. Wait about 20 seconds for a setup page
+- **Keep it short** — physical screen; English is 41 characters.
+- **Translation:** 
+
+### `firstboot.hotspot.first_3`
+- **English:** 3. No page? Join {ssid} in your WiFi settings
+- **Keep it short** — physical screen; English is 45 characters.
+- **Placeholders (copy exactly):** `{ssid}` = the WiFi network name
+- **Translation:** 
+
+### `firstboot.hotspot.first_4`
+- **English:** 4. Then open a browser: {host_url} or {ip_url}
+- **Keep it short** — physical screen; English is 46 characters.
+- **Placeholders (copy exactly):** `{host_url}` = a value the software fills in; `{ip_url}` = a value the software fills in
+- **Translation:** 
+
+### `firstboot.hotspot.framing`
+- **English:** The clock makes its own WiFi for setup.
+- **Keep it short** — physical screen; English is 39 characters.
+- **Translation:** 
+
+### `firstboot.hotspot.label_network`
+- **English:** LitClock's WiFi network:
+- **Keep it short** — physical screen; English is 24 characters.
+- **Translation:** 
+
+### `firstboot.hotspot.label_password`
+- **English:** LitClock's WiFi password:
+- **Keep it short** — physical screen; English is 25 characters.
+- **Translation:** 
+
+### `firstboot.hotspot.retry_connect_1`
+- **English:** 1. Rescan the QR code to rejoin {ssid}
+- **Keep it short** — physical screen; English is 38 characters.
+- **Placeholders (copy exactly):** `{ssid}` = the WiFi network name
+- **Translation:** 
+
+### `firstboot.hotspot.retry_connect_2`
+- **English:** 2. Check your WiFi is 2.4GHz and in range of the clock
+- **Keep it short** — physical screen; English is 54 characters.
+- **Translation:** 
+
+### `firstboot.hotspot.retry_connect_3`
+- **English:** 3. On the setup page, pick your network and try again
+- **Keep it short** — physical screen; English is 53 characters.
+- **Translation:** 
+
+### `firstboot.hotspot.retry_connect_4`
+- **English:** 4. No page? Open a browser: {host_url} or {ip_url}
+- **Keep it short** — physical screen; English is 50 characters.
+- **Placeholders (copy exactly):** `{host_url}` = a value the software fills in; `{ip_url}` = a value the software fills in
+- **Translation:** 
+
+### `firstboot.hotspot.retry_password_1`
+- **English:** 1. Rescan the QR code to rejoin {ssid}
+- **Keep it short** — physical screen; English is 38 characters.
+- **Placeholders (copy exactly):** `{ssid}` = the WiFi network name
+- **Translation:** 
+
+### `firstboot.hotspot.retry_password_2`
+- **English:** 2. Select your internet WiFi network, type your WiFi password
+- **Keep it short** — physical screen; English is 61 characters.
+- **Translation:** 
+
+### `firstboot.hotspot.retry_password_3`
+- **English:** 3. No page? Open a browser: {host_url} or {ip_url}
+- **Keep it short** — physical screen; English is 50 characters.
+- **Placeholders (copy exactly):** `{host_url}` = a value the software fills in; `{ip_url}` = a value the software fills in
+- **Translation:** 
+
+### `firstboot.hotspot.title`
+- **English:** WiFi Setup
+- **Keep it short** — physical screen; English is 10 characters.
+- **Translation:** 
+
+### `firstboot.hotspot.title_retry`
+- **English:** Couldn't Join Your WiFi
+- **Keep it short** — physical screen; English is 23 characters.
+- **Translation:** 
+
+### `firstboot.splash.connecting.message`
+- **English:** This can take up to a minute.
+- **Keep it short** — physical screen; English is 29 characters.
+- **Translation:** 
+
+### `firstboot.splash.connecting.title`
+- **English:** Connecting to {ssid}…
+- **Keep it short** — physical screen; English is 21 characters.
+- **Placeholders (copy exactly):** `{ssid}` = the WiFi network name
 - **Translation:** 
 
 ### `firstboot.splash.detecting_location.message`
@@ -1507,6 +1998,81 @@ _Painted on the physical screen — width-limited, keep it short._
 ### `reset.splash.failed.title`
 - **English:** Reset did not finish
 - **Keep it short** — physical screen; English is 20 characters.
+- **Translation:** 
+
+### `shutdown.farewell.poweroff.1`
+- **English:** “The rest is silence.” — Shakespeare
+- **Keep it short** — physical screen; English is 36 characters.
+- **Translation:** 
+
+### `shutdown.farewell.poweroff.2`
+- **English:** “And so it goes.” — Kurt Vonnegut
+- **Keep it short** — physical screen; English is 33 characters.
+- **Translation:** 
+
+### `shutdown.farewell.poweroff.3`
+- **English:** “After all, tomorrow is another day.” — Margaret Mitchell
+- **Keep it short** — physical screen; English is 57 characters.
+- **Translation:** 
+
+### `shutdown.farewell.poweroff.4`
+- **English:** “So we beat on, boats against the current.” — Fitzgerald
+- **Keep it short** — physical screen; English is 56 characters.
+- **Translation:** 
+
+### `shutdown.farewell.poweroff.5`
+- **English:** “A far, far better rest that I go to.” — Dickens
+- **Keep it short** — physical screen; English is 48 characters.
+- **Translation:** 
+
+### `shutdown.farewell.reboot.1`
+- **English:** “To sleep, perchance to dream.” — Shakespeare
+- **Keep it short** — physical screen; English is 45 characters.
+- **Translation:** 
+
+### `shutdown.farewell.reboot.2`
+- **English:** “I have promises to keep.” — Robert Frost
+- **Keep it short** — physical screen; English is 41 characters.
+- **Translation:** 
+
+### `shutdown.farewell.reboot.3`
+- **English:** “Not all those who wander are lost.” — Tolkien
+- **Keep it short** — physical screen; English is 46 characters.
+- **Translation:** 
+
+### `shutdown.farewell.reboot.4`
+- **English:** “Be back before the next chapter begins.”
+- **Keep it short** — physical screen; English is 41 characters.
+- **Translation:** 
+
+### `shutdown.farewell.reboot.5`
+- **English:** “And miles to go before I sleep.” — Robert Frost
+- **Keep it short** — physical screen; English is 48 characters.
+- **Translation:** 
+
+### `shutdown.farewell.welcome.1`
+- **English:** “It was the best of times…” — Dickens
+- **Keep it short** — physical screen; English is 37 characters.
+- **Translation:** 
+
+### `shutdown.farewell.welcome.2`
+- **English:** “Call me Ishmael.” — Melville
+- **Keep it short** — physical screen; English is 29 characters.
+- **Translation:** 
+
+### `shutdown.farewell.welcome.3`
+- **English:** “All happy families are alike.” — Tolstoy
+- **Keep it short** — physical screen; English is 41 characters.
+- **Translation:** 
+
+### `shutdown.farewell.welcome.4`
+- **English:** “It was a bright cold day in April.” — Orwell
+- **Keep it short** — physical screen; English is 45 characters.
+- **Translation:** 
+
+### `shutdown.farewell.welcome.5`
+- **English:** “Many years later, as he faced the firing squad…” — García Márquez
+- **Keep it short** — physical screen; English is 66 characters.
 - **Translation:** 
 
 ### `shutdown.splash.poweroff.submessage`
@@ -1742,6 +2308,47 @@ _The hotspot page a phone opens to join WiFi._
 - **Formatting allowed:** {b}…{/b} = bold
 - **Translation:** 
 
+### `setup.cause.bad_password`
+- **English:** Incorrect WiFi password
+- **Translation:** 
+
+### `setup.cause.connect_failed`
+- **English:** Connection failed: {detail}
+- **Placeholders (copy exactly):** `{detail}` = a value the software fills in
+- **Translation:** 
+
+### `setup.cause.control_chars`
+- **English:** WiFi passwords can't contain line breaks or control characters — re-type the password and try again.
+- **Translation:** 
+
+### `setup.cause.no_ip`
+- **English:** Connected but could not obtain IP address
+- **Translation:** 
+
+### `setup.cause.not_found`
+- **English:** Network '{ssid}' not found
+- **Placeholders (copy exactly):** `{ssid}` = the WiFi network name
+- **Translation:** 
+
+### `setup.cause.not_found_hidden`
+- **English:** Couldn't find '{ssid}'. If it's a hidden network, make sure it's 2.4GHz and in range, then try again. Also double-check the exact spelling — network names are case-sensitive.
+- **Placeholders (copy exactly):** `{ssid}` = the WiFi network name
+- **Translation:** 
+
+### `setup.cause.setup_error`
+- **English:** Setup error: {detail}
+- **Placeholders (copy exactly):** `{detail}` = a value the software fills in
+- **Translation:** 
+
+### `setup.cause.signal_failed`
+- **English:** Setup completed but signal file write failed
+- **Translation:** 
+
+### `setup.cause.timeout`
+- **English:** Couldn't reach '{ssid}' — the network didn't answer in time. Check that it's a 2.4GHz network and in range, then try again.
+- **Placeholders (copy exactly):** `{ssid}` = the WiFi network name
+- **Translation:** 
+
 ### `setup.cna.body`
 - **English:** Tap below to continue setting up your clock.
 - **Translation:** 
@@ -1788,10 +2395,6 @@ _The hotspot page a phone opens to join WiFi._
 - **English:** Type the name of your WiFi network, or pick one from the list.
 - **Translation:** 
 
-### `setup.language.label`
-- **English:** Language for quotes and settings
-- **Translation:** 
-
 ### `setup.language.title`
 - **English:** Language
 - **Translation:** 
@@ -1816,6 +2419,25 @@ _The hotspot page a phone opens to join WiFi._
 - **English:** Joining your WiFi — hang tight.
 - **Translation:** 
 
+### `setup.success.footer`
+- **English:** Watch the clock’s screen. Within a couple of minutes it will show a QR code. Switch your phone back to {ssid}, then scan the QR code to finish setup. If you miss scanning it and the clock is showing quotes now, don’t worry. If the screen says it couldn’t join, scan its QR code to try again. If the screen hasn’t changed after a few minutes, unplug the clock and plug it back in.
+- **Placeholders (copy exactly):** `{ssid}` = the WiFi network name
+- **Translation:** 
+
+### `setup.success.heading`
+- **English:** Joining your WiFi
+- **Translation:** 
+
+### `setup.success.subtitle`
+- **English:** Your clock is connecting to {b}{ssid}{/b}. Your phone will lose this page in a moment; that’s expected.
+- **Placeholders (copy exactly):** `{ssid}` = the WiFi network name
+- **Formatting allowed:** {b}…{/b} = bold
+- **Translation:** 
+
+### `setup.success.wifi_label`
+- **English:** WiFi
+- **Translation:** 
+
 ### `setup.wifi.help`
 - **English:** Pick the WiFi your phone normally uses — at home, the office, wherever the clock will live. Not the {network} network you joined to see this page.
 - **Placeholders (copy exactly):** `{network}` = the WiFi network name
@@ -1838,6 +2460,16 @@ _The hotspot page a phone opens to join WiFi._
 
 ### `setup.wifi.manual_placeholder`
 - **English:** Network name
+- **Translation:** 
+
+### `setup.wifi.option`
+- **English:** {ssid} ({strength})
+- **Placeholders (copy exactly):** `{ssid}` = the WiFi network name; `{strength}` = a value the software fills in
+- **Translation:** 
+
+### `setup.wifi.option_open`
+- **English:** {ssid} ({strength} [Open])
+- **Placeholders (copy exactly):** `{ssid}` = the WiFi network name; `{strength}` = a value the software fills in
 - **Translation:** 
 
 ### `setup.wifi.password_help`
@@ -1866,5 +2498,25 @@ _The hotspot page a phone opens to join WiFi._
 
 ### `setup.wifi.refresh`
 - **English:** Refresh
+- **Translation:** 
+
+### `setup.wifi.scan_failed`
+- **English:** Scan failed - tap Refresh
+- **Translation:** 
+
+### `setup.wifi.scanning`
+- **English:** Scanning...
+- **Translation:** 
+
+### `setup.wifi.strength_medium`
+- **English:** Medium
+- **Translation:** 
+
+### `setup.wifi.strength_strong`
+- **English:** Strong
+- **Translation:** 
+
+### `setup.wifi.strength_weak`
+- **English:** Weak
 - **Translation:** 
 

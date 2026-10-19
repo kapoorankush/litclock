@@ -101,3 +101,52 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* Language rows (litclock-dev#532 D15/D17). A language list is not a binary,
+ * so it is not a pill: the same radio markup (and the same JS hooks) laid out
+ * as DESIGN.md form rows — one full-width row per language, 44px minimum
+ * target, 8px apart, hairline between. The native radio is SHOWN, so the
+ * current language reads by the filled dot, not by colour alone (D17); the
+ * focus ring is the pill's own 2px / 2px-offset outline. Long names wrap
+ * instead of clipping at large text sizes. */
+.settings-segmented--rows {
+  flex-direction: column;
+  gap: var(--sp-sm);
+  background: none;
+  border: none;
+  padding: 0;
+}
+.settings-segmented--rows .settings-segmented__opt {
+  flex: none;
+  justify-content: flex-start;
+  text-align: left;
+  min-height: 44px;
+  padding: var(--sp-sm) 0;
+  font-size: var(--fs-body);
+  color: var(--ink);
+  border-bottom: 1px solid var(--hairline);
+  border-radius: 0;
+  overflow-wrap: anywhere;
+}
+/* Cancel the pill's fill. Weight follows the radio's own :checked, never the
+ * server-rendered .is-selected — /system (and no-JS /settings) never updates
+ * that class, so keying on it left the starting language bold beside the
+ * newly picked one (DT7 review). */
+.settings-segmented--rows .settings-segmented__opt.is-selected,
+.settings-segmented--rows .settings-segmented__opt:has(.settings-segmented__input:checked) {
+  background: none;
+  color: var(--ink);
+}
+.settings-segmented--rows .settings-segmented__opt:has(.settings-segmented__input:checked) {
+  font-weight: 600;
+}
+.settings-segmented--rows .settings-segmented__input {
+  position: static;
+  opacity: 1;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  margin: 0 var(--sp-sm) 0 0;
+  pointer-events: auto;
+  accent-color: var(--accent);
+}

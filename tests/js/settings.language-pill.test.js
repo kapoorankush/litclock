@@ -88,6 +88,7 @@ afterEach(() => {
   delete window.location;
   window.location = realLocation;
   window.alert = realAlert;
+  window.sessionStorage.clear(); // the RT5 switch flag must not leak between tests
 });
 
 describe("Language pill auto-save (litclock-dev#532 pickers 5b)", () => {

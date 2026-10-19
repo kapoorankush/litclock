@@ -113,6 +113,25 @@ def geocode_location(query, country_code=None):
         return {"error": str(e)}
 
 
+# ip-api.com's own `lang` codes (https://ip-api.com/docs/api:json): the place
+# names come back in the device language when ip-api has it, so the saved
+# location reads in the owner's language on the panel and in the PWA
+# (litclock-dev#532 T10). Keyed by our registry code; English is ip-api's
+# default and needs no parameter. A language ip-api lacks gets English names —
+# place names are data, not UI copy, and there is no better source here.
+_IP_API_LANG = {"de": "de", "es": "es", "fr": "fr", "ja": "ja", "pt": "pt-BR", "ru": "ru", "zh": "zh-CN"}
+
+
+def _ip_api_lang_param() -> str:
+    try:
+        import strings_catalog  # noqa: PLC0415
+
+        lang = _IP_API_LANG.get(strings_catalog.active_language())
+    except Exception:
+        return ""
+    return f"&lang={lang}" if lang else ""
+
+
 def ip_geolocate():
     """Get approximate location from public IP via ip-api.com.
 
@@ -127,7 +146,10 @@ def ip_geolocate():
     egress, satellite uplinks, some VPN exits — observed in production).
     """
     try:
-        url = "http://ip-api.com/json/?fields=lat,lon,city,regionName,country,countryCode,timezone"
+        url = (
+            "http://ip-api.com/json/?fields=lat,lon,city,regionName,country,countryCode,timezone"
+            + _ip_api_lang_param()
+        )
         req = urllib.request.Request(url)
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())

@@ -96,14 +96,19 @@ class TestShutdownSplash:
         assert catalog["shutdown.splash.reboot.message"] == "Restarting..."
         assert catalog["shutdown.splash.poweroff.title"] == "Powered Off"
 
-    def test_random_quote_selection(self, shutdown_content):
-        """Quote arrays should be indexed by $RANDOM so each shutdown shows
-        a different one."""
-        assert "RANDOM" in shutdown_content
-
-    def test_three_quote_banks(self, shutdown_content):
-        """Reboot, shutdown, and gift-mode each have their own QUOTES=() array."""
-        assert shutdown_content.count("QUOTES=(") == 3
+    def test_farewell_lines_come_from_the_catalog(self, shutdown_content):
+        """litclock-dev#532 T7: the farewell lines moved out of bash arrays
+        into the catalog (shutdown.farewell.<screen>.N, 1..N per language);
+        each arm names its screen and the part the line fills, and the
+        painter picks one at random in the device language."""
+        assert "QUOTES=(" not in shutdown_content and "RANDOM" not in shutdown_content
+        for arm in ('FAREWELL="welcome:submessage"', 'FAREWELL="reboot:submessage"', 'FAREWELL="poweroff:message"'):
+            assert arm in shutdown_content, arm
+        catalog = _en_catalog()
+        for screen in ("welcome", "reboot", "poweroff"):
+            assert [k for k in catalog if k.startswith(f"shutdown.farewell.{screen}.")] == [
+                f"shutdown.farewell.{screen}.{n}" for n in range(1, 6)
+            ], screen
 
     def test_gift_mode_marker_check(self, shutdown_content):
         """Gift-mode marker check must come before reboot/shutdown detection
@@ -565,15 +570,21 @@ class TestShutdownSplashArgAssemblyExecuted:
         end = body.index("\nfi\n", body.index("SPLASH_ARGS")) + len("\nfi\n")
         return body[start:end]
 
-    def _run(self, tmp_path, action, welcome_message=None):
+    def _run(self, tmp_path, action, welcome_message=None, refuse_farewell=False):
         import subprocess
 
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "eink_display.py").write_text("", encoding="utf-8")
         rec = tmp_path / "argv.rec"
         recorder = tmp_path / "python.sh"
+        # Appends one call per line block, separated by "--call--", so a
+        # retried paint is visible; refuse_farewell models an older painter
+        # (argparse exits 2 on an option it does not know).
+        refuse = 'for a in "$@"; do [ "$a" = --farewell ] && exit 2; done\n' if refuse_farewell else ""
         recorder.write_text(
-            "#!/bin/bash\n" + f'for a in "$@"; do printf "%s\\n" "$a"; done > "{rec}"\n',
+            "#!/bin/bash\n"
+            + f'{{ echo --call--; for a in "$@"; do printf "%s\\n" "$a"; done; }} >> "{rec}"\n'
+            + refuse,
             encoding="utf-8",
         )
         recorder.chmod(0o755)
@@ -591,22 +602,41 @@ class TestShutdownSplashArgAssemblyExecuted:
             f"{span}\n"
         )
         proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=20)
-        argv = rec.read_text(encoding="utf-8").splitlines() if rec.exists() else []
+        calls = rec.read_text(encoding="utf-8").split("--call--\n")[1:] if rec.exists() else []
+        self.calls = [c.splitlines() for c in calls]
+        argv = self.calls[-1] if self.calls else []
         return proc, argv
 
-    def test_reboot_arm_prefix_plus_quote_submessage(self, tmp_path):
-        _, argv = self._run(tmp_path, "reboot")
-        assert argv[:4] == ["src/eink_display.py", "status", "--catalog-prefix", "shutdown.splash.reboot"]
-        assert "--submessage" in argv
-        quote = argv[argv.index("--submessage") + 1]
-        assert quote.startswith('"'), quote  # a curated literary quote
-        assert "--message" not in argv  # Restarting... comes from the catalog
+    def test_an_older_painter_still_paints_the_screen_without_the_farewell(self, tmp_path):
+        """litclock-dev#923 review: a painter older than this script (a half-applied
+        tree) exits 2 on --farewell before painting; the screen must still
+        be painted — without the line — since it stays on the glass."""
+        proc, argv = self._run(tmp_path, "welcome", welcome_message="-Mom-", refuse_farewell=True)
+        assert len(self.calls) == 2, self.calls
+        assert "--farewell" in self.calls[0]
+        assert argv == ["src/eink_display.py", "status", "--catalog-prefix", "shutdown.splash.welcome", "--", "-Mom-"]
+        assert "painting without it" in proc.stdout
 
-    def test_poweroff_arm_quote_rides_the_message(self, tmp_path):
+    def test_one_paint_when_the_painter_accepts_it(self, tmp_path):
+        self._run(tmp_path, "poweroff")
+        assert len(self.calls) == 1
+
+    def test_reboot_arm_prefix_plus_farewell_submessage(self, tmp_path):
+        _, argv = self._run(tmp_path, "reboot")
+        assert argv[:6] == [
+            "src/eink_display.py",
+            "status",
+            "--catalog-prefix",
+            "shutdown.splash.reboot",
+            "--farewell",
+            "reboot:submessage",
+        ]
+        assert "--message" not in argv and "--submessage" not in argv  # all from the catalog
+
+    def test_poweroff_arm_farewell_rides_the_message(self, tmp_path):
         _, argv = self._run(tmp_path, "poweroff")
-        assert argv[2:4] == ["--catalog-prefix", "shutdown.splash.poweroff"]
-        assert "--message" in argv
-        assert "--submessage" not in argv  # "LitClock" comes from the catalog
+        assert argv[2:6] == ["--catalog-prefix", "shutdown.splash.poweroff", "--farewell", "poweroff:message"]
+        assert "--message" not in argv and "--submessage" not in argv
 
     def test_welcome_arm_default_title_comes_from_catalog(self, tmp_path):
         _, argv = self._run(tmp_path, "welcome")

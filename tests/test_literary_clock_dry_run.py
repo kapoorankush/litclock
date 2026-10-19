@@ -13,6 +13,7 @@ Every test here is defending one of two guarantees:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -365,7 +366,11 @@ class TestRequireRuntimeRender:
     def _tier(stdout: str) -> str:
         import re
 
-        m = re.search(r"^dry-run: rendered \d+x\d+ image, render_mode=([\w-]+)$", stdout, re.M)
+        # A plain-time frame also says why (litclock-dev#532 D8): "time-only
+        # (gap)" or "time-only (failure)". Anchored so nothing else can trail.
+        m = re.search(
+            r"^dry-run: rendered \d+x\d+ image, render_mode=([\w-]+)(?: \((?:gap|failure)\))?$", stdout, re.M
+        )
         assert m, f"the dry-run must print its tier on stdout; got {stdout!r}"
         return m.group(1)
 
@@ -432,4 +437,24 @@ class TestRequireRuntimeRender:
         src = LITERARY_CLOCK.read_text(encoding="utf-8")
         executed = "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
         assert '"--require-runtime-render"' in executed
-        assert "sys.exit(3)" in executed, "the fallback verdict is exit 3, distinct from a crash (1)"
+        # Named since litclock-dev#532 (EXIT_NOT_RUNTIME beside EXIT_NO_SAMPLE);
+        # the value is what update.sh branches on, and the executed tests in
+        # this class assert the real exit status.
+        assert "sys.exit(EXIT_NOT_RUNTIME)" in executed
+        assert re.search(r"^EXIT_NOT_RUNTIME = 3$", executed, re.M), (
+            "the fallback verdict is exit 3, distinct from a crash (1)"
+        )
+
+
+def test_sample_quote_without_dry_run_is_refused():
+    """litclock-dev#532 R10: a bare --sample-quote would otherwise paint the
+    live panel at the current minute, the flag silently ignored."""
+    r = subprocess.run(
+        [sys.executable, "-m", "src.literary_clock", "--sample-quote"],
+        cwd=REPO_ROOT,
+        env=_python_env(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode == 2 and "only means something with --dry-run" in r.stderr, r.stderr

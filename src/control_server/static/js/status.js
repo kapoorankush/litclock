@@ -125,6 +125,12 @@
     return tr('status.stale.no_quote', 'Clock service may be paused — no quote published yet');
   }
 
+  function fallbackLineFor(reason) {
+    if (reason === 'gap') return tr('clock.fallback.gap', 'No book quote for this minute yet.');
+    if (reason === 'failure') return tr('clock.fallback.failure', 'Book quotes are unavailable right now.');
+    return '';
+  }
+
   function patch(s) {
     if (!s || s.ok !== true) return;
 
@@ -147,11 +153,20 @@
       setHidden(phase3SkipBanner, !s.phase3_skipped_at_unix);
     }
 
+    // litclock-dev#532 D8/R14 — quote-failure banner. The server decides the
+    // threshold (quote_failure); the text is static in the template.
+    var quoteFailureBanner = getEl('[data-status-quote-failure-banner]');
+    if (quoteFailureBanner) {
+      setHidden(quoteFailureBanner, !s.quote_failure);
+    }
+
     // Hero: either show quote+attribution or the empty-state. The Jinja
     // template renders ONE of the two branches at SSR; we toggle between
     // them via [hidden] so the JS doesn't have to manage element creation.
     var heroFull = getEl('[data-status-hero-full]');
     var heroEmpty = getEl('[data-status-hero-empty]');
+    var heroFallback = getEl('[data-status-hero-fallback]');
+    var fallbackLine = s.quote ? '' : fallbackLineFor(s.fallback_reason);
     if (s.quote) {
       setText(getEl('[data-status-quote]'), s.quote);
       setText(getEl('[data-status-attr-prefix]'), buildAttributionPrefix(s));
@@ -162,9 +177,17 @@
       setHidden(getEl('[data-status-attr-time-wrap]'), !s.time);
       setHidden(heroFull, false);
       setHidden(heroEmpty, true);
+      setHidden(heroFallback, true);
+    } else if (fallbackLine) {
+      // litclock-dev#532 D8: the panel shows the plain time; say its line.
+      setText(getEl('[data-status-hero-fallback-text]'), fallbackLine);
+      setHidden(heroFull, true);
+      setHidden(heroEmpty, true);
+      setHidden(heroFallback, false);
     } else {
       setHidden(heroFull, true);
       setHidden(heroEmpty, false);
+      setHidden(heroFallback, true);
     }
 
     // Status rows: WiFi (truncated to SSID_MAX_CHARS to match the Jinja
@@ -240,6 +263,7 @@
     if (show) {
       setHidden(heroFull, true);
       setHidden(heroEmpty, true);
+      setHidden(getEl('[data-status-hero-fallback]'), true);
       setHidden(heroUnreachable, false);
       setHidden(bookmark, true);
     } else {

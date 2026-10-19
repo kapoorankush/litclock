@@ -47,8 +47,9 @@ waitress==3.0.2
 # CVE-floor constraint — not directly imported.
 # urllib3 is a transitive of `requests`, but we pin it here so the
 # resolver can never roll us BELOW the floor that closed
-# CVE-2026-44431 / CVE-2026-44432 (PR litclock-dev#322, commit a5c0b355). Bump
-# this pin when a newer urllib3 ships further security fixes; running
+# CVE-2026-44431 / CVE-2026-44432 (PR litclock-dev#322, commit a5c0b355); raised to
+# 2.8.0 for PYSEC-2026-4175/4176/4177 (2026-10-07). Bump this pin
+# when a newer urllib3 ships further security fixes; running
 # `pip-compile --upgrade` will pick up newer compatible releases
 # automatically once this floor is raised.
-urllib3>=2.7.0
+urllib3>=2.8.0

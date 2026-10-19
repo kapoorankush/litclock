@@ -636,3 +636,55 @@ a.accent-link:hover { color: var(--accent-muted); }
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
+
+/* Toast (DESIGN.md "Toast specs", locked): bottom-anchored 24px above the
+ * tab bar, centred, max-content capped at min(80vw, 360px), 320ms slide-up,
+ * 200ms fade-out, tap to dismiss, one at a time. First used by the language
+ * switch note (litclock-dev#532 RT5). */
+.toast {
+  position: fixed;
+  left: 50%;
+  /* 84px is the tab bar's reserved height (body padding-bottom above), at
+   * its tallest; the measured bar is ~67px at the default text size, so this
+   * lands the toast ~24px above it there and clear of it at AX5. */
+  bottom: calc(84px + var(--sp-sm) + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(80vw, 360px);
+  padding: var(--sp-sm) var(--sp-lg);
+  background: var(--surface-raised);
+  color: var(--ink);
+  border-radius: 8px;
+  font-size: var(--fs-caption);
+  z-index: 20;
+  cursor: pointer;
+  animation: toast-in 320ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.toast__icon {
+  color: var(--success);
+  vertical-align: -2px;
+  margin-right: var(--sp-xs);
+}
+
+.toast--leaving {
+  opacity: 0;
+  transition: opacity 200ms ease-in;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 16px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+}

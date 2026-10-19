@@ -462,7 +462,7 @@ def test_atomic_write_env_sh_uses_0644_on_first_boot(flock_or_skip: str, tmp_pat
     assert mode == 0o644, f"first-boot env.sh must be 0644 so pi-user `source env.sh` works, got {oct(mode)}"
 
 
-# ─── 4. Cross-writer timeout symmetry (litclock-dev#274 follow-up #4) ─────────────
+# ─── 5. Cross-writer timeout symmetry (litclock-dev#274 follow-up #4) ─────────────
 
 
 def test_python_writer_times_out_when_shell_holds_flock_too_long(
@@ -539,3 +539,228 @@ def test_python_and_shell_share_lock_wait_env_var(monkeypatch: pytest.MonkeyPatc
     assert config._parse_env_lock_wait_default() == 7.0, (
         "Python parser must honor LITCLOCK_ENV_LOCK_WAIT — matching shell-side budget"
     )
+
+
+# ─── 6. Durability barriers (litclock-dev#893) ───────────────────────
+#
+# rename is atomic for readers, not durable: the staged bytes must be fsynced
+# BEFORE `mv` publishes them (else a power cut can leave a zero-length file)
+# and the directory AFTER (else the rename itself can be lost). A power cut
+# cannot be staged, so these shadow `sync` and `mv` with loggers that delegate
+# to the real binaries and assert on the ORDER, which is the whole property.
+
+
+def _stub_bin(tmp_path: Path, fail: str = "") -> tuple[Path, Path]:
+    """`sync` + `mv` loggers. ``fail`` = "file" or "dir" makes `sync` exit 1
+    for that kind of operand (and only that kind) instead of syncing."""
+    real_sync, real_mv = shutil.which("sync"), shutil.which("mv")
+    assert real_sync and real_mv
+    stub = tmp_path / "stub_bin"
+    stub.mkdir()
+    log = tmp_path / "calls.log"
+    fail_test = {"": "false", "file": '[[ -f "$1" ]]', "dir": '[[ -d "$1" ]]'}[fail]
+    (stub / "sync").write_text(
+        f"#!/bin/bash\necho \"sync $*\" >> '{log}'\nif {fail_test}; then exit 1; fi\nexec '{real_sync}' \"$@\"\n"
+    )
+    (stub / "mv").write_text(f"#!/bin/bash\necho \"mv $*\" >> '{log}'\nexec '{real_mv}' \"$@\"\n")
+    for f in ("sync", "mv"):
+        (stub / f).chmod(0o755)
+    return stub, log
+
+
+def _env_harness(tmp_path: Path, fail: str = "") -> tuple[dict, Path, Path]:
+    stub, log = _stub_bin(tmp_path, fail)
+    home = tmp_path / "home"
+    home.mkdir()
+    env_sh = home / "env.sh"
+    env_sh.write_text("export WEATHER_UNITS=imperial\n")
+    proc_env = os.environ.copy()
+    proc_env["PATH"] = f"{stub}:{proc_env['PATH']}"
+    proc_env["LITCLOCK_ENV_FILE"] = str(env_sh)
+    proc_env["NEW_BODY"] = "export WEATHER_UNITS=metric\n"
+    return proc_env, env_sh, log
+
+
+def _run_atomic_write(proc_env: dict, env_sh: Path) -> subprocess.CompletedProcess:
+    script = (
+        f". '{STATE_SH}' && ENV_FILE_DEFAULT=\"${{LITCLOCK_ENV_FILE}}\" atomic_write_env_sh '{env_sh}' \"$NEW_BODY\""
+    )
+    return subprocess.run(["bash", "-c", script], env=proc_env, capture_output=True, text=True, timeout=30)
+
+
+def _staged_leftovers(directory: Path) -> list[str]:
+    return sorted(p.name for p in directory.iterdir() if p.name.startswith("env.sh.") and p.name != "env.sh.lock")
+
+
+def _assert_synced_around_the_rename(calls: list[str], dest: Path) -> None:
+    mv_idx = [i for i, c in enumerate(calls) if c.startswith("mv ")]
+    assert len(mv_idx) == 1, calls
+    m = mv_idx[0]
+    staged = calls[m].split()[-2]
+    assert Path(staged).parent == dest.parent and staged != str(dest), calls
+    assert f"sync {staged}" in calls[:m], f"staged file must be synced BEFORE the rename: {calls}"
+    assert f"sync {dest.parent}" in calls[m + 1 :], f"its directory must be synced AFTER the rename: {calls}"
+
+
+def test_atomic_write_env_sh_syncs_file_before_rename_and_dir_after(flock_or_skip: str, tmp_path: Path) -> None:
+    """Every shell env.sh writer — reset-setup, clone prep, first-boot,
+    update.sh's Stage B flip — goes through this finalizer."""
+    proc_env, env_sh, log = _env_harness(tmp_path)
+    proc = _run_atomic_write(proc_env, env_sh)
+    assert proc.returncode == 0, proc.stderr
+    assert env_sh.read_text() == "export WEATHER_UNITS=metric\n"
+    _assert_synced_around_the_rename(log.read_text().splitlines(), env_sh)
+
+
+def test_atomic_write_env_sh_failed_file_sync_leaves_env_untouched(flock_or_skip: str, tmp_path: Path) -> None:
+    """A failed data flush aborts before the rename, destination untouched and
+    no staged copy left behind (a leaked `env.sh.XXXXXX` is a full copy of
+    env.sh, API key included)."""
+    proc_env, env_sh, log = _env_harness(tmp_path, fail="file")
+    proc = _run_atomic_write(proc_env, env_sh)
+    assert proc.returncode != 0
+    assert "could not flush" in proc.stderr
+    assert env_sh.read_text() == "export WEATHER_UNITS=imperial\n"
+    assert not any(c.startswith("mv ") for c in log.read_text().splitlines())
+    assert _staged_leftovers(env_sh.parent) == []
+
+
+def test_atomic_write_env_sh_failed_dir_sync_still_succeeds_but_says_so(flock_or_skip: str, tmp_path: Path) -> None:
+    """The new file is in place and its bytes are durable, so a failed
+    directory sync must not report the write as failed — reset-setup would
+    print "env.sh untouched" over a file it had replaced — but it must not be
+    silent either (owner decision, litclock-dev#893 review)."""
+    proc_env, env_sh, _ = _env_harness(tmp_path, fail="dir")
+    proc = _run_atomic_write(proc_env, env_sh)
+    assert proc.returncode == 0, proc.stderr
+    assert env_sh.read_text() == "export WEATHER_UNITS=metric\n"
+    assert "could not sync directory" in proc.stderr, proc.stderr
+
+
+def test_atomic_write_env_sh_no_flock_failed_finalize_leaves_no_staged_copy(tmp_path: Path) -> None:
+    """The no-flock fallback used to `return $?` straight out of a failed
+    finalize, leaking the staged env.sh copy; the flock path always cleaned
+    up. PATH holds the failing `sync` stub and coreutils, but no flock."""
+    stub, _ = _stub_bin(tmp_path, fail="file")
+    for tool in ("bash", "mktemp", "stat", "chmod", "chown", "rm", "dirname", "basename"):
+        real = shutil.which(tool)
+        if real:
+            os.symlink(real, stub / tool)
+    assert shutil.which("flock", path=str(stub)) is None
+    env_sh = tmp_path / "env.sh"
+    env_sh.write_text("export WEATHER_UNITS=imperial\n")
+    proc_env = {"PATH": str(stub), "HOME": str(tmp_path), "NEW_BODY": "export WEATHER_UNITS=metric\n"}
+    proc = _run_atomic_write(proc_env | {"LITCLOCK_ENV_FILE": str(env_sh)}, env_sh)
+    assert proc.returncode != 0
+    assert "flock(1) unavailable" in proc.stderr, "test bug: did not take the no-flock path"
+    assert env_sh.read_text() == "export WEATHER_UNITS=imperial\n"
+    assert _staged_leftovers(tmp_path) == []
+
+
+def test_atomic_write_env_sh_without_sync_still_writes(flock_or_skip: str, tmp_path: Path) -> None:
+    """`sync` absent (busybox sandboxes) degrades to the unsynced write rather
+    than refusing — pinned deliberately, not left to a tool-list accident."""
+    sandbox = tmp_path / "bin"
+    sandbox.mkdir()
+    for tool in ("bash", "mktemp", "mv", "stat", "chmod", "chown", "rm", "dirname", "basename", "flock"):
+        real = shutil.which(tool)
+        if real:
+            os.symlink(real, sandbox / tool)
+    assert shutil.which("sync", path=str(sandbox)) is None
+    env_sh = tmp_path / "env.sh"
+    env_sh.write_text("export WEATHER_UNITS=imperial\n")
+    proc_env = {"PATH": str(sandbox), "HOME": str(tmp_path), "LITCLOCK_ENV_FILE": str(env_sh)}
+    proc = _run_atomic_write(proc_env | {"NEW_BODY": "export WEATHER_UNITS=metric\n"}, env_sh)
+    assert proc.returncode == 0, proc.stderr
+    assert env_sh.read_text() == "export WEATHER_UNITS=metric\n"
+
+
+def _run_atomic_write_file(proc_env: dict, dest: Path, content: str) -> subprocess.CompletedProcess:
+    proc_env = proc_env | {"CONTENT": content}
+    script = f". '{STATE_SH}' && atomic_write_file '{dest}' \"$CONTENT\""
+    return subprocess.run(["bash", "-c", script], env=proc_env, capture_output=True, text=True, timeout=30)
+
+
+def test_atomic_write_file_syncs_file_before_rename_and_dir_after(tmp_path: Path) -> None:
+    """/var/lib/litclock state is mostly written FRESH — rollback-target,
+    blocked-sha, the self-test pass record — which ext4's auto_da_alloc does
+    not cover, so it was more exposed than env.sh. An empty rollback-target
+    after a power cut silently cancels the auto-rollback (litclock-dev#893 red team)."""
+    stub, log = _stub_bin(tmp_path)
+    state = tmp_path / "state"
+    state.mkdir()
+    dest = state / "rollback-target"
+    proc_env = os.environ.copy() | {"PATH": f"{stub}:{os.environ['PATH']}"}
+    proc = _run_atomic_write_file(proc_env, dest, "a" * 40)
+    assert proc.returncode == 0, proc.stderr
+    assert dest.read_text() == "a" * 40
+    _assert_synced_around_the_rename(log.read_text().splitlines(), dest)
+
+
+def test_atomic_write_file_failed_file_sync_does_not_publish(tmp_path: Path) -> None:
+    stub, log = _stub_bin(tmp_path, fail="file")
+    state = tmp_path / "state"
+    state.mkdir()
+    dest = state / "rollback-target"
+    proc_env = os.environ.copy() | {"PATH": f"{stub}:{os.environ['PATH']}"}
+    proc = _run_atomic_write_file(proc_env, dest, "a" * 40)
+    assert proc.returncode != 0
+    assert not dest.exists()
+    assert list(state.iterdir()) == [], "the staged copy must be removed"
+    assert not any(c.startswith("mv ") for c in log.read_text().splitlines())
+
+
+def test_atomic_write_file_failed_dir_sync_still_succeeds_but_says_so(tmp_path: Path) -> None:
+    stub, _ = _stub_bin(tmp_path, fail="dir")
+    state = tmp_path / "state"
+    state.mkdir()
+    dest = state / "blocked-sha"
+    proc_env = os.environ.copy() | {"PATH": f"{stub}:{os.environ['PATH']}"}
+    proc = _run_atomic_write_file(proc_env, dest, "b" * 40)
+    assert proc.returncode == 0, proc.stderr
+    assert dest.read_text() == "b" * 40
+    assert "could not sync directory" in proc.stderr, proc.stderr
+
+
+def _sudo_fallback_bin(tmp_path: Path, fail_first_file_sync: bool) -> tuple[Path, Path]:
+    """Force atomic_write_file's `sudo tee` fallback: `mktemp` fails, `sudo`
+    runs its arguments as-is, and `sync` logs whether it ran under sudo."""
+    stub, log = _stub_bin(tmp_path)
+    real_sync = shutil.which("sync")
+    flag = tmp_path / "failed-once"
+    fail = f"[[ -f \"$1\" && ! -e '{flag}' ]] && {{ touch '{flag}'; exit 1; }}\n" if fail_first_file_sync else ""
+    (stub / "sync").write_text(
+        f"#!/bin/bash\necho \"sync${{IN_SUDO:+ (sudo)}} $*\" >> '{log}'\n{fail}exec '{real_sync}' \"$@\"\n"
+    )
+    (stub / "sudo").write_text('#!/bin/bash\nIN_SUDO=1 exec "$@"\n')
+    (stub / "mktemp").write_text("#!/bin/bash\nexit 1\n")
+    for f in ("sync", "sudo", "mktemp"):
+        (stub / f).chmod(0o755)
+    return stub, log
+
+
+def test_atomic_write_file_sudo_fallback_flushes_once_with_sudo(tmp_path: Path) -> None:
+    stub, log = _sudo_fallback_bin(tmp_path, fail_first_file_sync=False)
+    state = tmp_path / "state"
+    state.mkdir()
+    dest = state / "rollback-target"
+    proc = _run_atomic_write_file(os.environ.copy() | {"PATH": f"{stub}:{os.environ['PATH']}"}, dest, "a" * 40)
+    assert proc.returncode == 0, proc.stderr
+    assert dest.read_text() == "a" * 40
+    calls = log.read_text().splitlines()
+    file_syncs = [c for c in calls if c.startswith("sync") and ".tmp." in c]
+    assert file_syncs == [f"sync (sudo) {dest}.tmp.{file_syncs[0].rsplit('.', 1)[-1]}"], calls
+
+
+def test_atomic_write_file_sudo_fallback_does_not_retry_a_failed_flush(tmp_path: Path) -> None:
+    """A retried fsync can succeed after the kernel dropped the failed pages;
+    an unprivileged try followed by a sudo retry published exactly the file a
+    flush had just rejected (litclock-dev#893 review, Codex)."""
+    stub, log = _sudo_fallback_bin(tmp_path, fail_first_file_sync=True)
+    state = tmp_path / "state"
+    state.mkdir()
+    dest = state / "rollback-target"
+    proc = _run_atomic_write_file(os.environ.copy() | {"PATH": f"{stub}:{os.environ['PATH']}"}, dest, "a" * 40)
+    assert proc.returncode != 0
+    assert not dest.exists(), "a file whose flush failed must not be published"
+    assert list(state.iterdir()) == [], "the staged copy must be removed"

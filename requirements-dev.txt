@@ -7,5 +7,9 @@ pytest-mock>=3.15.1
 # forever on a writer that never comes, which is a PASS-shaped failure.
 pytest-timeout>=2.4.0
 pyyaml>=6.0.3
+# litclock-dev#532 DT8: reads the control app's woff2 web fonts (with brotli)
+# for the glyph check in tools/render_invariants.py and the translator
+# validator. Dev/CI only — never installed on the clock.
+fonttools[woff]>=4.60.1
 # freetype-py moved to requirements.in at Stage 2 (litclock-dev#531) — it is now a
 # runtime dependency of src/quote_renderer.py, pinned in the main lock.

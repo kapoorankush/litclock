@@ -85,10 +85,11 @@ def _registry_corpus(code: str) -> Path | None:
     root for an absolute ``rel`` and follows ``..`` and symlinks, so a
     registry typo could name any pi-readable file and serve its lines as
     quote text; a resolved path outside the checkout is refused. A zero-byte
-    file is refused too, so an empty translation cannot shadow a healthy
-    English corpus. A file that exists but does not parse is NOT caught here
-    (that costs a full read per minute) — it falls to the PNG tier exactly
-    as a corrupt English corpus always has.
+    file is refused too. A file that exists but does not parse is NOT caught
+    here (that costs a full read per minute): an undecodable one raises from
+    the index walk, and one with no usable rows raises
+    :class:`CorpusUnavailable` from ``_index`` — both reach the painter as a
+    failed minute (litclock-dev#532 R9).
     """
     rel = strings_catalog.corpus_relpath(code)
     if not rel:
@@ -122,18 +123,38 @@ def _registry_corpus(code: str) -> Path | None:
     return candidate
 
 
+class CorpusUnavailable(Exception):
+    """The active language has no usable quote corpus (litclock-dev#532 R9).
+
+    Raised instead of quietly serving ANOTHER language's quotes: before R9 a
+    Spanish device whose corpus was missing, empty, outside the checkout or
+    junk read the English corpus and painted English quotes under a Spanish
+    masthead. The painter treats this as a quote FAILURE for the minute — the
+    plain-time frame with its failure line, counted toward the PWA warning
+    (D8, R14) — never as a gap, and never as permission to borrow English."""
+
+
 def corpus_path() -> Path:
     """The corpus the RUNTIME RENDERER reads: the active language's registry
     corpus (litclock-dev#870, unblocking litclock-dev#532 Stage 4).
 
     Precedence: the ``LITCLOCK_CORPUS_CSV`` override -> ``languages.json``'s
-    ``corpus.path`` for ``strings_catalog.active_language()`` -> the English
-    registry corpus -> the shipped default. Degrades the way the strings
-    catalog does: an unknown or inactive code is already English by the time
-    it reaches here, and a registry entry that is missing, empty or outside
-    the checkout falls through with a warning (once per process — see
-    ``_registry_corpus``). A clock must never stop painting over a registry
-    typo.
+    ``corpus.path`` for ``strings_catalog.active_language()``. A registry
+    entry that is missing, empty or outside the checkout raises
+    :class:`CorpusUnavailable` (warning once per process — see
+    ``_registry_corpus``); the painter paints the plain time for that minute.
+    A clock must never stop painting over a registry typo, and it must never
+    paint another language's quotes over one either (litclock-dev#532 R9 —
+    this function used to fall through to the ENGLISH corpus for every
+    language).
+
+    The fleet default keeps one more rung, the shipped default file, because
+    that file is what the registry names for it anyway and what the PNG set
+    was baked from (``image_corpus_path``). It is the only language with a
+    shipped-default file to fall back to; it is not a fallback for others.
+    An unknown or inactive code is already the fleet default by the time it
+    reaches here (``strings_catalog.active_language``) — that is the
+    device-level rule, separate from this one.
 
     Resolved on EVERY call, on purpose: the index cache is keyed by path, so
     a language change reaches any long-lived importer on its next lookup —
@@ -145,12 +166,18 @@ def corpus_path() -> Path:
     """
     if _CORPUS_PATH is not None:
         return _CORPUS_PATH
-    code = strings_catalog.active_language()
-    for candidate_code in dict.fromkeys((code, strings_catalog.CANONICAL_LANGUAGE)):
-        resolved = _registry_corpus(candidate_code)
-        if resolved is not None:
-            return resolved
-    return _DEFAULT_CORPUS_PATH
+    code = strings_catalog.quote_language()
+    if code is None:
+        # A non-English device whose registry cannot be read: active_language()
+        # says English, but that is the unreadable registry talking, not the
+        # owner (litclock-dev#532 review).
+        raise CorpusUnavailable("the language registry is unreadable, so this device's corpus cannot be resolved")
+    resolved = _registry_corpus(code)
+    if resolved is not None:
+        return resolved
+    if code == strings_catalog.CANONICAL_LANGUAGE:
+        return _DEFAULT_CORPUS_PATH
+    raise CorpusUnavailable(f"no usable quote corpus for {code!r} (see the languages.json warning above)")
 
 
 def image_corpus_path() -> Path:
@@ -295,13 +322,37 @@ def _current_stat(path: Path) -> tuple[int, int]:
         return 0, 0
 
 
+# A bucket key that names a real minute: "0000".."2359".
+_CLOCK_KEY_RE = re.compile(r"^(?:[01][0-9]|2[0-3])[0-5][0-9]$")  # ASCII: \d also matches ٦ and ６
+
+
 def _index(csv_path: str | os.PathLike | None = None) -> dict[str, list[dict]]:
     path = corpus_path() if csv_path is None else Path(csv_path)
     # realpath: symlinked installs and env-var overrides must key ONE
     # cache entry per underlying file, not one per spelling of its path.
     path = Path(os.path.realpath(path))
     mtime_ns, size = _current_stat(path)
-    return _index_for(str(path), mtime_ns, size)
+    index = _index_for(str(path), mtime_ns, size)
+    if csv_path is None and not any(_CLOCK_KEY_RE.match(k) for k in index):
+        # The device language's corpus resolved but yielded no rows: deleted
+        # since the check (or never there — the fleet default's last rung is
+        # not existence-checked), or a file of junk lines with fewer than five
+        # fields, or rows whose time fields name no real minute (a header row,
+        # `H:MM` without the zero). Every minute would read as an uncovered GAP and the owner
+        # would never be told; it is a broken corpus, so say so
+        # (litclock-dev#532 R9). An explicit csv_path keeps answering empty —
+        # tooling and tests ask about a specific file, not the device.
+        raise CorpusUnavailable(f"quote corpus {path} has no usable rows")
+    return index
+
+
+def device_index() -> dict[str, list[dict]]:
+    """The device language's whole index, ``HHMM -> entries`` (treat as
+    immutable — it is the shared cached object). Raises
+    :class:`CorpusUnavailable` like ``bucket_entries(hhmm)`` does; for
+    callers that look at many minutes at once (the self-test's sample search,
+    litclock-dev#532 R10), so the corpus is resolved once, not per minute."""
+    return _index(None)
 
 
 def bucket_entries(hhmm: str, csv_path: str | os.PathLike | None = None) -> tuple[dict, ...]:
@@ -310,6 +361,10 @@ def bucket_entries(hhmm: str, csv_path: str | os.PathLike | None = None) -> tupl
     ``CorpusRow`` objects from this). Entries carry ``quote_raw``; apply
     ``preprocess_quote`` to the rows actually used. ``csv_path=None``
     means ``corpus_path()`` — the active language's corpus (litclock-dev#870).
+    With ``csv_path=None`` it raises :class:`CorpusUnavailable` when that
+    corpus cannot be used (litclock-dev#532 R9) — documented here because
+    ``quote_renderer.rows_for_time`` is a validation proof input and its
+    docstring is deliberately left alone.
 
     Returns a tuple so callers cannot reorder/extend the cached bucket;
     the entry dicts themselves are still the SHARED cached objects —

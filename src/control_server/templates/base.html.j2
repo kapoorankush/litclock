@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ page_language() }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -379,6 +379,10 @@ sudo reboot</code></pre>
      while the user is actually navigating between pages — semantically
      wrong. Drop the tabs framing, keep aria-current="page" which is the
      correct landmark idiom for "you are here". #}
+  {# Toast live region (DESIGN.md: aria-live on the toast CONTAINER) — present
+     and empty from first paint, so a toast added later is announced; one
+     inserted already filled often is not (litclock-dev#532 RT5 review). #}
+  <div class="toast-region" data-toast-region role="status" aria-live="polite"></div>
   <nav class="tabbar" aria-label="{{ t('aria.nav.primary') }}">
     <a href="/"{% if active_tab == 'status' %} aria-current="page"{% endif %}>
       <svg class="tabbar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

@@ -80,6 +80,15 @@ is used because it, unlike 2.5:
   with no automatic reinstatement);
 - is a single international license rather than a per-jurisdiction port.
 
+### Other languages' corpora
+
+Each corpus under `languages/<code>/` (a quote compilation in that language,
+contributed for this project and not derived from the English database) is
+distributed under the same **[CC BY-NC-SA
+4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)**, by project rule —
+see CONTRIBUTING.md, "Licensing of contributions". The licence covers the
+compilation; each excerpt remains its author's or translator's.
+
 Upstream's original database remains available under CC BY-NC-SA 2.5 from
 [JohannesNE/literature-clock](https://github.com/JohannesNE/literature-clock);
 this re-versioning applies only to this project's derivative.

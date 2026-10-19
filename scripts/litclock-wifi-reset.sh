@@ -10,14 +10,21 @@
 # detects "already on WiFi" and never enters AP-mode, soft-bricking the user
 # on a gift-transfer / moved-house path):
 #
+#   Guard: if the setup marker is gone and first-boot is already running a
+#      setup, exit 0 having changed nothing (a double-fire; litclock-dev#938).
+#   Pre-flight: refuse (exit 1) if nmcli is missing.
+#   0. ENABLE litclock-firstboot.service (litclock-dev#938) — before any
+#      state changes, refusing to reset if it fails. See Step 0 below.
 #   1. Stop litclock-control.service so the running waitress process doesn't
 #      linger on the dead LAN interface as a zombie. firstboot.service brings
 #      it back when /etc/litclock/.setup-complete reappears.
-#   2. Delete every NetworkManager connection of type 802-11-wireless by UUID
+#   2. Remove /etc/litclock/.setup-complete (and .handoff-complete) so
+#      litclock-firstboot.service re-runs its hotspot + captive-portal
+#      provisioning flow. Before the wipe, so no interruption point leaves
+#      "no WiFi, but marked set up" (litclock-dev#938 review).
+#   3. Delete every NetworkManager connection of type 802-11-wireless by UUID
 #      (not SSID — connection IDs are not guaranteed equal to SSID, and
 #      duplicate/escaped SSIDs make name-based delete brittle).
-#   3. Remove /etc/litclock/.setup-complete so litclock-firstboot.service
-#      will re-run its hotspot + captive-portal provisioning flow.
 #   4. Restart litclock-firstboot.service (Type=oneshot — restart re-fires it).
 #
 # env.sh is preserved verbatim — D1 lock: location, weather, gift-mode all
@@ -42,17 +49,66 @@ log() {
     echo "[litclock-wifi-reset] $1"
 }
 
+# Already handed off (litclock-dev#938 review): the setup marker is gone and
+# first-boot is running a setup right now. A second reset here — the PWA's
+# token-restore path allows a double-fire, and a maintainer can re-run the
+# unit — would delete every 802-11-wireless profile, the live LitClock-Setup
+# hotspot included, and restart first-boot mid-setup. Change nothing. Exit 0
+# so the unit's ExecStopPost failsafe also leaves the running setup alone.
+# Two known limits, both CLI-only (owner decisions on the litclock-dev#938 review): the
+# guard starts at "activating", so a first-boot whose start job is still
+# QUEUED reads "inactive" and a second reset in that gap proceeds; and a
+# WEDGED first-boot (activating forever) is no longer killed and rerun by a
+# reset. Recover that one directly:
+#   sudo systemctl restart --no-block litclock-firstboot.service
+if [ ! -e "$SETUP_COMPLETE_FILE" ] \
+    && [ "$("$SYSTEMCTL" is-active litclock-firstboot.service 2>/dev/null)" = activating ]; then
+    log "first-boot is already provisioning (no setup marker) — nothing to reset"
+    log "if that setup is stuck, run: sudo systemctl restart --no-block litclock-firstboot.service"
+    exit 0
+fi
+
 # Pre-flight — nmcli must be installed and executable. If it's missing
 # (rare but possible after a failed apt upgrade or pi-gen drift), the
-# wifi-wipe step on line ~60 silently emits an empty UUID list and we
-# proceed to remove .setup-complete + restart firstboot anyway. Result:
-# NetworkManager's saved connections stay on disk, firstboot detects
-# "already on WiFi", exits oneshot, and the Pi appears stuck (no
-# hotspot, no LAN drop). Fail loud + early instead. /review caught
+# wifi-wipe step (Step 3) silently emits an empty UUID list, after Step 2
+# has already removed .setup-complete, and we restart firstboot anyway. Result:
+# NetworkManager's saved connections stay on disk, and first-boot's
+# pre-connected path (litclock-dev#647) rejoins the same network and finishes
+# setup inline, so the reset silently does nothing. Fail loud + early instead. /review caught
 # this; see PR litclock-dev#284 review notes.
 if ! command -v "$NMCLI" >/dev/null 2>&1; then
     log "error: nmcli not found at $NMCLI — refusing to reset (would soft-brick)"
     log "       install with: sudo apt install network-manager"
+    exit 1
+fi
+
+# Step 0 — enable firstboot BEFORE touching anything (litclock-dev#938).
+# A successful setup ends with disable_first_boot() (scripts/first-boot.sh),
+# so on a provisioned clock the unit is DISABLED. Restarting it in Step 4
+# runs it once, but nothing brings it back at the next boot: if setup is not
+# finished within first-boot's 30-minute window, it paints "Setup incomplete
+# — unplug and plug back in" and powers off, and after that power-cycle no
+# hotspot is raised and the WiFi profiles are already gone. The clock sits on
+# the boot splash for good, and an owner without a console has to reflash.
+# A power cut or timeout after the WiFi wipe reached the same state, which is why
+# this runs FIRST rather than beside the restart. Every other handoff to
+# first-boot already enables it (reset-setup.sh, prepare-for-cloning.sh,
+# wifi-watchdog.sh). Enabling while .setup-complete still exists is harmless:
+# first-boot's check_setup_complete skips. A successful setup disables the
+# unit again; a reset cut off before Step 2 leaves it enabled with the marker
+# in place, and first-boot then runs its "already set up" path at each boot:
+# it starts the clock as a normal boot would, which also re-enables
+# litclock.timer if someone had disabled it by hand (owner decision on the
+# litclock-dev#938 review: not worth touching first-boot.sh for).
+# If it fails, refuse the reset, like the nmcli pre-flight above: a reset
+# that cannot promise a retry is worse than no reset.
+# --no-reload: enable's implicit daemon-reload is slow on a Zero 2 W and can
+# fail AFTER the symlink is made, which would refuse a reset for nothing.
+# The symlink is all the next boot reads; the unit is already loaded.
+log "Enabling litclock-firstboot.service"
+if ! "$SYSTEMCTL" enable --no-reload litclock-firstboot.service 2>&1; then
+    log "error: could not enable litclock-firstboot.service — refusing to reset"
+    log "       (an unfinished setup would leave the clock unrecoverable)"
     exit 1
 fi
 
@@ -64,7 +120,37 @@ log "Stopping litclock-control.service"
 "$SYSTEMCTL" stop litclock-control.service 2>&1 || \
     log "warn: could not stop litclock-control.service (may not be running)"
 
-# Step 2 — wipe ALL wifi-type connections by UUID (D12).
+# Step 2 — remove the setup-complete marker so firstboot.service re-runs.
+# BEFORE the WiFi wipe (litclock-dev#938 review; this used to come after it).
+# With the marker gone first, any interruption from here on lands in
+# provisioning. A power cut does so at the next boot: first-boot is already
+# enabled (Step 0) and, seeing no marker, either takes the pre-connected path
+# on WiFi that is still saved or raises the hotspot. A kill or timeout while
+# the Pi stays up does so at once, through the unit's ExecStopPost= failsafe
+# (systemd/litclock-wifi-reset.service), which restarts first-boot. The old
+# order left a window where the WiFi was gone but the marker was not, so
+# first-boot skipped and no hotspot came up. It also means a failed rm aborts
+# before anything destructive.
+log "Removing $SETUP_COMPLETE_FILE"
+if [ -f "$SETUP_COMPLETE_FILE" ]; then
+    if ! rm -f "$SETUP_COMPLETE_FILE" 2>&1; then
+        log "error: could not remove $SETUP_COMPLETE_FILE — firstboot will not re-enter AP-mode"
+        exit 1
+    fi
+fi
+
+# EPIC litclock-dev#383 PR2 (litclock-dev#388): clear the handoff marker too. A WiFi reset is exactly
+# when the egress timezone may change (moving house, regifting). env.sh is
+# preserved, but if the new network's IP-geo FAILS the resolver leaves the
+# stale lat/tz in place — and if .handoff-complete still existed, the re-
+# provision would skip the handoff entirely and start a WRONG-TIME clock
+# (defeating the A2 invariant). Clearing it forces the handoff (IP-geo
+# re-resolve + browser-tz fallback) to re-run. Best-effort: a stuck marker
+# here only costs a missed re-handoff, so don't abort the reset on failure.
+log "Removing $HANDOFF_COMPLETE_FILE"
+rm -f "$HANDOFF_COMPLETE_FILE" 2>/dev/null || log "warning: could not remove $HANDOFF_COMPLETE_FILE"
+
+# Step 3 — wipe ALL wifi-type connections by UUID (D12).
 # nmcli -t emits machine-parseable colon-separated rows. We read both UUID
 # and TYPE so we can filter on type AND iterate by UUID (not name).
 WIFI_UUIDS=()
@@ -86,29 +172,6 @@ else
         fi
     done
 fi
-
-# Step 3 — remove the setup-complete marker so firstboot.service re-runs.
-# We do this AFTER the nmcli wipe because firstboot's own logic gates on
-# .setup-complete; the order here mirrors the user-intent ("forget WiFi,
-# then restart provisioning").
-log "Removing $SETUP_COMPLETE_FILE"
-if [ -f "$SETUP_COMPLETE_FILE" ]; then
-    if ! rm -f "$SETUP_COMPLETE_FILE" 2>&1; then
-        log "error: could not remove $SETUP_COMPLETE_FILE — firstboot will not re-enter AP-mode"
-        exit 1
-    fi
-fi
-
-# EPIC litclock-dev#383 PR2 (litclock-dev#388): clear the handoff marker too. A WiFi reset is exactly
-# when the egress timezone may change (moving house, regifting). env.sh is
-# preserved, but if the new network's IP-geo FAILS the resolver leaves the
-# stale lat/tz in place — and if .handoff-complete still existed, the re-
-# provision would skip the handoff entirely and start a WRONG-TIME clock
-# (defeating the A2 invariant). Clearing it forces the handoff (IP-geo
-# re-resolve + browser-tz fallback) to re-run. Best-effort: a stuck marker
-# here only costs a missed re-handoff, so don't abort the reset on failure.
-log "Removing $HANDOFF_COMPLETE_FILE"
-rm -f "$HANDOFF_COMPLETE_FILE" 2>/dev/null || log "warning: could not remove $HANDOFF_COMPLETE_FILE"
 
 # Step 4 — restart firstboot. Type=oneshot units re-fire on `restart`.
 #

@@ -136,7 +136,12 @@ fi
 # (update.sh must be able to re-acquire it). flock absent (CI) → skip gate.
 _LOCK_FD=""
 if command -v flock >/dev/null 2>&1; then
-    exec 9>"$UPDATE_LOCK_FILE" 2>/dev/null && _LOCK_FD=9
+    # Braces: `exec 9>file 2>/dev/null` with no command applies BOTH
+    # redirections to the whole script, so every log_warn after this line
+    # went to /dev/null and nothing reached the journal (since the LKG
+    # revert landed; found on the litclock-dev#893 review). Grouping scopes
+    # the 2>/dev/null to the open alone.
+    { exec 9>"$UPDATE_LOCK_FILE"; } 2>/dev/null && _LOCK_FD=9
     if [ -n "$_LOCK_FD" ] && ! flock -n 9; then
         log_info "update in progress (lock held) — deferring to next tick"
         exit 0
@@ -145,7 +150,7 @@ fi
 _release_lock() {
     [ -n "$_LOCK_FD" ] || return 0
     flock -u 9 2>/dev/null || true
-    exec 9>&- 2>/dev/null || true
+    { exec 9>&-; } 2>/dev/null || true
     _LOCK_FD=""
 }
 
@@ -251,21 +256,48 @@ log_warn "reverting to last-known-good $lkg via update.sh rollback mode"
 # consumes rollback-target and clears the recovery state in its Phase 7 (and
 # deliberately KEEPS blocked-sha in rollback mode so the weekly timer won't
 # reinstall the brick). bootcheck never clears them except on a healthy boot.
-atomic_write_file "$ROLLBACK_TARGET_FILE" "$lkg"
+#
+# rollback-target is load-bearing: update.sh picks rollback mode from it, so
+# triggering without it runs a NORMAL update and then marks recovery attempted
+# — the next threshold gives up having never rolled back. Since
+# litclock-dev#893 atomic_write_file refuses to publish a file the card failed
+# to flush, so on a sick card this write can now fail cleanly; don't trigger
+# on it. The counter stays at threshold, so the next 5-min tick retries.
+# blocked-sha is a guard against a later reinstall, not the rollback itself —
+# a failure there is logged, and rolling back is still the better outcome.
+if ! atomic_write_file "$ROLLBACK_TARGET_FILE" "$lkg"; then
+    log_warn "could not persist rollback-target — NOT triggering the rollback; will retry next cycle"
+    _release_lock; exit 0
+fi
 if [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-    atomic_write_file "$BLOCKED_SHA_FILE" "$HEAD_SHA"
+    atomic_write_file "$BLOCKED_SHA_FILE" "$HEAD_SHA" \
+        || log_warn "could not persist blocked-sha — rolling back anyway; the weekly timer may re-offer $HEAD_SHA"
 fi
 
+# bootcheck-recovering is what bounds a re-rollback loop (the next threshold
+# gives up instead of rolling back again), so it is a PREREQUISITE, written
+# before the trigger: if it cannot be persisted, don't roll back — clearing
+# the counter after an unmarked rollback restarts the budget, and a card that
+# keeps failing the write would roll back forever (litclock-dev#893 review, Codex). If
+# the trigger then fails, withdraw the marker so the next threshold RETRIES
+# rather than giving up on a rollback that never ran; the counter stays at
+# threshold, so the next 5-min tick re-triggers promptly. update.sh keeps the
+# marker in rollback mode, so writing it before the --no-block start is safe.
+# Known residual, accepted (owner, litclock-dev#899 review): a power cut in the moment
+# between the marker write and the trigger leaves the marker with no rollback
+# started, so the next threshold gives up instead of rolling back. The other
+# order trades that millisecond window for a rollback loop on a card that
+# keeps failing writes; a two-state marker was judged not worth its state.
+if ! atomic_write_file "$BOOTCHECK_RECOVERING_FILE" ""; then
+    log_warn "could not persist bootcheck-recovering — NOT triggering the rollback; will retry next cycle"
+    _release_lock; exit 0
+fi
 # Release the lock so update.sh can acquire it, then trigger the rollback.
-# Mark bootcheck-recovering + clear the counter ONLY if the trigger actually
-# fires — if `systemctl start` fails, the next threshold must RETRY the
-# rollback, not see the recovering marker and give up prematurely. Leaving the
-# counter at threshold means the next 5-min tick re-triggers promptly.
 _release_lock
 if $UPDATE_TRIGGER_CMD; then
-    atomic_write_file "$BOOTCHECK_RECOVERING_FILE" ""
     atomic_remove_file "$BOOT_FAIL_COUNT_FILE"
 else
+    atomic_remove_file "$BOOTCHECK_RECOVERING_FILE"
     log_warn "could not trigger litclock-update.service ($UPDATE_TRIGGER_CMD) — will retry next cycle"
 fi
 exit 0

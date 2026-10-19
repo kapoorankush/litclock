@@ -61,12 +61,16 @@ class RowPolicy:
 # Keys are grouped by section to match the page layout. Comments cite the
 # /plan-design-review decision and any owner-persona rationale.
 PRIVACY_POLICY: Final[dict[str, RowPolicy]] = {
-    # --- Build & version (info-only, never an anomaly) ---
+    # --- Build & version (info-only; anomalous only on a language fallback, litclock-dev#532 R12) ---
     "app_version": RowPolicy("safe-clear", "safe-clear"),
+    "language": RowPolicy("safe-clear", "safe-clear"),
+    "language_shown": RowPolicy("safe-clear", "safe-clear"),
     "git_head": RowPolicy("safe-clear", "safe-clear"),
     "images_version": RowPolicy("safe-clear", "safe-clear"),
     "last_update_at": RowPolicy("safe-clear", "safe-clear"),
     "last_update_version": RowPolicy("safe-clear", "safe-clear"),
+    # update.sh-authored text: phase, sha, log path. No user data.
+    "last_update_error": RowPolicy("safe-clear", "safe-clear"),
     # --- System ---
     "kernel": RowPolicy("safe-clear", "safe-clear"),
     "os_release": RowPolicy("safe-clear", "safe-clear"),
@@ -105,6 +109,8 @@ PRIVACY_POLICY: Final[dict[str, RowPolicy]] = {
     "time": RowPolicy("safe-clear", "safe-clear"),
     "picked_at": RowPolicy("safe-clear", "safe-clear"),
     "render_mode": RowPolicy("safe-clear", "safe-clear"),
+    "fallback_reason": RowPolicy("safe-clear", "safe-clear"),
+    "consecutive_failures": RowPolicy("safe-clear", "safe-clear"),
     # --- Setup markers (operational booleans / paths) ---
     "setup_complete": RowPolicy("safe-clear", "safe-clear"),
     "handoff_complete": RowPolicy("safe-clear", "safe-clear"),

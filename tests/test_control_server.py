@@ -2847,7 +2847,7 @@ class TestM2ReviewFixups:
         (b) Production hardware failure (epd.display() raises) used to
             publish a fresh quote anyway, defeating the stale signal.
         Both fixed by making main() pure-ish (composition only); main()
-        now returns (image, quote_meta, now) and __main__ publishes after
+        now returns (image, quote_meta, now, fallback_reason) and __main__ publishes after
         the hardware update succeeds."""
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
         import literary_clock
@@ -2861,10 +2861,10 @@ class TestM2ReviewFixups:
             import pytest as _pt
 
             _pt.skip(f"main() can't run in this test env: {e}")
-        assert isinstance(result, tuple) and len(result) == 3, (
-            f"main() must return (image, quote_meta, now) tuple; got {type(result).__name__}"
+        assert isinstance(result, tuple) and len(result) == 4, (
+            f"main() must return (image, quote_meta, now, fallback_reason) tuple; got {type(result).__name__}"
         )
-        image, _quote_meta, _now = result
+        image, _quote_meta, _now, _reason = result
         assert image is not None
         assert not target.exists(), (
             "main() must NOT write the status file — that's __main__'s job after "
@@ -3007,3 +3007,95 @@ class TestCreateAppEnvDefaults:
         monkeypatch.setenv("LITCLOCK_LAST_UPDATE_FILE", str(env_path))
         app = create_app({"LAST_UPDATE_FILE": str(config_path)})
         assert app.config["LAST_UPDATE_FILE"] == str(config_path)
+
+
+class TestQuoteFailureSurface:
+    """litclock-dev#532 D8/R14 — the painter counts consecutive FAILURE frames
+    in the status file; /api/status turns the count into `quote_failure` and
+    the Status tab shows a banner with a next step from the third one."""
+
+    def _body(self, status_file, **payload):
+        _write_status_payload(status_file, **payload)
+        app = create_app({"VERSION_OVERRIDE": "v0.test", "STATUS_FILE": str(status_file)})
+        return app.test_client().get("/api/status").json
+
+    @pytest.mark.parametrize(("count", "warn"), [(0, False), (1, False), (2, False), (3, True), (40, True)])
+    def test_the_warning_starts_at_three(self, status_file, count, warn):
+        body = self._body(status_file, consecutive_failures=count)
+        assert body["consecutive_failures"] == count
+        assert body["quote_failure"] is warn
+
+    @pytest.mark.parametrize(
+        "bad", ["3", True, 3.5, None, [3], -4], ids=["str", "bool", "float", "null", "list", "neg"]
+    )
+    def test_a_malformed_count_is_no_warning(self, status_file, bad):
+        body = self._body(status_file, consecutive_failures=bad)
+        assert body["consecutive_failures"] == 0 and body["quote_failure"] is False
+
+    def test_no_warning_while_the_stale_banner_speaks(self, status_file):
+        """One banner per cause: a stale file is the stale banner's to explain."""
+        import time as _time
+
+        body = self._body(status_file, consecutive_failures=5, picked_at=_time.time() - 3600)
+        assert body["stale"] is True and body["quote_failure"] is False
+
+    @pytest.mark.parametrize("reason", ["gap", "failure"])
+    def test_the_fallback_reason_reaches_the_api(self, status_file, reason):
+        body = self._body(status_file, quote="", fallback_reason=reason)
+        assert body["fallback_reason"] == reason
+
+    @pytest.mark.parametrize(
+        "reason", ["oops", 1, None, ["gap"], {"r": "gap"}], ids=["str", "int", "null", "list", "dict"]
+    )
+    def test_an_unknown_reason_is_null(self, status_file, reason):
+        assert self._body(status_file, quote="", fallback_reason=reason)["fallback_reason"] is None
+
+    def test_a_reason_beside_a_quote_is_null(self, status_file):
+        assert self._body(status_file, fallback_reason="gap")["fallback_reason"] is None
+
+    def test_the_hero_shows_the_panels_line_not_starting_up(self, status_file):
+        """Review: on a plain-time frame the hero said "Starting up…" — under
+        the failure banner, and on every gap minute of a partly covered
+        language."""
+        import re
+
+        _write_status_payload(status_file, quote="", author="", title="", fallback_reason="gap")
+        app = create_app({"VERSION_OVERRIDE": "v0.test", "STATUS_FILE": str(status_file)})
+        html = app.test_client().get("/").get_data(as_text=True)
+        fallback = re.search(r"data-status-hero-fallback\s*([^>]*)>", html)
+        empty = re.search(r"data-status-hero-empty\s*([^>]*)>", html)
+        assert fallback and not re.search(r"\bhidden\b", fallback.group(1))
+        assert empty and re.search(r"\bhidden\b", empty.group(1))
+        assert "No book quote for this minute yet." in html
+
+    def test_a_status_file_from_before_the_count_is_no_warning(self, status_file):
+        body = self._body(status_file)
+        assert body["consecutive_failures"] == 0 and body["quote_failure"] is False
+
+    def test_no_status_file_is_no_warning(self, status_file):
+        app = create_app({"VERSION_OVERRIDE": "v0.test", "STATUS_FILE": str(status_file)})
+        body = app.test_client().get("/api/status").json
+        assert body["quote_failure"] is False
+
+    def _banner_attrs(self, status_file, count):
+        import re
+
+        _write_status_payload(status_file, consecutive_failures=count)
+        app = create_app({"VERSION_OVERRIDE": "v0.test", "STATUS_FILE": str(status_file)})
+        html = app.test_client().get("/").get_data(as_text=True)
+        m = re.search(r"data-status-quote-failure-banner\s*([^>]*)>", html)
+        assert m is not None, "the banner element must always be rendered so status.js can toggle it"
+        return m.group(1), html
+
+    def test_the_status_page_shows_the_banner_and_its_next_step(self, status_file):
+        import re
+
+        attrs, html = self._banner_attrs(status_file, 3)
+        assert not re.search(r"\bhidden\b", attrs)
+        assert "restart it from the System tab" in html
+
+    def test_the_status_page_hides_the_banner_below_the_threshold(self, status_file):
+        import re
+
+        attrs, _ = self._banner_attrs(status_file, 2)
+        assert re.search(r"\bhidden\b", attrs)

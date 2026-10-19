@@ -21,12 +21,8 @@ from typing import Any
 # the same source the diagnostics page's Jinja side reads via t(), which
 # is what makes the pasted payload match the page the user is looking at.
 # The table lives inside build_copy_payload, so labels resolve per call
-# (a language switch reaches the next Copy without a restart).
-# PORT NOTE: this module-level import makes the whole diagnostics package
-# hard-depend on the litclock-dev#532 chain (strings_catalog + languages/) —
-# same warning as control_server/__init__'s create_app note.
-from strings_catalog import get as _t
-
+# (a language switch reaches the next Copy without a restart) — through the
+# REQUEST's snapshot (control_server/_strings.py), the one the page used.
 from ..._diagnostics_privacy import redact
 
 
@@ -43,15 +39,23 @@ def build_copy_payload(
     Format is intentionally a fenced ``markdown`` block so the helper can
     drop it into an issue, a Slack code-block, an email, etc.
     """
+    # ONE catalog resolution for the whole payload (litclock-dev#532 O4), so a
+    # language save landing mid-build cannot mix its labels.
+    from ..._strings import request_snapshot  # noqa: PLC0415
+
+    _t = request_snapshot().get
     sections: list[tuple[str, list[tuple[str, str]]]] = [
         (
             "Build & version",
             [
                 (_t("diag.row.app_version"), "app_version"),
+                (_t("diag.row.language"), "language"),
+                (_t("diag.row.language_shown"), "language_shown"),
                 (_t("diag.row.git_head"), "git_head"),
                 (_t("diag.row.images_version"), "images_version"),
                 (_t("diag.row.last_update_at"), "last_update_at"),
                 (_t("diag.row.last_update_version"), "last_update_version"),
+                (_t("diag.row.last_update_error"), "last_update_error"),
             ],
         ),
         (
@@ -158,6 +162,17 @@ def build_copy_payload(
         render_mode = values.get("render_mode")
         if render_mode:
             lines.append(f"Rendered by: {render_mode}")
+        picked_at = values.get("picked_at")
+        if picked_at:
+            lines.append(f"Picked at: {picked_at}")
+        lines.append("")
+    elif values.get("fallback_reason"):
+        # litclock-dev#532 D8/R14: the panel shows the plain time. Which kind
+        # of no-quote it is, and how long failures have run, is what support
+        # needs when the owner reports the Status-tab warning.
+        lines.append("## Last frame")
+        lines.append(f"Plain time ({values.get('fallback_reason')}) at {values.get('time') or '?'}")
+        lines.append(f"Failed quote frames in a row: {values.get('consecutive_failures') or 0}")
         picked_at = values.get("picked_at")
         if picked_at:
             lines.append(f"Picked at: {picked_at}")

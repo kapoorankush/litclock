@@ -156,7 +156,12 @@ class TestDiagnosticsCopyPayloadParity:
     (b) the page/payload key sets differ exactly as documented, and (c)
     every referenced catalog key resolves."""
 
-    PAGE_ONLY = {"author", "picked_at", "quote", "render_mode", "time", "title"}
+    # fallback_reason / consecutive_failures (litclock-dev#532 D8/R14): the
+    # payload carries them as a prose "## Last frame" block, like the rest of
+    # the last-quote rows.
+    PAGE_ONLY = {
+        "author", "picked_at", "quote", "render_mode", "time", "title", "fallback_reason", "consecutive_failures",
+    }  # fmt: skip
     # Empty by construction now: the old {"state"} entry was never a display
     # row — it was a dict.get("state", "unknown") the first conversion regex
     # over-matched (caught in-round; the run-the-tool-on-the-real-repo class).
@@ -177,8 +182,8 @@ class TestDiagnosticsCopyPayloadParity:
     # shared rows revert to two-source literals with the suite green — the
     # precise shape this file's TECHNIQUE NOTE rejected). A genuinely added
     # or removed row updates these two numbers in the same diff.
-    PAGE_ROWS = 36
-    PAYLOAD_ROWS = 30
+    PAGE_ROWS = 41
+    PAYLOAD_ROWS = 33
 
     def _page(self) -> dict[str, str]:
         sites = self._sites(DIAG_TEMPLATE.read_text())
@@ -1014,6 +1019,21 @@ class TestSystemPageJsCatalog:
             assert value != key, f"{key} did not resolve"
 
 
+class _FixedSnapshot:
+    """A strings_catalog.Snapshot stand-in serving one value for every key."""
+
+    def __init__(self, value):
+        self._value = value
+        self.language = self.requested = "en"
+
+    def get(self, key, /, **slots):
+        return self._value
+
+
+def _poisoned(monkeypatch, strings_catalog, value):
+    monkeypatch.setattr(strings_catalog, "snapshot", lambda lang=None: _FixedSnapshot(value))
+
+
 class TestSystemPageSsrCatalog:
     """litclock-dev#532 bulk extraction slice 6: system.html.j2's SSR
     strings via t()/t_rich(). t_rich's contract: catalog values stay plain
@@ -1140,13 +1160,9 @@ class TestSystemPageSsrCatalog:
 
         app = create_app(test_config={"VERSION_OVERRIDE": "v0.0.0-test"})
         t_rich = app.jinja_env.globals["t_rich"]
-        monkeypatch.setattr(
-            strings_catalog,
-            "get",
-            lambda key, /, **slots: '<script>alert(1)</script> {b}safe{/b} "q"',
-        )
-        # create_app bound t_rich to the module function at registration
-        # time — patch through the module attribute the closure reads.
+        _poisoned(monkeypatch, strings_catalog, '<script>alert(1)</script> {b}safe{/b} "q"')
+        # t_rich reads through strings_catalog.snapshot() (litclock-dev#532
+        # RT1) — patch the module attribute the closure calls.
         out = str(t_rich("any.key"))
         assert "<script>" not in out
         assert "&lt;script&gt;" in out
@@ -1166,7 +1182,7 @@ class TestSystemPageSsrCatalog:
         app = create_app(test_config={"VERSION_OVERRIDE": "v0.0.0-test"})
         t_rich = app.jinja_env.globals["t_rich"]
         monkeypatch.setattr(
-            strings_catalog, "get", lambda key, /, **slots: "join {b}{network}{/b} now"
+            strings_catalog, "snapshot", lambda lang=None: _FixedSnapshot("join {b}{network}{/b} now")
         )
         out = str(t_rich("any.key", network="{b}<script>x</script>{/b}"))
         assert "<script>" not in out
@@ -1190,6 +1206,7 @@ class TestSettingsPageCatalog:
         "settings.js.save_failed.weather",
         "settings.js.save_failed.units",
         "settings.js.save_failed.language",
+        "settings.language.switching",  # litclock-dev#532 RT5 note
     )
     # A representative SSR sample (the full set lives in the template; these
     # rendered-value canaries catch a broken t() wholesale).

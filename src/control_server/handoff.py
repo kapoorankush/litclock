@@ -427,10 +427,6 @@ def current_timezone() -> str | None:
         return None
 
 
-def _units_label(units: str) -> str:
-    return "Metric (°C)" if units == "metric" else "Imperial (°F)"
-
-
 def handoff_context(app) -> dict:
     """Banner data derived from env.sh. ``state`` is "success" when a location
     was detected (tz known) and "failure" when it wasn't — the two banner
@@ -449,8 +445,9 @@ def handoff_context(app) -> dict:
         "state": "success" if has_location else "failure",
         "has_location": has_location,
         "location_name": env.get("WEATHER_LOCATION_NAME", "").strip(),
+        # The e-ink splash labels it from the catalog in its own language
+        # (litclock-dev#532 T6); this used to carry an English label.
         "units": units,
-        "units_label": _units_label(units),
         "mature_enabled": env.get("ALLOW_NSFW_QUOTES", "false").strip().lower() == "true",
     }
 

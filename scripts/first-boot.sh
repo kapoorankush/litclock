@@ -608,11 +608,15 @@ main() {
             # NO language argument — a fresh device keeps Accept-Language
             # negotiation alive on this boot (the litclock-dev#743 empty-seed contract).
             # `true`: a FRESH flash renders text from its first paint. The
-            # helper defaults to false for the reset and cloning callers,
-            # which run on existing devices (litclock-dev#871 Stage B).
+            # reset and cloning callers run on existing devices and pass
+            # that device's current tier instead (env_sh_current_runtime_render),
+            # never a literal true (litclock-dev#871 Stage B).
             _defaults=$(env_sh_defaults "" true)$'\n'
-            if ! atomic_write_env_sh "$ENV_FILE" "$_defaults"; then
-                local _rc=$?
+            local _rc=0
+            atomic_write_env_sh "$ENV_FILE" "$_defaults" || _rc=$?
+            # Not `if ! …; then _rc=$?`: the negation makes $? 0, so the 75
+            # arm was dead and every failure logged "rc=0" (litclock-dev#893 review).
+            if [[ "$_rc" != "0" ]]; then
                 if [[ "$_rc" == "75" ]]; then
                     log "WARN env.sh locked by another writer — leaving default-creation to next boot"
                 else

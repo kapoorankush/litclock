@@ -275,7 +275,10 @@ describe("updates.js litclock-dev#607 resume-after-restart", () => {
 
     const terminal = document.getElementById("phase-terminal-message");
     expect(terminal.hidden).toBe(false);
-    expect(terminal.textContent).toContain("reverted");
+    // litclock-dev#532 T10: the catalog sentence, never update.sh's English
+    // diagnostic ("Smoke test failed; reverted to …") from payload.error.
+    expect(terminal.textContent).toContain("rolled back");
+    expect(terminal.textContent).not.toContain("Smoke test failed");
     expect(terminal.dataset.tone).toBe("reverted");
     expect(phaseState(5)).toBe("failed");
   });
@@ -292,7 +295,11 @@ describe("updates.js litclock-dev#607 resume-after-restart", () => {
       return {
         ok: true,
         status: 200,
-        json: async () => ({ ok: true, state: "failed_unrecovered" }),
+        json: async () => ({
+          ok: true,
+          state: "failed_unrecovered",
+          error: "pip install failed AND git revert failed; manual recovery required.",
+        }),
       };
     });
     mock.register(/\/api\/update\/apply$/, { status: 202, body: { ok: true } });
@@ -316,6 +323,7 @@ describe("updates.js litclock-dev#607 resume-after-restart", () => {
     expect(terminal.hidden).toBe(false);
     expect(terminal.dataset.tone).toBe("error");
     expect(terminal.textContent).toContain("did not finish");
+    expect(terminal.textContent).not.toContain("pip install failed");
     // phase_index absent → `|| 0` default: no row is failed-highlighted,
     // everything upcoming (updateRowStates(0, true) matches no index ≥ 1).
     expect(phaseState(1)).toBe("upcoming");
@@ -466,4 +474,52 @@ describe("updates.js litclock-dev#607 resume-after-restart", () => {
     expect(healthCalls(mock)).toBe(healthAfterVerdict);
     expect(document.getElementById("phase-terminal-message").hidden).toBe(true);
   });
+
+  // litclock-dev#532 T10: a cold load after a finished failure shows the
+  // catalog sentence, never update.sh's English diagnostic in payload.error.
+  for (const [state, want] of [
+    ["failed_reverted", "rolled back"],
+    ["failed_unrecovered", "did not finish"],
+  ]) {
+    it(`cold load of ${state} shows the catalog copy, not payload.error`, async () => {
+      mock.register(/\/api\/update\/check$/, { status: 200, body: { ok: true, available: true } });
+      mock.register(/\/api\/update\/status$/, {
+        status: 200,
+        body: { ok: true, state, phase_index: 5, error: "Smoke test failed; reverted to v0.223.0." },
+      });
+      loadScript("updates.js");
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(50);
+      await flushMicrotasks();
+      const terminal = document.getElementById("phase-terminal-message");
+      expect(terminal.hidden).toBe(false);
+      expect(terminal.textContent).toContain(want);
+      expect(terminal.textContent).not.toContain("Smoke test failed");
+    });
+  }
+
+  // litclock-dev#532 T10: the live path. An in-progress page whose poll
+  // turns terminal goes through handleStatusPayload, the third pair of
+  // sites that used to prefer payload.error.
+  for (const [state, want, tone] of [
+    ["failed_reverted", "rolled back", "reverted"],
+    ["failed_unrecovered", "did not finish", "error"],
+  ]) {
+    it(`a live poll turning ${state} shows the catalog copy, not payload.error`, async () => {
+      buildDom({ inProgress: true, phase: 4 });
+      mock.register(/\/api\/update\/status$/, {
+        status: 200,
+        body: { ok: true, state, phase_index: 5, error: "Smoke test failed; reverted to v0.223.0." },
+      });
+      loadScript("updates.js");
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushMicrotasks();
+      const terminal = document.getElementById("phase-terminal-message");
+      expect(terminal.hidden).toBe(false);
+      expect(terminal.dataset.tone).toBe(tone);
+      expect(terminal.textContent).toContain(want);
+      expect(terminal.textContent).not.toContain("Smoke test failed");
+    });
+  }
 });

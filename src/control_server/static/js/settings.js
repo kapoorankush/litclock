@@ -564,6 +564,109 @@
     });
   }
 
+  // ── litclock-dev#532 RT5: the language switch ─────────────────────────
+  const LANGUAGE_SWITCH_FLAG = "litclock.languageSwitched";
+  // How long the reload waits for a new service worker before going anyway —
+  // generous, because a Pi Zero precaching ~27 URLs while it repaints the
+  // panel for the same save can take several seconds (RT5 review).
+  const SW_SWAP_TIMEOUT_MS = 10000;
+
+  // The service worker caches pages per language (its CACHE_NAME carries the
+  // page language), so after a language save it must be replaced BEFORE the
+  // reload, or the reload — and any offline reopen — is served the old
+  // language's cached page. Ask for the new worker, reload when it takes
+  // control; reload at once when nothing new is coming (no worker, iOS, or
+  // an unchanged script), and after SW_SWAP_TIMEOUT_MS whatever happens.
+  function reloadAfterServiceWorkerUpdate() {
+    let done = false;
+    function go() {
+      if (done) return;
+      done = true;
+      window.location.reload();
+    }
+    const sw = navigator.serviceWorker;
+    if (!sw || !sw.controller || typeof sw.getRegistration !== "function") {
+      go();
+      return;
+    }
+    sw.addEventListener("controllerchange", go);
+    window.setTimeout(go, SW_SWAP_TIMEOUT_MS);
+    sw.getRegistration()
+      .then(function (reg) {
+        if (!reg) return go();
+        return reg.update().then(function () {
+          if (!reg.installing && !reg.waiting) go();
+        });
+      })
+      .catch(go);
+  }
+
+  // The note on the reloaded page (DESIGN.md toast spec: subtle, inline,
+  // bottom, 3s, tap to dismiss, one at a time), in the NEW language — this
+  // page was rendered in it. If it was NOT (the reload beat the new service
+  // worker and the old one served its cached page), reload once more rather
+  // than announce the old language; a second miss just drops the note.
+  // A flag this old belongs to a reload that never happened (offline, or
+  // the reader left the page) — not to this load.
+  const LANGUAGE_SWITCH_FLAG_TTL_MS = 30000;
+  function showLanguageSwitchNote() {
+    let flag = null;
+    try {
+      flag = JSON.parse(window.sessionStorage.getItem(LANGUAGE_SWITCH_FLAG) || "null");
+      window.sessionStorage.removeItem(LANGUAGE_SWITCH_FLAG);
+    } catch (e) {
+      return;
+    }
+    if (!flag || typeof flag.code !== "string" || !flag.code) return;
+    if (!(Date.now() - flag.at <= LANGUAGE_SWITCH_FLAG_TTL_MS)) return;
+    const code = flag.code;
+    const selected = document.querySelector("[data-language-pill] .is-selected");
+    if (!selected || selected.getAttribute("data-language-opt") !== code) {
+      if (!flag.retried) {
+        try {
+          window.sessionStorage.setItem(LANGUAGE_SWITCH_FLAG, JSON.stringify({ code: code, at: flag.at, retried: true }));
+        } catch (e) {
+          return;
+        }
+        window.location.reload();
+      }
+      return;
+    }
+    const name = selected.querySelector("span");
+    showToast(
+      tr('settings.language.switching', 'The clock is switching to {language} now.')
+        .split("{language}")
+        .join(name ? name.textContent : code)
+    );
+  }
+
+  function showToast(message) {
+    const region = document.querySelector("[data-toast-region]");
+    if (!region) return;
+    // One at a time: a new toast replaces the old.
+    region.textContent = "";
+    const toast = document.createElement("div");
+    toast.className = "toast";
+    toast.setAttribute("data-toast", "");
+    // Phosphor `check`, 14px in --success (DESIGN.md: Toast: success).
+    toast.innerHTML =
+      '<svg class="toast__icon" viewBox="0 0 256 256" width="14" height="14" aria-hidden="true">' +
+      '<path fill="currentColor" d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,' +
+      '11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z"/></svg>';
+    const text = document.createElement("span");
+    text.textContent = message;
+    toast.appendChild(text);
+    function dismiss() {
+      toast.classList.add("toast--leaving");
+      window.setTimeout(function () {
+        toast.remove();
+      }, 200);
+    }
+    toast.addEventListener("click", dismiss);
+    region.appendChild(toast);
+    window.setTimeout(dismiss, 3000);
+  }
+
   // `onSaved` (optional) fires once the pill state is fully committed —
   // i.e. after a successful save with no further pending re-tap. Used by
   // the Language pill (litclock-dev#532 pickers 5b) to reload the page so
@@ -619,6 +722,27 @@
       }
     }
 
+    // Arrow keys in a radio group CHECK the next option on every press, so
+    // committing on each `change` saved (and, for the language, reloaded)
+    // the first option a keyboard user passed through on the way to the one
+    // they wanted (litclock-dev#532 DT7 review). A keyboard-driven change
+    // commits after a short pause, or when focus leaves the group; a click
+    // or tap still commits at once.
+    let lastNavKeyAt = -Infinity;
+    let settleTimer = null;
+    function commitNow() {
+      if (settleTimer !== null) {
+        window.clearTimeout(settleTimer);
+        settleTimer = null;
+      }
+      pump();
+    }
+    pill.addEventListener("keydown", function (ev) {
+      if (NAV_KEYS.indexOf(ev.key) !== -1) lastNavKeyAt = Date.now();
+    });
+    pill.addEventListener("focusout", function (ev) {
+      if (settleTimer !== null && !pill.contains(ev.relatedTarget)) commitNow();
+    });
     opts.forEach(function (opt) {
       const radio = opt.querySelector(".settings-segmented__input");
       if (!radio) return;
@@ -626,10 +750,19 @@
         if (!radio.checked) return;
         selectVisual(opt); // optimistic — the radio click IS the commit.
         desiredOpt = opt;
-        pump();
+        if (Date.now() - lastNavKeyAt < NAV_KEY_WINDOW_MS) {
+          if (settleTimer !== null) window.clearTimeout(settleTimer);
+          settleTimer = window.setTimeout(commitNow, KEYBOARD_SETTLE_MS);
+          return;
+        }
+        commitNow();
       });
     });
   }
+  const NAV_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"];
+  // A `change` this soon after an arrow key came from the keyboard.
+  const NAV_KEY_WINDOW_MS = 100;
+  const KEYBOARD_SETTLE_MS = 1000;
 
   wireBooleanToggleAutoSave(
     document.getElementById("allow_nsfw_quotes"),
@@ -676,9 +809,25 @@
       document.querySelectorAll("[data-language-pill] .settings-segmented__input").forEach(function (r) {
         r.disabled = true;
       });
-      window.location.reload();
+      // litclock-dev#532 RT5 (D11/R17): the reloaded page says the clock is
+      // switching now — the save already repainted the panel — so leave it
+      // a one-shot flag, in this tab only.
+      // The flag carries the language switched TO, so the reloaded page can
+      // tell whether it really is in that language (RT5 review).
+      const chosen = document.querySelector("[data-language-pill] .is-selected");
+      try {
+        window.sessionStorage.setItem(
+          LANGUAGE_SWITCH_FLAG,
+          JSON.stringify({ code: chosen ? chosen.getAttribute("data-language-opt") : "", at: Date.now() })
+        );
+      } catch (e) {
+        /* storage blocked: the switch still happens, just without the note */
+      }
+      reloadAfterServiceWorkerUpdate();
     }
   );
+
+  showLanguageSwitchNote();
 
   // M6 adversarial /review fix — refresh the CSRF token at submit time so
   // a cached /settings HTML (from the SW navigation cache) doesn't carry a

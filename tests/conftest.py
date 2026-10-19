@@ -229,6 +229,29 @@ def network_attempts_summary_line(state: _NetworkAttemptState) -> str | None:
 
 
 @pytest.fixture
+def english_only_registry(tmp_path, monkeypatch):
+    """A language registry listing English alone, for tests of the
+    single-language fleet's behaviour (the dormant pickers, the en-only
+    validator). They used to read the REAL languages.json, and so would
+    have gone red the day a second language was activated rather than on
+    the change that broke them (litclock-dev#532 T9: six did, measured with
+    an active es). Points at the real English bundle."""
+    import strings_catalog
+
+    # The REAL English entry, whole: a hand-written one would lack fields
+    # (corpus, coverage) a later filter on active languages may read, and
+    # English could silently drop out of the "single" fleet (litclock-dev#927 review).
+    real = json.loads((REPO_ROOT / "languages.json").read_text(encoding="utf-8"))
+    registry = {**real, "languages": {"en": real["languages"]["en"]}}
+    reg = tmp_path / "languages-en-only.json"
+    reg.write_text(json.dumps(registry), encoding="utf-8")
+    monkeypatch.setattr(strings_catalog, "REGISTRY_PATH", reg)
+    strings_catalog.reset_cache()
+    yield reg
+    strings_catalog.reset_cache()
+
+
+@pytest.fixture
 def tmp_env_file(tmp_path):
     """Create a temporary env.sh file with typical content."""
     env_file = tmp_path / "env.sh"

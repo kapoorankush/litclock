@@ -179,6 +179,7 @@ class TestMainBlockActuallyTerminatesViaOsExit:
                 self.dry_run = dry_run
                 # litclock-dev#871 Stage A: the dry-run block reads this flag too.
                 self.require_runtime_render = False
+                self.sample_quote = False
 
         class _Parser:
             def __init__(self, *a, **k):
@@ -266,6 +267,7 @@ class TestMainBlockActuallyTerminatesViaOsExit:
                         types.SimpleNamespace(size=(800, 480)),
                         {"time": "00:30"},
                         datetime(2026, 9, 5, 0, 30, 0),
+                        None,  # fallback_reason (litclock-dev#532 D8): a quote frame
                     )
                 )
             ),

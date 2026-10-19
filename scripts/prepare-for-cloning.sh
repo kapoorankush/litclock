@@ -123,7 +123,7 @@ _THIS_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # "say DO NOT CLONE loudly". Check explicitly, before any step has run, so the
 # operator gets a reason instead of a bash error. Same check as
 # reset-setup.sh's, which needs it for correctness rather than for the message.
-for _fn in atomic_write_env_sh env_sh_defaults clear_and_lock_bash_history; do
+for _fn in atomic_write_env_sh env_sh_defaults clear_and_lock_bash_history env_staging_files; do
     if ! declare -F "$_fn" >/dev/null 2>&1; then
         echo -e "${RED}ERROR: $_fn is not defined after sourcing lib/state.sh.${NC}" >&2
         echo "  $_THIS_SCRIPT_DIR/lib/state.sh is missing or too old for this script." >&2
@@ -349,36 +349,6 @@ _abort_env_credentials() {
         "every copy would carry the API key and home location." "$@"
 }
 
-# The env.sh Step 2 writes. Declared HERE, not at Step 2, because the gate
-# ~350 lines below derives its key list from it and this script has no `set -u`.
-#
-# litclock-dev#840 — the body comes from env_sh_defaults() in lib/state.sh,
-# the single source shared with first-boot.sh and reset-setup.sh. This copy
-# was hand-maintained and was the SHORTEST of the four (litclock-dev#783): it missed
-# WEATHER_LOCATION_NAME and LITCLOCK_LANGUAGE, so every SD card cut from this
-# flow — the highest-fanout distribution path there is — produced devices
-# lacking the language knob litclock-dev#532 depends on. The key set, the comment
-# status and the litclock-dev#337 A3 MODE=auto default all live in that helper now; see
-# its contract comment before changing anything about this line.
-#
-# NO language argument: a clone must not inherit the cloner's LITCLOCK_LANGUAGE
-# (empty keeps Accept-Language negotiation alive on the recipient's first boot).
-#
-# The `$'\n'` is REQUIRED, not decoration: command substitution strips trailing
-# newlines, and update.sh Phase 3 appends missing sample keys with `>>`, which
-# would otherwise splice the first one onto `# export LOG_LEVEL=WARNING`.
-DEFAULTS=$(env_sh_defaults)$'\n'
-# litclock-dev#839 — the keys the gate re-reads are DERIVED from the wipe, not
-# listed a second time: litclock-dev#821's hand-written list (five keys) was narrower
-# than the wipe (eight), so WEATHER_IP_COUNTRY, WEATHER_LAST_IP_GEO_AT and
-# LITCLOCK_LANGUAGE would have survived the "returned 0, bad file" path
-# unflagged. Every key DEFAULTS writes EMPTY — live or commented out — is
-# owner data (API key, coordinates, place name, IP country, geo stamp,
-# language, gift message); a key the wipe gives a VALUE is a preference.
-# One name per line.
-_ENV_OWNER_KEYS=$(printf '%s\n' "$DEFAULTS" \
-    | sed -nE 's/^#?[[:space:]]*export[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)=[[:space:]]*$/\1/p')
-
 # Step 1: Stop the setup-state writers. The markers they can re-create are
 # removed in Step 2b, once the env.sh wipe has succeeded (litclock-dev#855
 # review: removing them before an abortable step left a device that booted
@@ -417,6 +387,44 @@ systemctl stop litclock-update.service 2>/dev/null || true
 systemctl stop litclock-handoff-fallback.timer 2>/dev/null || true
 systemctl stop litclock-handoff-fallback.service 2>/dev/null || true
 echo -e "${GREEN}done${NC}"
+
+# The env.sh Step 2 writes. Built HERE, right AFTER Step 1 stopped the writers
+# (PR litclock-dev#929 review: built before it, a Stage B flip landing in between was
+# overwritten with the stale `false`), and not at Step 2, because the gate
+# ~350 lines below derives its key list from it and this script has no `set -u`.
+#
+# litclock-dev#840 — the body comes from env_sh_defaults() in lib/state.sh,
+# the single source shared with first-boot.sh and reset-setup.sh. This copy
+# was hand-maintained and was the SHORTEST of the four (litclock-dev#783): it missed
+# WEATHER_LOCATION_NAME and LITCLOCK_LANGUAGE, so every SD card cut from this
+# flow — the highest-fanout distribution path there is — produced devices
+# lacking the language knob litclock-dev#532 depends on. The key set, the comment
+# status and the litclock-dev#337 A3 MODE=auto default all live in that helper now; see
+# its contract comment before changing anything about this line.
+#
+# NO language argument: a clone must not inherit the cloner's LITCLOCK_LANGUAGE
+# (empty keeps Accept-Language negotiation alive on the recipient's first boot).
+#
+# The second argument DOES carry over: the runtime-render tier. A master already
+# on text yields clones that render text from their first paint; a master still
+# on images yields clones that Stage B migrates on their first update tick (see
+# env_sh_current_runtime_render in lib/state.sh). `|| echo false` covers an
+# older lib/state.sh without the helper: the value this line used to seed.
+#
+# The `$'\n'` is REQUIRED, not decoration: command substitution strips trailing
+# newlines, and update.sh Phase 3 appends missing sample keys with `>>`, which
+# would otherwise splice the first one onto `# export LOG_LEVEL=WARNING`.
+DEFAULTS=$(env_sh_defaults "" "$(env_sh_current_runtime_render "$INSTALL_DIR/env.sh" 2>/dev/null || echo false)")$'\n'
+# litclock-dev#839 — the keys the gate re-reads are DERIVED from the wipe, not
+# listed a second time: litclock-dev#821's hand-written list (five keys) was narrower
+# than the wipe (eight), so WEATHER_IP_COUNTRY, WEATHER_LAST_IP_GEO_AT and
+# LITCLOCK_LANGUAGE would have survived the "returned 0, bad file" path
+# unflagged. Every key DEFAULTS writes EMPTY — live or commented out — is
+# owner data (API key, coordinates, place name, IP country, geo stamp,
+# language, gift message); a key the wipe gives a VALUE is a preference.
+# One name per line.
+_ENV_OWNER_KEYS=$(printf '%s\n' "$DEFAULTS" \
+    | sed -nE 's/^#?[[:space:]]*export[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)=[[:space:]]*$/\1/p')
 
 # Step 2: Clear env.sh credentials.
 #
@@ -849,21 +857,15 @@ unset _ENV_LEAKS
 # Refuse rather than delete: a staging file here means a writer died mid-write,
 # so the card's state is not what the operator thinks, and silently removing the
 # evidence is the wrong answer on a path whose whole job is to certify the card.
-shopt -s nullglob
-_ENV_STAGING=("$INSTALL_DIR"/env.sh.??????)
-shopt -u nullglob
-# env.sh.sample is six characters too; it is tracked and is not a staging file.
-_ENV_STAGING_REAL=()
-for _s in "${_ENV_STAGING[@]}"; do
-    [[ "$(basename "$_s")" == "env.sh.sample" ]] && continue
-    _ENV_STAGING_REAL+=("$_s")
-done
-if [[ ${#_ENV_STAGING_REAL[@]} -gt 0 ]]; then
+# The shapes (all three writers', incl. src/config.py's `.env.sh.tmp.*`,
+# litclock-dev#893) live in env_staging_files in lib/state.sh.
+env_staging_files "$INSTALL_DIR" _ENV_STAGING
+if [[ ${#_ENV_STAGING[@]} -gt 0 ]]; then
     _abort_env_credentials \
-        "abandoned atomic-write staging file(s) beside it: ${_ENV_STAGING_REAL[*]}" \
+        "abandoned atomic-write staging file(s) beside it: ${_ENV_STAGING[*]}" \
         "each is a full copy of the previous owner's env.sh; remove them and re-run."
 fi
-unset _ENV_STAGING _ENV_STAGING_REAL _s
+unset _ENV_STAGING
 echo -e "${GREEN}done${NC}"
 
 echo ""

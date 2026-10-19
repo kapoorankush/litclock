@@ -2947,8 +2947,8 @@ class TestPrepareForGiftLanguage:
             assert not lang_path.exists()
             mock_run.assert_not_called()
 
-    def test_dormant_fleet_accepts_only_en(self, client, tmp_path):
-        """Real en-only registry: es is rejected, en stages fine."""
+    def test_dormant_fleet_accepts_only_en(self, client, tmp_path, english_only_registry):
+        """An en-only registry: es is rejected, en stages fine."""
         response, lang_path, mock_run = self._post(client, tmp_path, {"language": "es"})
         assert response.status_code == 400
         response, lang_path, mock_run = self._post(client, tmp_path, {"language": "en"})
@@ -2976,8 +2976,11 @@ class TestPrepareForGiftLanguage:
 
     # ── template rendering ──
 
-    def test_gift_language_pill_dormant_on_single_language_fleet(self, client):
-        html = client.get("/system").get_data(as_text=True)
+    def test_gift_language_pill_dormant_on_single_language_fleet(self, client, english_only_registry):
+        resp = client.get("/system")
+        html = resp.get_data(as_text=True)
+        # Absence alone would pass on an error page (litclock-dev#927 review).
+        assert resp.status_code == 200 and "action-card__form--destructive" in html
         assert "data-gift-language-pill" not in html
         assert 'name="language"' not in html
 
@@ -2986,7 +2989,9 @@ class TestPrepareForGiftLanguage:
         assert "data-gift-language-pill" in html
         assert 'data-gift-language-opt="en"' in html
         assert 'data-gift-language-opt="es"' in html
-        assert "Español" in html
+        # Radio rows with each name in its own language (D15/D17).
+        assert 'data-gift-language-opt="es" lang="es">' in html
+        assert "settings-segmented--rows" in html.split("data-gift-language-pill", 1)[0][-200:]
         # The pill lives INSIDE the destructive form so the checked radio
         # rides the no-JS POST natively.
         destructive = html.split("action-card__form--destructive", 1)[1].split("</form>", 1)[0]

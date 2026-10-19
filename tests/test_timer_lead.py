@@ -73,8 +73,14 @@ class TestTheTwoHalvesAgree:
             "datetime.now() still reports the OLD minute and the clock renders the previous "
             "minute's quote PERMANENTLY (litclock-dev#762 Trap 1)"
         )
+        # litclock-dev#532 R10 lifted the expression into _render_target() so
+        # the self-test's sample search starts from the same instant; main()
+        # must still take its `now` from it unless handed an explicit target.
+        assert "now = at if at is not None else _render_target()" in body, (
+            "main() no longer takes its target from _render_target()"
+        )
         assert re.search(
-            r"now = \(datetime\.now\(\)\.astimezone\(\) \+ timedelta\(seconds=RENDER_LEAD_S\)\)"
+            r"return \(datetime\.now\(\)\.astimezone\(\) \+ timedelta\(seconds=RENDER_LEAD_S\)\)"
             r"\.astimezone\(\)\.replace\(tzinfo=None\)",
             body,
         ), (
@@ -235,9 +241,9 @@ class TestTheOffsetSurvivesIntoWhatIsActuallyPublished:
             }
 
         monkeypatch.setattr(lc, "get_current_quote", _recording_pick)
-        monkeypatch.setattr(lc, "get_current_quote_runtime", lambda **kw: None)
+        monkeypatch.setattr(lc, "get_current_quote_runtime", lambda **kw: (None, "failure"))
 
-        _image, meta, now = lc.main()
+        _image, meta, now, _reason = lc.main()
 
         assert seen, "the quote pick was never called — this test proves nothing"
         assert seen[0].strftime("%H:%M") == expected, (
@@ -260,7 +266,7 @@ class TestTheOffsetSurvivesIntoWhatIsActuallyPublished:
 
         wall = datetime(2026, 8, 30, 12, 34, 56)
         lc = self._frozen(monkeypatch, tmp_path, wall)
-        _image, quote_meta, now = lc.main()
+        _image, quote_meta, now, _reason = lc.main()
         lc._write_status_file(quote_meta, now)
 
         published = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
@@ -273,7 +279,7 @@ class TestTheOffsetSurvivesIntoWhatIsActuallyPublished:
         """Trap 3, executed: at 23:59:56 the render is for tomorrow."""
         wall = datetime(2026, 8, 30, 23, 59, 56)
         lc = self._frozen(monkeypatch, tmp_path, wall)
-        _image, _meta, now = lc.main()
+        _image, _meta, now, _reason = lc.main()
         assert (now.year, now.month, now.day) == (2026, 8, 31), (
             f"main() rendered for {now:%Y-%m-%d}; the masthead date must be tomorrow's when "
             "the target crosses midnight"
@@ -287,12 +293,12 @@ def test_the_status_write_call_site_passes_the_target():
     panel — so this is a source assertion, on comment-stripped lines, paired
     with the executed test of the function itself above."""
     body = _executed(PAINTER)
-    assert "_write_status_file(quote_meta, now)" in body, (
+    assert "_write_status_file(quote_meta, now, fallback_reason)" in body, (
         "the status write no longer passes the threaded target. A live clock read there "
         "publishes the minute that has just ENDED while the panel shows the next one, so "
         "the PWA contradicts the device in the user's hand"
     )
-    assert "_write_status_file(quote_meta, datetime.now())" not in body
+    assert "_write_status_file(quote_meta, datetime.now()" not in body
 
 
 class TestTheNightlyClearIsDecidedByExecutingTheGate:
@@ -365,6 +371,7 @@ class TestTheNightlyClearIsDecidedByExecutingTheGate:
             # litclock-dev#871 Stage A: __main__ reads this before the dry-run
             # branch, so every parser stub must carry it.
             require_runtime_render = False
+            sample_quote = False  # litclock-dev#532 R10, read before the dry-run branch too
 
         class _Parser:
             def __init__(self, *a, **k):
@@ -414,12 +421,18 @@ class TestTheNightlyClearIsDecidedByExecutingTheGate:
             "signal_handler": lambda *a: None,
             # The threaded target is what main() hands the block — the whole
             # point of the change.
-            "main": lambda: (types.SimpleNamespace(size=(800, 480)), {"time": target.strftime("%H:%M")}, target),
+            # The fourth element is main()'s fallback_reason (litclock-dev#532
+            # D8). A distinctive value so the status write can be checked for
+            # passing it through (the writer turns a missing one into
+            # "failure", which a None here could not tell apart).
+            "main": lambda: (types.SimpleNamespace(size=(800, 480)), {"time": target.strftime("%H:%M")}, target, "gap"),
             # Record the ARGUMENT, not just the call. A stub that discards it
             # lets a rebind between the clear gate and the status write survive:
             # /api/status would publish the minute that has just ENDED while the
             # panel shows the next one. Measured — it passed 4127 tests.
-            "_write_status_file": lambda meta, when=None, *a, **k: calls.append(f"status:{when}"),
+            "_write_status_file": lambda meta, when=None, reason="<absent>", *a, **k: calls.extend(
+                [f"status:{when}", f"reason:{reason}"]
+            ),
             "_write_heartbeat": lambda *a, **k: None,
             "datetime": datetime,
             "_epd": None,
@@ -484,6 +497,13 @@ class TestTheNightlyClearIsDecidedByExecutingTheGate:
         waveform the owner sees as a flash."""
         calls = self._run_main_block(monkeypatch, target)
         assert "Clear" not in calls, f"the clear fired for target {target:%H:%M}. Calls: {calls}"
+
+    def test_the_status_write_publishes_the_reason_main_returned(self, monkeypatch):
+        """litclock-dev#532 D8/R14, executed rather than grepped: a rebind or a
+        dropped argument between main() and the write would publish every gap
+        as a failure (the writer's default), and the PWA would warn falsely."""
+        calls = self._run_main_block(monkeypatch, datetime(2026, 8, 30, 0, 30, 0))
+        assert "reason:gap" in calls, f"the status write did not receive main()'s reason: {calls}"
 
     def test_it_honours_a_configured_clear_hour(self, monkeypatch):
         """The nightly clear fires at the PARSED hour — through the lifted
@@ -797,10 +817,10 @@ def test_the_target_survives_a_dst_spring_forward(monkeypatch, tmp_path):
         monkeypatch.setattr(literary_clock, "datetime", FrozenDT)
         monkeypatch.setenv("WEATHER_ENABLED", "false")
         monkeypatch.setattr(literary_clock, "STATUS_FILE", str(tmp_path / "s.json"))
-        monkeypatch.setattr(literary_clock, "get_current_quote_runtime", lambda **kw: None)
+        monkeypatch.setattr(literary_clock, "get_current_quote_runtime", lambda **kw: (None, "failure"))
         monkeypatch.setattr(literary_clock, "get_current_quote", lambda **kw: None)
 
-        _image, _meta, now = literary_clock.main()
+        _image, _meta, now, _reason = literary_clock.main()
         assert now.strftime("%H:%M") == "03:00", (
             f"at 01:59:56 CST the target is {now:%H:%M}; four seconds later the local wall "
             "clock reads 03:00 CDT. 02:00 is a minute that does not exist that day — naive "

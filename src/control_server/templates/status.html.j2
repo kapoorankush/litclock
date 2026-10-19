@@ -57,6 +57,20 @@
   </span>
 </div>
 
+{# litclock-dev#532 D8/R14 — the clock has painted the plain time instead of a
+   book quote because quotes FAILED (not because the minute has none) for
+   several minutes running. Same banner shape as the two above; the text is
+   static, so status.js only toggles [hidden]. #}
+<div class="stale-banner" role="status" aria-live="polite"
+     data-status-quote-failure-banner {% if not s.quote_failure %}hidden{% endif %}>
+  <svg class="stale-banner-icon" aria-hidden="true" viewBox="0 0 256 256" width="16" height="16" fill="currentColor">
+    <path d="M128,24A104,104,0,1,0,232,128,104.12,104.12,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm16-40a8,8,0,0,1-8,8,16,16,0,0,1-16-16V128a8,8,0,0,1,0-16,16,16,0,0,1,16,16v40A8,8,0,0,1,144,176ZM112,84a12,12,0,1,1,12,12A12,12,0,0,1,112,84Z"/>
+  </svg>
+  <span class="stale-banner-text">
+    {{ t('status.quote_failure') }}
+  </span>
+</div>
+
 {# Hero card per DESIGN.md "Hero card" composition. The paper-grain.svg
    tile is applied via CSS (light mode only) to keep the markup minimal
    and the texture cosmetic. The quote element is `<blockquote>` so
@@ -86,8 +100,16 @@
             data-status-attr-time-wrap {% if not s.time %}hidden{% endif %}> <span class="hero-time">·&nbsp;<span data-status-attr-time>{{ s.time or "" }}</span></span></span>
     </p>
   </div>
-  <p class="hero-empty" data-status-hero-empty {% if s.quote %}hidden{% endif %}>
+  <p class="hero-empty" data-status-hero-empty {% if s.quote or s.fallback_reason %}hidden{% endif %}>
     <em>{{ t('status.empty.lead') }}</em>&nbsp; {{ t('status.empty.body') }}
+  </p>
+  {# litclock-dev#532 D8: the panel is showing the plain time — say what it
+     says, not "Starting up…", which only fits a clock that has published
+     nothing yet (review finding: the two read as a contradiction under the
+     quote-failure banner, and on every gap minute of a partly covered
+     language). #}
+  <p class="hero-empty" data-status-hero-fallback {% if s.quote or not s.fallback_reason %}hidden{% endif %}>
+    <em data-status-hero-fallback-text>{% if s.fallback_reason %}{{ t('clock.fallback.' ~ s.fallback_reason) }}{% endif %}</em>
   </p>
   {# litclock-dev#309 — graceful disconnect state. Hidden on SSR; status.js reveals
      this when /api/status polling fails (network error, timeout, non-OK)
@@ -186,6 +208,8 @@
 <script type="application/json" data-litclock-strings>{{ catalog_subset([
   'status.stale.with_age',
   'status.stale.no_quote',
+  'clock.fallback.gap',
+  'clock.fallback.failure',
 ]) | tojson }}</script>
 <script src="{{ url_for('static', filename='js/status.js') }}" defer></script>
 {% endblock %}

@@ -90,6 +90,16 @@ SETUP_QR_SIZE = 220
 SETUP_VALUE_FONT_SIZE = 24
 SETUP_VALUE_X = SETUP_QR_X + SETUP_QR_SIZE + 30
 SETUP_VALUE_BUDGET = DISPLAY_SIZE[0] - SETUP_VALUE_X
+# A centred line's room on the setup splash: the panel less a 12px margin
+# each side (the title's own top inset). litclock-dev#532 T6 backstop.
+SETUP_LINE_BUDGET = DISPLAY_SIZE[0] - 24
+# Floors for the copy-line fit ladder (_fit_line, litclock-dev#532 RT4): the
+# smallest each line may shrink to before it is cut — still legible across a
+# room, and still a heading above the 18pt steps.
+SETUP_TITLE_FONT_FLOOR = 24
+SETUP_TITLE_Y = 12
+SETUP_LABEL_FONT_FLOOR = 16
+SETUP_SMALL_FONT_FLOOR = 14
 
 # ISO 18004 wants 4 modules of blank around the symbol. generate_qr_image
 # bakes 2 of them in via border=2, so the panel has to supply the other 2.
@@ -104,6 +114,8 @@ SETUP_VALUE_BUDGET = DISPLAY_SIZE[0] - SETUP_VALUE_X
 # structural for this reason, and a point-in-time number reintroduces the
 # bug it fixed.
 SETUP_QR_QUIET_ZONE_PX = 16
+# The setup title's ink must end above the QR's top quiet zone (RT4).
+SETUP_TITLE_INK_BOTTOM = SETUP_QR_Y - SETUP_QR_QUIET_ZONE_PX
 
 # The framing line sits in the band under the QR, clear of its quiet zone.
 # Derived, not measured, so moving or resizing the QR moves it too.
@@ -229,6 +241,35 @@ def create_qr_display_image(url: str, title: str = None, caption: str = None, qr
     return image
 
 
+# litclock-dev#532 RT4: a structured record of every place a renderer gives
+# up part of a text — cut it ("truncated"), folded a line break ("collapsed"),
+# or used a smaller size than the layout's own ("shrunk"). Off unless a caller
+# is recording; tests/test_screen_fit.py records every surface in every
+# language and fails on any lost text, without parsing log lines.
+_FIT_EVENTS: list | None = None
+
+
+class recording_fits:
+    """``with recording_fits() as events:`` — collect (surface, field, kind,
+    text) tuples for everything rendered inside the block."""
+
+    def __enter__(self):
+        global _FIT_EVENTS
+        self._previous = _FIT_EVENTS
+        _FIT_EVENTS = []
+        return _FIT_EVENTS
+
+    def __exit__(self, *_exc):
+        global _FIT_EVENTS
+        _FIT_EVENTS = self._previous
+        return False
+
+
+def _fit_event(surface: str, field: str, kind: str, text: str) -> None:
+    if _FIT_EVENTS is not None:
+        _FIT_EVENTS.append((surface, field, kind, text))
+
+
 # Gift-mode title layout (litclock-dev#319). Two lines max so a personalized welcome
 # can read naturally across the 800×480 canvas without falling off either
 # edge; a 1-line single-word title still centers fine because the wrapper
@@ -255,7 +296,15 @@ ELLIPSIS = "…"
 TITLE_FIT_TIERS = ((48, 2), (44, 3), (38, 3), (32, 4), (28, 4))
 
 
-def _wrap_title(text: str, font: ImageFont.FreeTypeFont, max_width: int, max_lines: int) -> list[str]:
+def _wrap_title(
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+    max_lines: int,
+    *,
+    surface: str = "title",
+    field: str = "wrapped text",
+) -> list[str]:
     """Word-wrap ``text`` into at most ``max_lines`` lines whose pixel width
     fits within ``max_width`` when rendered with ``font``. Explicit ``\n``
     breaks are honored as hard line boundaries. If a single word is wider
@@ -312,6 +361,7 @@ def _wrap_title(text: str, font: ImageFont.FreeTypeFont, max_width: int, max_lin
         return lines
 
     kept = lines[:max_lines]
+    _fit_event(surface, field, "truncated", text)
     overflow_tail = kept[-1]
     # Append ellipsis; trim characters off the tail until it fits again.
     candidate = overflow_tail.rstrip() + ELLIPSIS
@@ -363,6 +413,8 @@ def _fit_title(text: str, font_path: str, max_width: int) -> tuple[list[str], "I
         # untruncated line count at this font size.
         natural = _wrap_title(text, font, max_width, len(text) + 1)
         if len(natural) <= max_lines:
+            if size != TITLE_FIT_TIERS[0][0]:
+                _fit_event("status splash", "title", "shrunk", text)
             return natural, font
         last = (natural, font, max_lines)
     # Overflowed every tier — truncate at the smallest (last) tier.
@@ -443,13 +495,17 @@ def create_status_image(title: str, message: str = None, submessage: str = None)
     # the steps list (litclock-dev#319 follow-up to the wrap fix).
     if message:
         message_y = title_y + title_block_height + 30
+        wrapped_here = "\n" not in message
         message, message_font = _fit_block_to_panel(
             message, message_font, draw, "status message", STATUS_MESSAGE_FONT_FLOOR
         )
         bbox = draw.textbbox((0, 0), message, font=message_font)
         msg_width = bbox[2] - bbox[0]
         msg_x = (DISPLAY_SIZE[0] - msg_width) // 2
-        draw.text((msg_x, message_y), message, font=message_font, fill=0)
+        # A line the fit wrapped is centred line by line; a block that
+        # arrived multi-line (the gift steps) keeps its left-aligned list.
+        align = "center" if wrapped_here and "\n" in message else "left"
+        draw.text((msg_x, message_y), message, font=message_font, fill=0, align=align)
 
     # Draw submessage if provided
     if submessage:
@@ -533,8 +589,10 @@ HOTSPOT_RETRY_CONNECT_FAILED = "connect_failed"
 # 298px against the 510px budget (the panel is 800px wide and the label
 # column starts at x=290, right of the 220px QR), so the fixed-position
 # layout cannot have moved.
-SETUP_LABEL_NETWORK = "LitClock's WiFi network:"
-SETUP_LABEL_PASSWORD = "LitClock's WiFi password:"
+#
+# The copy lives in the catalog since litclock-dev#532 T6
+# (firstboot.hotspot.label_network / .label_password), with the rest of this
+# screen's text; the reasoning above is why the English reads as it does.
 
 # The concept the whole flow rests on and that nothing on the panel supplied.
 # Neither reader knew a device can broadcast its own network — "I didn't buy
@@ -542,7 +600,34 @@ SETUP_LABEL_PASSWORD = "LitClock's WiFi password:"
 # under the QR, as the lead-in to the numbered steps. First run only: by the
 # time the retry screen appears the reader has joined this network once, so
 # the concept has landed and the headline is carrying different news.
-SETUP_FRAMING_LINE = "The clock makes its own WiFi for setup."
+# Catalog key firstboot.hotspot.framing (litclock-dev#532 T6).
+
+
+class _KeyNames:
+    """The catalog stand-in when strings_catalog cannot even be imported (a
+    stale or half-written venv): every lookup is its own key, followed by its
+    slot values. Visible and diagnosable, which is the existing status-splash
+    posture (see _resolve_status_parts) — and the values matter: the step
+    lines are the only place the setup screen prints the typed-address
+    fallback, so the key alone would drop it (T6 review)."""
+
+    def get(self, key: str, /, **slots) -> str:
+        return " ".join([key, *(str(value) for value in slots.values())])
+
+
+def _splash_catalog(lang: str | None = None):
+    """ONE catalog resolution for a whole splash (litclock-dev#532 RT1/O4):
+    every string on the frame comes from the same language — the device's,
+    or the fleet default WHOLE when its bundle is unusable (R15), never a
+    mix. ``lang`` is an explicit language (the setup page's session language,
+    RT3); None means the device's."""
+    try:
+        import strings_catalog  # noqa: PLC0415
+
+        return strings_catalog.snapshot(lang)
+    except Exception:
+        logging.exception("strings catalog unavailable; the splash shows key names")
+        return _KeyNames()
 
 
 def _sanitize_render_text(value: str | None, field: str, surface: str = "setup splash") -> str:
@@ -622,10 +707,12 @@ def _clamp_to_width(text: str, font, draw, max_w: int, field: str, surface: str 
     collapsed = _collapse_newlines(text)
     if collapsed != text:
         logging.warning("%s %s contained line breaks; collapsed to one line", surface, field)
-    fitted = _fit_ssid_to_band(collapsed, font, draw, max_w, max_lines=1)
+        _fit_event(surface, field, "collapsed", text)
+    fitted = _fit_ssid_to_band(collapsed, font, draw, max_w, max_lines=1, record=False)
     result = fitted[0] if fitted else ""
     if result != collapsed:
         logging.warning("%s %s too wide for the panel; truncated to fit", surface, field)
+        _fit_event(surface, field, "truncated", text)
     return result
 
 
@@ -656,8 +743,9 @@ def _clamp_block_to_panel(text: str, font, draw, field: str) -> str:
     32-byte SSID overflowed. Neither was true.)
 
     Headroom on the fixed copy is also thinner than it looks: the widest
-    shipped string is a poweroff farewell quote at 738.9px, 21px under the
-    limit. One added comma would ellipsise it, on the one splash that persists
+    shipped string is a poweroff farewell quote at 744.7px, 15px under the
+    limit (738.9px with straight quotes; the curly ones added 2026-10-16 cost
+    5.8px). One added comma would ellipsise it, on the one splash that persists
     on the glass while the device sits powered off on a shelf.
 
     Deliberately a clamp rather than a re-flow so shipped layouts stay
@@ -683,6 +771,8 @@ def _clamp_block_to_panel(text: str, font, draw, field: str) -> str:
 # losing the tail; translated strings run ~30% longer than the English the
 # fixed sizes were tuned for. Floors keep glance-legibility on the panel.
 STATUS_MESSAGE_FONT_FLOOR = 20
+# How many lines a single-line status block may wrap to before it is cut.
+STATUS_BLOCK_WRAP_LINES = 2
 STATUS_SUBMESSAGE_FONT_FLOOR = 15
 
 
@@ -728,13 +818,57 @@ def _fit_block_to_panel(text: str, font, draw, field: str, floor: int):
                 break
             fitted = candidate
             if _widest(candidate) <= max_w:
+                _fit_event("status splash", field, "shrunk", text)
                 return text, fitted
+        # A single line too long even at the floor (a translated farewell,
+        # litclock-dev#532 T7/RT4) wraps onto two lines at the largest size
+        # that holds them, rather than losing its tail. Multi-line blocks
+        # (the gift steps) keep their own lines. Two lines of the message
+        # font still clear the submessage band.
+        if "\n" not in text:
+            for trial in range(int(base_size), floor - 1, -1):
+                try:
+                    candidate = ImageFont.truetype(path, trial)
+                except Exception:
+                    break
+                lines = _wrap_title(text, candidate, max_w, len(text) + 1)
+                if len(lines) <= STATUS_BLOCK_WRAP_LINES:
+                    _fit_event("status splash", field, "wrapped", text)
+                    return "\n".join(lines), candidate
     # Floor reached (or no size ladder to walk) — clamp per line.
     return _clamp_block_to_panel(text, fitted, draw, field), fitted
 
 
+# The numbered steps per variant, one catalog key per line (litclock-dev#532
+# T6). A language keeps the line count; its translator chooses the wording.
+_HOTSPOT_STEP_KEYS = {
+    None: (
+        "firstboot.hotspot.first_1",
+        "firstboot.hotspot.first_2",
+        "firstboot.hotspot.first_3",
+        "firstboot.hotspot.first_4",
+    ),
+    HOTSPOT_RETRY_WIFI_PASSWORD: (
+        "firstboot.hotspot.retry_password_1",
+        "firstboot.hotspot.retry_password_2",
+        "firstboot.hotspot.retry_password_3",
+    ),
+    HOTSPOT_RETRY_CONNECT_FAILED: (
+        "firstboot.hotspot.retry_connect_1",
+        "firstboot.hotspot.retry_connect_2",
+        "firstboot.hotspot.retry_connect_3",
+        "firstboot.hotspot.retry_connect_4",
+    ),
+}
+
+
 def setup_instruction_lines(
-    ip: str, ssid: str = "LitClock-Setup", is_retry: bool = False, retry_reason: str | None = None
+    ip: str,
+    ssid: str = "LitClock-Setup",
+    is_retry: bool = False,
+    retry_reason: str | None = None,
+    *,
+    catalog=None,
 ) -> list[str]:
     """Bottom instruction block for the setup splash.
 
@@ -773,35 +907,32 @@ def setup_instruction_lines(
       should appear, not what it is called.
     - No "~". Read aloud by a non-technical reader the tilde is a stray mark,
       and on an e-ink panel a stray mark is entirely plausible.
+
+    The lines are catalog strings (litclock-dev#532 T6), read from
+    ``catalog`` — the splash's one resolution — or a fresh one. The two
+    addresses arrive whole as ``{host_url}`` / ``{ip_url}``, so a translation
+    places them but cannot break them.
+
+    litclock-dev#603: the connect-failed retry steps carry no password
+    advice. The join failed for a reason that is NOT the password — a
+    timeout, an unreachable/hidden network, or an unclassified nmcli error —
+    so password advice would send the reader retyping a password that was
+    never the problem; the likely fixes are radio-physical (band, range). The
+    setup page shows the specific cause once they're back on it.
     """
+    if catalog is None:
+        catalog = _splash_catalog()
+    variant = None
     if is_retry:
-        if retry_reason == HOTSPOT_RETRY_CONNECT_FAILED:
-            # litclock-dev#603 — the join failed for a reason that is NOT
-            # the password: a timeout, an unreachable/hidden network, or an
-            # unclassified nmcli error. Password advice here would send the
-            # reader retyping a password that was never the problem; the
-            # likely fixes are radio-physical (band, range). The setup page
-            # shows the specific cause once they're back on it.
-            return [
-                f"1. Rescan the QR code to rejoin {ssid}",
-                "2. Check your WiFi is 2.4GHz and in range of the clock",
-                "3. On the setup page, pick your network and try again",
-                f"4. No page? Open a browser: http://{SETUP_HOSTNAME} or http://{ip}",
-            ]
-        return [
-            f"1. Rescan the QR code to rejoin {ssid}",
-            "2. Select your internet WiFi network, type your WiFi password",
-            f"3. No page? Open a browser: http://{SETUP_HOSTNAME} or http://{ip}",
-        ]
-    return [
-        f"1. Scan the QR code to join {ssid}",
-        "2. Wait about 20 seconds for a setup page",
-        f"3. No page? Join {ssid} in your WiFi settings",
-        f"4. Then open a browser: http://{SETUP_HOSTNAME} or http://{ip}",
-    ]
+        connect_failed = retry_reason == HOTSPOT_RETRY_CONNECT_FAILED
+        variant = HOTSPOT_RETRY_CONNECT_FAILED if connect_failed else HOTSPOT_RETRY_WIFI_PASSWORD
+    slots = {"ssid": ssid, "host_url": f"http://{SETUP_HOSTNAME}", "ip_url": f"http://{ip}"}
+    return [catalog.get(key, **slots) for key in _HOTSPOT_STEP_KEYS[variant]]
 
 
-def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason: str = None) -> Image.Image:
+def create_hotspot_display_image(
+    ssid: str, password: str, ip: str, retry_reason: str = None, *, lang: str | None = None
+) -> Image.Image:
     """
     Create a display image for WiFi hotspot setup.
 
@@ -822,6 +953,8 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
             the failed connection attempt and may not see the banner until
             they've rescanned the QR. Both variants share the class-neutral
             title; the numbered steps differ.
+        lang: the language to paint in (litclock-dev#532: the setup page's
+            session language, RT3); None means the device's.
 
     Returns:
         PIL Image ready for display
@@ -834,6 +967,7 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
     # blank splash on THE setup screen is a worse failure than a cleaned one.
     ssid = _sanitize_render_text(ssid, "network name")
     password = _sanitize_render_text(password, "password")
+    catalog = _splash_catalog(lang)
 
     # Create white background
     image = Image.new("1", DISPLAY_SIZE, 255)
@@ -866,10 +1000,36 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
     # home-WiFi-password field. "Couldn't Join Your WiFi" makes it
     # unambiguous that the failure was about the user's own WiFi, not the
     # hotspot the phone is currently connected to.
-    title = "Couldn't Join Your WiFi" if is_retry else "WiFi Setup"
+    # The title, framing line and labels fit their space by shrinking first
+    # and cutting only at a floor (_fit_line; litclock-dev#532 RT4): a
+    # translation, unlike the English it replaces, is not measured by hand.
+    # The step lines below are clamped (each carries the SSID and addresses,
+    # whose own guards apply). English fits at the layout's own sizes, so its
+    # frame is unchanged; CI's screen-fit matrix fails any language that
+    # reaches a cut on any of them.
+    title, title_font = _fit_line(
+        catalog.get("firstboot.hotspot.title_retry" if is_retry else "firstboot.hotspot.title"),
+        title_font,
+        draw,
+        SETUP_LINE_BUDGET,
+        "title",
+        "setup splash",
+        SETUP_TITLE_FONT_FLOOR,
+    )
+    # The title must also clear the QR's quiet zone BELOW it: an accented
+    # descender (ç, ý, ţ) reaches deeper than anything in the English, and
+    # ink there is a scan-reliability bug (RT4 matrix). Shrink for height too.
+    title_path = getattr(title_font, "path", None)
+    while (
+        draw.textbbox((0, SETUP_TITLE_Y), title, font=title_font)[3] > SETUP_TITLE_INK_BOTTOM
+        and isinstance(title_path, (str, os.PathLike))
+        and getattr(title_font, "size", 0) > SETUP_TITLE_FONT_FLOOR
+    ):
+        title_font = ImageFont.truetype(title_path, title_font.size - 1)
+        _fit_event("setup splash", "title", "shrunk", title)
     bbox = draw.textbbox((0, 0), title, font=title_font)
     title_width = bbox[2] - bbox[0]
-    draw.text(((DISPLAY_SIZE[0] - title_width) // 2, 12), title, font=title_font, fill=0)
+    draw.text(((DISPLAY_SIZE[0] - title_width) // 2, SETUP_TITLE_Y), title, font=title_font, fill=0)
 
     # Framing line placement is NOT free space. Directly under the title it
     # left a 2px gap to the title's descenders and, being centred on an 800px
@@ -883,11 +1043,20 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
     # than measured once, so moving or resizing the QR moves it too. It reads
     # as the lead-in to the numbered steps it introduces.
     if not is_retry:
-        fb = draw.textbbox((0, 0), SETUP_FRAMING_LINE, font=small_font)
+        framing, framing_font = _fit_line(
+            catalog.get("firstboot.hotspot.framing"),
+            small_font,
+            draw,
+            SETUP_LINE_BUDGET,
+            "framing line",
+            "setup splash",
+            SETUP_SMALL_FONT_FLOOR,
+        )
+        fb = draw.textbbox((0, 0), framing, font=framing_font)
         draw.text(
             ((DISPLAY_SIZE[0] - (fb[2] - fb[0])) // 2, SETUP_FRAMING_Y),
-            SETUP_FRAMING_LINE,
-            font=small_font,
+            framing,
+            font=framing_font,
             fill=0,
         )
 
@@ -915,13 +1084,21 @@ def create_hotspot_display_image(ssid: str, password: str, ip: str, retry_reason
     ssid_line = _clamp_to_width(ssid, value_font, draw, value_budget, "network name")
     password_line = _clamp_to_width(password, value_font, draw, value_budget, "password")
 
-    draw.text((text_x, text_y), SETUP_LABEL_NETWORK, font=label_font, fill=0)
+    label_network = catalog.get("firstboot.hotspot.label_network")
+    label_password = catalog.get("firstboot.hotspot.label_password")
+    label_network, network_font = _fit_line(
+        label_network, label_font, draw, value_budget, "network label", "setup splash", SETUP_LABEL_FONT_FLOOR
+    )
+    label_password, password_font = _fit_line(
+        label_password, label_font, draw, value_budget, "password label", "setup splash", SETUP_LABEL_FONT_FLOOR
+    )
+    draw.text((text_x, text_y), label_network, font=network_font, fill=0)
     draw.text((text_x, text_y + 30), ssid_line, font=value_font, fill=0)
 
-    draw.text((text_x, text_y + 80), SETUP_LABEL_PASSWORD, font=label_font, fill=0)
+    draw.text((text_x, text_y + 80), label_password, font=password_font, fill=0)
     draw.text((text_x, text_y + 110), password_line, font=value_font, fill=0)
 
-    lines = setup_instruction_lines(ip, ssid=ssid, is_retry=is_retry, retry_reason=retry_reason)
+    lines = setup_instruction_lines(ip, ssid=ssid, is_retry=is_retry, retry_reason=retry_reason, catalog=catalog)
 
     # Per-line clamp (litclock-dev#626, the litclock-dev#589-review Q4 gap): the credential
     # block clamps its values, but the STEP lines interpolate the same ssid
@@ -1009,6 +1186,16 @@ HANDOFF_RIGHT_COLUMN_X = 530
 # on the sibling line.
 HANDOFF_RIGHT_TEXT_BUDGET = HANDOFF_QR_SIZE + 2 * (HANDOFF_QR_X - HANDOFF_RIGHT_COLUMN_X)
 HANDOFF_VALUE_BUDGET = HANDOFF_RIGHT_COLUMN_X - HANDOFF_COLUMN_GUTTER - HANDOFF_VALUE_COLUMN
+# The free-text lines (litclock-dev#532 T6): those level with the right
+# column (heading, settings label, call to action) stop at its gutter; the
+# tip and bottom lines sit below it and get the panel between the margins.
+HANDOFF_LEFT_LANE_BUDGET = HANDOFF_RIGHT_COLUMN_X - HANDOFF_COLUMN_GUTTER - HANDOFF_LEFT_MARGIN
+HANDOFF_FULL_LINE_BUDGET = DISPLAY_SIZE[0] - 2 * HANDOFF_LEFT_MARGIN
+# Their fit-ladder floors (_fit_line, RT4): the heading stays a heading, the
+# 22pt lines stay above the 18pt tips, the tips stay legible.
+HANDOFF_HEADING_FONT_FLOOR = 28
+HANDOFF_LINE_FONT_FLOOR = 16
+HANDOFF_SMALL_FONT_FLOOR = 14
 # The LABEL column is tighter still (182px), and moving the value column left
 # tightened it further — a deliberate trade made when this fix was chosen: it
 # shifts the litclock-dev#532 translation pressure from the values onto the labels, where
@@ -1021,9 +1208,9 @@ HANDOFF_LABEL_BUDGET = HANDOFF_VALUE_COLUMN - HANDOFF_COLUMN_GUTTER - HANDOFF_LE
 # truncate instead of shrinking further.
 HANDOFF_ROW_FONT_FLOOR = 15
 HANDOFF_ROW_HEIGHT = 34
-# Kept short so it reads as a value rather than a sentence; the QR clearance
-# it used to rely on is now enforced by HANDOFF_VALUE_BUDGET above.
-HANDOFF_NOT_DETECTED = "Not detected"
+# "Not detected" (firstboot.handoff.not_detected) is kept short so it reads
+# as a value rather than a sentence; the QR clearance it used to rely on is
+# now enforced by HANDOFF_VALUE_BUDGET above.
 
 # SSID caveat layout (litclock-dev#399). Painted right-column under the URL text.
 # Max lines: two is the budget — wider would push past the bottom-status
@@ -1034,15 +1221,16 @@ HANDOFF_SSID_MAX_LINES = 2
 # spacing tweak doesn't have to grep pixel arithmetic.
 HANDOFF_CAVEAT_TOP_GAP = 28  # url_y → caveat_label_y
 HANDOFF_CAVEAT_SSID_GAP = 24  # caveat_label_y → first ssid line
+# A translated caveat wraps rather than being cut (litclock-dev#532 RT4). Two
+# lines plus a two-line SSID still end above the bottom status line.
+HANDOFF_CAVEAT_MAX_LINES = 2
 # Per-line vertical spacing for the SSID value. Two values because the
 # bold label_font (22pt) is taller than the small_font (18pt); a wrapped
 # SSID at small_font packs tighter.
 HANDOFF_SSID_LINE_HEIGHT_LARGE = 24  # label_font (22pt bold)
 HANDOFF_SSID_LINE_HEIGHT_SMALL = 22  # small_font (18pt regular)
-# Caveat label copy — hoisted alongside HANDOFF_NOT_DETECTED so future
-# copy iterations have ONE intercept point (matches the splash's other
-# user-visible strings).
-HANDOFF_CAVEAT_LABEL = "Scan with your phone on:"
+# The caveat label's copy is firstboot.handoff.caveat (litclock-dev#532 T6),
+# with every other string on this splash.
 
 
 def _halve_until_close(text: str, suffix: str, font, draw, max_w: int) -> str:
@@ -1070,7 +1258,9 @@ def _halve_until_close(text: str, suffix: str, font, draw, max_w: int) -> str:
     return text
 
 
-def _fit_ssid_to_band(ssid: str, font, draw, max_w: int, max_lines: int = HANDOFF_SSID_MAX_LINES) -> list[str]:
+def _fit_ssid_to_band(
+    ssid: str, font, draw, max_w: int, max_lines: int = HANDOFF_SSID_MAX_LINES, *, record: bool = True
+) -> list[str]:
     """Wrap an SSID string into at most ``max_lines`` lines at ``font``,
     each fitting within ``max_w`` pixels. The last line is truncated with
     an ellipsis (… U+2026) when the full SSID overflows. Truncation keeps
@@ -1094,6 +1284,8 @@ def _fit_ssid_to_band(ssid: str, font, draw, max_w: int, max_lines: int = HANDOF
             return lines
         # Doesn't fit. If this is the last line, fit-with-ellipsis.
         if is_last:
+            if record:
+                _fit_event("handoff splash", "ssid", "truncated", ssid)
             ellipsis = "…"
             line = _halve_until_close(remaining, ellipsis, font, draw, max_w)
             while line and draw.textlength(line + ellipsis, font=font) > max_w:
@@ -1184,7 +1376,10 @@ def _fit_row_text(text: str, font, draw, budget: int, field: str):
     # BEFORE the first measurement: this ladder measures ahead of
     # _clamp_to_width, which is where the collapse used to happen, so without it
     # a single "\n" in a row value takes down the whole splash render.
-    text = _collapse_newlines(text)
+    collapsed = _collapse_newlines(text)
+    if collapsed != text:
+        _fit_event("handoff splash", field, "collapsed", text)
+    text = collapsed
     if draw.textlength(text, font=font) <= budget:
         return text, font
 
@@ -1202,11 +1397,45 @@ def _fit_row_text(text: str, font, draw, budget: int, field: str):
                 logging.error("row shrink ladder could not load %s at %dpt (%s)", path, trial, e)
                 break
             if draw.textlength(text, font=candidate) <= budget:
+                _fit_event("handoff splash", field, "shrunk", text)
                 return text, candidate
             fitted = candidate
 
     # Still too wide at the floor — truncate at whatever size we reached.
     return _clamp_to_width(text, fitted, draw, budget, field, surface="handoff splash"), fitted
+
+
+def _fit_line(text: str, font, draw, budget: int, field: str, surface: str, floor: int):
+    """One line of COPY into ``budget`` px: the layout's own size when it fits
+    (the same font object back, so the frame is byte-identical), else one
+    point smaller at a time down to ``floor``, and only then cut with an
+    ellipsis. litclock-dev#532 RT4: a translation is not measured by hand
+    the way the English was, so every copy line on the setup splashes walks
+    this ladder; CI (tests/test_screen_fit.py) fails any language that needs
+    the cut. Returns ``(text, font)``."""
+    if not text:
+        return "", font
+    collapsed = _collapse_newlines(text)
+    if collapsed != text:
+        logging.warning("%s %s contained line breaks; collapsed to one line", surface, field)
+        _fit_event(surface, field, "collapsed", text)
+    if draw.textlength(collapsed, font=font) <= budget:
+        return collapsed, font
+    path = getattr(font, "path", None)
+    base_size = getattr(font, "size", None)
+    fitted = font
+    if isinstance(path, (str, os.PathLike)) and base_size:
+        for trial in range(int(base_size) - 1, floor - 1, -1):
+            try:
+                candidate = ImageFont.truetype(path, trial)
+            except Exception as e:
+                logging.error("%s %s could not load %s at %dpt (%s)", surface, field, path, trial, e)
+                break
+            fitted = candidate
+            if draw.textlength(collapsed, font=candidate) <= budget:
+                _fit_event(surface, field, "shrunk", text)
+                return collapsed, candidate
+    return _clamp_to_width(collapsed, fitted, draw, budget, field, surface=surface), fitted
 
 
 def _draw_dotted_row(draw, y, label, value, font):
@@ -1249,7 +1478,7 @@ def _draw_dotted_row(draw, y, label, value, font):
     draw.text((HANDOFF_VALUE_COLUMN, baseline), value, font=value_font, fill=0, anchor="ls")
 
 
-def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
+def create_handoff_splash_image(settings: dict, qr_url: str, *, lang: str | None = None) -> Image.Image:
     """Render the post-WiFi handoff splash (EPIC litclock-dev#383 PR2, litclock-dev#388).
 
     Painted by control_server on the first launch since setup, in the gap
@@ -1258,7 +1487,8 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
 
     ``settings`` is ``handoff.handoff_context`` output; the relevant keys are
     ``has_location`` (success vs failure variant), ``location_name``,
-    ``timezone``, ``units_label``, ``mature_enabled``. ``connected_ssid``
+    ``timezone``, ``units`` (``"metric"`` or anything else for imperial),
+    ``mature_enabled``. ``connected_ssid``
     (litclock-dev#399) is optional — when present, the splash paints a "phone must
     be on this WiFi" caveat under the QR so a phone on cellular / a
     different network doesn't silently fail the scan (the QR encodes a
@@ -1270,8 +1500,15 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
     Failure (no location, tz unknown): "Almost ready." + "Not detected" rows +
     a "scan the QR to set your timezone" call to action, because a clock that
     paints quotes at the wrong time is worse than no clock (design-review A2).
+
+    Every string comes from ONE catalog resolution (litclock-dev#532 T6, RT1)
+    in ``lang`` or the device's language; the "LITCLOCK" wordmark is a brand
+    and stays as is. The units VALUE is resolved here from ``units`` too — it
+    used to arrive pre-labelled in English from control_server.
     """
     has_location = bool(settings.get("has_location"))
+    catalog = _splash_catalog(lang)
+    not_detected = catalog.get("firstboot.handoff.not_detected")
 
     image = Image.new("1", DISPLAY_SIZE, 255)
     draw = ImageDraw.Draw(image)
@@ -1334,22 +1571,40 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
     if connected_ssid:
         caveat_y = url_y + HANDOFF_CAVEAT_TOP_GAP
         # Center the label under the QR (matches URL-text alignment).
-        caveat_label = _clamp_to_width(
-            HANDOFF_CAVEAT_LABEL, small_font, draw, HANDOFF_RIGHT_TEXT_BUDGET, "caveat label", surface="handoff splash"
-        )
-        label_w = draw.textlength(caveat_label, font=small_font)
-        draw.text(
-            (qr_x + (qr_size - label_w) // 2, caveat_y),
-            caveat_label,
-            font=small_font,
-            fill=0,
-        )
+        # One line when it fits (the English); a longer translation — or one
+        # that breaks its own line — wraps to two rather than being cut or
+        # folded (litclock-dev#532 RT4), and the SSID moves down under it,
+        # still clear of the tips and the bottom line.
+        caveat = catalog.get("firstboot.handoff.caveat")
+        if "\n" not in caveat and draw.textlength(caveat, font=small_font) <= HANDOFF_RIGHT_TEXT_BUDGET:
+            caveat_lines = [caveat]
+        else:
+            caveat_lines = _wrap_title(
+                caveat,
+                small_font,
+                HANDOFF_RIGHT_TEXT_BUDGET,
+                HANDOFF_CAVEAT_MAX_LINES,
+                surface="handoff splash",
+                field="caveat label",
+            )
+            _fit_event("handoff splash", "caveat label", "wrapped", caveat)
+        # The font's own line height, not the SSID's tighter 22px pitch: an
+        # accented capital under a descender would otherwise meet it (RT4 review).
+        caveat_pitch = sum(small_font.getmetrics())
+        for i, line in enumerate(caveat_lines):
+            label_w = draw.textlength(line, font=small_font)
+            draw.text(
+                (qr_x + (qr_size - label_w) // 2, caveat_y + i * caveat_pitch),
+                line,
+                font=small_font,
+                fill=0,
+            )
         # The SSID value uses the bold label_font when it fits on one line
         # (~12 chars at 22pt — typical home WiFi), so it pops as the
         # actionable value. For longer SSIDs we fall back to small_font
         # (18pt) and wrap onto up to HANDOFF_SSID_MAX_LINES lines via
         # `_fit_ssid_to_band` (testable in isolation).
-        ssid_y = caveat_y + HANDOFF_CAVEAT_SSID_GAP
+        ssid_y = caveat_y + HANDOFF_CAVEAT_SSID_GAP + (len(caveat_lines) - 1) * caveat_pitch
         max_w = qr_size  # match the QR's width as the natural visual bound
 
         if draw.textlength(connected_ssid, font=label_font) <= max_w:
@@ -1373,11 +1628,24 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
             )
 
     # Heading.
-    heading = "Ready to read." if has_location else "Almost ready."
-    draw.text((HANDOFF_LEFT_MARGIN, 92), heading, font=heading_font, fill=0)
+    # Every catalog line fits its lane (T6 review, RT4): those level with the
+    # QR column stop at its gutter, so no translation can draw into the QR —
+    # the only way to the PWA from this screen — and the rest at the panel
+    # margins. A line shrinks before it is cut (_fit_line), and the fit also
+    # collapses a translated line break, which textlength would raise on.
+    # CI's screen-fit matrix fails any language that reaches the cut.
+    def lane(key: str, font, field: str, floor: int, budget: int = HANDOFF_LEFT_LANE_BUDGET):
+        return _fit_line(catalog.get(key), font, draw, budget, field, "handoff splash", floor)
+
+    heading_key = "firstboot.handoff.heading_ready" if has_location else "firstboot.handoff.heading_almost"
+    heading, heading_fit = lane(heading_key, heading_font, "heading", HANDOFF_HEADING_FONT_FLOOR)
+    draw.text((HANDOFF_LEFT_MARGIN, 92), heading, font=heading_fit, fill=0)
 
     # Settings summary block.
-    draw.text((HANDOFF_LEFT_MARGIN, 158), "Your settings — auto-detected:", font=label_font, fill=0)
+    settings_label, settings_fit = lane(
+        "firstboot.handoff.settings_label", label_font, "settings label", HANDOFF_LINE_FONT_FLOOR
+    )
+    draw.text((HANDOFF_LEFT_MARGIN, 158), settings_label, font=settings_fit, fill=0)
     # Same defence the connected_ssid field above already gets, for the same
     # reason: these are not trusted strings. location_name and timezone come
     # from the ip-api.com response, which is fetched over plain HTTP
@@ -1386,23 +1654,36 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
     # does not go through it. Unfiltered, a bidi override or zero-width run
     # could reorder or hide part of the very rows the splash exists to let the
     # user verify before trusting the clock.
-    location_value = _sanitize_row_value(settings.get("location_name")) or HANDOFF_NOT_DETECTED
-    timezone_value = _sanitize_row_value(settings.get("timezone")) or HANDOFF_NOT_DETECTED
+    location_value = _sanitize_row_value(settings.get("location_name")) or not_detected
+    timezone_value = _sanitize_row_value(settings.get("timezone")) or not_detected
     if not has_location:
-        location_value = timezone_value = HANDOFF_NOT_DETECTED
+        location_value = timezone_value = not_detected
     rows = [
-        ("Location", location_value),
-        ("Timezone", timezone_value),
-        # Sanitized like the rows above, and for the same reason: this arrives
-        # from the same --settings-json payload. Unfiltered it accepted a bidi
-        # override, and a NON-STRING value (json.loads happily yields an int or
-        # a dict) raised TypeError out of _collapse_newlines and took the whole
-        # splash down. `or` restores the default for empty/invalid input.
-        ("Units", _sanitize_row_value(settings.get("units_label")) or "Imperial (°F)"),
+        (catalog.get("firstboot.handoff.row_location"), location_value),
+        (catalog.get("firstboot.handoff.row_timezone"), timezone_value),
+        # A label chosen from the catalog by an exact match, so nothing from
+        # the --settings-json payload reaches the panel here: anything but
+        # "metric" (absent, a non-string, a typo) is imperial, the default
+        # the row always had.
+        (
+            catalog.get("firstboot.handoff.row_units"),
+            catalog.get(
+                "firstboot.handoff.units_metric"
+                if settings.get("units") == "metric"
+                else "firstboot.handoff.units_imperial"
+            ),
+        ),
         # Not bare truthiness: the string "false" is truthy, which would invert
         # the mature-content indicator. handoff_context() always passes a real
         # bool, but --settings-json does not have to.
-        ("Mature quotes", "On" if _as_bool(settings.get("mature_enabled")) else "Off"),
+        (
+            catalog.get("firstboot.handoff.row_mature"),
+            catalog.get(
+                "firstboot.handoff.value_on"
+                if _as_bool(settings.get("mature_enabled"))
+                else "firstboot.handoff.value_off"
+            ),
+        ),
     ]
     row_y = 200
     for label, value in rows:
@@ -1410,31 +1691,38 @@ def create_handoff_splash_image(settings: dict, qr_url: str) -> Image.Image:
         row_y += HANDOFF_ROW_HEIGHT
 
     # Call to action + educational note, lower-left.
-    cta = "To change anything, scan the QR." if has_location else "Scan the QR to set your timezone."
-    draw.text((HANDOFF_LEFT_MARGIN, row_y + 14), cta, font=row_font, fill=0)
+    cta_key = "firstboot.handoff.cta_ready" if has_location else "firstboot.handoff.cta_almost"
+    cta, cta_fit = lane(cta_key, row_font, "cta", HANDOFF_LINE_FONT_FLOOR)
+    draw.text((HANDOFF_LEFT_MARGIN, row_y + 14), cta, font=cta_fit, fill=0)
     tip_lines = [
-        "Tip: this QR lives in the corner of every",
-        "quote — scan it any time to return to settings.",
+        lane("firstboot.handoff.tip_1", small_font, "tip", HANDOFF_SMALL_FONT_FLOOR, HANDOFF_FULL_LINE_BUDGET),
+        lane("firstboot.handoff.tip_2", small_font, "tip", HANDOFF_SMALL_FONT_FLOOR, HANDOFF_FULL_LINE_BUDGET),
     ]
     tip_y = row_y + 52
-    for line in tip_lines:
-        draw.text((HANDOFF_LEFT_MARGIN, tip_y), line, font=small_font, fill=0)
+    for line, line_font in tip_lines:
+        draw.text((HANDOFF_LEFT_MARGIN, tip_y), line, font=line_font, fill=0)
         tip_y += 24
 
     # Bottom status line, centered.
-    bottom = "Quotes start shortly." if has_location else "Quotes start once your timezone is set."
-    bottom_w = draw.textlength(bottom, font=row_font)
-    draw.text(((DISPLAY_SIZE[0] - bottom_w) // 2, DISPLAY_SIZE[1] - 44), bottom, font=row_font, fill=0)
+    bottom, bottom_fit = lane(
+        "firstboot.handoff.bottom_ready" if has_location else "firstboot.handoff.bottom_almost",
+        row_font,
+        "bottom line",
+        HANDOFF_LINE_FONT_FLOOR,
+        HANDOFF_FULL_LINE_BUDGET,
+    )
+    bottom_w = draw.textlength(bottom, font=bottom_fit)
+    draw.text(((DISPLAY_SIZE[0] - bottom_w) // 2, DISPLAY_SIZE[1] - 44), bottom, font=bottom_fit, fill=0)
 
     return image
 
 
-def display_handoff_splash(settings: dict, qr_url: str):
+def display_handoff_splash(settings: dict, qr_url: str, *, lang: str | None = None):
     """Render + push the handoff splash to the e-paper display."""
-    return display_image(create_handoff_splash_image(settings, qr_url))
+    return display_image(create_handoff_splash_image(settings, qr_url, lang=lang))
 
 
-def display_hotspot_info(ssid: str, password: str, ip: str, retry_reason: str = None):
+def display_hotspot_info(ssid: str, password: str, ip: str, retry_reason: str = None, *, lang: str | None = None):
     """
     Display hotspot connection info on e-paper display.
 
@@ -1444,8 +1732,9 @@ def display_hotspot_info(ssid: str, password: str, ip: str, retry_reason: str = 
         ip: Hotspot gateway IP
         retry_reason: If set, renders the retry-specific variant. See
             create_hotspot_display_image() for supported values.
+        lang: the language to paint in; None means the device's.
     """
-    image = create_hotspot_display_image(ssid, password, ip, retry_reason=retry_reason)
+    image = create_hotspot_display_image(ssid, password, ip, retry_reason=retry_reason, lang=lang)
     return display_image(image)
 
 
@@ -1515,6 +1804,14 @@ def _parse_slots(pairs):
     return slots
 
 
+def _farewell_arg(value: str) -> tuple[str, str]:
+    """``SET:PART`` for --farewell, both from a fixed vocabulary."""
+    farewell_set, _, part = value.partition(":")
+    if farewell_set not in ("welcome", "reboot", "poweroff") or part not in ("message", "submessage"):
+        raise argparse.ArgumentTypeError(f"--farewell wants welcome|reboot|poweroff:message|submessage, got {value!r}")
+    return farewell_set, part
+
+
 def _resolve_status_parts(args):
     """The status subcommand's (title, message, submessage).
 
@@ -1534,9 +1831,20 @@ def _resolve_status_parts(args):
         try:
             import strings_catalog  # noqa: PLC0415
 
-            title, message, submessage = strings_catalog.get_triplet(
-                args.catalog_prefix, **_parse_slots(args.slot)
-            )
+            # One resolution for the triplet AND the farewell line (litclock-dev#532 O4).
+            snap = strings_catalog.snapshot()
+            title, message, submessage = snap.get_triplet(args.catalog_prefix, **_parse_slots(args.slot))
+            if args.farewell:
+                farewell_set, part = args.farewell
+                lines = snap.numbered(f"shutdown.farewell.{farewell_set}")
+                if lines:
+                    import random  # noqa: PLC0415
+
+                    line = random.choice(lines)
+                    if part == "message":
+                        message = line
+                    else:
+                        submessage = line
         except Exception as exc:  # noqa: BLE001 — doom-path paint must survive ANY catalog failure
             # Not just ImportError (Codex slice-2 /review): a half-deployed
             # venv can carry a strings_catalog that IMPORTS but is stale or
@@ -1590,6 +1898,12 @@ def main():
         default=[],
         metavar="NAME=VALUE",
         help="fill a {NAME} slot in catalog-resolved parts (repeatable)",
+    )
+    status_parser.add_argument(
+        "--farewell",
+        type=_farewell_arg,
+        help="SET:PART — fill PART (message or submessage) with one of the device language's "
+        "farewell lines for SET (welcome, reboot or poweroff), chosen at random (litclock-dev#532 T7)",
     )
     status_parser.add_argument("--save", "-s", help="Save to file instead of displaying")
 

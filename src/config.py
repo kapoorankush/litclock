@@ -7,7 +7,14 @@ PATCH route) call ``atomic_update`` here so the env.sh write contract stays
 identical across all settings edits.
 
 Locked behaviors:
-- Atomic via `os.replace(tmp, target)` — no torn writes on power loss.
+- Atomic via `os.replace(tmp, target)` — a concurrent reader sees the old
+  file or the new one, never a torn mix.
+- Durable across power loss (litclock-dev#893): the temp file is fsynced
+  BEFORE the rename and the directory after it. Rename alone is not a
+  durability barrier — without the first fsync a power cut can leave a
+  ZERO-LENGTH env.sh (every setting gone at once), and without the second
+  the rename itself can be lost after the PWA has already said "Saved.".
+  `src/wifi_provision.py`'s hotspot-password writer is the model.
 - Ownership + mode of the existing file are preserved (fchown/fchmod on the
   tmp fd before replace).
 - Updates are merged into existing content; lines for un-managed keys
@@ -35,6 +42,7 @@ characters (post-litclock-dev#319: 80).
 from __future__ import annotations
 
 import fcntl
+import logging
 import os
 import re
 import shlex
@@ -686,6 +694,25 @@ def _exclusive_lock(target: Path, timeout: float | None = None) -> Iterator[None
             os.close(lock_fd)
 
 
+def _fsync_dir(directory: str) -> None:
+    """Make a completed rename in ``directory`` durable (litclock-dev#893).
+
+    Best-effort by design: by the time this runs the new env.sh is already in
+    place and its bytes are already fsynced, so the worst a lost rename can do
+    after a power cut is bring back the OLD file intact — stale, never empty
+    (or, on a first write, no file, which first-boot recreates). Raising here
+    would tell the caller its save failed when it did not.
+    """
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError as e:
+        logging.getLogger(__name__).warning("Could not fsync %s after writing env.sh (%s)", directory, e)
+
+
 def atomic_update(
     updates: Mapping[str, str],
     path: str | os.PathLike[str] = ENV_FILE_DEFAULT,
@@ -702,6 +729,8 @@ def atomic_update(
     - File ownership + mode are preserved via fchown/fchmod on the tmp fd.
     - Atomic via ``os.replace`` — readers see either pre- or post-state, never
       a torn intermediate.
+    - Durable: tmp fsynced before the replace, the directory after it
+      (litclock-dev#893 — see the module docstring for why each is needed).
     - Concurrent writers are serialized: the read+modify+write+replace sequence
       is wrapped in an exclusive ``fcntl.flock`` on ``<path>.lock`` (sidecar).
       Without this, two writers each holding pre-update content would last-
@@ -764,6 +793,10 @@ def atomic_update(
             os.fchmod(fd, stat.st_mode)
             with os.fdopen(fd, "w") as f:
                 f.write(new_content)
+                # The data must be on the card BEFORE the rename publishes it,
+                # or a power cut can commit the rename over an empty inode.
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_path, p)
         except Exception:
             try:
@@ -771,3 +804,4 @@ def atomic_update(
             except OSError:
                 pass
             raise
+        _fsync_dir(env_dir)

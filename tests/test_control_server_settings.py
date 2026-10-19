@@ -1426,8 +1426,12 @@ class TestSettingsLanguageSection(_PostHelpers):
         es_dir = tmp_path / "languages-es"
         es_dir.mkdir()
         es_strings = es_dir / "strings.json"
+        # COMPLETE (every canonical key): since litclock-dev#532 RT1 a bundle
+        # missing any key is unusable and the page renders wholly in English.
+        en_path = Path(__file__).resolve().parents[1] / "languages" / "en" / "strings.json"
+        canonical = {k: v for k, v in _json.loads(en_path.read_text("utf-8")).items() if not k.startswith("_")}
         es_strings.write_text(
-            _json.dumps({"settings.language.title": "Idioma"}), encoding="utf-8"
+            _json.dumps({**canonical, "settings.language.title": "Idioma"}), encoding="utf-8"
         )
         registry = {
             "schema_version": 1,
@@ -1456,10 +1460,13 @@ class TestSettingsLanguageSection(_PostHelpers):
 
     # ── dormancy (today's English-only fleet) ──
 
-    def test_language_section_absent_on_single_language_fleet(self, client) -> None:
+    def test_language_section_absent_on_single_language_fleet(self, client, english_only_registry) -> None:
         """The 5a zero-friction rule, PWA edition: one active language →
         no Language section at all, not a one-option pill."""
-        html = client.get("/settings").get_data(as_text=True)
+        resp = client.get("/settings")
+        html = resp.get_data(as_text=True)
+        # Absence alone would pass on an error page (litclock-dev#927 review).
+        assert resp.status_code == 200 and 'id="settings-location-h"' in html
         assert "data-language-pill" not in html
         assert "settings-language-h" not in html
         assert 'name="LITCLOCK_LANGUAGE"' not in html
@@ -1482,8 +1489,10 @@ class TestSettingsLanguageSection(_PostHelpers):
         assert "data-language-pill" in html
         assert 'data-language-opt="en"' in html
         assert 'data-language-opt="es"' in html
-        # Native-name labels, not English exonyms.
-        assert "Español" in html
+        # Native-name labels, not English exonyms — each tagged with its own
+        # language, laid out as radio ROWS (D15/D17), not a binary pill.
+        assert 'data-language-opt="es" lang="es">' in html and "Español" in html
+        assert 'class="settings-segmented settings-segmented--rows"' in html.split("data-language-pill", 1)[0][-200:]
         # No persisted language → English (the fleet default) is selected.
         assert (
             '<label class="settings-segmented__opt is-selected"\n               data-language-opt="en"'
@@ -1616,9 +1625,9 @@ class TestSettingsLanguageSection(_PostHelpers):
             in html
         )
 
-    def test_dormant_fleet_rejects_inactive_code(self, client, csrf_token, env_file) -> None:
+    def test_dormant_fleet_rejects_inactive_code(self, client, csrf_token, env_file, english_only_registry) -> None:
         """The SECTION_KEYS comment's 'at worst write en' bound, negative
-        half: on the REAL en-only registry a POST of es must 422 and leave
+        half: on an en-only registry a POST of es must 422 and leave
         env.sh untouched."""
         resp = self.post_form(
             client, csrf_token=csrf_token, section="language", LITCLOCK_LANGUAGE="es"
@@ -1679,3 +1688,50 @@ class TestSettingsLanguageSection(_PostHelpers):
             assert 'value="de"\n                 checked' in html
         finally:
             strings_catalog.reset_cache()
+
+
+class TestRequestBodyCeiling(_PostHelpers):
+    """werkzeug 3.1.9 stopped capping URL-encoded form bodies (it reads them
+    whole); without an app-level ceiling one LAN request could exhaust the
+    Pi's memory, and form parsing runs before the CSRF check."""
+
+    def test_oversized_form_is_413_before_csrf(self, client) -> None:
+        from control_server import MAX_REQUEST_BODY_BYTES
+
+        resp = client.post(
+            "/settings",
+            data={"section": "units", "pad": "x" * (MAX_REQUEST_BODY_BYTES + 1)},
+            base_url="http://litclock.local",
+            headers={"Origin": "http://litclock.local"},
+        )
+        assert resp.status_code == 413, "must be rejected for size, not reach the CSRF 403"
+
+    def test_oversized_json_is_413(self, client, csrf_token) -> None:
+        from control_server import MAX_REQUEST_BODY_BYTES
+
+        resp = self._post_json(client, {"WEATHER_UNITS": "metric", "pad": "x" * (MAX_REQUEST_BODY_BYTES + 1)},
+                               csrf_token=csrf_token)
+        assert resp.status_code == 413
+
+    def test_a_normal_form_still_saves(self, client, csrf_token) -> None:
+        """The ceiling must not reject ordinary settings saves."""
+        resp = self.post_form(client, csrf_token=csrf_token, section="units", WEATHER_UNITS="metric")
+        assert resp.status_code == 303
+
+
+def test_waitress_gets_the_same_ceiling(monkeypatch) -> None:
+    """Executed: main() must hand waitress the cap, or a body larger than
+    Flask's limit is still buffered whole by the server before Flask sees it."""
+    import types
+
+    import control_server
+    from control_server import app as app_mod
+
+    seen = {}
+    fake = types.ModuleType("waitress")
+    fake.serve = lambda app, **kw: seen.update(kw)
+    monkeypatch.setitem(sys.modules, "waitress", fake)
+    monkeypatch.setattr("control_server.log_buffer.init_memory_handler", lambda *a, **k: None)
+    monkeypatch.setattr("control_server.handoff.kickoff", lambda app: None)
+    app_mod.main()
+    assert seen.get("max_request_body_size") == control_server.MAX_REQUEST_BODY_BYTES, seen

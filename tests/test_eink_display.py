@@ -1,7 +1,9 @@
 """Tests for eink_display module — QR code generation (no hardware needed)."""
 
+import json
 import logging
 import sys
+from pathlib import Path
 
 import pytest
 from PIL import Image, ImageDraw, ImageFont
@@ -17,6 +19,9 @@ import wifi_provision as _wifi_provision  # noqa: E402
 from eink_display import create_qr_display_image, generate_qr_image
 
 SHIPPED_PW = "Ab3xYz9qKmNpQrTu"[: _wifi_provision.HOTSPOT_PASSWORD_LENGTH]
+
+# The splash copy's source since litclock-dev#532 T6: the English catalog.
+EN = json.loads((Path(__file__).resolve().parent.parent / "languages/en/strings.json").read_text("utf-8"))
 
 
 class TestHandoffSplashCliExitCode:
@@ -121,15 +126,15 @@ class TestSetupSplashCopy:
     """
 
     def test_labels_do_not_say_hotspot(self):
-        assert "hotspot" not in eink_display.SETUP_LABEL_NETWORK.lower()
-        assert "hotspot" not in eink_display.SETUP_LABEL_PASSWORD.lower()
+        assert "hotspot" not in EN["firstboot.hotspot.label_network"].lower()
+        assert "hotspot" not in EN["firstboot.hotspot.label_password"].lower()
 
     def test_labels_say_the_words_they_are_supposed_to_say(self):
         """Adversarial review built `SETUP_LABEL_NETWORK = "Clock's Netwrok:"`
         — 16 chars, contains "clock", no "hotspot" — and every test passed.
         A typo in the most-read word on the panel has to be catchable."""
-        assert eink_display.SETUP_LABEL_NETWORK == "LitClock's WiFi network:"
-        assert eink_display.SETUP_LABEL_PASSWORD == "LitClock's WiFi password:"
+        assert EN["firstboot.hotspot.label_network"] == "LitClock's WiFi network:"
+        assert EN["firstboot.hotspot.label_password"] == "LitClock's WiFi password:"
 
     def test_labels_still_disambiguate_whose_network_this_is(self):
         """Dropping the jargon must not drop the distinction it carried. The
@@ -144,11 +149,11 @@ class TestSetupSplashCopy:
         labels to "LitClock's WiFi" is what makes the password an input to
         that specific network instead of a possession of the device.
         """
-        for label in (eink_display.SETUP_LABEL_NETWORK, eink_display.SETUP_LABEL_PASSWORD):
+        for label in (EN["firstboot.hotspot.label_network"], EN["firstboot.hotspot.label_password"]):
             assert "litclock" in label.lower(), label
             assert "wifi" in label.lower(), label
-        assert "password" in eink_display.SETUP_LABEL_PASSWORD.lower()
-        assert "network" in eink_display.SETUP_LABEL_NETWORK.lower()
+        assert "password" in EN["firstboot.hotspot.label_password"].lower()
+        assert "network" in EN["firstboot.hotspot.label_network"].lower()
 
     def test_labels_fit_the_panel_measured_not_counted(self):
         """Character count is NOT width in a proportional font — the earlier
@@ -172,7 +177,7 @@ class TestSetupSplashCopy:
         draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 255))
         font = ImageFont.truetype(eink_display.FONT_PATH_BOLD, 22)
         budget = eink_display.DISPLAY_SIZE[0] - 290
-        for label in (eink_display.SETUP_LABEL_NETWORK, eink_display.SETUP_LABEL_PASSWORD):
+        for label in (EN["firstboot.hotspot.label_network"], EN["firstboot.hotspot.label_password"]):
             width = draw.textbbox((0, 0), label, font=font)[2]
             assert width < budget, f"{label!r} is {width}px, over the {budget}px budget"
 
@@ -256,7 +261,7 @@ class TestSetupSplashCopy:
         # standard has to apply to new copy. Mutating this constant to
         # "The clcok makes its own WiFi for setpu." passed the whole file
         # when the only assertion here was `"own wifi" in ...lower()`.
-        assert eink_display.SETUP_FRAMING_LINE == "The clock makes its own WiFi for setup."
+        assert EN["firstboot.hotspot.framing"] == "The clock makes its own WiFi for setup."
 
         first = eink_display.create_hotspot_display_image("LitClock-Setup", "pw", "10.42.0.1")
         retry = eink_display.create_hotspot_display_image(
@@ -288,7 +293,7 @@ class TestSetupSplashCopy:
 
         draw = ImageDraw.Draw(Image.new("1", eink_display.DISPLAY_SIZE, 255))
         font = ImageFont.truetype(eink_display.FONT_PATH, 18)
-        framing_bottom = draw.textbbox((0, eink_display.SETUP_FRAMING_Y), eink_display.SETUP_FRAMING_LINE, font=font)[3]
+        framing_bottom = draw.textbbox((0, eink_display.SETUP_FRAMING_Y), EN["firstboot.hotspot.framing"], font=font)[3]
 
         produced = {
             len(eink_display.setup_instruction_lines("10.42.0.1", is_retry=r, retry_reason=reason))
@@ -513,8 +518,8 @@ class TestSetupSplashCopy:
         finally:
             ImageDraw.ImageDraw.text = original
 
-        assert eink_display.SETUP_LABEL_NETWORK in drawn
-        assert eink_display.SETUP_LABEL_PASSWORD in drawn
+        assert EN["firstboot.hotspot.label_network"] in drawn
+        assert EN["firstboot.hotspot.label_password"] in drawn
         for line in eink_display.setup_instruction_lines("10.42.0.1"):
             assert line in drawn
         assert not any("hotspot" in str(t).lower() for t in drawn), drawn

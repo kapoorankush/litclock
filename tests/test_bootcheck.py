@@ -27,9 +27,12 @@ from __future__ import annotations
 
 import fcntl
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "litclock-bootcheck.sh"
@@ -219,6 +222,36 @@ def test_threshold_pins_lkg_and_triggers_update(tmp_path):
     assert e.sf("blocked-sha").read_text().strip() == e.head
     assert e.sf("bootcheck-recovering").exists()
     assert e.count() is None  # fresh window for recovered code
+
+
+@pytest.mark.parametrize("failing", ["rollback-target", "bootcheck-recovering"])
+def test_threshold_does_not_trigger_without_its_prerequisites(tmp_path, failing):
+    """litclock-dev#893: atomic_write_file now refuses to publish a file the
+    card failed to flush. Without rollback-target the trigger would run a
+    NORMAL update and then mark recovery attempted, so the next threshold gives
+    up having never rolled back. Without bootcheck-recovering the counter was
+    cleared after an unmarked rollback, restarting the budget — a card that
+    keeps failing that write would roll back forever."""
+    e = _Env(tmp_path)
+    e.sf("boot-fail-count").write_text("2")
+    e.sf("lkg-sha").write_text(e.lkg + "\n")
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    real_sync = shutil.which("sync")
+    (stub / "sync").write_text(
+        f'#!/bin/bash\ncase "$(basename "$1")" in {failing}.*) exit 1 ;; esac\nexec {real_sync} "$@"\n'
+    )
+    (stub / "sync").chmod(0o755)
+    r = e.run(extra_path=str(stub))
+    assert r.returncode == 0, r.stderr
+    assert not e.did("update-triggered"), f"must not hand off to update.sh without {failing}"
+    assert not e.sf(failing).exists()
+    if failing == "rollback-target":
+        assert not e.sf("bootcheck-recovering").exists(), "recovery was not attempted and must not be marked so"
+    assert e.count() == "3", "the counter stays at threshold so the next tick retries"
+    # The warning must reach stderr (journald): the lock's `exec 9>file
+    # 2>/dev/null` used to silence every log_warn for the rest of the script.
+    assert f"could not persist {failing}" in r.stderr, r.stderr
 
 
 def test_threshold_no_lkg_gives_up(tmp_path):
@@ -443,3 +476,13 @@ def test_counter_persist_failure_aborts_without_reboot(tmp_path):
     assert r.returncode == 0
     assert not e.did("rebooted")
     assert not e.did("update-triggered")
+
+
+def test_warnings_reach_stderr_after_the_lock_is_taken(tmp_path):
+    """Every log_warn runs after Gate 1 opens the update lock. A bare
+    `exec 9>file 2>/dev/null` made that 2>/dev/null permanent, so bootcheck
+    printed nothing to the journal on any unhealthy boot (litclock-dev#893 review)."""
+    e = _Env(tmp_path)
+    r = e.run()  # unhealthy boot #1 of 3 → warns and reboots
+    assert e.did("rebooted")
+    assert "no heartbeat since boot" in r.stderr, r.stderr

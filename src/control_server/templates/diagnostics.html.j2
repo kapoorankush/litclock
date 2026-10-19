@@ -239,10 +239,13 @@
        t('diag.section.build'),
        rows=[
          (t('diag.row.app_version'), 'app_version'),
+         (t('diag.row.language'), 'language'),
+         (t('diag.row.language_shown'), 'language_shown'),
          (t('diag.row.git_head'), 'git_head'),
          (t('diag.row.images_version'), 'images_version'),
          (t('diag.row.last_update_at'), 'last_update_at'),
          (t('diag.row.last_update_version'), 'last_update_version'),
+         (t('diag.row.last_update_error'), 'last_update_error'),
        ]
   ) }}
 
@@ -344,6 +347,8 @@
          (t('diag.row.title'), 'title'),
          (t('diag.row.time'), 'time'),
          (t('diag.row.render_mode'), 'render_mode'),
+         (t('diag.row.fallback_reason'), 'fallback_reason'),
+         (t('diag.row.consecutive_failures'), 'consecutive_failures'),
          (t('diag.row.picked_at'), 'picked_at'),
        ]
   ) }}

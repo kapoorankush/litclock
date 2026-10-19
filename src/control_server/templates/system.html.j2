@@ -278,14 +278,14 @@
       <label class="action-card__label" id="gift-language-label">{{ t('system.gift_language.label') }}</label>
       <fieldset class="settings-row settings-row--pill action-card__language">
         <legend class="settings-visually-hidden">{{ t('system.gift_language.label') }}</legend>
-        <div class="settings-segmented" role="radiogroup" aria-labelledby="gift-language-label" data-gift-language-pill>
+        <div class="settings-segmented settings-segmented--rows" role="radiogroup" aria-labelledby="gift-language-label" data-gift-language-pill>
           {%- set current_code = current_language() -%}
           {%- if current_code not in language_choices -%}
             {%- set current_code = language_choices | sort | first -%}
           {%- endif -%}
           {% for code in language_choices | sort %}
           <label class="settings-segmented__opt{% if current_code == code %} is-selected{% endif %}"
-                 data-gift-language-opt="{{ code }}">
+                 data-gift-language-opt="{{ code }}" lang="{{ code }}">
             <input type="radio"
                    class="settings-segmented__input"
                    name="language"

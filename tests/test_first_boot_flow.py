@@ -981,7 +981,10 @@ class TestGiftLanguageConditionalConsumption:
         assert proc.returncode == 0, proc.stderr
 
     def test_inactive_code_is_kept(self, tmp_path):
-        proc = self._run_helper_py(tmp_path, marker_content="es")
+        # A well-formed code no registry will ever list: the helper runs in a
+        # subprocess against the REAL registry, where `es` stops being
+        # inactive the day Spanish is activated (litclock-dev#532 T9).
+        proc = self._run_helper_py(tmp_path, marker_content="zz")
         assert proc.returncode != 0
 
     def test_garbage_code_is_kept(self, tmp_path):
