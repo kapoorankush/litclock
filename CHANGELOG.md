@@ -4,6 +4,8 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+## [v0.232.0] - 2026-10-18
+
 ### Changed
 
 - The WiFi setup pages on your phone have a new look that matches the LitClock app, and the page after you tap Complete Setup now tells you what the clock is doing next.
