@@ -56,10 +56,9 @@ def _clean_values() -> dict:
         "weather_enabled": True,
         "weather_location_name": "Austin, Texas",
         "weather_location_mode": "auto",
-        # Relative to now, NOT a fixed date: the time-location anomaly trips
-        # when last_ip_geo_at ages past ANOMALY_LAST_IPGEO_AGE_S (7 days), so a
-        # hardcoded timestamp is a date-bomb that silently reddens this "clean"
-        # fixture once wall-clock passes the threshold. 1 day keeps it fresh.
+        # Relative to now, NOT a fixed date. Since litclock-dev#958 the stamp's
+        # age no longer trips anything (the per-boot verdict decides), but a
+        # fresh value keeps this "clean" fixture realistic.
         "last_ip_geo_at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
         "service_states": {"litclock.service": {"state": "active"}},
         "quote": "non-empty",

@@ -20,6 +20,8 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC = REPO_ROOT / "src"
 if str(SRC) not in sys.path:
@@ -166,6 +168,189 @@ class TestLastIpGeoAtHasAWriter:
         assert written, "a successful IP-geo must stamp WEATHER_LAST_IP_GEO_AT"
         # Parseable by the same call the anomaly detector uses.
         assert datetime.fromisoformat(written).tzinfo is not None
+
+    @staticmethod
+    def _stub_ip_geo(monkeypatch, result):
+        monkeypatch.setattr("geocoding.ip_geolocate", lambda *a, **k: result)
+        monkeypatch.setattr("geocoding.set_system_timezone", lambda tz: (True, None))
+
+    SF = {"lat": 37.7749, "lon": -122.4194, "city": "San Francisco", "countryCode": "US", "timezone": "UTC"}
+
+    def test_an_unsynced_clock_writes_the_location_but_not_the_stamp(self, tmp_path, monkeypatch):
+        """litclock-dev#958: a stamp from an unsynced clock (fake-hwclock, or a
+        fresh image's build day) read weeks old the moment it was written. The
+        location is still saved and the boot is still recorded as resolved;
+        the previous stamp is left exactly as it was. No wait."""
+        import os
+
+        import location_resolver
+
+        monkeypatch.setenv("LITCLOCK_TIMESYNC_MARKER", str(tmp_path / "never-synced"))
+        monkeypatch.setattr(location_resolver.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("no wait")))
+        env = tmp_path / "env.sh"
+        env.write_text(
+            "export WEATHER_LOCATION_MODE=auto\n"
+            "export WEATHER_LOCATION_NAME=\n"
+            "export WEATHER_LAST_IP_GEO_AT=2026-10-01T00:00:00+00:00\n"
+        )
+        self._stub_ip_geo(monkeypatch, self.SF)
+
+        assert location_resolver.resolve_location_from_ip(retries=False, env_file=str(env)) is True
+
+        saved = config.load_config(str(env))
+        assert saved["WEATHER_LOCATION_NAME"], "the location itself must still be written"
+        assert saved["WEATHER_LAST_IP_GEO_AT"] == "2026-10-01T00:00:00+00:00"
+        with open(os.environ["LITCLOCK_IPGEO_BOOT_MARKER"]) as f:
+            assert f.read().split() == ["test-boot-0000", "ok"]
+
+    def test_a_failed_resolve_records_failed_for_this_boot(self, tmp_path, monkeypatch):
+        import os
+
+        import location_resolver
+
+        env = tmp_path / "env.sh"
+        env.write_text("export WEATHER_LOCATION_MODE=auto\n")
+        self._stub_ip_geo(monkeypatch, None)
+        assert location_resolver.resolve_location_from_ip(retries=False, env_file=str(env)) is False
+        with open(os.environ["LITCLOCK_IPGEO_BOOT_MARKER"]) as f:
+            assert f.read().split() == ["test-boot-0000", "failed"]
+
+    @staticmethod
+    def _marker():
+        import os
+
+        with open(os.environ["LITCLOCK_IPGEO_BOOT_MARKER"]) as f:
+            return f.read().split()
+
+    def test_the_attempt_is_marked_running_first(self, tmp_path, monkeypatch):
+        """A resolver killed by its unit's timeout must leave evidence."""
+        import location_resolver
+
+        seen = []
+        real = location_resolver._resolve_location_from_ip
+
+        def spy(**kw):
+            seen.append(self._marker())
+            return real(**kw)
+
+        monkeypatch.setattr(location_resolver, "_resolve_location_from_ip", spy)
+        env = tmp_path / "env.sh"
+        env.write_text("export WEATHER_LOCATION_MODE=auto\n")
+        self._stub_ip_geo(monkeypatch, self.SF)
+        assert location_resolver.resolve_location_from_ip(retries=False, env_file=str(env)) is True
+        assert seen == [["test-boot-0000", "running"]]
+        assert self._marker() == ["test-boot-0000", "ok"]
+
+    def test_an_exception_records_failed(self, tmp_path, monkeypatch):
+        """Codex: a malformed ip-api answer raised past the recording."""
+        import location_resolver
+
+        env = tmp_path / "env.sh"
+        env.write_text("export WEATHER_LOCATION_MODE=auto\n")
+        monkeypatch.setattr(location_resolver, "_resolve_location_from_ip", lambda **kw: 1 / 0)
+        with pytest.raises(ZeroDivisionError):
+            location_resolver.resolve_location_from_ip(retries=False, env_file=str(env))
+        assert self._marker() == ["test-boot-0000", "failed"]
+
+    def test_a_non_string_country_code_does_not_raise(self, tmp_path, monkeypatch):
+        import location_resolver
+
+        env = tmp_path / "env.sh"
+        env.write_text("export WEATHER_LOCATION_MODE=auto\n")
+        self._stub_ip_geo(monkeypatch, dict(self.SF, country_code=["US"]))
+        assert location_resolver.resolve_location_from_ip(retries=False, env_file=str(env)) is True
+
+    def test_a_later_failure_never_demotes_this_boots_ok(self, tmp_path, monkeypatch):
+        """review: one timed-out PWA refresh must not make a healthy clock
+        "stale" until the next reboot."""
+        import location_resolver
+
+        env = tmp_path / "env.sh"
+        env.write_text("export WEATHER_LOCATION_MODE=auto\n")
+        self._stub_ip_geo(monkeypatch, self.SF)
+        assert location_resolver.resolve_location_from_ip(retries=False, env_file=str(env)) is True
+        self._stub_ip_geo(monkeypatch, None)
+        assert location_resolver.resolve_location_from_ip(retries=False, env_file=str(env)) is False
+        assert self._marker() == ["test-boot-0000", "ok"]
+
+    def test_a_refused_write_records_failed(self, tmp_path, monkeypatch):
+        import location_resolver
+        import setup_server
+
+        env = tmp_path / "env.sh"
+        env.write_text("export WEATHER_LOCATION_MODE=auto\n")
+        self._stub_ip_geo(monkeypatch, self.SF)
+        monkeypatch.setattr(setup_server, "_update_env_location", lambda *a, **k: False)
+        assert location_resolver.resolve_location_from_ip(retries=False, env_file=str(env)) is False
+        assert self._marker() == ["test-boot-0000", "failed"]
+
+    def test_a_failed_replace_leaves_no_temp_file(self, tmp_path, monkeypatch):
+        import os
+
+        import location_resolver
+
+        def boom(*a):
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(location_resolver.os, "replace", boom)
+        location_resolver._record_boot_outcome("ok")
+        assert [n for n in os.listdir(os.path.dirname(os.environ["LITCLOCK_IPGEO_BOOT_MARKER"])) if ".ipgeo" in n] == []
+
+    def test_a_writer_blocked_on_the_lock_sees_the_ok_it_waited_for(self, tmp_path):
+        """Codex: the no-demote check and the replace must be atomic. A failing
+        writer that started while another held the lock must re-read after it
+        gets it, and then keep the "ok" the holder wrote."""
+        import fcntl
+        import os
+        import threading
+
+        import location_resolver
+
+        marker = os.environ["LITCLOCK_IPGEO_BOOT_MARKER"]
+        location_resolver._record_boot_outcome("running")
+        fd = os.open(f"{marker}.lock", os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        writer = threading.Thread(target=location_resolver._record_boot_outcome, args=("failed",))
+        writer.start()
+        writer.join(0.3)
+        assert writer.is_alive(), "the failing writer must wait for the lock"
+        with open(marker, "w") as f:  # the holder publishes ok, then releases
+            f.write("test-boot-0000 ok\n")
+        os.close(fd)
+        writer.join(5)
+        assert self._marker() == ["test-boot-0000", "ok"]
+
+    def test_a_specific_writer_supersedes(self, tmp_path, monkeypatch):
+        import location_resolver
+
+        monkeypatch.setattr("geocoding.set_system_timezone", lambda tz: (True, None))
+
+        location_resolver._record_boot_outcome("ok")
+        env = tmp_path / "env.sh"
+        env.write_text("export WEATHER_LOCATION_MODE=specific\n")
+        location_resolver.update_env_location(
+            51.5, -0.12, location_name="London", timezone="Europe/London", mode="specific", env_file=str(env)
+        )
+        assert self._marker() == ["test-boot-0000", "superseded"]
+
+    def test_writer_and_diagnostics_reader_round_trip(self, tmp_path):
+        from flask import Flask
+
+        import location_resolver
+        from control_server.routes.diagnostics import _collectors
+
+        location_resolver._record_boot_outcome("failed")
+        with Flask(__name__).app_context():
+            assert _collectors._read_ipgeo_this_boot() == "failed"
+
+    def test_a_marker_write_failure_never_fails_the_resolve(self, tmp_path, monkeypatch):
+        import location_resolver
+
+        monkeypatch.setenv("LITCLOCK_IPGEO_BOOT_MARKER", str(tmp_path / "no-such-dir" / "marker"))
+        env = tmp_path / "env.sh"
+        env.write_text("export WEATHER_LOCATION_MODE=auto\n")
+        self._stub_ip_geo(monkeypatch, self.SF)
+        assert location_resolver.resolve_location_from_ip(retries=False, env_file=str(env)) is True
 
     def test_specific_mode_save_does_NOT_stamp_it(self, tmp_path):
         """The stamp means "IP-geo last succeeded". The shared writer also

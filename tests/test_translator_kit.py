@@ -441,3 +441,26 @@ class TestEveryBundleInTheTree:
         findings = _validate.validate("ru", str(ru))
         assert any("plural forms" in f for f in findings), findings  # the NOTE that used to name one
         assert not [f for f in findings if "dev#" in f], [f for f in findings if "dev#" in f]
+
+
+def test_the_glyph_check_covers_every_panel_surface():
+    """litclock-dev#942 review: the L8 panel-glyph check reads its own
+    namespace list (tools/pwa_glyphs.py EINK_NAMESPACES), which only claims
+    to mirror the kit's E-ink surfaces. A namespace added to one and not the
+    other ships panel copy the glyph check never reads."""
+    tools = str(Path(__file__).resolve().parent.parent / "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import pwa_glyphs
+
+    kit = {ns for ns, (label, _note, _len) in _kit._SURFACES.items() if label.startswith("E-ink")}
+    assert set(pwa_glyphs.EINK_NAMESPACES) == kit
+
+
+def test_the_update_namespace_holds_only_panel_copy():
+    """The kit classes a namespace as e-ink by its FIRST segment, so a future
+    PWA key under update.* would be sized and glyph-checked as panel copy
+    (litclock-dev#942 adversarial /review). Keep update.* to the splash, or split it."""
+    en = json.loads((Path(__file__).resolve().parent.parent / "languages" / "en" / "strings.json").read_text())
+    stray = [k for k in en if k.startswith("update.") and not k.startswith("update.splash.")]
+    assert stray == [], stray

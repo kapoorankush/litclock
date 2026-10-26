@@ -1125,6 +1125,25 @@ class TestSaveAndApplyTriggers(_PostHelpers):
         cfg = config.load_config(env_file)
         assert "Austin" in cfg["WEATHER_LOCATION_NAME"]
 
+    def test_a_specific_save_supersedes_this_boots_ipgeo_verdict(self, client, csrf_token, monkeypatch) -> None:
+        """litclock-dev#958: after a Specific save the coordinates on disk are
+        no longer IP-geo data, so an earlier "ok" must stop vouching for them;
+        otherwise an Auto switch whose one-shot lookup fails reads healthy."""
+        import location_resolver
+
+        location_resolver._record_boot_outcome("ok")
+        resp = self.post_form(
+            client,
+            csrf_token=csrf_token,
+            section="location",
+            WEATHER_LOCATION_MODE="specific",
+            location_query="Austin, TX",
+        )
+        assert resp.status_code == 303
+        assert location_resolver.read_boot_outcome() == "superseded"
+        location_resolver._record_boot_outcome("failed")
+        assert location_resolver.read_boot_outcome() == "failed", "a later Auto failure must now show"
+
 
 class TestSyncQuickAndA14Backstop(_PostHelpers):
     """litclock-dev#337 /review testing-gaps fills. Pin the server-side behavior of:

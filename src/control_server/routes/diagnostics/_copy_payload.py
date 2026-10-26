@@ -92,6 +92,7 @@ def build_copy_payload(
                 (_t("diag.row.weather_units"), "weather_units"),
                 (_t("diag.row.weather_enabled"), "weather_enabled"),
                 (_t("diag.row.last_ip_geo_at"), "last_ip_geo_at"),
+                (_t("diag.row.ipgeo_this_boot"), "ipgeo_this_boot"),
             ],
         ),
         (

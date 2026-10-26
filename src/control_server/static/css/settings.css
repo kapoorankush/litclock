@@ -357,3 +357,24 @@
 html.has-js [data-no-js-only] {
   display: none;
 }
+
+/* litclock-dev#533 — the Experimental section's fortune-only fields (dwell,
+ * databases) show only while "Fortunes" is the checked mode. Written as a HIDE
+ * rule on the quotes radio, not a show rule on the fortune one, so a browser
+ * without :has() falls back to showing them rather than hiding them for good.
+ * The fields still post when hidden, so a quotes-mode save keeps them. A
+ * rejected save that carries a field error inside the block keeps it shown,
+ * so the inline error is never hidden with its field. */
+.settings-form:has(input[name="LITCLOCK_CONTENT_MODE"][value="quotes"]:checked) [data-fortune-only]:not(:has([role="alert"])) {
+  display: none;
+}
+
+/* The wrapper is one flex item of .settings-form, so the form's gap stops at
+ * it; give its own children the same spacing, or the help line sits flush on
+ * the "Minutes between fortunes" label. Less specific than the hide rule, so
+ * that one still wins in quotes mode. */
+.settings-fortune-only {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-md);
+}

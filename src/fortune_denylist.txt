@@ -1,0 +1,10 @@
+# Fortune-mode denylist (litclock-dev#533).
+#
+# One entry per line: the 16-hex-char key `python3 src/fortune.py hash`
+# prints for a fortune read on stdin. A listed entry is never painted, at any
+# setting. Text after `#` is a comment — keep the key alone on its line, and
+# do NOT paste the fortune itself here: the repo carries no fortune text, only
+# Debian's package does (sourcing decision on litclock-dev#533).
+#
+# Use this for entries the length and art filters let through but that should
+# not appear on a gifted clock: dated, cruel, or meaningless without context.

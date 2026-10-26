@@ -16,6 +16,20 @@
 
 **Depends on / blocked by:** litclock-dev#254 shipped + 5+ /api/* routes in production.
 
+### Literal corpus format: text between pipes is the text — owner decision 2026-10-13, deferred
+
+**What:** Read every quote corpus (`image-gen/litclock_annotated.csv`, `languages/<code>/quotes.csv`) as a LITERAL format: whatever sits between two `|` is displayed exactly as typed, with no CSV quoting and no `""` escapes. Requires one-time decode/rewrite of the English corpus (no row contains a `|`, measured 2026-10-13), and updating every reader and writer: `src/quote_corpus.py`, `src/quote_renderer.py`, `tools/validate_measurement.py`, `image-gen/quote_to_image.php` (`fgetcsv`), `image-gen/corpus_edit.py` (writer + content hashes/manifest). Replace render-invariants L6 (strict-CSV) with a literal-format check: exactly 6 fields per line, plus a warning for a field that looks CSV-quoted (`"""` or doubled `""`), which is what a spreadsheet export produces.
+
+**Why:** The owner prefers that volunteers and the maintainer never need to know CSV escaping. Under CSV a leading `"` is syntax, so `"Come at seven," she said.` silently loses its opening mark on the panel. PR litclock-dev#928 (2026-10-13) hand-fixed 41 rows of exactly this class.
+
+**Cons:** Spreadsheet exports (Excel/Sheets) add CSV quoting, so that workflow then needs the warning above. `quote_renderer.py` and `tools/validate_measurement.py` are both runtime-render proof inputs, so the change costs every device one ~3 min re-validation (one revoke per update however many inputs change).
+
+**More readers and writers than the list above** (2026-10-21 /review of litclock-dev#930): `image-gen/merge_quotes.py` WRITES the corpus with `csv.writer` and would silently re-add CSV quoting after the migration; readers also include `image-gen/generate_images.py`, `audit_quotes.py`, `apply_audit.py`, `process_reviewed.py`, `build_gold_set.py`, `gather_quotes.py`, `tools/render_invariants.py`, `tools/language_corpora.py`, and test fixtures built with `csv.writer` (`test_apply_audit.py`, `test_build_gold_set.py`). `languages/<code>/quotes.csv` is a convention for future volunteer corpora; none exists in the tree yet.
+
+**Context:** Decoded text should be byte-identical, so the PNGs themselves should not change; verify with the manifest content hashes. **But the pipeline will still treat it as a full corpus change** (2026-10-21 /review of litclock-dev#930): editing `quote_to_image.php` changes `generator_hash`, so `corpus_edit.py`'s `_generator_out_of_sync()` forces a full 4,803-image regeneration; rewriting the CSV-quoted rows changes `corpus_hash`; and CLAUDE.md requires `corpus_edit.py ship`, which bumps `.images-version` and cuts a new images release every device downloads (~124MB) unless that is deliberately skipped. **Bundle it with a release that already touches a proof input**, so the fleet re-validates once rather than twice. The first such window is litclock-dev#947 (Pillow 13 / certifi, `requirements.txt`, queued for the next public port, 2026-10-21). Using it means holding a security port for an unstarted feature that needs full bench QA; not decided.
+
+**Depends on / blocked by:** nothing; the owner said "later some time".
+
 ## Completed
 
 ### Harden coordinate redaction value-group — litclock-dev#498 — SHIPPED

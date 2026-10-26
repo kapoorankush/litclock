@@ -144,6 +144,16 @@
   // E-ink "powered off" frame lands earlier (SPI floor); the PWA countdown
   // is what protects against an enthusiastic unplug ahead of disk sync.
   var POWEROFF_SAFETY_COUNTDOWN_S = 20;
+  // litclock-dev#939 — Reset WiFi answers 200 once the job is QUEUED, but the
+  // script can still refuse (nmcli pre-flight, the litclock-dev#938 firstboot-enable
+  // guard) before its Step 1 stops this server. The verdict comes from the
+  // clock, never from timing: /api/wifi/reset/status reads the reset unit,
+  // and only its "refused" swaps the card. Inferring a refusal from this
+  // server still answering was wrong after a reset that WORKED and was
+  // re-provisioned onto the same network while this tab slept (litclock-dev#949 review).
+  // 90s covers a job queued behind an update's 60s stop timeout; any other
+  // answer, or none, keeps the handoff card.
+  var WIFI_RESET_WATCH_MS = 90000;
 
   // No-op on browsers without <dialog> support — form falls back to native
   // POST. iOS Safari 15.4+ + Chrome 37+ + Firefox 98+ all have it; the
@@ -466,11 +476,12 @@
     if (action === 'wifi_reset') {
       // Reset-WiFi handoff (litclock-dev#245 M5 D11). The litclock-wifi-reset.service
       // unit drops the LAN and restarts firstboot.service which brings up
-      // the LitClock-Setup hotspot. There's no point polling /api/health
-      // — control_server is being stopped. Just show terminal handoff
-      // copy with the locked DESIGN.md text and let the user follow the
-      // instruction to switch their phone WiFi.
+      // the LitClock-Setup hotspot. Show the terminal handoff copy at once,
+      // then ask the clock whether the reset REFUSED (litclock-dev#939); see
+      // WIFI_RESET_WATCH_MS.
       renderResetWifiCard(main);
+      pollDeadline = Date.now() + WIFI_RESET_WATCH_MS;
+      scheduleWifiResetProbe();
       return;
     }
 
@@ -488,7 +499,7 @@
       // litclock-dev#316 /review CRITICAL fix — Prepare-for-Gifting handoff. The
       // litclock-prepare-for-gift.service unit wipes WiFi, paints the
       // welcome on the e-ink, then powers the device off. Like
-      // wifi_reset, there's no point polling /api/health — the box is
+      // factory_reset, there's no point polling /api/health — the box is
       // going away. Show terminal handoff copy from the locked DESIGN.md
       // confirm-modal description ("Pack and ship the device") so the
       // user knows the action succeeded; falling through to
@@ -516,10 +527,9 @@
   }
 
   function renderResetWifiCard(main) {
-    // litclock-dev#245 M5 D11 — terminal handoff copy. No health-poll: by the time
-    // this renders, litclock-wifi-reset.service has either started OR is
-    // about to start, and the LAN is going away regardless. The user has
-    // to switch their phone over to the LitClock-Setup network.
+    // litclock-dev#245 M5 D11 — terminal handoff copy. The user has to switch their
+    // phone over to the LitClock-Setup network. The caller then asks
+    // /api/wifi/reset/status whether the reset refused (litclock-dev#939).
     main.innerHTML =
       '<section class="reconnect-state" role="status" aria-live="polite" data-state="wifi-reset">' +
       '  <h2 class="reconnect-state__title"><em>' + esc(tr('system.card.wifi_reset.title', 'Switching to setup mode…')) + '</em></h2>' +
@@ -531,6 +541,59 @@
       esc(tr('system.card.wifi_reset.body2', 'Your location, weather, and gift settings stay saved.')) +
       '  </p>' +
       '</section>';
+  }
+
+  function scheduleWifiResetProbe() {
+    pollTimer = window.setTimeout(askWifiResetVerdict, POLL_INTERVAL_MS);
+  }
+
+  function askWifiResetVerdict() {
+    var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var timeoutId = ctrl
+      ? window.setTimeout(function () { ctrl.abort(); }, POLL_TIMEOUT_MS)
+      : null;
+    fetch('/api/wifi/reset/status', ctrl ? { signal: ctrl.signal } : {})
+      .then(function (response) {
+        if (timeoutId) window.clearTimeout(timeoutId);
+        return response.ok ? response.json() : null;
+      })
+      .then(function (body) {
+        if (body && body.state === 'refused') {
+          var main = document.querySelector('main');
+          if (main) renderResetWifiRefusedCard(main);
+          return;
+        }
+        if (Date.now() < pollDeadline) scheduleWifiResetProbe();
+      })
+      .catch(function () {
+        // No answer is not a verdict: the server going away is what a started
+        // reset looks like, and a slow reply or a dropped packet is not a
+        // refusal either. Keep asking until the window closes.
+        if (timeoutId) window.clearTimeout(timeoutId);
+        if (Date.now() < pollDeadline) scheduleWifiResetProbe();
+      });
+  }
+
+  function renderResetWifiRefusedCard(main) {
+    // litclock-dev#939 — the clock reports the reset stopped before removing its setup
+    // marker: same WiFi, same clock, no hotspot. Error-state treatment per DESIGN.md (accent line,
+    // muted body, one primary action); the action reloads the System tab,
+    // where Reset WiFi lives.
+    main.innerHTML =
+      '<section class="reconnect-state reconnect-state--error" role="status" aria-live="polite" data-state="wifi-reset-refused">' +
+      '  <h2 class="reconnect-state__title">' + esc(tr('system.card.wifi_reset_refused.title', 'The reset didn’t start.')) + '</h2>' +
+      '  <p class="reconnect-state__body">' +
+      esc(tr('system.card.wifi_reset_refused.body', 'Your clock is still on its WiFi and working normally. Restart the clock from this tab, then try again.')) +
+      '  </p>' +
+      '  <button type="button" class="reconnect-state__retry">' + esc(tr('system.card.wifi_reset_refused.button', 'Back to System')) + '</button>' +
+      '</section>';
+    var back = main.querySelector('.reconnect-state__retry');
+    if (back) {
+      back.addEventListener('click', function () { window.location.reload(); });
+      // The verdict lands well after the tap: move focus so keyboard and
+      // screen-reader users meet the changed outcome, not a stale "join".
+      back.focus();
+    }
   }
 
   function renderFactoryResetCard(main) {

@@ -348,6 +348,10 @@ _Screen-reader labels — describe the control's purpose._
 - **English:** Images version
 - **Translation:** 
 
+### `diag.row.ipgeo_this_boot`
+- **English:** IP-geo this boot
+- **Translation:** 
+
 ### `diag.row.kernel`
 - **English:** Kernel
 - **Translation:** 
@@ -681,6 +685,54 @@ _Screen-reader labels — describe the control's purpose._
 
 ### `settings.js.tz_failed_network`
 - **English:** Couldn't set timezone. Check your network and try again.
+- **Translation:** 
+
+### `settings.lab.categories_hint`
+- **English:** Leave every box unticked to use all the ordinary ones. A mature one is used only when you tick it and NSFW quotes are allowed.
+- **Translation:** 
+
+### `settings.lab.categories_legend`
+- **English:** Fortune databases
+- **Translation:** 
+
+### `settings.lab.category_mature`
+- **English:** mature
+- **Translation:** 
+
+### `settings.lab.category_missing`
+- **English:** not installed
+- **Translation:** 
+
+### `settings.lab.dwell_label`
+- **English:** Minutes between fortunes
+- **Translation:** 
+
+### `settings.lab.fortune_hint`
+- **English:** Fortunes come from the Debian fortune databases, in English whatever the clock's language. The time moves up beside the date.
+- **Translation:** 
+
+### `settings.lab.hint`
+- **English:** Features still being tried out. They may change or disappear in a later update.
+- **Translation:** 
+
+### `settings.lab.mode_fortune`
+- **English:** Fortunes
+- **Translation:** 
+
+### `settings.lab.mode_legend`
+- **English:** What the clock shows
+- **Translation:** 
+
+### `settings.lab.mode_quotes`
+- **English:** Literary quotes
+- **Translation:** 
+
+### `settings.lab.no_databases`
+- **English:** No fortune databases are installed on this clock yet. The next software update installs them.
+- **Translation:** 
+
+### `settings.lab.title`
+- **English:** Experimental
 - **Translation:** 
 
 ### `settings.language.error_empty`
@@ -1175,6 +1227,18 @@ _Screen-reader labels — describe the control's purpose._
 
 ### `system.card.wifi_reset.title`
 - **English:** Switching to setup mode…
+- **Translation:** 
+
+### `system.card.wifi_reset_refused.body`
+- **English:** Your clock is still on its WiFi and working normally. Restart the clock from this tab, then try again.
+- **Translation:** 
+
+### `system.card.wifi_reset_refused.button`
+- **English:** Back to System
+- **Translation:** 
+
+### `system.card.wifi_reset_refused.title`
+- **English:** The reset didn’t start.
 - **Translation:** 
 
 ### `system.gift.help`
@@ -2107,6 +2171,21 @@ _Painted on the physical screen — width-limited, keep it short._
 - **Keep it short** — physical screen; English is 19 characters.
 - **Translation:** 
 
+### `update.splash.applying.message`
+- **English:** Please don't unplug
+- **Keep it short** — physical screen; English is 19 characters.
+- **Translation:** 
+
+### `update.splash.applying.submessage`
+- **English:** The clock will resume on its own
+- **Keep it short** — physical screen; English is 32 characters.
+- **Translation:** 
+
+### `update.splash.applying.title`
+- **English:** Updating software
+- **Keep it short** — physical screen; English is 17 characters.
+- **Translation:** 
+
 ## Messages
 _Status and error messages._
 
@@ -2207,6 +2286,10 @@ _Status and error messages._
 - **English:** must be 'true' or 'false'
 - **Translation:** 
 
+### `validator.content_mode_enum`
+- **English:** must be 'quotes' or 'fortune'
+- **Translation:** 
+
 ### `validator.country_code`
 - **English:** must be a 2-letter UPPERCASE ISO country code (e.g. 'US', 'GB', 'IN')
 - **Translation:** 
@@ -2214,6 +2297,15 @@ _Status and error messages._
 ### `validator.forbidden_char`
 - **English:** may not contain {ch}
 - **Placeholders (copy exactly):** `{ch}` = a single character
+- **Translation:** 
+
+### `validator.fortune_categories`
+- **English:** must be a comma-separated list of fortune database names
+- **Translation:** 
+
+### `validator.fortune_dwell`
+- **English:** must be a whole number of minutes from {lo} to {hi}
+- **Placeholders (copy exactly):** `{hi}` = a value the software fills in; `{lo}` = a value the software fills in
 - **Translation:** 
 
 ### `validator.iso_timestamp`

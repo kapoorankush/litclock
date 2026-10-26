@@ -166,6 +166,30 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     app.jinja_env.globals["weather_enabled"] = _config.weather_enabled
 
+    # litclock-dev#533 — the hidden lab section's category list is whatever
+    # fortune databases this device has installed, read per render (an apt
+    # install lands without a restart). Guarded: a missing package or a
+    # broken module renders an empty list, never a 500 on /settings.
+    def _fortune_categories() -> list[tuple[str, bool]]:
+        try:
+            import fortune  # noqa: PLC0415
+
+            return fortune.categories()
+        except Exception:  # noqa: BLE001
+            return []
+
+    app.jinja_env.globals["fortune_categories"] = _fortune_categories
+
+    def _fortune_dwell_choices() -> tuple[int, ...]:
+        try:
+            import fortune  # noqa: PLC0415
+
+            return fortune.DWELL_CHOICES
+        except Exception:  # noqa: BLE001
+            return (1, 5, 10, 15)
+
+    app.jinja_env.globals["fortune_dwell_choices"] = _fortune_dwell_choices
+
     # litclock-dev#532 slice 6 — rich copy. Catalog values stay PLAIN TEXT;
     # mid-sentence emphasis is expressed with a tiny whitelisted token
     # vocabulary ({b}…{/b}, {em}…{/em}, {code}…{/code}) so translators can

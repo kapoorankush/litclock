@@ -200,81 +200,106 @@ class TestMissingLanIpSettlingWindow:
         assert "network" in anomalies, "a still-absent IP past the grace is a real fault"
 
 
-class TestIpGeoAgeThreshold:
-    """ANOMALY_LAST_IPGEO_AGE_S = 7 days. Only fires when weather is enabled."""
+class TestIpGeoThisBoot:
+    """litclock-dev#958: Automatic mode re-resolves once per boot, so "stale"
+    means this boot's resolve did not succeed (``ipgeo_this_boot``, from a
+    boot_id marker). Age alone flagged every healthy clock up for a week."""
+
+    def _payload(self, now: datetime, *, this_boot, stamp_age_days, mode: str = "auto") -> dict:
+        v = _baseline(now)
+        v["weather_enabled"] = True
+        v["weather_location_name"] = "Austin, Texas"
+        v["weather_location_mode"] = mode
+        v["ipgeo_this_boot"] = this_boot
+        v["last_ip_geo_at"] = (now - timedelta(days=stamp_age_days)).isoformat() if stamp_age_days is not None else None
+        return v
+
+    def test_a_healthy_clock_up_for_weeks_is_not_stale(self, frozen_clock):
+        v = self._payload(frozen_clock, this_boot="ok", stamp_age_days=30)
+        assert "time-location" not in _anomalies._compute_anomalies(v)
+
+    def test_a_failed_boot_resolve_is_stale_even_with_a_fresh_stamp(self, frozen_clock):
+        v = self._payload(frozen_clock, this_boot="failed", stamp_age_days=0)
+        assert "time-location" in _anomalies._compute_anomalies(v)
+
+    def test_a_failed_boot_resolve_is_stale_with_no_stamp_at_all(self, frozen_clock):
+        """Codex: an empty stamp must not exempt a failing clock forever."""
+        v = self._payload(frozen_clock, this_boot="failed", stamp_age_days=None)
+        assert "time-location" in _anomalies._compute_anomalies(v)
+
+    def test_no_verdict_is_unknown_not_stale(self, frozen_clock):
+        """No marker this boot — this release arrived by OTA and the clock has
+        not rebooted — must not call every freshly updated clock stale."""
+        v = self._payload(frozen_clock, this_boot=None, stamp_age_days=30)
+        v["uptime_s"] = 40 * 86400
+        assert "time-location" not in _anomalies._compute_anomalies(v)
+
+    def test_superseded_is_not_stale(self, frozen_clock):
+        v = self._payload(frozen_clock, this_boot="superseded", stamp_age_days=30)
+        v["uptime_s"] = 3600
+        assert "time-location" not in _anomalies._compute_anomalies(v)
+
+    def test_running_with_an_unknown_uptime_is_not_stale(self, frozen_clock):
+        """Never call a resolver mid-flight killed on an unreadable uptime."""
+        v = self._payload(frozen_clock, this_boot="running", stamp_age_days=30)
+        v["uptime_s"] = None
+        assert "time-location" not in _anomalies._compute_anomalies(v)
+
+    def test_failed_is_stale_even_while_settling(self, frozen_clock):
+        v = self._payload(frozen_clock, this_boot="failed", stamp_age_days=0)
+        v["uptime_s"] = 10
+        assert "time-location" in _anomalies._compute_anomalies(v)
+
+    def test_running_while_the_boot_settles_is_no_verdict(self, frozen_clock):
+        v = self._payload(frozen_clock, this_boot="running", stamp_age_days=30)
+        v["uptime_s"] = _anomalies.ANOMALY_IPGEO_SETTLE_S - 1
+        assert "time-location" not in _anomalies._compute_anomalies(v)
+
+    def test_running_past_the_settle_window_means_killed(self, frozen_clock):
+        v = self._payload(frozen_clock, this_boot="running", stamp_age_days=0)
+        v["uptime_s"] = _anomalies.ANOMALY_IPGEO_SETTLE_S
+        assert "time-location" in _anomalies._compute_anomalies(v)
+
+    def test_specific_mode_stays_exempt(self, frozen_clock):
+        v = self._payload(frozen_clock, this_boot="failed", stamp_age_days=30, mode="specific")
+        assert "time-location" not in _anomalies._compute_anomalies(v)
+
+    @pytest.mark.parametrize("mode", ["autp", "", "AUTO"])
+    def test_an_invalid_or_unset_mode_is_not_exempt(self, frozen_clock, mode):
+        """litclock-dev#836's guard, pinned on the branch production takes."""
+        v = self._payload(frozen_clock, this_boot="failed", stamp_age_days=0, mode=mode)
+        assert "time-location" in _anomalies._compute_anomalies(v)
+
+
+class TestIpGeoAgeAloneNeverTrips:
+    """litclock-dev#958 (owner decision): the 7-day age rule is gone. It flagged
+    every healthy clock up for a week; only this boot's verdict decides now."""
+
+    @pytest.mark.parametrize("this_boot", [None, "ok", "superseded"])
+    def test_an_ancient_stamp_is_not_stale(self, frozen_clock, this_boot):
+        v = _baseline(frozen_clock)
+        v["weather_enabled"] = True
+        v["weather_location_name"] = "San Francisco"
+        v["ipgeo_this_boot"] = this_boot
+        v["uptime_s"] = 30 * 86400
+        v["last_ip_geo_at"] = (frozen_clock - timedelta(days=400)).isoformat()
+        assert "time-location" not in _anomalies._compute_anomalies(v)
+
+
+class TestLocationModeGuards:
+    """litclock-dev#836 guards that outlive the age rule (litclock-dev#958 removed it)."""
 
     def _payload_with_ipgeo(self, frozen_now: datetime, age: timedelta) -> dict:
         v = _baseline(frozen_now)
-        # Enable weather AND set a valid location_name so the only path to
-        # tripping the anomaly is the age check.
         v["weather_enabled"] = True
         v["weather_location_name"] = "San Francisco"
         v["last_ip_geo_at"] = (frozen_now - age).isoformat()
         return v
 
-    def test_one_ms_under_threshold(self, frozen_clock):
-        v = self._payload_with_ipgeo(
-            frozen_clock,
-            timedelta(seconds=_anomalies.ANOMALY_LAST_IPGEO_AGE_S, milliseconds=-1),
-        )
-        assert "time-location" not in _anomalies._compute_anomalies(v)
-
-    def test_at_threshold_no_anomaly(self, frozen_clock):
-        # Strict > → equality does NOT trip. Mirrors the symmetric tests
-        # in TestDhcpAgeThreshold + TestQuoteAgeThreshold so a regression
-        # that flipped > to >= gets caught here too. Codex /review #3.
-        v = self._payload_with_ipgeo(
-            frozen_clock,
-            timedelta(seconds=_anomalies.ANOMALY_LAST_IPGEO_AGE_S),
-        )
-        assert "time-location" not in _anomalies._compute_anomalies(v)
-
-    def test_one_ms_over_threshold_trips(self, frozen_clock):
-        v = self._payload_with_ipgeo(
-            frozen_clock,
-            timedelta(seconds=_anomalies.ANOMALY_LAST_IPGEO_AGE_S, milliseconds=1),
-        )
-        assert "time-location" in _anomalies._compute_anomalies(v)
-
-    # litclock-dev#836 — the age check is gated on WEATHER_LOCATION_MODE. Since
-    # litclock-dev#791 the resolver writes the stamp; an owner who then picks a Specific
-    # location keeps it, and location_resolver.main() deliberately stops
-    # refreshing it in that mode. Before the gate, a correctly configured
-    # Specific clock showed a permanent "Location stale" after seven days.
-    # Only the VALID non-auto value is exempt: an invalid mode ("autp",
-    # "AUTO") also freezes the stamp, but that is a broken env.sh and this
-    # anomaly is the only surface that shows it (Codex, litclock-dev#836 review — the
-    # first cut exempted every non-auto value and hid the fault).
-
     def _stale_payload(self, frozen_now: datetime, mode) -> dict:
         v = self._payload_with_ipgeo(frozen_now, timedelta(days=8))
         v["weather_location_mode"] = mode
         return v
-
-    def test_specific_mode_ignores_stale_stamp(self, frozen_clock):
-        v = self._stale_payload(frozen_clock, "specific")
-        assert "time-location" not in _anomalies._compute_anomalies(v)
-
-    def test_auto_mode_trips_on_stale_stamp(self, frozen_clock):
-        v = self._stale_payload(frozen_clock, "auto")
-        assert "time-location" in _anomalies._compute_anomalies(v)
-
-    @pytest.mark.parametrize("mode", [None, "", "  "], ids=["none", "empty", "whitespace"])
-    def test_unset_mode_is_auto_and_trips(self, frozen_clock, mode):
-        # The collector maps an empty env value to None; a legacy pre-litclock-dev#337
-        # env.sh has no key at all. The resolver runs IP-geo for both, so a
-        # stale stamp is a real fault for both.
-        v = self._stale_payload(frozen_clock, mode)
-        assert "time-location" in _anomalies._compute_anomalies(v)
-
-    @pytest.mark.parametrize("mode", ["autp", "AUTO", "Specific", "manual"])
-    def test_invalid_mode_still_trips(self, frozen_clock, mode):
-        # The writer rejects these (config._validate_weather_location_mode),
-        # so they only reach env.sh by hand. The resolver skips IP-geo for
-        # any non-"auto" value, so the stamp freezes exactly as in Specific
-        # mode — but as a fault, and the age check must keep showing it.
-        v = self._stale_payload(frozen_clock, mode)
-        assert "time-location" in _anomalies._compute_anomalies(v)
 
     def test_specific_mode_still_trips_on_empty_city(self, frozen_clock):
         # The gate is on the AGE check only. A Specific-mode clock with no
@@ -315,6 +340,7 @@ class TestIpGeoAgeThreshold:
             if '.strip() or "auto"' in path.read_text(encoding="utf-8"):
                 offenders.append(str(path.relative_to(src_root)))
         assert offenders == [], offenders
+
 
 
 class TestQuoteAgeThreshold:

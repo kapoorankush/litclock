@@ -4,6 +4,21 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Fortune mode: under Settings → Experimental you can switch the clock from literary quotes to fortunes (short sayings, jokes and aphorisms), with the time moving up beside the date; this update installs the fortune collection on your clock.
+- While an update installs, the clock now shows "Updating software — Please don't unplug" instead of a quote that has stopped changing.
+
+### Changed
+
+- This update takes a few minutes longer than usual, because the clock re-checks that it can still draw its quotes correctly before resuming.
+
+### Fixed
+
+- The app no longer warns "Location stale" on a clock that has simply been running for a while, and a clock that starts up before your router after a power cut now keeps retrying until it finds its location; Diagnostics shows whether this start-up's location lookup worked.
+- If Reset WiFi in the app cannot start, the app now says so instead of telling you to join the LitClock-Setup network.
+- Security updates to two of the clock's software libraries.
+
 ## [v0.232.0] - 2026-10-18
 
 ### Changed

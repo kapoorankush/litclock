@@ -871,6 +871,13 @@ class TestBashTripletParity:
             "This clock may still hold its previous owner's settings.",
             "Do NOT pass it on. Power it off and on, then try Factory reset again.",
         ),
+        # litclock-dev#942 — born in the catalog, never a literal; pinned here so
+        # the painted-prefix sweep below covers update.sh too.
+        "update.splash.applying": (
+            "Updating software",
+            "Please don't unplug",
+            "The clock will resume on its own",
+        ),
     }
 
     def test_catalog_values_match_the_former_literals(self):
@@ -901,6 +908,7 @@ class TestBashTripletParity:
             "shutdown-splash.sh",
             "litclock-bootcheck-giveup-splash.sh",
             "litclock-reset-failed-splash.sh",
+            "update.sh",
         ):
             body = (REPO_ROOT / "scripts" / script).read_text(encoding="utf-8")
             code = "\n".join(

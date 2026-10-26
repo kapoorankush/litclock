@@ -97,6 +97,8 @@ class TestMainModeSpecificGate:
 
         assert rc == 0, "main() should exit 0 (clean no-op) when MODE=specific"
         assert before == after, "env.sh must be byte-identical after a MODE=specific no-op"
+        # litclock-dev#958: nor may it leave a per-boot verdict behind.
+        assert not os.path.exists(os.environ["LITCLOCK_IPGEO_BOOT_MARKER"])
 
     def test_main_runs_when_mode_auto(self, tmp_env_file, monkeypatch):
         """Counterpart: when MODE=auto, the oneshot runs the resolver."""
@@ -181,6 +183,21 @@ class TestMainModeSpecificGate:
 
         location_resolver.main()
         assert called == [1]
+
+    @pytest.mark.parametrize("outcome", [False, "raise"])
+    def test_main_exits_tempfail_when_an_auto_lookup_fails(self, tmp_env_file, monkeypatch, outcome):
+        """litclock-dev#958: the unit retries on failure (Restart=on-failure),
+        so a failed Auto lookup must exit non-zero — 75, EX_TEMPFAIL."""
+        _write_env(tmp_env_file, {"WEATHER_LOCATION_MODE": "auto"})
+        monkeypatch.setenv("LITCLOCK_ENV_FILE", tmp_env_file)
+
+        def fake(**kw):
+            if outcome == "raise":
+                raise RuntimeError("boom")
+            return outcome
+
+        monkeypatch.setattr(location_resolver, "resolve_location_from_ip", fake)
+        assert location_resolver.main() == location_resolver.EXIT_TEMPFAIL == 75
 
     def test_main_exits_cleanly_on_missing_env(self, tmp_path, monkeypatch):
         """No env.sh → no panic, just clean exit 0. systemd shouldn't retry-loop."""

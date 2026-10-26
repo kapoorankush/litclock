@@ -32,7 +32,7 @@ from __future__ import annotations
 from ._anomalies import (
     ANOMALY_CPU_TEMP_C,
     ANOMALY_DISK_FREE_PCT,
-    ANOMALY_LAST_IPGEO_AGE_S,
+    ANOMALY_IPGEO_SETTLE_S,
     ANOMALY_MEMORY_FREE_MB,
     ANOMALY_QUOTE_AGE_S,
     ANOMALY_RECENT_LOG_LOOKBACK,
@@ -118,7 +118,7 @@ __all__ = [
     # --- Anomaly thresholds + helpers ---
     "ANOMALY_CPU_TEMP_C",
     "ANOMALY_DISK_FREE_PCT",
-    "ANOMALY_LAST_IPGEO_AGE_S",
+    "ANOMALY_IPGEO_SETTLE_S",
     "ANOMALY_MEMORY_FREE_MB",
     "ANOMALY_QUOTE_AGE_S",
     "ANOMALY_RECENT_LOG_LOOKBACK",

@@ -23,7 +23,8 @@ apt-get install -y \
     libharfbuzz-dev \
     libfribidi-dev \
     libxcb1-dev \
-    jq
+    jq \
+    fortunes
 
 # --- BCM2835 library ---
 BCM2835_VERSION="1.75"

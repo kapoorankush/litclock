@@ -1,4 +1,5 @@
 import argparse
+import functools
 import json
 import logging
 import os
@@ -14,7 +15,7 @@ from glob import glob
 from pathlib import Path
 from random import randrange
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, features
 
 import config
 import quote_corpus
@@ -328,6 +329,17 @@ MASTHEAD_DATE_FLOOR = 32
 # made bounds every measure after it (and the log lines) for a pathological
 # bundle — Pillow is O(n) per measure and refuses a string past ~1M chars.
 MASTHEAD_DATE_MAX_CHARS = 120
+# Fortune mode's masthead (litclock-dev#533, owner decision 2026-08-12): the
+# time leads at the size the date has always used, the date steps down beside
+# it, and the pair is centred between the weather rule and the QR quiet zone.
+# Measured on the shipped font: English's widest lockup ("00:00" + "Mon,
+# September 0x") ends at x=668, against the same MASTHEAD_DATE_RIGHT the
+# quote masthead is held to.
+LOCKUP_TIME_FONT_SIZE = DATE_FONT_SIZE
+LOCKUP_DATE_FONT_SIZE = 28
+LOCKUP_DATE_FLOOR = 20
+LOCKUP_TIME_GAP = 26
+LOCKUP_BAND = (WEATHER_DIVIDER_X + DIVIDER_WIDTH // 2 + 1, QR_POSITION[0] - QR_QUIET_ZONE)  # x=228..701
 # datetime.weekday() order (Monday first) and month order: the catalog names.
 _WEEKDAY_KEYS = (
     "clock.weekday.mon",
@@ -477,8 +489,96 @@ def _fit_masthead_date(draw, text: str):
     return cut.rstrip() + "…", font
 
 
-def _compose_masthead(image, draw, date_text: str, temp_high: str | None, temp_low: str | None, icon_path: str | None):
+def _time_slot_metrics() -> tuple[list[str] | None, int]:
+    """(features, slot width) for the lockup's time — fortune mode only, so a
+    quote-mode minute never pays for it.
+
+    Literata's figures are proportional ("1" is 9px narrower than "0" at
+    48pt), so a centred lockup would slide every minute. Tabular figures
+    where raqm can shape them — then every time is one width, which
+    tests/test_fortune.py checks over all 1,440 — and otherwise a slot sized
+    over all 1,440 times, the TEMP_BAND discipline."""
+    if "time_slot" not in _masthead_cache:
+        font = _masthead_metrics()["date_font"]
+        probe = ImageDraw.Draw(Image.new("1", (4, 4)))
+        # Tabular only if the shaper actually applied it: every digit one
+        # advance. Ten measures prove that; then "00:00" is every time's width.
+        # A font or build that ignores tnum takes the full sweep instead of
+        # trusting a slot measured on one string (review).
+        tabular = features.check("raqm") and (
+            len({probe.textlength(d, font=font, features=["tnum"]) for d in "0123456789"}) == 1
+        )
+        if tabular:
+            feats = ["tnum"]
+            slot = probe.textbbox((0, 0), "00:00", font=font, features=feats)[2]
+        else:
+            feats = None
+            slot = max(
+                probe.textbbox((0, 0), f"{h:02d}:{m:02d}", font=font)[2] for h in range(24) for m in range(60)
+            )
+        _masthead_cache.update(time_features=feats, time_slot=slot)
+    return _masthead_cache["time_features"], _masthead_cache["time_slot"]
+
+
+@functools.lru_cache(maxsize=8)
+def _lockup_date_font(size: int):
+    return ImageFont.truetype(FONT_PATH, size)
+
+
+def _fit_lockup_date(draw, date_text: str, budget: int):
+    """(text, font) for the lockup's date in ``budget`` px: the design size,
+    else smaller down to LOCKUP_DATE_FLOOR, else the floor with the text cut.
+    A translated date CI never saw lands here; English never does."""
+    text = date_text
+    for size in range(LOCKUP_DATE_FONT_SIZE, LOCKUP_DATE_FLOOR - 1, -2):
+        font = _lockup_date_font(size)
+        if _date_ink_width(draw, text, font) <= budget:
+            if size != LOCKUP_DATE_FONT_SIZE:
+                logging.warning(f"masthead lockup date {text!r} drawn at {size}pt")
+            return text, font
+    while text and _date_ink_width(draw, text + "…", font) > budget:
+        text = text[:-1]
+    logging.warning(f"masthead lockup date {date_text!r} too wide even at {LOCKUP_DATE_FLOOR}pt; cut to fit")
+    return (text.rstrip() + "…") if text else "", font
+
+
+def _draw_time_lockup(draw, mh: dict, time_text: str, date_text: str) -> tuple[int, int]:
+    """Fortune mode's dateline: the time in its fixed slot, the date beside
+    it, both on the masthead baseline, the pair centred in LOCKUP_BAND and
+    never past MASTHEAD_DATE_RIGHT. Returns the lockup's (left, right) ink
+    span for the invariant tests."""
+    band_left, band_right = LOCKUP_BAND
+    time_features, slot = _time_slot_metrics()
+    budget = MASTHEAD_DATE_RIGHT - band_left - slot - LOCKUP_TIME_GAP
+    date_text, date_font = _fit_lockup_date(draw, date_text, budget)
+    width = slot + LOCKUP_TIME_GAP + _date_ink_width(draw, date_text, date_font)
+    left = band_left + max(0, (band_right - band_left - width) // 2)
+    left = min(left, MASTHEAD_DATE_RIGHT - width)
+    tw = draw.textbbox((0, 0), time_text, font=mh["date_font"], features=time_features)[2]
+    draw.text(
+        (left + (slot - tw) // 2, mh["baseline"]),
+        time_text,
+        font=mh["date_font"],
+        anchor="ls",
+        features=time_features,
+        fill=0,
+    )
+    draw.text((left + slot + LOCKUP_TIME_GAP, mh["baseline"]), date_text, font=date_font, anchor="ls", fill=0)
+    return left, left + width
+
+
+def _compose_masthead(
+    image,
+    draw,
+    date_text: str,
+    temp_high: str | None,
+    temp_low: str | None,
+    icon_path: str | None,
+    time_text: str | None = None,
+):
     """Draw the top strip: date, weather lockup (when temps present), rules.
+    With ``time_text`` (fortune mode, litclock-dev#533) the dateline becomes
+    the time-and-date lockup instead; nothing else in the strip moves.
     Call AFTER the quote paste — the rule's bottom ink row (DIVIDER_Y+2 ==
     QUOTE_AREA_Y) must overwrite the quote image's top margin row, as it
     always has. A missing/corrupt icon leaves the icon area blank but never
@@ -503,7 +603,9 @@ def _compose_masthead(image, draw, date_text: str, temp_high: str | None, temp_l
         ):
             w = draw.textbbox((0, 0), line_text, font=mh["temp_font"])[2]
             draw.text((mh["slot_right"] - w, line_baseline - mh["temp_asc"]), line_text, font=mh["temp_font"], fill=0)
-    if _date_ink_width(draw, date_text, mh["date_font"]) <= MASTHEAD_DATE_BUDGET:
+    if time_text is not None:
+        _draw_time_lockup(draw, mh, time_text, date_text)
+    elif _date_ink_width(draw, date_text, mh["date_font"]) <= MASTHEAD_DATE_BUDGET:
         draw.text((DATE_X, mh["date_y"]), date_text, font=mh["date_font"], fill=0)
     else:
         # A smaller size sits on the same baseline, so the date still clears
@@ -723,6 +825,57 @@ def _sample_minute(start: datetime) -> datetime | None:
     return None
 
 
+def _pick_quote(now: datetime, allow_nsfw: bool) -> tuple[dict | None, str | None]:
+    """The literary-quote tiers for ``now``: runtime text, then the English
+    PNG set. Returns (quote_meta, fallback_reason) with the same contract as
+    main()'s — exactly one of the two is None. Lifted out of main() for
+    litclock-dev#533, which puts the fortune tier in front of it."""
+    quote_meta = None
+    fallback_reason: str | None = None
+    # litclock-dev#532 R7: the pre-rendered PNG set is ENGLISH-ONLY — the one
+    # standing English asymmetry, kept because those PNGs predate runtime
+    # render. Every other language always renders text: the flag, the
+    # validation marker, the self-test and Stage B decide text-vs-PNG for the
+    # PNG set's language only, and a non-English minute that cannot render
+    # paints the plain time in its own language (R1), never English PNGs.
+    #
+    # quote_language(), not active_language(): with the registry unreadable the
+    # latter calls every device English, and a Spanish clock would be back on
+    # English PNGs (None then — the text tier reports the failure). Guarded:
+    # resolving the language reads two files, and nothing here may stop the
+    # minute's paint (litclock-dev#532 review).
+    language_known = True
+    try:
+        png_tier = strings_catalog.quote_language() == strings_catalog.CANONICAL_LANGUAGE
+    except Exception as e:
+        # Neither tier: the PNGs are English-only, and the text tier without a
+        # known language would also skip English's validation gate. A failed
+        # minute, said plainly (round-2 review).
+        logging.error(f"could not resolve the device language ({e}); painting the plain time")
+        language_known = png_tier = False
+        fallback_reason = FALLBACK_FAILURE
+    runtime_attempted = language_known and ((not png_tier) or _runtime_render_enabled())
+    if runtime_attempted:
+        quote_meta, fallback_reason = get_current_quote_runtime(now=now, allow_nsfw=allow_nsfw)
+    if quote_meta is None and png_tier:
+        png_meta = get_current_quote(now=now, allow_nsfw=allow_nsfw)
+        if png_meta is not None:
+            if runtime_attempted:
+                # "image" alone can't tell "runtime rendering is off on this
+                # device" from "runtime rendering is failing every minute" —
+                # and with the flag defaulting off, EVERY device reports the
+                # former today, which would make the fleet evidence useless
+                # (litclock-dev#543 review F3). Distinguish the alarm condition.
+                png_meta["render_mode"] = "image-fallback"
+            quote_meta, fallback_reason = png_meta, None
+        elif not runtime_attempted:
+            fallback_reason = FALLBACK_GAP if _png_set_present() else FALLBACK_FAILURE
+        # else: the runtime tier's own reason stands — a PNG miss after a
+        # runtime failure is still a failure, after a runtime gap still a gap.
+
+    return quote_meta, fallback_reason
+
+
 def main(at: datetime | None = None):
     """Compose and return the current-minute image plus the metadata the
     __main__ block needs to publish the OV3 status file AFTER the e-ink
@@ -817,48 +970,14 @@ def main(at: datetime | None = None):
     #
     # (Why aware arithmetic, and why datetime.now(): _render_target.)
     now = at if at is not None else _render_target()
-    quote_meta = None
+    mode = _content_mode()
+    quote_meta = get_current_fortune(now) if mode == "fortune" else None
     fallback_reason: str | None = None
-    # litclock-dev#532 R7: the pre-rendered PNG set is ENGLISH-ONLY — the one
-    # standing English asymmetry, kept because those PNGs predate runtime
-    # render. Every other language always renders text: the flag, the
-    # validation marker, the self-test and Stage B decide text-vs-PNG for the
-    # PNG set's language only, and a non-English minute that cannot render
-    # paints the plain time in its own language (R1), never English PNGs.
-    #
-    # quote_language(), not active_language(): with the registry unreadable the
-    # latter calls every device English, and a Spanish clock would be back on
-    # English PNGs (None then — the text tier reports the failure). Guarded:
-    # resolving the language reads two files, and nothing here may stop the
-    # minute's paint (litclock-dev#532 review).
-    language_known = True
-    try:
-        png_tier = strings_catalog.quote_language() == strings_catalog.CANONICAL_LANGUAGE
-    except Exception as e:
-        # Neither tier: the PNGs are English-only, and the text tier without a
-        # known language would also skip English's validation gate. A failed
-        # minute, said plainly (round-2 review).
-        logging.error(f"could not resolve the device language ({e}); painting the plain time")
-        language_known = png_tier = False
-        fallback_reason = FALLBACK_FAILURE
-    runtime_attempted = language_known and ((not png_tier) or _runtime_render_enabled())
-    if runtime_attempted:
-        quote_meta, fallback_reason = get_current_quote_runtime(now=now, allow_nsfw=allow_nsfw)
-    if quote_meta is None and png_tier:
-        png_meta = get_current_quote(now=now, allow_nsfw=allow_nsfw)
-        if png_meta is not None:
-            if runtime_attempted:
-                # "image" alone can't tell "runtime rendering is off on this
-                # device" from "runtime rendering is failing every minute" —
-                # and with the flag defaulting off, EVERY device reports the
-                # former today, which would make the fleet evidence useless
-                # (litclock-dev#543 review F3). Distinguish the alarm condition.
-                png_meta["render_mode"] = "image-fallback"
-            quote_meta, fallback_reason = png_meta, None
-        elif not runtime_attempted:
-            fallback_reason = FALLBACK_GAP if _png_set_present() else FALLBACK_FAILURE
-        # else: the runtime tier's own reason stands — a PNG miss after a
-        # runtime failure is still a failure, after a runtime gap still a gap.
+    if quote_meta is None:
+        # Quotes mode, or fortune mode with nothing to show (package missing,
+        # an empty category pick, a render failure): the literary quote is the
+        # fallback, never a blank body. The masthead still leads with the time.
+        quote_meta, fallback_reason = _pick_quote(now, allow_nsfw)
 
     draw = ImageDraw.Draw(image)
 
@@ -887,7 +1006,11 @@ def main(at: datetime | None = None):
             fallback_reason = FALLBACK_FAILURE
             _draw_time_fallback(draw, now, fallback_reason)
 
-    _compose_masthead(image, draw, masthead_date(now), temp_high, temp_low, icon_path)
+    # One layout per mode (litclock-dev#533 design, 2026-08-12): fortune mode leads with
+    # the time on EVERY frame, including a quote fallback, so the panel never
+    # reconfigures itself minute to minute.
+    time_text = now.strftime("%H:%M") if mode == "fortune" else None
+    _compose_masthead(image, draw, masthead_date(now), temp_high, temp_low, icon_path, time_text=time_text)
 
     _stamp_update_failed_glyph(image, draw)
     _composite_settings_qr(image)
@@ -1117,6 +1240,47 @@ def get_current_quote_runtime(
     }, None
 
 
+def _content_mode() -> str:
+    """LITCLOCK_CONTENT_MODE from the environment runtheclock.sh sourced env.sh into
+    (litclock-dev#533). Never raises: a broken fortune module means quotes."""
+    try:
+        import fortune  # noqa: PLC0415
+
+        return fortune.content_mode(os.environ.get("LITCLOCK_CONTENT_MODE"))
+    except Exception as e:
+        logging.error(f"content mode unreadable ({e!r}); painting quotes")
+        return "quotes"
+
+
+def get_current_fortune(now: datetime) -> dict | None:
+    """Fortune mode's body (litclock-dev#533): the dwell slot's fortune as a
+    ready-to-paste mode-"1" frame plus status metadata, or None — the caller
+    then paints a literary quote. Never raises."""
+    try:
+        import fortune  # noqa: PLC0415
+
+        # The frame check runs inside the pick, so a rejected frame costs one
+        # candidate rather than the whole dwell slot (review).
+        picked = fortune.current_fortune(now, frame_ok=_runtime_frame_ok)
+        if picked is None:
+            return None
+        item, body = picked
+        frame = body.convert("1", dither=Image.Dither.NONE)
+    except Exception as e:
+        logging.error(f"fortune unavailable ({e!r}); painting a quote")
+        return None
+    return {
+        "quote": item.text,
+        "author": item.attribution,
+        "title": "",
+        "time": now.strftime("%H:%M"),
+        "image_path": _persist_runtime_frame(frame) or "",
+        "picked_at": _time.time(),
+        "image": frame,
+        "render_mode": "fortune",
+    }
+
+
 def get_current_quote(
     now: datetime | None = None,
     allow_nsfw: bool = False,
@@ -1244,6 +1408,9 @@ def _write_status_file(quote_meta: dict | None, now: datetime, fallback_reason: 
         #   "image-fallback" runtime was ATTEMPTED and lost -> the alarm
         #   "image"          runtime not enabled here; PNG by design
         #   "time-only"      no quote this minute -> plain-time frame drawn
+        #   "fortune"        fortune mode painted a fortune (litclock-dev#533);
+        #                    a fortune-mode miss paints a quote and reports
+        #                    that quote's own tier
         #   None             unknown (a meta without the field; never
         #                    claim a tier we can't prove — litclock-dev#543 F4)
         # Rendered in the diagnostics page + support bundle.
@@ -1499,6 +1666,27 @@ if __name__ == "__main__":
                 sys.exit(EXIT_NO_SAMPLE)
             print(f"dry-run: sampling {sample.strftime('%H:%M')}", flush=True)
         try:
+            # The self-test (--require-runtime-render / --sample-quote)
+            # certifies the QUOTE renderer, so it pins quotes mode
+            # (litclock-dev#533) — a fortune-mode device must still be able to
+            # earn the pass Stage B gates on. The plain smoke gate honours
+            # LITCLOCK_CONTENT_MODE, and so tests the tier the device actually paints.
+            if args.require_runtime_render or args.sample_quote:
+                os.environ["LITCLOCK_CONTENT_MODE"] = "quotes"
+            elif _content_mode() == "fortune":
+                # The quote tiers are a fortune-mode device's fallback, so the
+                # smoke gate still runs them there (review). Exactly the bar a
+                # quotes-mode device's gate holds them to: an exception exits 1
+                # and reverts; a degraded frame (time-only, a failure reason)
+                # is printed but passes, as it does in quotes mode — the
+                # weekly self-test, pinned to quotes, is what catches a text
+                # renderer that degrades. Stricter here would revert releases
+                # on fortune devices that every other device keeps (Codex).
+                os.environ["LITCLOCK_CONTENT_MODE"] = "quotes"
+                fallback = main()
+                fallback_mode = fallback[1].get("render_mode") if fallback[1] else "time-only"
+                print(f"dry-run: fortune-mode fallback tier render_mode={fallback_mode}", flush=True)
+                os.environ["LITCLOCK_CONTENT_MODE"] = "fortune"
             result = main() if sample is None else main(at=sample)
         except Exception:
             logging.exception("dry-run render failed")

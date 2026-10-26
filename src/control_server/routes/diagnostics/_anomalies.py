@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime  # noqa: F401 — unused since litclock-dev#958, but tests pin _anomalies.datetime (frozen_clock)
 from pathlib import Path
 from typing import Any
 
@@ -57,7 +57,14 @@ ANOMALY_SIGNAL_DBM = -75
 # /plan-design-review P7.1=A, and a slow associate on a weak signal still needs
 # the room.
 ANOMALY_LAN_IP_SETTLE_S = 300
-ANOMALY_LAST_IPGEO_AGE_S = 7 * 24 * 3600
+# litclock-dev#958 (owner decision 2026-10-23, replacing the P7.1=A 7-day age
+# rule): Automatic mode re-resolves once per boot (retrying on failure), so
+# "stale" means this boot's re-resolve did not succeed — read from the
+# per-boot verdict (``ipgeo_this_boot``), with no wall clock involved. The age
+# rule flagged every healthy clock up for a week, and no verdict (an OTA with
+# no reboot yet) is unknown, never stale. Past this much uptime, a verdict
+# still reading "running" means the resolver was killed: a failure.
+ANOMALY_IPGEO_SETTLE_S = 300
 ANOMALY_QUOTE_AGE_S = 90
 ANOMALY_RECENT_LOG_LOOKBACK = 50  # last N entries scanned for ERROR-level
 
@@ -65,7 +72,7 @@ __all__ = [
     "ANOMALY_CPU_TEMP_C",
     "ANOMALY_DISK_FREE_PCT",
     "ANOMALY_LAN_IP_SETTLE_S",
-    "ANOMALY_LAST_IPGEO_AGE_S",
+    "ANOMALY_IPGEO_SETTLE_S",
     "ANOMALY_MEMORY_FREE_MB",
     "ANOMALY_QUOTE_AGE_S",
     "ANOMALY_RECENT_LOG_LOOKBACK",
@@ -171,7 +178,11 @@ def _compute_anomalies(values: dict[str, Any]) -> list[str]:
       is no reachability probe. Accepted gap: the DHCP heuristic never caught
       that state either.
     - ``time-location`` — weather enabled AND (city empty OR (mode is not
-      ``specific``, per :func:`_location_mode`, AND last IP-geo > 7 days)).
+      ``specific``, per :func:`_location_mode`, AND this boot's resolve
+      FAILED or is still "running" past ``ANOMALY_IPGEO_SETTLE_S`` of known
+      uptime — killed)). No verdict is unknown, never stale. litclock-dev#958: Automatic mode re-resolves only at boot,
+      so the old age-only test flagged every healthy clock up for a week. A
+      failed verdict trips even with an empty stamp.
       The mode gate is litclock-dev#836: since litclock-dev#791 the resolver writes
       ``WEATHER_LAST_IP_GEO_AT``, and an owner who then picks a Specific
       location keeps that stamp while the resolver deliberately stops
@@ -196,7 +207,6 @@ def _compute_anomalies(values: dict[str, Any]) -> list[str]:
       ``ANOMALY_RECENT_LOG_LOOKBACK`` buffer entries.
     """
     anomalies: list[str] = []
-    now = datetime.now(tz=UTC)
 
     # System
     sys_anomaly = False
@@ -248,20 +258,20 @@ def _compute_anomalies(values: dict[str, Any]) -> list[str]:
         tl_anomaly = False
         if not values.get("weather_location_name"):
             tl_anomaly = True
-        ipgeo_iso = values.get("last_ip_geo_at")
-        # litclock-dev#836 — in Specific mode the stamp is a frozen record of the last
-        # auto resolve, not a fault, and the resolver will never refresh it.
-        # Only the VALID non-auto value is exempt: see _location_mode.
-        if _location_mode(values) != "specific" and isinstance(ipgeo_iso, str) and ipgeo_iso:
-            try:
-                ipgeo_dt = datetime.fromisoformat(ipgeo_iso)
-                if ipgeo_dt.tzinfo is None:
-                    ipgeo_dt = ipgeo_dt.replace(tzinfo=UTC)
-                age = (now - ipgeo_dt).total_seconds()
-                if age > ANOMALY_LAST_IPGEO_AGE_S:
-                    tl_anomaly = True
-            except ValueError:
-                pass
+        this_boot = values.get("ipgeo_this_boot")
+        # litclock-dev#836 — in Specific mode the resolver never runs, by design. Only
+        # the VALID non-auto value is exempt: see _location_mode.
+        if _location_mode(values) != "specific":
+            raw_uptime = values.get("uptime_s")
+            uptime = None if isinstance(raw_uptime, bool) else _coerce_float(raw_uptime)
+            settled = uptime is not None and uptime >= ANOMALY_IPGEO_SETTLE_S
+            # litclock-dev#958: only this boot's own verdict decides. "failed"
+            # is stale; "running" is stale only once the boot has provably
+            # settled (a killed resolver), never on an unreadable uptime.
+            # "ok", "superseded" and no verdict at all are not: the old 7-day
+            # age rule WAS the false positive (owner decision on the review).
+            if this_boot == "failed" or (this_boot == "running" and settled):
+                tl_anomaly = True
         if tl_anomaly:
             anomalies.append("time-location")
 

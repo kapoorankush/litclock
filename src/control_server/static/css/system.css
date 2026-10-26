@@ -276,6 +276,14 @@
   outline-offset: 2px;
 }
 
+/* DESIGN.md error state: --error accent line at the top of the card, as
+ * .hero-unreachable draws it (litclock-dev#949 review: the retry and
+ * reset-refused cards claimed the treatment without drawing it). */
+.reconnect-state--error {
+  border-top: 2px solid var(--error);
+  padding-top: var(--sp-md);
+}
+
 .reconnect-state--error .reconnect-state__title {
   /* Error state stays in default ink — italic accent is for "in progress". */
   color: var(--ink);

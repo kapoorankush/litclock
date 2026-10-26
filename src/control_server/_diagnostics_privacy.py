@@ -100,6 +100,7 @@ PRIVACY_POLICY: Final[dict[str, RowPolicy]] = {
     "weather_units": RowPolicy("safe-clear", "safe-clear"),
     "weather_enabled": RowPolicy("safe-clear", "safe-clear"),
     "last_ip_geo_at": RowPolicy("safe-clear", "safe-clear"),
+    "ipgeo_this_boot": RowPolicy("safe-clear", "safe-clear"),
     # --- Services. systemd unit state is operational, not PII. ---
     "service_states": RowPolicy("safe-clear", "safe-clear"),
     # --- Last quote (corpus content, not user PII) ---

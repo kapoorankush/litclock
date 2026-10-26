@@ -184,7 +184,7 @@ Every LitClock serves a small web app on your home network at **`http://litclock
 | Screen | What it does |
 |-----|--------------|
 | **Status** | Current quote, weather, WiFi, and version at a glance |
-| **Settings** | Location (automatic by IP, or type any place worldwide), weather on/off, Fahrenheit/Celsius, mature-content filter |
+| **Settings** | Location (automatic by IP, or type any place worldwide), weather on/off, Fahrenheit/Celsius, mature-content filter, and [Fortune mode](#fortune-mode-experimental) |
 | **Updates** | Current version, release notes, and a button to apply an update now |
 | **System** | Restart, power off, reset WiFi, factory reset, and "Prepare for Gifting" |
 | **Diagnostics** (separate page) | Read-only health panel at `/diagnostics` — last render, network, services, recent logs, and a downloadable support-log bundle. Linked from the app's live-status ribbon |
@@ -194,6 +194,24 @@ Every LitClock serves a small web app on your home network at **`http://litclock
   <img src="docs/images/pwa-settings.png" alt="Settings tab — location, weather, temperature" width="260">
   <img src="docs/images/pwa-system.png" alt="System tab — restart, reset WiFi, factory reset" width="260">
 </p>
+
+### Fortune mode (experimental)
+
+Want a change from the literary quotes? Settings → **Experimental** switches the clock to **fortunes**: short sayings, jokes and aphorisms from the classic Unix `fortune` collection. The clock stays a clock: the time moves up into the header beside the date, and the body shows a fortune instead of a quote.
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/fortune-frame.png" alt="E-ink frame in fortune mode: the header shows the weather, 07:42 beside Fri, October 23, and the settings QR code; the body reads Early to bed and early to rise, makes a man healthy, wealthy and wise, credited to Benjamin Franklin, 1735" width="420"></td>
+    <td align="center"><img src="docs/images/pwa-experimental.png" alt="The Experimental section in the control app: What the clock shows, with Literary quotes and Fortunes; Minutes between fortunes, with 1, 5, 10 and 15; a Fortune databases list; and a Save button" width="260"></td>
+  </tr>
+</table>
+
+- **How often it changes:** a new fortune every minute by default, or every 5, 10 or 15 minutes.
+- **Which fortunes:** every ordinary collection installed on the clock is used unless you pick some under **Fortune databases**. Offensive collections are used only if you tick them by name and also allow mature content, and Raspberry Pi OS doesn't ship any.
+- **Always something on screen:** if a fortune can't be shown (the collection is missing, or nothing fits), the clock falls back to that minute's literary quote, exactly as it would in quotes mode.
+- **English only:** the fortunes are in English whatever language the clock uses.
+
+Switch back to **Literary quotes** at any time; your fortune settings are kept for next time. The fortunes come from Debian's `fortunes` package: new images include it, and older clocks install it on their next update. None are stored in this repository. Being experimental, the feature may change or be removed in a later update.
 
 ### Configuration
 
@@ -225,6 +243,9 @@ export WEATHER_TTL=3600
 | `ALLOW_NSFW_QUOTES` | Show quotes with mature content (default: `false`) |
 | `WEATHER_TTL` | Weather cache duration in seconds (default: `3600`) |
 | `OPENWEATHERMAP_APIKEY` | Optional — use OpenWeatherMap instead of Open-Meteo (see below) |
+| `LITCLOCK_CONTENT_MODE` | `quotes` (default) or `fortune` — see [Fortune mode](#fortune-mode-experimental) |
+| `LITCLOCK_FORTUNE_DWELL_MINUTES` | Minutes each fortune stays up, 1–60 (default: `1`) |
+| `LITCLOCK_FORTUNE_CATEGORIES` | Comma-separated fortune collections to use; empty means every ordinary (non-offensive) one (default: empty) |
 
 <details>
 <summary><b>Advanced: using OpenWeatherMap instead of Open-Meteo</b></summary>

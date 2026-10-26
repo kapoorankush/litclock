@@ -2369,6 +2369,20 @@
       "plural": null
     },
     {
+      "key": "diag.row.ipgeo_this_boot",
+      "english": "IP-geo this boot",
+      "surface": "Control app",
+      "surface_note": "The control app's diagnostics view.",
+      "length_sensitive": false,
+      "en_length": 16,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
       "key": "diag.row.kernel",
       "english": "Kernel",
       "surface": "Control app",
@@ -4529,6 +4543,174 @@
       "surface_note": "The control app's Settings tab.",
       "length_sensitive": false,
       "en_length": 56,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.categories_hint",
+      "english": "Leave every box unticked to use all the ordinary ones. A mature one is used only when you tick it and NSFW quotes are allowed.",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 126,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.categories_legend",
+      "english": "Fortune databases",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 17,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.category_mature",
+      "english": "mature",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 6,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.category_missing",
+      "english": "not installed",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 13,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.dwell_label",
+      "english": "Minutes between fortunes",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 24,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.fortune_hint",
+      "english": "Fortunes come from the Debian fortune databases, in English whatever the clock's language. The time moves up beside the date.",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 125,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.hint",
+      "english": "Features still being tried out. They may change or disappear in a later update.",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 79,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.mode_fortune",
+      "english": "Fortunes",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 8,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.mode_legend",
+      "english": "What the clock shows",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 20,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.mode_quotes",
+      "english": "Literary quotes",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 15,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.no_databases",
+      "english": "No fortune databases are installed on this clock yet. The next software update installs them.",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 93,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.title",
+      "english": "Experimental",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 12,
       "slots": [],
       "rich": {
         "allowed": [],
@@ -7504,6 +7686,48 @@
       "plural": null
     },
     {
+      "key": "system.card.wifi_reset_refused.body",
+      "english": "Your clock is still on its WiFi and working normally. Restart the clock from this tab, then try again.",
+      "surface": "Control app",
+      "surface_note": "The phone/desktop control app (System tab).",
+      "length_sensitive": false,
+      "en_length": 102,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "system.card.wifi_reset_refused.button",
+      "english": "Back to System",
+      "surface": "Control app",
+      "surface_note": "The phone/desktop control app (System tab).",
+      "length_sensitive": false,
+      "en_length": 14,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "system.card.wifi_reset_refused.title",
+      "english": "The reset didn’t start.",
+      "surface": "Control app",
+      "surface_note": "The phone/desktop control app (System tab).",
+      "length_sensitive": false,
+      "en_length": 23,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
       "key": "system.gift.help",
       "english": "Up to 80 bytes across 1–2 lines (about 80 plain letters; emoji and accented characters count for more). Leave blank to use the default welcome. Backticks and {code}${/code} aren't allowed.",
       "surface": "Control app",
@@ -7882,6 +8106,48 @@
       "plural": null
     },
     {
+      "key": "update.splash.applying.message",
+      "english": "Please don't unplug",
+      "surface": "E-ink splash",
+      "surface_note": "Shown on the physical panel while a software update installs — width-limited.",
+      "length_sensitive": true,
+      "en_length": 19,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "update.splash.applying.submessage",
+      "english": "The clock will resume on its own",
+      "surface": "E-ink splash",
+      "surface_note": "Shown on the physical panel while a software update installs — width-limited.",
+      "length_sensitive": true,
+      "en_length": 32,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "update.splash.applying.title",
+      "english": "Updating software",
+      "surface": "E-ink splash",
+      "surface_note": "Shown on the physical panel while a software update installs — width-limited.",
+      "length_sensitive": true,
+      "en_length": 17,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
       "key": "updates.apply",
       "english": "Apply update…",
       "surface": "Control app",
@@ -8232,6 +8498,20 @@
       "plural": null
     },
     {
+      "key": "validator.content_mode_enum",
+      "english": "must be 'quotes' or 'fortune'",
+      "surface": "Messages",
+      "surface_note": "Form-validation error messages.",
+      "length_sensitive": false,
+      "en_length": 29,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
       "key": "validator.country_code",
       "english": "must be a 2-letter UPPERCASE ISO country code (e.g. 'US', 'GB', 'IN')",
       "surface": "Messages",
@@ -8257,6 +8537,45 @@
           "name": "ch",
           "count": 1,
           "note": "a single character"
+        }
+      ],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "validator.fortune_categories",
+      "english": "must be a comma-separated list of fortune database names",
+      "surface": "Messages",
+      "surface_note": "Form-validation error messages.",
+      "length_sensitive": false,
+      "en_length": 56,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "validator.fortune_dwell",
+      "english": "must be a whole number of minutes from {lo} to {hi}",
+      "surface": "Messages",
+      "surface_note": "Form-validation error messages.",
+      "length_sensitive": false,
+      "en_length": 51,
+      "slots": [
+        {
+          "name": "hi",
+          "count": 1,
+          "note": "a value the software fills in"
+        },
+        {
+          "name": "lo",
+          "count": 1,
+          "note": "a value the software fills in"
         }
       ],
       "rich": {

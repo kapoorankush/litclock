@@ -161,6 +161,7 @@ The first-boot flow (`scripts/first-boot.sh`) provisions WiFi via a web UI; ever
 - **Captive portal**: Connect a phone to the hotspot. The setup page should auto-open (or be reachable at the displayed IP). On iOS, the journal should show the litclock-dev#526 coax sequence: a `CAPTIVE-PROBE` line with branch `cna-302` or `cna-302-hostmatch` (grep `-> cna-302`, matches both) `status=302` for the `CaptiveNetworkSupport wispr` UA, then (if the sheet rises) a Safari-family UA fetching `/cna` (bridge, 200). A `cna-bridge` 200 answered to a wispr UA means the UA split regressed. Ideally also verify no regression on one iOS-18-class device and macOS (their detection UA is also CaptiveNetworkSupport).
 - **WiFi provisioning**: Select a network from the setup page, enter credentials. Verify the Pi connects and transitions to clock mode.
 - **WiFi provisioning failure + retry**: Enter a wrong WiFi password. The page should auto-refresh and show an error banner ("Couldn't join your WiFi…"). Fix the password and resubmit. The Pi should connect on retry. Banner must NOT use the deprecated "home WiFi" phrasing.
+- **PWA Reset WiFi refused (litclock-dev#939)**: the System tab's Reset WiFi must say "The reset didn’t start." when the reset script refuses, and keep "Join LitClock-Setup" when it runs. The verdict is the clock's own (`curl -s http://<clock>/api/wifi/reset/status` → `{"state": …}`), never timing. Stage a refusal WITHOUT touching WiFi: `sudo systemctl edit litclock-wifi-reset.service` → `[Service]` `Environment=LITCLOCK_NMCLI=/nonexistent/nmcli`, which refuses at the nmcli pre-flight before any state change. Run Reset WiFi from the PWA: expect the refused card within a few seconds, `state` = `refused`, `journalctl -u litclock-wifi-reset` showing `refusing to reset (would soft-brick)`, and the clock still on its WiFi. **Do NOT stage it by masking `litclock-firstboot`**: its unit file lives directly in `/etc/systemd/system`, so `mask` fails, and a `systemctl enable` run to "prove" the guard ENABLES first-boot on a provisioned clock. For the started path without wiping WiFi, override the unit instead: `ExecStart=` then `ExecStart=/bin/sh -c "sleep 2; systemctl stop litclock-control.service"` (Step 1 only); the handoff card must stay, and once `litclock-control` is started again `state` reads `unknown` (systemd has unloaded the finished unit) — anything but `refused` is the pass. Measured 2026-10-21: refused card at 3.8s; started path kept the handoff card. Run the control first, on code WITHOUT this change (anything before litclock-dev#949), with the refusal staged: it must show the stuck "Join LitClock-Setup" card, or the check proves nothing. Remove the drop-in and `daemon-reload` afterwards.
 - **IP-geo auto-populate (US residential)**: On a US residential WiFi, after submit verify env.sh contains `WEATHER_LATITUDE`, `WEATHER_LONGITUDE`, `WEATHER_LOCATION_NAME` (City, State), `WEATHER_UNITS=imperial`, and `timedatectl` reports the correct timezone — all from one ip-api.com call.
 - **IP-geo auto-populate (non-US)**: On a non-US WiFi (or via VPN), verify `WEATHER_UNITS=metric` and tz matches the egress country.
 - **IP-geo hard failure**: Block `ip-api.com` (firewall rule or DNS block) during provisioning. Resolver retries 4 times with 1/3/9s backoff. After hard failure: env.sh location keys stay empty, timezone unset. PR2 handoff splash will surface the browser-tz fallback.
@@ -598,6 +599,50 @@ sudo systemctl start litclock-update.service && journalctl -fu litclock-update
   (`echo '{' > languages/en/strings.json`) and it must print `0` and STILL exit
   0 — a non-zero exit with empty stdout is indistinguishable from a dead
   interpreter, and the gate would have to guess. Restore the bundle afterwards.
+- **The "Updating software" splash paints on an APPLIED release only (litclock-dev#942).**
+  Needs a release that changes HEAD, so use the local-remote harness, and first
+  confirm the run logged `Updated: <old> → <the sha you built>` — a reused tag
+  resolves to the old sha and logs `Already up to date`, which here reads like a
+  correct no-op (see the tag-reuse trap in the Stage B section). Then:
+  `Painted the updating splash` shortly after `Updated:`, and the quote back after
+  Phase 7 — `picked_at` in `/run/litclock/current-quote.json` LATER than the
+  journal timestamp of the `Painted` line (merely "changed" is not enough: the
+  in-flight `:56` paint the splash waits for can rewrite it after `Updated:`).
+  A tick with nothing new logs `Already up to date` and NO splash line. **The
+  journal proves delivery, not content**: a catalog that lacks the keys paints
+  their NAMES and still succeeds, so look at the glass once, or paint the same
+  triplet offscreen with `--save` and read it. **The `Painted` line is evidence
+  only because the paint passes `status --require-panel`**: plain `status` exits
+  0 on `'GPIO busy'` or no display, which is how the line could not fail before
+  the litclock-dev#943 review. Prove that on the device while the `:56` paint
+  holds GPIO — it claims the panel at about `:58` (after startup, the quote pick
+  and any weather fetch) and holds it until the process exits around `:06`, so
+  `ActiveState=activating` alone is not proof, and a probe fired at `:56`-`:57`
+  can take the panel first:
+
+  ```bash
+  cd /home/pi/litclock
+  S=$(date +%S); sleep $(( (58 - 10#$S + 60) % 60 ))   # land at ~:58
+  for f in "" --require-panel; do
+    out=$(timeout 20 ./venv/bin/python3 src/eink_display.py status $f \
+          --catalog-prefix update.splash.applying 2>&1); rc=$?
+    echo "[${f:-plain}] rc=$rc busy=$(grep -c "GPIO busy" <<<"$out")"
+  done
+  ```
+
+  PASS is plain `rc=0` and `--require-panel` `rc=1`, **each with `busy=1`**. A
+  probe with `busy=0` reached a free panel and proves nothing either way: rerun
+  the block. Use the venv interpreter as written — the file's shebang is
+  `/usr/bin/env python3`, so `./src/...` runs system Python, whose missing
+  imports exit 1 for reasons unrelated to the panel. Measured 2026-10-19: `0`
+  and `1`, both busy. Also expect the splash to be SKIPPED on a bootcheck
+  rollback and while `.handoff-complete` is absent; both are unit-tested only.
+  The rollback skip is stageable with the existing rollback harness (Stage B
+  section) and was left off the bench by choice; the handoff skip is not
+  stageable by deleting the marker, because update.sh's handoff migration
+  re-creates it whenever the timezone is known. The splash is never a failure:
+  a failed paint logs `could not paint the updating splash (rc N)` and the
+  update carries on.
 
 ### Stage B — the runtime-render migration (litclock-dev#871)
 
@@ -798,6 +843,56 @@ are identical), so it cannot test the snapshot path; the 2026-09-24 run did.
   exercises a device whose self-test passes and whose panel then fails, because
   that device does not exist to hand.
 
+### Fortune mode (litclock-dev#533)
+
+Settings → Experimental (shown to everyone since 2026-10-24). The suite covers
+the reader, the fit, the lockup geometry and the lab form against SYNTHETIC
+databases; what it cannot see is Debian's real package on Raspberry Pi OS, the
+glass, and the OTA path that installs it.
+
+- **The OTA installs the databases, once.** On a device flashed before this
+  release, the first tick that applies it must log `Installing fortune databases`
+  and leave `dpkg-query -W fortunes` installed; the NEXT tick must not log it
+  again. On a FRESH image the lists are empty, so expect the
+  `refreshing package lists and retrying once` line before it succeeds — that
+  line is the path the fleet takes. `fortunes-off` is not installed anywhere:
+  bookworm's archive has none (`E: Unable to locate package fortunes-off`,
+  measured on the bench 2026-10-23), so there are no mature fortunes on the
+  fleet and the NSFW half of the pool rule is reader-only.
+- **The section is always there; its fortune fields follow the pill.** Plain
+  `/settings` shows "Experimental" with only the mode pill while "Literary
+  quotes" is checked; tapping "Fortunes" must reveal "Minutes between fortunes"
+  and the database list at once, before any Save (CSS `:has()`), and tapping
+  back must hide them. Pick Fortunes, Save: within ~1 min the panel shows the
+  time-led masthead and a fortune, and `jq -r .render_mode
+  /run/litclock/current-quote.json` says `fortune`. Switch back to quotes and
+  Save: the section must still be there.
+- **The fallback paints a quote, and prove the check can fail first.** Add
+  `export LITCLOCK_FORTUNE_DIR=/nonexistent` to `env.sh`: the next frame must be
+  a literary quote (`render_mode` `runtime`, not `fortune`) under the SAME
+  time-led masthead. Remove the line and confirm `fortune` returns — that pair
+  is what proves the field moves at all.
+- **Dwell, read from SSH.** Five scheduled minutes with
+  `jq -r '"\(.time) \(.quote[:40])"' /run/litclock/current-quote.json`: at the
+  default 1 the quote must change every minute. Set 5 in the Experimental
+  section and confirm it holds across a slot (:00-:04) and changes at :05,
+  while `.time` advances every minute.
+- **Look at the glass once.** The lockup at arm's length (the 28pt date beside
+  the 48pt time on 1-bit e-ink is the decision nobody has seen on a panel yet),
+  a short fortune at the 56pt poster cap, a long one near the 22pt floor, and
+  the minute 10:59 -> 11:00: with tabular figures the lockup must not shift
+  sideways. Also eyeball the reserve option the 2026-08-12 design comment asked
+  for (time alone, 72pt, no date) if the lockup reads badly — it is not built.
+- **The self-test still certifies the quote renderer.** On a device in fortune
+  mode, `sudo rm /var/lib/litclock/runtime-render-selftest.json` and run a tick:
+  the `[selftest]` line must say `render_mode=runtime` (pinned to quotes) while
+  the `[smoke]` line says `render_mode=fortune` (the device's own tier). A
+  `[selftest] ... render_mode=fortune` means the pin regressed, and Stage B
+  would refuse that device forever.
+- **The smoke gate renders both tiers on a fortune device.** In fortune mode a
+  tick's `[smoke]` lines must include `fortune-mode fallback tier render_mode=`
+  (the quote tier it falls back to) followed by `render_mode=fortune`.
+
 ### litclock-dev#337 — Location/Weather/Temperature IA (post-design-review, A9-A18)
 
 After litclock-dev#337 lands, the Settings tab IA changes substantially. Replace the pre-litclock-dev#337 expectations with these:
@@ -818,6 +913,8 @@ After litclock-dev#337 lands, the Settings tab IA changes substantially. Replace
 - **Gift mode → fresh-flash recipient (A3)**: `sudo ./scripts/reset-setup.sh --gift-mode` on Pi A → SD card to Pi B (or reflash Pi A) → connect to new WiFi → verify first-boot resolver writes `WEATHER_LOCATION_MODE=auto` + `WEATHER_IP_COUNTRY` populated + UNITS matches recipient's country (regardless of what the gifter had).
 - **No Clear button anywhere**: PWA → Location section (any state). Verify no "Clear location" button renders. (Per A10 — Automatic pill IS the reset.)
 - **No-JS form fallback still works**: Disable JavaScript in browser (Safari → Advanced → "Show Develop menu" → Develop → Disable JavaScript). Reload Settings tab. All forms should still POST; Save buttons render for every section (including Weather and Temperature whose JS-enabled flow is auto-save). Server-side validation (A14) backstops the empty-Specific-Place case with a 422 + "Type a place or pick Automatic." inline error.
+
+- **"Location stale" means this boot's re-resolve failed (litclock-dev#958).** After a reboot, once `systemctl show litclock-reresolve-location -p ExecMainStartTimestamp` is set, `cat /run/litclock/ipgeo-boot-id` must print the CURRENT `cat /proc/sys/kernel/random/boot_id` followed by `ok` (briefly `running`), and Diagnostics → Time & location must read "IP-geo this boot: ok" with no stale pill however old "Last IP-geo" is. The control, and it must fail: block `ip-api.com` (`/etc/hosts`) and reboot — the marker must say `failed` and the pill must show. Then the power-cut case: unblock within a few minutes WITHOUT rebooting — the unit's `Restart=on-failure` must bring the marker to `ok` within ~2 minutes (`journalctl -u litclock-reresolve-location -b` shows the restarts), and the panel must keep painting throughout (nothing waits on this unit). Right after an OTA with no reboot there is no marker: no pill, by design. On a fresh flash "Last IP-geo" may stay EMPTY if NTP had not synced — never a date before the boot.
 
 **Quick way to re-test first-boot:**
 

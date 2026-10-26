@@ -512,6 +512,117 @@
   </form>
 </section>
 
+{# ─── Experimental (litclock-dev#533) ──────────────────────────────────────
+   Shown to everyone (owner decision 2026-10-24, reversing the ?lab=1 gate).
+   The fortune-only fields sit in [data-fortune-only], which settings.css hides
+   while "Literary quotes" is checked — :has(), so it follows the tap live with
+   no JS, and a browser without :has() simply shows them. Hidden fields still
+   post, so a quotes-mode save keeps the fortune settings as they were. No-JS
+   by construction — a plain form with one Save button. #}
+{%- set content_mode = (s.get('LITCLOCK_CONTENT_MODE') or 'quotes').strip().lower() -%}
+{%- set fortune_dbs = fortune_categories() -%}
+{%- set picked = (s.get('LITCLOCK_FORTUNE_CATEGORIES') or '').lower().split(',') | map('trim') | reject('equalto', '') | list -%}
+{%- set dwell = (s.get('LITCLOCK_FORTUNE_DWELL_MINUTES') or '1').strip() -%}
+<section class="settings-section" role="region" aria-labelledby="settings-lab-h" id="lab">
+  <h2 id="settings-lab-h" class="settings-section__title">{{ t('settings.lab.title') }}</h2>
+  <p class="settings-section__hint">{{ t('settings.lab.hint') }}</p>
+
+  <form class="settings-form"
+        method="POST"
+        action="{{ url_for('settings.settings_post') }}"
+        data-section="lab">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="section" value="lab">
+
+    <fieldset class="settings-row settings-row--pill">
+      <legend class="settings-row__label">{{ t('settings.lab.mode_legend') }}</legend>
+      <div class="settings-segmented" role="radiogroup" aria-label="{{ t('settings.lab.mode_legend') }}">
+        {% for value, key in (('quotes', 'settings.lab.mode_quotes'), ('fortune', 'settings.lab.mode_fortune')) %}
+        {#- No server-rendered .is-selected: nothing in settings.js moves it for
+            these pills, so it would stay lit beside the newly tapped option.
+            segmented.css fills on :has(:checked), which follows the radio. #}
+        <label class="settings-segmented__opt">
+          <input type="radio" class="settings-segmented__input" name="LITCLOCK_CONTENT_MODE" value="{{ value }}"
+                 {% if content_mode == value %}checked{% endif %}>
+          <span>{{ t(key) }}</span>
+        </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    {% if field_errors.get('LITCLOCK_CONTENT_MODE') %}
+      <p class="settings-row__error" role="alert">{{ field_errors['LITCLOCK_CONTENT_MODE'] }}</p>
+    {% endif %}
+
+    <div class="settings-fortune-only" data-fortune-only>
+    <p class="settings-row__help">{{ t('settings.lab.fortune_hint') }}</p>
+
+    <fieldset class="settings-row settings-row--pill">
+      <legend class="settings-row__label">{{ t('settings.lab.dwell_label') }}</legend>
+      <div class="settings-segmented" role="radiogroup" aria-label="{{ t('settings.lab.dwell_label') }}">
+        {%- set dwell_choices = fortune_dwell_choices() -%}
+        {%- if dwell.isdigit() and 1 <= dwell | int <= 60 and dwell | int not in dwell_choices -%}
+          {#- A hand-set value the pill does not offer stays visible and kept. -#}
+          {%- set dwell_choices = (dwell_choices | list) + [dwell | int] -%}
+        {%- endif -%}
+        {% for n in dwell_choices %}
+        <label class="settings-segmented__opt">
+          <input type="radio" class="settings-segmented__input" name="LITCLOCK_FORTUNE_DWELL_MINUTES" value="{{ n }}"
+                 {% if dwell.isdigit() and dwell | int == n %}checked{% endif %}>
+          <span>{{ n }}</span>
+        </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    {% if field_errors.get('LITCLOCK_FORTUNE_DWELL_MINUTES') %}
+      <p class="settings-row__error" role="alert">{{ field_errors['LITCLOCK_FORTUNE_DWELL_MINUTES'] }}</p>
+    {% endif %}
+
+    {% if fortune_dbs %}
+    <details class="settings-details"{% if picked %} open{% endif %}>
+      <summary class="settings-details__summary">{{ t('settings.lab.categories_legend') }}</summary>
+      <p class="settings-details__help">{{ t('settings.lab.categories_hint') }}</p>
+      {# Marks the list as rendered: without it (no databases installed) a save
+         must leave LITCLOCK_FORTUNE_CATEGORIES alone rather than reset it to "all". #}
+      <input type="hidden" name="fortune_categories_listed" value="1">
+      {% for name, mature in fortune_dbs %}
+      <div class="settings-row settings-checkbox-row">
+        <label class="settings-checkbox-row__head">
+          <input type="checkbox" name="fortune_category" value="{{ name }}"
+                 {% if name in picked %}checked{% endif %}>
+          <span class="settings-checkbox-row__head-label">{{ name }}{% if mature %} ({{ t('settings.lab.category_mature') }}){% endif %}</span>
+        </label>
+      </div>
+      {% endfor %}
+      {#- A stored pick that is not installed right now (a package upgrade, a
+          hand-edit) still gets a box, ticked and marked, so a mode-only save
+          keeps it AND the owner can untick it — a hidden carry-through could
+          never be cleared and would pin the clock to quotes (re-review). -#}
+      {%- set listed_names = fortune_dbs | map('first') | list -%}
+      {% for name in picked if name not in listed_names %}
+      <div class="settings-row settings-checkbox-row">
+        <label class="settings-checkbox-row__head">
+          <input type="checkbox" name="fortune_category" value="{{ name }}" checked>
+          <span class="settings-checkbox-row__head-label">{{ name }} ({{ t('settings.lab.category_missing') }})</span>
+        </label>
+      </div>
+      {% endfor %}
+    </details>
+    {% else %}
+    <p class="settings-row__help">{{ t('settings.lab.no_databases') }}</p>
+    {% endif %}
+    {% if field_errors.get('LITCLOCK_FORTUNE_CATEGORIES') %}
+      <p class="settings-row__error" role="alert">{{ field_errors['LITCLOCK_FORTUNE_CATEGORIES'] }}</p>
+    {% endif %}
+    </div>
+
+    {# Not data-no-js-only: this section has no auto-save layer, so the
+       button is the save path for JS users too. #}
+    <div class="settings-form__actions">
+      <button type="submit" class="settings-button settings-button--primary">{{ t('settings.common.save') }}</button>
+    </div>
+  </form>
+</section>
+
 {# Footer cross-link to System → Reset WiFi (DESIGN.md IA).
    M7 OV-6 (codex /design-review): the link MUST NOT use .accent-link at
    body-text size — DESIGN.md "Color contrast" (line 315) names accent-on-
