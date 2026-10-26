@@ -20,11 +20,16 @@ gift-mode all stay set). The user only re-enters WiFi credentials.
 Routes:
 - POST /api/wifi/reset — confirm-token gated, rate-limited, blocks during
                          active update.
+- GET  /api/wifi/reset/status — what the reset job did since the last
+                         dispatch, for the PWA's refused card (litclock-dev#939).
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
+import time
+from pathlib import Path
 from typing import Final
 
 from flask import Blueprint, current_app, jsonify, request
@@ -34,6 +39,7 @@ import strings_catalog  # noqa: E402 — src/ on sys.path; hard dep since litclo
 from .. import update_state
 from ..confirm_tokens import ConfirmTokenStore, envelope_for_consume_outcome
 from ..errors import envelope
+from ..handoff import _setup_complete_path
 from ..rate_limit import RateLimiter
 
 bp = Blueprint("wifi", __name__)
@@ -41,6 +47,11 @@ bp = Blueprint("wifi", __name__)
 SYSTEMCTL: Final[str] = update_state.SYSTEMCTL_BIN
 SYSTEMCTL_TIMEOUT_S: Final[int] = 5
 RESET_UNIT: Final[str] = "litclock-wifi-reset.service"
+# litclock-dev#939 — when THIS server last queued the reset: CLOCK_MONOTONIC
+# (the clock systemd stamps unit state changes with) and wall time (the clock
+# file mtimes use). tmpfs, so it survives the ExecStopPost failsafe restarting
+# this server and resets with a reboot, exactly as the monotonic clock does.
+DEFAULT_DISPATCH_FILE: Final[Path] = Path("/run/litclock/wifi-reset-dispatch")
 
 
 def _store() -> ConfirmTokenStore:
@@ -136,6 +147,7 @@ def reset() -> tuple[object, int]:
             409,
         )
 
+    _record_dispatch()
     try:
         subprocess.run(
             ["sudo", SYSTEMCTL, "start", "--no-block", RESET_UNIT],
@@ -204,3 +216,103 @@ def reset() -> tuple[object, int]:
         ),
         200,
     )
+
+
+def _dispatch_file() -> Path:
+    return Path(os.environ.get("LITCLOCK_WIFI_RESET_DISPATCH_FILE", str(DEFAULT_DISPATCH_FILE)))
+
+
+def _record_dispatch() -> None:
+    """Stamp the dispatch BEFORE queueing, so any unit state change the
+    status endpoint later sees is provably newer. Best effort: without the
+    stamp the status reads ``unknown`` and the PWA keeps its handoff card,
+    which is the behaviour before litclock-dev#939."""
+    try:
+        _dispatch_file().write_text(f"{time.monotonic():.6f} {time.time():.6f}\n", encoding="utf-8")
+    except OSError as exc:
+        current_app.logger.warning("could not record the WiFi reset dispatch: %s", exc)
+
+
+@bp.route("/api/wifi/reset/status", methods=["GET"])
+def reset_status() -> tuple[object, int]:
+    """What the reset job did since this server last queued it (litclock-dev#939).
+
+    ``POST /api/wifi/reset`` answers 200 once the job is QUEUED; the script
+    can still refuse before its Step 1 stops this server. The PWA used to
+    infer a refusal from this server still answering, which is wrong after a
+    reset that worked and was re-provisioned onto the same network. This
+    reads the unit instead. Read-only ``systemctl show`` needs no sudo.
+
+    ``state``:
+      * ``refused`` — the unit ended FAILED after our dispatch AND
+        ``.setup-complete`` is older than the dispatch, i.e. the script
+        stopped before its Step 2 removed it (the nmcli pre-flight, the litclock-dev#938
+        enable guard, a failed ``rm``). The clock is still on its WiFi and no
+        LitClock-Setup network is coming. A failure AFTER Step 2 is not a
+        refusal: the failsafe restarts first-boot, which can re-provision on
+        the same network and recreate the marker, so the reset did run
+        (litclock-dev#949 re-review: a Step 3 timeout read as "didn't start").
+      * ``pending`` — no state change since the dispatch yet (queued, e.g.
+        behind ``Conflicts=litclock-update.service``'s stop) while an
+        earlier state change is on record; a first reset of the boot reads
+        ``unknown`` here instead, which the PWA treats the same.
+      * ``running`` / ``done`` — started, or finished cleanly.
+      * ``unknown`` — no dispatch on record, systemd did not answer, the unit
+        was unloaded (systemd then reports no timestamp), or it failed after
+        the setup marker was removed or recreated.
+    """
+    try:
+        mono, wall = _dispatch_file().read_text(encoding="utf-8").split()
+        dispatched, dispatched_wall = float(mono), float(wall)
+    except (OSError, ValueError):
+        return jsonify({"state": "unknown"}), 200
+    try:
+        out = subprocess.run(
+            [
+                SYSTEMCTL,
+                "show",
+                RESET_UNIT,
+                "-p",
+                "ActiveState",
+                "-p",
+                "StateChangeTimestampMonotonic",
+            ],
+            check=True,
+            timeout=SYSTEMCTL_TIMEOUT_S,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (subprocess.SubprocessError, OSError):
+        return jsonify({"state": "unknown"}), 200
+    props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    try:
+        changed = int(props.get("StateChangeTimestampMonotonic", "0")) / 1_000_000
+    except ValueError:
+        changed = 0.0
+    active = props.get("ActiveState", "")
+    if changed == 0:
+        # systemd unloads an inactive oneshot nobody references, and then
+        # reports a zero timestamp: the record is gone, not "not started yet"
+        # (measured on the bench after a clean run).
+        state = "unknown"
+    elif changed <= dispatched:
+        state = "pending"
+    elif active == "failed":
+        state = "refused" if _setup_marker_untouched_since(dispatched_wall) else "unknown"
+    elif active in ("activating", "active", "deactivating", "reloading"):
+        state = "running"
+    elif active == "inactive":
+        state = "done"
+    else:
+        state = "unknown"
+    return jsonify({"state": state}), 200
+
+
+def _setup_marker_untouched_since(wall: float) -> bool:
+    """True when ``.setup-complete`` predates the dispatch: the reset never
+    reached its Step 2 (which removes it) or first-boot never recreated it.
+    Missing, or touched since, is not proof of a refusal."""
+    try:
+        return os.stat(_setup_complete_path(current_app)).st_mtime < wall
+    except OSError:
+        return False

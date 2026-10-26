@@ -1496,8 +1496,9 @@ def test_env_sh_defaults_helper_matches_sample():
     Austin — worse than the honest empty state.
     """
     sample = _sample_keys()
-    # 19 since litclock-dev#791 added WEATHER_LAST_IP_GEO_AT (was 18).
-    assert len(sample) == 19, f"env.sh.sample parsed as {len(sample)} keys, expected 19 — parser drift?"
+    # 19 since litclock-dev#791 added WEATHER_LAST_IP_GEO_AT (was 18); 22 since
+    # litclock-dev#533 added the three LITCLOCK_ fortune-mode keys.
+    assert len(sample) == 22, f"env.sh.sample parsed as {len(sample)} keys, expected 22 — parser drift?"
 
     keys = _block_keys(env_sh_defaults().split("\n"))
     missing = sorted(set(sample) - set(keys))

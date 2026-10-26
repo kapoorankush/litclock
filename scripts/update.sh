@@ -13,6 +13,7 @@
 #                                              ▼
 #   Phase 1  stop litclock.timer; clear /var/lib/litclock/lkg-sha
 #   Phase 2  save OLD_SHA, git fetch --tags, git reset --hard <target>
+#            applied release only: paint the "Updating software" splash (litclock-dev#942)
 #   Phase 2b cleanup stale files; sync obsolete systemd units
 #   Phase 2c download_images.sh (graceful-offline)
 #   Phase 3  merge env.sh.sample vars into env.sh
@@ -837,6 +838,43 @@ if ! command -v jq >/dev/null 2>&1; then
         log_warn "jq install failed; PWA reading-list will not animate this run"
 fi
 
+# litclock-dev#533 — fortune mode reads Debian's fortune databases straight from
+# /usr/share/games/fortunes, so they must be on the device. New images carry
+# them (pi-gen); this backfills devices flashed before that, the way jq is
+# backfilled above. Non-fatal: fortune mode is hidden, and without the databases
+# it paints quotes.
+#
+# Keyed on the PACKAGE, not a file: fortunes.dat also ships in fortunes-min, and
+# a device holding only that would never get the rest (review). And it refreshes
+# the package lists once on failure, because an image ships with
+# /var/lib/apt/lists emptied (pi-gen 04-finalize) and cannot even locate the
+# package until they exist. Both apt calls are bounded and say why they failed.
+#
+# fortunes-off (the offensive databases) is NOT installed anywhere: Raspberry Pi
+# OS bookworm's archive does not carry it ("Unable to locate package", measured
+# on the bench 2026-10-23), so an attempt could only fail on every tick.
+# Only the DOWNLOAD is under a kill timeout: a timeout that lands mid-unpack
+# leaves dpkg "interrupted", and every later apt call on the device fails until
+# someone runs `dpkg --configure -a` by hand (re-review). Installing an
+# already-downloaded ~2MB package is quick and local.
+_fortune_apt_install() {
+    local out rc
+    out=$(timeout 120 sudo apt-get install -y --download-only --no-install-recommends fortunes 2>&1) \
+        && out=$(sudo apt-get install -y --no-install-recommends fortunes 2>&1)
+    rc=$?
+    printf '%s\n' "$out" | tail -3
+    return "$rc"
+}
+if command -v apt-get >/dev/null 2>&1 && command -v dpkg-query >/dev/null 2>&1 \
+    && ! dpkg-query -W -f='${Status}' fortunes 2>/dev/null | grep -q 'install ok installed'; then
+    log_info "Installing fortune databases (fortune mode, litclock-dev#533)..."
+    if ! _fortune_apt_install; then
+        log_info "fortunes install failed; refreshing package lists and retrying once"
+        timeout 180 sudo apt-get update -q 2>&1 | tail -2
+        _fortune_apt_install || log_warn "fortunes install failed; fortune mode will paint quotes until it succeeds"
+    fi
+fi
+
 # ─── Phase 1: Stop timer ─────────────────────────────────────────────
 
 # Row 1 of the D3 phase reading-list: "Checking for updates"
@@ -1132,10 +1170,93 @@ NEW_SHA=$(git rev-parse --short HEAD)
 # render "v0.210.0 → v0.211.0" copy from row 2 onward.
 update_status_set_to_version "$NEW_SHA"
 
-if [[ "$OLD_SHA" == "$NEW_SHA" ]]; then
+# litclock-dev#942 — tell the owner not to unplug. Phase 1 stopped the timer, so
+# the panel would otherwise hold the last quote for the whole apply (5m22s
+# measured on the fielded clock for v0.232.0), and a clock that looks stopped
+# invites a power cut mid-update. Painted only on an APPLIED release (below),
+# so a weekly no-op tick never shows it.
+#
+# Nothing here can fail the update: a splash is not part of the release, and
+# the smoke gate must not depend on it. The quote comes back on every exit
+# without help — success and both revert arms `systemctl start
+# litclock.service`, and anything else hits the EXIT trap's timer re-arm.
+#
+# Two states where nothing would ever paint over it, so it is skipped there:
+#   - setup handoff incomplete: litclock.service is ConditionPathExists-gated on
+#     .handoff-complete, and the handoff migration above deliberately leaves it
+#     absent when the timezone is unknown. A splash there would replace the
+#     handoff screen (the owner's only QR into the app) and never clear.
+#   - bootcheck rollback: the snapshot of the abandoned release's update.sh runs
+#     against the last-known-good tree, whose catalog may predate these keys
+#     and would paint their names. A recovery is not "updating" anyway.
+#
+# The wait: stopping the timer does not stop a `:56` paint already in flight,
+# and a paint that starts while it holds GPIO dies with 'GPIO busy'. ActiveState,
+# not `is-active`: a running oneshot reads `activating`, which `is-active`
+# reports as not-active. The bound is wall-clock (SECONDS), with each query
+# itself bounded; a busy painter past it, or a systemd that will not answer,
+# skips the splash rather than gamble on the panel being free. The paint gets
+# `-k`, so a painter that ignores SIGTERM is reaped; one stuck in
+# uninterruptible SPI I/O cannot be reaped by any timeout (the litclock-dev#856 residual)
+# and would hold the update until the unit's own limit. Bounds are small because every second here is
+# spent before Phase 2c, which on an old 600s-timeout unit is budget the
+# re-validator needs; 20s covers a cold paint (~10s measured) with margin.
+#
+# The paint runs the TARGET tree on the PREVIOUS venv (Phase 4 has not run yet).
+# Today that costs nothing. A release that adds a package to this path fails
+# one of three ways until Phase 7 repaints: a strings_catalog dependency paints
+# the keys' names (the never-blank fallback); an eink_display top-level import
+# exits 1 with no paint; a display_driver dependency is swallowed by
+# get_display() and reaches the panel as nothing, which --require-panel turns
+# into the warning below. Keep the splash path on already-installed packages.
+#
+# --require-panel: plain `status` exits 0 even when nothing reached the panel
+# ('GPIO busy', no display), so "Painted" would be a line that cannot fail.
+UPDATE_SPLASH_WAIT_S=20
+UPDATE_SPLASH_PAINT_TIMEOUT_S=20
+UPDATE_SPLASH_HANDOFF_MARKER=/etc/litclock/.handoff-complete
+_paint_update_splash() {
+    local state deadline
+    if [[ "$ROLLBACK_MODE" -eq 1 ]]; then
+        log_info "Bootcheck rollback — no updating splash (litclock-dev#942)"
+        return 0
+    fi
+    if [[ ! -f "$UPDATE_SPLASH_HANDOFF_MARKER" ]]; then
+        log_info "Setup handoff not complete — leaving the setup screen up, no updating splash (litclock-dev#942)"
+        return 0
+    fi
+    deadline=$((SECONDS + UPDATE_SPLASH_WAIT_S))
+    while true; do
+        if ! state=$(timeout -k 2 5 systemctl show -p ActiveState --value litclock.service 2>/dev/null); then
+            log_warn "could not read litclock.service state — skipping the updating splash rather than contend for the panel (litclock-dev#942)"
+            return 0
+        fi
+        case "$state" in
+            activating|active|deactivating|reloading) ;;
+            *) break ;;
+        esac
+        if [[ "$SECONDS" -ge "$deadline" ]]; then
+            log_warn "litclock.service still $state after ${UPDATE_SPLASH_WAIT_S}s — skipping the updating splash rather than contend for the panel (litclock-dev#942)"
+            return 0
+        fi
+        sleep 1
+    done
+    if timeout -k 5 "$UPDATE_SPLASH_PAINT_TIMEOUT_S" "$PYTHON" src/eink_display.py status --require-panel --catalog-prefix update.splash.applying; then
+        log_info "Painted the updating splash"
+    else
+        log_warn "could not paint the updating splash (rc $?) — continuing the update; the panel keeps the last quote (litclock-dev#942)"
+    fi
+    return 0
+}
+
+# Compared as FULL shas: OLD_SHA is a --short taken before the fetch and git's
+# abbreviation length grows with the object count, so `abc1234` vs `abc12345`
+# would read as an update and paint the splash on a tick that installed nothing.
+if [[ "$(git rev-parse -q --verify "${OLD_SHA}^{commit}" 2>/dev/null)" == "$(git rev-parse HEAD 2>/dev/null)" ]]; then
     log_info "Already up to date ($OLD_SHA)"
 else
     log_info "Updated: $OLD_SHA → $NEW_SHA"
+    _paint_update_splash
 fi
 
 # ─── Phase 2b: Clean up stale files ──────────────────────────────────

@@ -8,6 +8,14 @@ Documentation=https://github.com/kapoorankush/litclock/issues/337
 # complete — by then setup_server is gone and this oneshot is the right caller.
 # On subsequent boots the marker persists, so this oneshot fires normally.
 ConditionPathExists=/etc/litclock/.handoff-complete
+# litclock-dev#958: a FAILED lookup is retried (Restart= below), bounded here:
+# 10 starts within 40 min, then the unit fails for real and Diagnostics'
+# services row shows it. Covers a clock that boots before its router after a
+# power cut (NetworkManager-wait-online times out, the lookup fails), which
+# otherwise carried "Location stale" for its whole uptime: nothing else
+# re-resolves.
+StartLimitIntervalSec=2400
+StartLimitBurst=10
 # litclock-dev#337 A8 (deliberate): NO `Before=litclock.service`. Best-effort boot. If IP-geo
 # is slow (DNS race post-WiFi, ip-api outage), the first quote tick still fires
 # on schedule using last-boot's data; the next tick has the fresh result.
@@ -64,6 +72,11 @@ StandardError=journal
 # margin for the env.sh flock contention window (litclock-dev#274). Anything past 60s
 # means something is wrong (DNS wedged?) and we want systemd to surface it.
 TimeoutStartSec=60
+# litclock-dev#958: main() exits 75 when an Auto-mode lookup fails (0 for
+# success and for every deliberate no-op), so only a real failure retries.
+# 10 tries x (120s + up to 60s) fits the 40-min StartLimit window above.
+Restart=on-failure
+RestartSec=120
 
 [Install]
 # Run once at boot — the systemd convention for a oneshot that should fire

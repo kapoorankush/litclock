@@ -742,9 +742,9 @@ def test_the_painted_masthead_date_comes_from_the_device_language(device, monkey
     strings_catalog.reset_cache()
     drawn = []
     real = literary_clock._compose_masthead
-    def spy(image, draw, date_text, *rest):
+    def spy(image, draw, date_text, *rest, **kw):
         drawn.append(date_text)
-        return real(image, draw, date_text, *rest)
+        return real(image, draw, date_text, *rest, **kw)
 
     monkeypatch.setattr(literary_clock, "_compose_masthead", spy)
     literary_clock.main()

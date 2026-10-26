@@ -18,6 +18,7 @@ libfribidi-dev
 libxcb1-dev
 wireless-tools
 jq
+fortunes
 python3-gpiozero
 python3-lgpio
 python3-spidev

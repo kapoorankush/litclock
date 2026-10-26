@@ -8,7 +8,7 @@ astral==3.2
     # via -r requirements.in
 blinker==1.9.0
     # via flask
-certifi==2026.2.25
+certifi==2026.10.19
     # via requests
 cffi==2.0.0
     # via timezonefinder
@@ -47,7 +47,7 @@ numpy==2.4.5
     # via timezonefinder
 pigpio==1.78
     # via -r requirements.in
-pillow==12.3.0
+pillow==13.0.0
     # via -r requirements.in
 pycparser==3.0
     # via cffi

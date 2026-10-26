@@ -2153,6 +2153,9 @@ _OWNER_KEYS = frozenset(
         "WEATHER_LAST_IP_GEO_AT",
         "LITCLOCK_LANGUAGE",
         "GIFT_MODE_MESSAGE",
+        # litclock-dev#533: empty means "every fortune database" — a pick, so
+        # a clone starts from the default like any other owner choice.
+        "LITCLOCK_FORTUNE_CATEGORIES",
     }
 )
 

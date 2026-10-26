@@ -544,3 +544,37 @@ class TestReadLanIpLive:
         monkeypatch.setattr(_network, "cached_subprocess", capture)
         _network.read_lan_ip_live(iface="wlan0")
         assert seen["argv"][-2:] == ["scope", "global"]
+
+
+class TestIpGeoThisBoot:
+    """litclock-dev#958: the resolver writes "<boot_id> ok|failed"; only a
+    marker from THIS boot is a verdict."""
+
+    @pytest.fixture()
+    def paths(self, app, tmp_path):
+        boot = tmp_path / "boot_id"
+        boot.write_text("abc-123\n")
+        marker = tmp_path / "ipgeo-boot-id"
+        app.config.update(DIAG_BOOT_ID_PATH=str(boot), DIAG_IPGEO_BOOT_MARKER_PATH=str(marker))
+        return marker
+
+    @pytest.mark.parametrize(
+        "content,want",
+        [
+            ("abc-123 ok\n", "ok"),
+            ("abc-123 failed\n", "failed"),
+            ("abc-123 running\n", "running"),
+            ("old-boot ok\n", None),
+            ("abc-123 maybe\n", None),
+            ("abc-123\n", None),
+            ("", None),
+        ],
+    )
+    def test_verdicts(self, app, paths, content, want):
+        paths.write_text(content)
+        with app.app_context():
+            assert _collectors._read_ipgeo_this_boot() == want
+
+    def test_no_marker_is_no_verdict(self, app, paths):
+        with app.app_context():
+            assert _collectors._read_ipgeo_this_boot() is None

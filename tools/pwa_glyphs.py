@@ -17,9 +17,10 @@ PWA_FONTS_DIR = _REPO / "src" / "control_server" / "static" / "fonts"
 # (Black), the plain-time frame's line (SemiBoldItalic). eink_display.py and
 # literary_clock.py name the same files.
 EINK_FONTS = ("Literata72pt-Regular.ttf", "Literata72pt-Black.ttf", "Literata72pt-SemiBoldItalic.ttf")
-# The catalog namespaces drawn on the panel (the translator kit's "E-ink"
-# surfaces).
-EINK_NAMESPACES = ("boot", "firstboot", "shutdown", "bootcheck", "reset", "clock")
+# The catalog namespaces drawn on the panel. Must equal the translator kit's
+# "E-ink" surfaces (scripts/build_translator_kit.py _SURFACES), pinned by
+# tests/test_translator_kit.py::test_the_glyph_check_covers_every_panel_surface.
+EINK_NAMESPACES = ("boot", "firstboot", "shutdown", "bootcheck", "reset", "clock", "update")
 
 
 def pwa_cmaps() -> dict[str, set[int]]:

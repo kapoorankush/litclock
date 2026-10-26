@@ -231,6 +231,40 @@ def _v(key, /, **slots):
     return strings_catalog.get(key, **slots)
 
 
+# litclock-dev#533 fortune mode. Kept here rather than imported from
+# src/fortune.py, which pulls in Pillow; tests/test_fortune.py pins the two
+# copies together.
+CONTENT_MODES = ("quotes", "fortune")
+FORTUNE_DWELL_RANGE = (1, 60)
+_FORTUNE_CATEGORY_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
+FORTUNE_CATEGORIES_MAX = 128
+
+
+def _validate_content_mode(value: str) -> tuple[bool, str | None]:
+    if value not in CONTENT_MODES:
+        return False, _v("validator.content_mode_enum")
+    return True, None
+
+
+def _validate_fortune_categories(value: str) -> tuple[bool, str | None]:
+    # Comma-separated database names; empty means every database. Names are
+    # the strfile file names Debian ships, so the ASCII token rule doubles as
+    # the shell-safety rule (the key is not in _SHELL_QUOTED_KEYS).
+    names = value.split(",") if value else []
+    if len(names) > FORTUNE_CATEGORIES_MAX or not all(_FORTUNE_CATEGORY_RE.fullmatch(n) for n in names):
+        return False, _v("validator.fortune_categories")
+    return True, None
+
+
+def _validate_fortune_dwell(value: str) -> tuple[bool, str | None]:
+    lo, hi = FORTUNE_DWELL_RANGE
+    # Length first: int() of a few thousand digits raises past Python's
+    # conversion limit, which surfaced as a 500 instead of a field error (Codex).
+    if not (len(value) <= 2 and value.isascii() and value.isdigit() and lo <= int(value) <= hi):
+        return False, _v("validator.fortune_dwell", lo=lo, hi=hi)
+    return True, None
+
+
 def _validate_language(value: str) -> tuple[bool, str | None]:
     """Accept only codes the registry lists as active (litclock-dev#532).
 
@@ -421,6 +455,11 @@ SETTINGS_ALLOWLIST: dict[str, Validator] = {
     # (owner-persona protection per OV-D-C). True → 'Live diagnostics' label
     # expanded. Read by base.html.j2 which sets body[data-diag-ribbon-expanded].
     "SHOW_DIAGNOSTICS_SHORTCUT": _validate_bool,
+    # litclock-dev#533 — fortune mode, written only by the PWA's Settings →
+    # Experimental section. The painter reads all three leniently.
+    "LITCLOCK_CONTENT_MODE": _validate_content_mode,
+    "LITCLOCK_FORTUNE_CATEGORIES": _validate_fortune_categories,
+    "LITCLOCK_FORTUNE_DWELL_MINUTES": _validate_fortune_dwell,
     # litclock-dev#280: GIFT_MODE_ENABLED dropped — the M3 toggle had no runtime
     # semantics (literary_clock.py never read it) and the new design treats
     # gift mode as a one-shot pre-ship action via /api/system/prepare-for-gift,

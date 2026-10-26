@@ -380,13 +380,16 @@ class TestAnomalyDetector:
         # Must not raise; treats as "no DHCP info, no anomaly."
         diagnostics._compute_anomalies(v)
 
-    def test_stale_ipgeo_triggers_time_location(self):
+    def test_failed_boot_ipgeo_triggers_time_location(self):
+        """litclock-dev#958: this boot's verdict, not the stamp's age, decides."""
         from datetime import UTC, datetime, timedelta
 
         v = self._baseline()
         v["weather_enabled"] = True
         v["weather_location_name"] = "Austin"
         v["last_ip_geo_at"] = (datetime.now(tz=UTC) - timedelta(days=8)).isoformat()
+        assert "time-location" not in diagnostics._compute_anomalies(v)
+        v["ipgeo_this_boot"] = "failed"
         assert "time-location" in diagnostics._compute_anomalies(v)
 
     def test_stale_quote_triggers_last_quote(self):

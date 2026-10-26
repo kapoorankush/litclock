@@ -682,3 +682,23 @@ def pytest_terminal_summary(terminalreporter):
     network_line = network_attempts_summary_line(_NETWORK_ATTEMPTS)
     if network_line is not None:
         terminalreporter.write_line(network_line, red=True, bold=True)
+
+
+@pytest.fixture(autouse=True)
+def _clock_is_synchronized(monkeypatch, tmp_path_factory):
+    """litclock-dev#958: the location resolver stamps WEATHER_LAST_IP_GEO_AT
+    only once systemd-timesyncd's marker exists, and records each boot's
+    outcome in a /run marker keyed on the kernel boot_id. Pin all three to
+    per-test paths: the suite must never depend on whether the HOST clock is
+    synced, and must never write the real /run/litclock. Tests of the unsynced
+    path point LITCLOCK_TIMESYNC_MARKER at a missing file."""
+    # Its own directory, never the test's tmp_path: tests that assert nothing
+    # leaked into tmp_path would see these files.
+    base = tmp_path_factory.mktemp("litclock-958")
+    synced = base / "timesync-synchronized"
+    synced.touch()
+    boot_id = base / "boot_id"
+    boot_id.write_text("test-boot-0000\n")
+    monkeypatch.setenv("LITCLOCK_TIMESYNC_MARKER", str(synced))
+    monkeypatch.setenv("LITCLOCK_BOOT_ID_PATH", str(boot_id))
+    monkeypatch.setenv("LITCLOCK_IPGEO_BOOT_MARKER", str(base / "ipgeo-boot-id"))

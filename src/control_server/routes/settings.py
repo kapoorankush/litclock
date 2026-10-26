@@ -63,7 +63,7 @@ SYSTEMCTL_TIMEOUT_S: Final[int] = 5
 
 # The section identifiers a save can target. Used by the PRG redirect
 # (`?saved=<section>`) and as keys for per-section error rendering.
-SECTIONS: Final[tuple[str, ...]] = ("weather", "units", "gift", "location", "advanced", "language")
+SECTIONS: Final[tuple[str, ...]] = ("weather", "units", "gift", "location", "advanced", "language", "lab")
 
 # Map section -> set of env keys that section is allowed to write. Belt
 # alongside SETTINGS_ALLOWLIST: the allowlist enforces shell-safety; this
@@ -117,7 +117,30 @@ SECTION_KEYS: Final[dict[str, frozenset[str]]] = {
     # Lives in Advanced to keep it out of the owner-persona's primary
     # surface; helper persona can flip it via the section toggle.
     "advanced": frozenset({"ALLOW_NSFW_QUOTES", "SHOW_DIAGNOSTICS_SHORTCUT"}),
+    # litclock-dev#533 — the "Experimental" section (fortune mode). Shown to
+    # everyone since the owner decision of 2026-10-24, which reversed the
+    # earlier hidden-behind-?lab=1 plan.
+    "lab": frozenset({"LITCLOCK_CONTENT_MODE", "LITCLOCK_FORTUNE_CATEGORIES", "LITCLOCK_FORTUNE_DWELL_MINUTES"}),
 }
+
+# The lab section's category checkboxes post one ``fortune_category`` field
+# per ticked box; the env key holds them comma-joined.
+_LAB_CATEGORY_FIELD: Final[str] = "fortune_category"
+
+
+def _form_payload(section: str) -> dict[str, Any]:
+    """``request.form`` flattened for _save_and_apply. Flat keeps the first
+    value of a repeated field, which is right for every field but the lab
+    section's checkbox list, joined here into its env key. No ticked box
+    posts nothing at all, so an empty list is an explicit "all" — but only
+    when the list was rendered (``fortune_categories_listed``): a device
+    with no databases installed must not have its pick reset by a save."""
+    payload = request.form.to_dict(flat=True)
+    payload.pop(_LAB_CATEGORY_FIELD, None)
+    listed = payload.pop("fortune_categories_listed", None) == "1"
+    if section == "lab" and listed:
+        payload["LITCLOCK_FORTUNE_CATEGORIES"] = ",".join(request.form.getlist(_LAB_CATEGORY_FIELD))
+    return payload
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -872,6 +895,20 @@ def _save_and_apply(
             504,
         )
 
+    # litclock-dev#958: a Specific save (typed city or Advanced raw coords) has
+    # just replaced the IP-geo data, so this boot's "ok" verdict no longer
+    # vouches for what is on disk — otherwise an Auto switch whose one-shot
+    # lookup then fails would still read healthy in Diagnostics.
+    if coords_changed and _config.weather_location_mode(
+        env_updates.get("WEATHER_LOCATION_MODE") or existing.get("WEATHER_LOCATION_MODE")
+    ) == "specific":
+        try:
+            import location_resolver  # noqa: PLC0415
+
+            location_resolver.mark_location_superseded()
+        except Exception as exc:  # noqa: BLE001 — best-effort, never fails a save
+            log.warning("could not mark the IP-geo verdict superseded: %r", exc)
+
     new_timezone: str | None = None
     if coords_changed:
         lat = env_updates.get("WEATHER_LATITUDE", "")
@@ -944,7 +981,7 @@ def settings_post() -> Any:
         # malformed clients don't accidentally write across boundaries.
         abort(400, description="Missing or invalid `section` field.")
 
-    body, status = _save_and_apply(request.form.to_dict(flat=True), section, is_form=True)
+    body, status = _save_and_apply(_form_payload(section), section, is_form=True)
 
     # litclock-dev#317 item 7 — the gift card lives on /system now, but the writer
     # endpoint stays here (centralised persistence). PRG-redirect the

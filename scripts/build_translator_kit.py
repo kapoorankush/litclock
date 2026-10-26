@@ -41,6 +41,7 @@ _SURFACES: dict[str, tuple[str, str, bool]] = {
     "firstboot": ("E-ink splash", "First-boot screens on the physical panel — width-limited.", True),
     "shutdown": ("E-ink splash", "Shutdown screen on the physical panel — width-limited.", True),
     "bootcheck": ("E-ink splash", "Recovery screen on the physical panel — width-limited.", True),
+    "update": ("E-ink splash", "Shown on the physical panel while a software update installs — width-limited.", True),
     "reset": ("E-ink splash", "Factory-reset screen on the physical panel — width-limited.", True),
     "clock": (
         "E-ink clock face",

@@ -4681,3 +4681,277 @@ class TestSelfTestDurationSurvivesToTheRecord:
             f"a painter that ran 2.2s longer moved the recorded duration by only "
             f"{ln - s}s ({s} -> {ln}) — the value is not tracking the clock"
         )
+
+
+
+
+class TestTheUpdatingSplash:
+    """litclock-dev#942 — an applied release paints "Updating software / Please
+    don't unplug"; a no-op tick paints nothing; a splash can never fail the
+    update, and is never painted where nothing would paint over it.
+
+    EXECUTED, not grepped. The helper is lifted out of update.sh and run with
+    systemctl, the painter and `timeout` stubbed, so the assertions are about
+    what happened (was the painter spawned, after which ActiveState, and what
+    did the function return), not about how the source is spelled. `sleep`
+    advances bash's SECONDS by 100 instead of sleeping: steps that large keep
+    a real one-second tick from changing any count, and the wall-clock bound
+    is exercised without real waiting.
+    """
+
+    PREFIX = "update.splash.applying"
+    PAINT = f"PAINT src/eink_display.py status --require-panel --catalog-prefix {PREFIX}"
+
+    def _helper(self, content):
+        start = content.index("_paint_update_splash() {")
+        end = content.index("\n}\n", start) + len("\n}\n")
+        return content[start:end]
+
+    def _assigned(self, content, name):
+        return re.search(rf"^{name}=(\S+)$", content, re.M).group(1)
+
+    def _run(
+        self, tmp_path, content, *, states, paint_rc=0, wait_s=300, query_s=0, handoff=True, rollback=0
+    ):
+        """`states` is the ActiveState sequence systemctl reports, one per
+        call; the last one repeats ("__fail__" = the query fails). Each query
+        really takes `query_s` seconds — it runs in a $( ) subshell, so a
+        stub cannot advance the parent's SECONDS. Returns (rc, output, events, raw):
+        `events` drops the TIMEOUT wrapper lines, `raw` keeps them."""
+        events = tmp_path / "events"
+        events.write_text("")
+        seq = tmp_path / "states"
+        seq.write_text("\n".join(states) + "\n")
+        marker = tmp_path / ".handoff-complete"
+        if handoff:
+            marker.write_text("")
+        painter = tmp_path / "python3"
+        painter.write_text(f'#!/bin/bash\necho "PAINT $*" >> "{events}"\nexit {paint_rc}\n')
+        painter.chmod(0o755)
+
+        script = f"""
+        log_info() {{ echo "[INFO] $*"; }}
+        log_warn() {{ echo "[WARN] $*"; }}
+        sleep() {{ SECONDS=$((SECONDS + 100)); }}
+        timeout() {{
+            local opts=""
+            while [[ "$1" == -* ]]; do opts="$opts $1 $2"; shift 2; done
+            echo "TIMEOUT$opts $1 ${{2##*/}}" >> "{events}"
+            shift
+            "$@"
+        }}
+        systemctl() {{
+            local s
+            [ {query_s} -gt 0 ] && command sleep {query_s}
+            s=$(head -n1 "{seq}")
+            [ "$(wc -l < "{seq}")" -gt 1 ] && sed -i 1d "{seq}"
+            echo "STATE $s" >> "{events}"
+            [ "$s" = "__fail__" ] && return 1
+            echo "$s"
+        }}
+        PYTHON="{painter}"
+        ROLLBACK_MODE={rollback}
+        UPDATE_SPLASH_WAIT_S={wait_s}
+        UPDATE_SPLASH_PAINT_TIMEOUT_S={self._assigned(content, "UPDATE_SPLASH_PAINT_TIMEOUT_S")}
+        UPDATE_SPLASH_HANDOFF_MARKER="{marker}"
+        {self._helper(content)}
+        _paint_update_splash
+        echo "RC=$?"
+        """
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        out = r.stdout + r.stderr
+        rc = int(re.search(r"^RC=(\d+)$", out, re.M).group(1))
+        lines = events.read_text().splitlines()
+        return rc, out, [e for e in lines if not e.startswith("TIMEOUT")], lines
+
+    def test_an_idle_painter_gets_the_splash(self, tmp_path, update_sh_content):
+        rc, out, ev, _ = self._run(tmp_path, update_sh_content, states=["inactive"])
+        assert [e for e in ev if e.startswith("PAINT")] == [self.PAINT], ev
+        assert rc == 0
+        assert "Painted the updating splash" in out
+
+    @pytest.mark.parametrize("busy", ["activating", "active", "deactivating", "reloading"])
+    def test_every_busy_state_is_waited_out(self, tmp_path, update_sh_content, busy):
+        """Phase 1 stops the timer, not a :56 paint already running. Painting
+        over it loses GPIO ('GPIO busy'), so the splash must come AFTER the
+        service leaves every busy state — the order is the assertion."""
+        rc, _, ev, _ = self._run(tmp_path, update_sh_content, states=[busy, busy, "inactive"])
+        assert ev == [f"STATE {busy}", f"STATE {busy}", "STATE inactive", self.PAINT], ev
+        assert rc == 0
+
+    def test_a_failed_last_paint_does_not_block_the_splash(self, tmp_path, update_sh_content):
+        """`failed` is a finished oneshot: the panel is free."""
+        _, _, ev, _ = self._run(tmp_path, update_sh_content, states=["failed"])
+        assert self.PAINT in ev, ev
+
+    def test_a_painter_that_never_finishes_is_not_fought(self, tmp_path, update_sh_content):
+        """Past the bound the splash is SKIPPED, not forced onto a panel
+        someone else holds, and the update carries on."""
+        rc, out, ev, _ = self._run(tmp_path, update_sh_content, states=["activating"], wait_s=300)
+        assert self.PAINT not in ev, ev
+        assert ev.count("STATE activating") == 4, ev  # t=0,100,200,300, then gave up
+        assert rc == 0
+        assert "skipping the updating splash" in out
+
+    def test_time_spent_querying_counts_against_the_bound(self, tmp_path, update_sh_content):
+        """The bound is WALL CLOCK. With a 3s bound and queries that really
+        take 2s, at most two fit; a loop that counted its own sleeps would
+        make four (Codex /review: the first counter loop excluded time spent
+        inside the query). A range, not an exact count, because this one is
+        real time and SECONDS ticks on whole seconds."""
+        _, _, ev, _ = self._run(tmp_path, update_sh_content, states=["activating"], wait_s=3, query_s=2)
+        assert self.PAINT not in ev, ev
+        assert 1 <= ev.count("STATE activating") <= 2, ev
+
+    def test_every_state_query_is_itself_bounded(self, tmp_path, update_sh_content):
+        """A wedged systemd must not stall the loop between ticks of the bound."""
+        _, _, _, raw = self._run(tmp_path, update_sh_content, states=["inactive"])
+        assert raw[0].startswith("TIMEOUT -k ") and raw[0].endswith(" systemctl"), raw
+
+    def test_an_unanswering_systemd_skips_the_splash(self, tmp_path, update_sh_content):
+        """Not knowing whether the panel is free is not 'free'."""
+        rc, out, ev, _ = self._run(tmp_path, update_sh_content, states=["__fail__"])
+        assert self.PAINT not in ev, ev
+        assert rc == 0
+        assert "could not read litclock.service state" in out
+
+    def test_the_paint_is_killable_at_the_configured_bound(self, tmp_path, update_sh_content):
+        """`timeout` without -k waits forever on a painter that ignores
+        SIGTERM. The bound asserted is the one update.sh assigns."""
+        bound = self._assigned(update_sh_content, "UPDATE_SPLASH_PAINT_TIMEOUT_S")
+        _, _, _, raw = self._run(tmp_path, update_sh_content, states=["inactive"])
+        paint = [e for e in raw if e.startswith("TIMEOUT") and e.endswith("python3")]
+        assert paint == [f"TIMEOUT -k 5 {bound} python3"], raw
+
+    def test_a_failed_paint_never_fails_the_update(self, tmp_path, update_sh_content):
+        rc, out, _, _ = self._run(tmp_path, update_sh_content, states=["inactive"], paint_rc=1)
+        assert rc == 0
+        assert "could not paint the updating splash (rc 1)" in out
+        assert "Painted the updating splash" not in out
+
+    def test_require_panel_makes_a_paint_that_never_landed_exit_1(self, monkeypatch):
+        """Red-team /review: plain `status` exits 0 when display_image()
+        returns False ('GPIO busy', no display), so "Painted" could not fail.
+        The flag update.sh passes must turn that into exit 1 — and leave the
+        plain form at 0, which shutdown-splash.sh and first-boot branch on."""
+        monkeypatch.syspath_prepend(str(REPO_ROOT / "src"))
+        import eink_display
+
+        monkeypatch.setattr(eink_display, "display_image", lambda image: False)
+        base = ["eink_display.py", "status", "--catalog-prefix", self.PREFIX]
+        monkeypatch.setattr(sys, "argv", base[:2] + ["--require-panel"] + base[2:])
+        with pytest.raises(SystemExit) as exc:
+            eink_display.main()
+        assert exc.value.code == 1
+        monkeypatch.setattr(sys, "argv", base)
+        eink_display.main()  # no SystemExit: the plain form keeps exit 0
+        monkeypatch.setattr(eink_display, "display_image", lambda image: True)
+        monkeypatch.setattr(sys, "argv", base[:2] + ["--require-panel"] + base[2:])
+        eink_display.main()  # a landed paint exits 0 with the flag too
+
+    def test_an_unfinished_handoff_keeps_its_screen(self, tmp_path, update_sh_content):
+        """litclock.service is ConditionPathExists-gated on .handoff-complete,
+        so with the marker absent NOTHING would paint over the splash: it would
+        replace the handoff screen (the owner's QR into the app) for good."""
+        rc, out, ev, _ = self._run(tmp_path, update_sh_content, states=["inactive"], handoff=False)
+        assert ev == [], ev  # not even a state query
+        assert rc == 0
+        assert "handoff not complete" in out
+
+    def test_a_rollback_paints_nothing(self, tmp_path, update_sh_content):
+        """The rollback snapshot runs against the last-known-good tree, whose
+        catalog may predate these keys and would paint their names."""
+        rc, out, ev, _ = self._run(tmp_path, update_sh_content, states=["inactive"], rollback=1)
+        assert ev == [], ev
+        assert rc == 0
+        assert "rollback" in out.lower()
+
+    def test_the_handoff_marker_is_the_one_the_clock_unit_gates_on(self, update_sh_content):
+        """The guard is only right if it reads the path litclock.service's
+        Condition reads; a drift here silently reopens the stranded splash."""
+        unit = (REPO_ROOT / "systemd" / "litclock.service").read_text(encoding="utf-8")
+        cond = re.search(r"^ConditionPathExists=(\S+)$", unit, re.M).group(1)
+        assert self._assigned(update_sh_content, "UPDATE_SPLASH_HANDOFF_MARKER") == cond
+
+    def _call_site(self, content, old, new, *, old_full, new_full):
+        start = content.index("# Compared as FULL shas:")
+        end = content.index("\nfi\n", start) + len("\nfi\n")
+        script = f"""
+        log_info() {{ echo "[INFO] $*"; }}
+        _paint_update_splash() {{ echo "SPLASH"; }}
+        git() {{
+            case "$*" in
+                "rev-parse HEAD") echo "{new_full}" ;;
+                "rev-parse -q --verify {old}^{{commit}}") echo "{old_full}" ;;
+                *) return 1 ;;
+            esac
+        }}
+        OLD_SHA={old}
+        NEW_SHA={new}
+        {content[start:end]}
+        """
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30).stdout
+
+    def test_an_applied_release_paints(self, update_sh_content):
+        out = self._call_site(update_sh_content, "abc1234", "def5678", old_full="abc1234" + "0" * 33,
+                              new_full="def5678" + "0" * 33)
+        assert "Updated: abc1234 → def5678" in out
+        assert "SPLASH" in out
+
+    def test_a_no_op_tick_paints_nothing(self, update_sh_content):
+        """The weekly tick with nothing new must not flash a splash."""
+        full = "abc1234" + "0" * 33
+        out = self._call_site(update_sh_content, "abc1234", "abc1234", old_full=full, new_full=full)
+        assert "Already up to date" in out
+        assert "SPLASH" not in out
+
+    def test_a_longer_abbreviation_is_not_an_update(self, update_sh_content):
+        """Adversarial /review: git's abbreviation grows with the object
+        count, so after a fetch the same commit can come back as abc12345.
+        Compared as short strings that read as an update and painted the
+        splash on a tick that installed nothing."""
+        full = "abc12345" + "0" * 32
+        out = self._call_site(update_sh_content, "abc1234", "abc12345", old_full=full, new_full=full)
+        assert "Already up to date" in out
+        assert "SPLASH" not in out
+
+    def test_the_target_release_paints_not_the_outgoing_one(self, update_sh_content):
+        """The call must sit after the re-exec guard, so the TARGET release's
+        code and catalog paint. Above it, the outgoing script would paint, and
+        on the re-exec path it would paint twice."""
+        code = "\n".join(ln.split("#", 1)[0] for ln in update_sh_content.splitlines())
+        guard = code.index('exec "$SELF_SCRIPT" "$OLD_SHA"')
+        calls = [m.start() for m in re.finditer(r"^\s*_paint_update_splash\s*$", code, re.M)]
+        assert len(calls) == 1 and calls[0] > guard, calls
+
+    def test_a_plain_failing_exit_after_the_splash_rearms_the_clock(self, update_sh_content):
+        """State matrix, painted x abort-exit: a plain `exit 1` in Phases 2b-4
+        (not a signal) must still reach the EXIT trap's timer re-arm, or the
+        splash stays up. Only the signal arm was executed before."""
+        lifted = TestTheExitTrapRearmsTheClock()._lifted(update_sh_content)
+        program = (
+            "set -u\n"
+            'sudo() { echo "STUB_SUDO $*"; }\n'
+            'timeout() { [ "$1" = -k ] && shift 2; shift; "$@"; }\n'
+            "update_status_failed_unrecovered() { echo STUB_STAMP; }\n"
+            "atomic_write_file() { echo STUB_GRACE; }\n"
+            "_PHASE3_ADDED_FILE=\nPOST_UPDATE_GRACE_FILE=/dev/null\n"
+            f"{lifted}"
+            "_LITCLOCK_UPDATE_FINALIZED=0\n_LITCLOCK_UPDATE_PHASE_INDEX=4\n"
+            "exit 1\n"
+        )
+        r = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30)
+        rearm = r.stdout.find("systemctl start --no-block litclock.timer")
+        assert r.returncode == 1, (r.returncode, r.stdout, r.stderr)
+        assert rearm != -1 and rearm < r.stdout.find("STUB_STAMP"), r.stdout
+
+    def test_phase7_repaints_before_rearming_the_timer(self, update_sh_content):
+        """State matrix, painted x phase7-keep: the success path's
+        `systemctl start litclock.service` is what replaces the splash at
+        once; without it the splash waits for the first :56 tick."""
+        start = update_sh_content.index('log_info "Refreshing display..."')
+        marker = "sudo systemctl start litclock.timer\n"
+        end = update_sh_content.index(marker, start) + len(marker)
+        program = 'log_info() { :; }\nsudo() { echo "SUDO $*"; }\n' + update_sh_content[start:end]
+        out = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=30).stdout
+        assert out.splitlines() == ["SUDO systemctl start litclock.service", "SUDO systemctl start litclock.timer"], out

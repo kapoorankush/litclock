@@ -1906,6 +1906,12 @@ def main():
         "farewell lines for SET (welcome, reboot or poweroff), chosen at random (litclock-dev#532 T7)",
     )
     status_parser.add_argument("--save", "-s", help="Save to file instead of displaying")
+    # litclock-dev#942 review: without it, a paint that never reached the panel
+    # ('GPIO busy', no display) still exits 0. Opt-in, because shutdown-splash.sh
+    # and first-boot's display_message_strict branch on this exit code.
+    status_parser.add_argument(
+        "--require-panel", action="store_true", help="Exit 1 if the image did not reach the panel"
+    )
 
     # Hotspot command
     hotspot_parser = subparsers.add_parser("hotspot", help="Display hotspot setup info with QR")
@@ -1968,8 +1974,8 @@ def main():
         image = create_status_image(title, message, submessage)
         if args.save:
             save_image(image, args.save)
-        else:
-            display_image(image)
+        elif not display_image(image) and args.require_panel:
+            sys.exit(1)
 
     elif args.command == "hotspot":
         image = create_hotspot_display_image(args.ssid, args.password, args.ip)

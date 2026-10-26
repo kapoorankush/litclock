@@ -1224,7 +1224,7 @@ class TestMastheadGeometry:
         mh = literary_clock._masthead_metrics()
         x, y, px = mh["icon_x"], mh["icon_y"], literary_clock.ICON_SIZE
         box = (x, y, x + px, y + px)
-        assert list(a.crop(box).getdata()) == list(b.crop(box).getdata())
+        assert list(a.crop(box).get_flattened_data()) == list(b.crop(box).get_flattened_data())
 
     def test_missing_icon_keeps_slot_and_survives(self, tmp_path):
         img = self._strip(icon=None)
@@ -1232,7 +1232,7 @@ class TestMastheadGeometry:
         mh = literary_clock._masthead_metrics()
         # temps identical with and without icon (fixed slot geometry)
         tbox = (mh["icon_x"] + literary_clock.ICON_SIZE, 0, self.VRULE_LEFT, self.RULE_TOP)
-        assert list(img.crop(tbox).getdata()) == list(ok.crop(tbox).getdata())
+        assert list(img.crop(tbox).get_flattened_data()) == list(ok.crop(tbox).get_flattened_data())
 
     def test_corrupt_icon_survives(self, tmp_path):
         bad = tmp_path / "junk.xbm"

@@ -431,6 +431,22 @@ def _read_last_update_error() -> str | None:
     return error if isinstance(error, str) and error else None
 
 
+def _read_ipgeo_this_boot() -> str | None:
+    """This boot's IP-geo state — "running", "ok" or "failed" — or None for no
+    verdict (litclock-dev#958). The format has ONE parser,
+    ``location_resolver.read_boot_outcome``; paths resolve at call time, so an
+    ``app.config`` override, the env and the writer all agree."""
+    try:
+        import location_resolver  # noqa: PLC0415 — src/ on sys.path; already a control-server dep (sync-quick)
+
+        return location_resolver.read_boot_outcome(
+            current_app.config.get("DIAG_IPGEO_BOOT_MARKER_PATH"),
+            current_app.config.get("DIAG_BOOT_ID_PATH"),
+        )
+    except Exception:
+        return None
+
+
 def _read_appliance_uptime_s() -> int | None:
     path = current_app.config.get("DIAG_PROC_UPTIME_PATH", DEFAULT_PROC_UPTIME_PATH)
     try:
@@ -920,6 +936,7 @@ def collect_diagnostics() -> dict[str, Any]:
         # the bundle reported weather off on a device that was painting it.
         "weather_enabled": _config.weather_enabled(env_settings),
         "last_ip_geo_at": env_settings.get("WEATHER_LAST_IP_GEO_AT") or None,
+        "ipgeo_this_boot": _read_ipgeo_this_boot(),
         # Services
         "service_states": services,
         # Last quote

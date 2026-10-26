@@ -100,3 +100,59 @@ describe("system.js reconnect-card escaping contract (litclock-dev#532)", () => 
     expect(main.textContent).not.toContain("{network}");
   });
 });
+
+describe("system.js Reset WiFi refused card escaping (litclock-dev#939)", () => {
+  const HOSTILE_REFUSED = {
+    "system.card.wifi_reset_refused.title": 'Didn’t <img src=x onerror="window.__pwned=3"> start',
+    "system.card.wifi_reset_refused.body": "<script>window.__pwned=4</script> still on WiFi & fine",
+    "system.card.wifi_reset_refused.button": "<b>Back</b>",
+  };
+  let mock;
+  let restoreDialog;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    document.body.innerHTML = `
+      <script type="application/json" data-litclock-strings>${JSON.stringify(HOSTILE_REFUSED).replace(/</g, "\\u003c")}</script>
+      <main>
+        <form data-confirm-action="wifi_reset" action="/api/wifi/reset">
+          <input type="hidden" name="token" value="tok" />
+          <button type="submit">Reset WiFi</button>
+        </form>
+      </main>
+      <dialog class="confirm-sheet" data-action="wifi_reset">
+        <button data-modal-confirm>Reset WiFi</button>
+        <button data-modal-cancel>Cancel</button>
+      </dialog>
+    `;
+    restoreDialog = stubDialog();
+    window.requestAnimationFrame = (cb) => cb();
+    mock = installFetchMock();
+    mock.register(/\/api\/wifi\/reset$/, { status: 200, body: { ok: true } });
+    mock.register(/\/api\/wifi\/reset\/status/, { status: 200, body: { state: "refused" } });
+  });
+
+  afterEach(() => {
+    mock.restore();
+    restoreDialog();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    delete window.__pwned;
+    document.body.innerHTML = "";
+  });
+
+  it("the refused card's catalog values render as TEXT", async () => {
+    loadScript("system.js");
+    document.querySelector('dialog[data-action="wifi_reset"] [data-modal-confirm]').click();
+    await vi.advanceTimersByTimeAsync(2100);
+    const main = document.querySelector("main");
+    expect(main.querySelector('[data-state="wifi-reset-refused"]')).not.toBeNull();
+    expect(main.textContent).toContain("onerror"); // anti-vacuity: the hostile blob was read
+    expect(main.querySelector("img")).toBeNull();
+    expect(main.querySelector("script")).toBeNull();
+    expect(main.querySelector("b")).toBeNull();
+    expect(window.__pwned).toBeUndefined();
+    expect(main.textContent).toContain("still on WiFi & fine");
+    expect(main.querySelector(".reconnect-state__retry").textContent).toBe("<b>Back</b>");
+  });
+});

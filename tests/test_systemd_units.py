@@ -1267,6 +1267,26 @@ class TestReresolveLocationUnit:
             "After= alone is vacuous when nothing else starts the waiter"
         )
 
+    def test_a_failed_lookup_is_retried_boundedly(self):
+        """litclock-dev#958: a clock that boots before its router must not
+        carry "failed" for its whole uptime. Exact-case raw lines, as above:
+        configparser would accept a lowercased directive systemd ignores."""
+        import re as _re
+
+        raw = self._raw()
+        assert _re.search(r"^Restart=on-failure$", raw, _re.M)
+        delay = int(_re.search(r"^RestartSec=(\d+)$", raw, _re.M).group(1))
+        burst = int(_re.search(r"^StartLimitBurst=(\d+)$", raw, _re.M).group(1))
+        window = int(_re.search(r"^StartLimitIntervalSec=(\d+)$", raw, _re.M).group(1))
+        timeout = int(_re.search(r"^TimeoutStartSec=(\d+)$", raw, _re.M).group(1))
+        # The window must hold every try, or the limit never trips and the
+        # retries are unbounded.
+        assert burst * (delay + timeout) <= window
+        assert 2 <= burst <= 20 and delay >= 60
+        # StartLimit* belongs in [Unit]; under [Service] systemd ignores it.
+        unit_section = raw.split("[Service]", 1)[0]
+        assert "StartLimitBurst=" in unit_section and "StartLimitIntervalSec=" in unit_section
+
     def test_does_not_block_first_quote_tick(self):
         """litclock-dev#337 A8 (locked, deliberately rejected during /review): NO
         `Before=litclock.service`. Best-effort boot. Blocking the first

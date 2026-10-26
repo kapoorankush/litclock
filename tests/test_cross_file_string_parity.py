@@ -182,8 +182,8 @@ class TestDiagnosticsCopyPayloadParity:
     # shared rows revert to two-source literals with the suite green — the
     # precise shape this file's TECHNIQUE NOTE rejected). A genuinely added
     # or removed row updates these two numbers in the same diff.
-    PAGE_ROWS = 41
-    PAYLOAD_ROWS = 33
+    PAGE_ROWS = 42  # +ipgeo_this_boot (litclock-dev#958)
+    PAYLOAD_ROWS = 34  # +ipgeo_this_boot (litclock-dev#958)
 
     def _page(self) -> dict[str, str]:
         sites = self._sites(DIAG_TEMPLATE.read_text())
@@ -931,6 +931,9 @@ class TestSystemPageJsCatalog:
         "system.card.wifi_reset.title",
         "system.card.wifi_reset.body",
         "system.card.wifi_reset.body2",
+        "system.card.wifi_reset_refused.title",
+        "system.card.wifi_reset_refused.body",
+        "system.card.wifi_reset_refused.button",
         "system.card.factory_reset.title",
         "system.card.factory_reset.body",
         "system.card.factory_reset.body2",

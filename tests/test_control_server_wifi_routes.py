@@ -219,3 +219,117 @@ class TestApiWifiReset:
             "routes/wifi.py must spell out the non-idempotent action escape hatch "
             "near the CalledProcessError restore (review D1)"
         )
+
+
+
+class TestApiWifiResetStatus:
+    """litclock-dev#939 (litclock-dev#949 review) — the PWA's "the reset didn't start"
+    verdict comes from the reset UNIT, not from this server still answering.
+    That inference was wrong after a reset that worked and was re-provisioned
+    onto the same network while the tab slept; the unit's own state is not.
+
+    systemctl is stubbed; what is pinned is the mapping from what systemd
+    reports, relative to OUR dispatch stamp and the setup marker, to the
+    state the PWA acts on.
+    """
+
+    DISPATCH = 1000.0  # CLOCK_MONOTONIC seconds when the reset was queued
+    WALL = 1_800_000_000.0  # wall time of the same dispatch
+
+    @pytest.fixture(autouse=True)
+    def _paths(self, tmp_path, monkeypatch, client):
+        self.stamp = tmp_path / "wifi-reset-dispatch"
+        self.marker = tmp_path / ".setup-complete"
+        monkeypatch.setenv("LITCLOCK_WIFI_RESET_DISPATCH_FILE", str(self.stamp))
+        client.application.config["SETUP_COMPLETE_FILE"] = str(self.marker)
+        self._marker_at(self.WALL - 3600)  # provisioned an hour before the reset
+
+    def _marker_at(self, mtime):
+        import os
+
+        self.marker.write_text("")
+        os.utime(self.marker, (mtime, mtime))
+
+    def _status(self, client, *, active="failed", changed_s=1005.0, stamp=True, show=None):
+        import subprocess
+
+        if stamp:
+            self.stamp.write_text(f"{self.DISPATCH} {self.WALL}\n")
+        out = f"ActiveState={active}\nStateChangeTimestampMonotonic={int(changed_s * 1_000_000)}\n"
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout=out, stderr="")
+        with patch("control_server.routes.wifi.subprocess.run", side_effect=show, return_value=result) as run:
+            response = client.get("/api/wifi/reset/status")
+        assert response.status_code == 200
+        return response.json["state"], run
+
+    def test_a_failure_before_step_2_is_a_refusal(self, client):
+        state, run = self._status(client, active="failed", changed_s=1005.0)
+        assert state == "refused"
+        argv = run.call_args[0][0]
+        assert argv[0] != "sudo", "a read-only show must not need sudo"
+        assert argv[1:3] == ["show", "litclock-wifi-reset.service"]
+
+    def test_a_failure_after_the_marker_was_recreated_is_not_a_refusal(self, client):
+        """litclock-dev#949 re-review: Step 2 removed the marker, Step 3 timed out, the
+        failsafe restarted first-boot and it re-provisioned inline, recreating
+        the marker. The unit still reads failed, but the reset DID run."""
+        self._marker_at(self.WALL + 40)
+        assert self._status(client, active="failed", changed_s=1061.0)[0] == "unknown"
+
+    def test_a_failure_with_the_marker_gone_is_not_a_refusal(self, client):
+        self.marker.unlink()
+        assert self._status(client, active="failed", changed_s=1005.0)[0] == "unknown"
+
+    def test_a_failure_from_BEFORE_our_dispatch_is_not_this_reset(self, client):
+        """A unit still FAILED from an earlier attempt, with our start job
+        queued behind it, must not be read as this reset refusing."""
+        assert self._status(client, active="failed", changed_s=999.0)[0] == "pending"
+        assert self._status(client, active="failed", changed_s=self.DISPATCH)[0] == "pending"
+
+    @pytest.mark.parametrize(
+        "active,want",
+        [("activating", "running"), ("active", "running"), ("deactivating", "running"), ("inactive", "done")],
+    )
+    def test_a_started_or_finished_reset_is_never_a_refusal(self, client, active, want):
+        assert self._status(client, active=active, changed_s=1005.0)[0] == want
+
+    def test_an_unloaded_unit_is_unknown_not_pending(self, client):
+        """Bench, 2026-10-21: after a clean run systemd unloads the unit and
+        reports StateChangeTimestampMonotonic=0. That is a missing record,
+        not a job still queued."""
+        assert self._status(client, active="inactive", changed_s=0)[0] == "unknown"
+
+    def test_no_dispatch_on_record_is_unknown(self, client):
+        assert self._status(client, stamp=False)[0] == "unknown"
+
+    @pytest.mark.parametrize("raw", ["not-a-number\n", "1000.0\n", ""])
+    def test_a_garbled_or_legacy_stamp_is_unknown(self, client, raw):
+        """A one-number stamp (the first litclock-dev#949 draft) has no wall time to
+        check the marker against, so it can never prove a refusal."""
+        self.stamp.write_text(raw)
+        assert self._status(client, stamp=False)[0] == "unknown"
+
+    def test_systemd_not_answering_is_unknown(self, client):
+        import subprocess
+
+        assert self._status(client, show=subprocess.TimeoutExpired("systemctl", 5))[0] == "unknown"
+
+    def test_the_reset_stamps_its_dispatch_before_queueing(self, client):
+        """The stamp must precede the start job, or a refusal fast enough to
+        land before the stamp would never read as refused."""
+        token = _mint_token(client)
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["stamp_at_dispatch"] = self.stamp.exists()
+            return None
+
+        with (
+            patch("control_server.routes.wifi.update_state.update_is_busy", return_value=False),
+            patch("control_server.routes.wifi.subprocess.run", side_effect=fake_run),
+        ):
+            response = client.post("/api/wifi/reset", json={"token": token})
+        assert response.status_code == 200
+        assert seen == {"stamp_at_dispatch": True}
+        mono, wall = (float(x) for x in self.stamp.read_text().split())
+        assert mono > 0 and wall > 1_700_000_000
