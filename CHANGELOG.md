@@ -4,6 +4,8 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+## [v0.233.0] - 2026-10-26
+
 ### Added
 
 - Fortune mode: under Settings → Experimental you can switch the clock from literary quotes to fortunes (short sayings, jokes and aphorisms), with the time moving up beside the date; this update installs the fortune collection on your clock.
