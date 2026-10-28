@@ -4,6 +4,10 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- With NSFW turned off, fortune mode no longer shows adult or crude fortunes.
+
 ## [v0.234.0] - 2026-10-28
 
 ### Changed

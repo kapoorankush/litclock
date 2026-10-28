@@ -20,6 +20,7 @@ import re
 import struct
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -1134,3 +1135,254 @@ class TestUnshowableDatabasesHidden:
         idx = next(db for db in fortune.list_databases() if db.name == "idx")
         assert idx.count == 1
         assert not fortune.has_showable(idx)
+
+
+def _r(text: str) -> str:
+    """rot13: the filter's fixtures are stored encoded, like the list itself,
+    so this public file carries none of the words in plain text."""
+    return codecs.decode(text, "rot13")
+
+
+class TestMatureWordFilter:
+    """litclock-dev#971: with ALLOW_NSFW_QUOTES off, an entry using a
+    MATURE_WORDS word is never painted. Debian's off/ split does not exist on
+    bookworm, so this filter is the only thing the NSFW switch does in
+    fortune mode. Our own words, like every fixture here: the repo carries no
+    Debian text."""
+
+    T = datetime(2026, 10, 22, 10, 0)
+    MATURE = [
+        _r("Jub uvq zl CRAVF RAIL?"),
+        _r("Gnk ynj vf jung ercynprf frk nsgre svsgl."),
+        _r("Grn vf svar,\nohg frk jba'g\nxrrc lbh njnxr."),
+    ]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            _r("jub uvq zl CRAVF RAIL"),
+            _r("n frk fpnaqny"),
+            _r("Frkhny cbyvgvpf"),
+            _r("n cvff-cbbe ercgvyr"),
+            _r("Shpxvat zneiryybhf"),
+            _r("Znfgheongvat va choyvp"),
+            # misses the litclock-dev#972 review found in bookworm's databases, or in the
+            # shapes they use
+            _r("GENAFFRKHNY DHVYGVAT ORRF"),
+            _r("Guvf NFRKHNY CVT"),
+            _r("qrns naq bire-frkrq"),
+            _r("nobhg sbercynl"),
+            _r("bu!! xvaxl!"),
+            _r("n ynzrnff rkphfr"),
+            _r("xvpx gur frangbe'f nff"),
+            _r("vg'f lbhe\nnff"),
+            _r("n s*pxvat qvfnfgre"),
+            _r("n pyhfgreshpx"),
+            _r("ubefrfuvg"),
+            _r("vg cvffrf zr bss"),
+            # shapes the corpus does not use today, closed anyway (Codex review)
+            _r("_frk_ ba gur oenva"),
+            _r("_shpxvat_ zneiryybhf"),
+            _r("n oybj\nwbo"),
+            _r("fu\u00advg unccraf"),
+            # second Codex pass: what the panel shows, not what the file holds
+            _r("n oybj-wbo"),
+            _r("n oybj-\nwbo"),
+            _r("fu-\nvg unccraf"),
+            _r("lbhe _nff_"),
+            _r("gur frangbe\u2019f nff"),
+            _r("Rng fu\rvg."),
+            _r("pyvgbevfrf naq fpebghzf"),
+            _r("ubeavre"),
+            _r("gur ubeavrfg"),
+            # third Codex pass
+            _r("N cvff-\ncbbe rkphfr."),
+            _r("Gur frk-\nnccrny jnf boivbhf."),
+            _r("Xvff lbhe-\nnff tbbqolr."),
+            _r("N oybj\u2010wbo."),
+            _r("Na nff\u2010ubyr."),
+            _r("Rng fu-  \nvg."),
+            _r("Fgbc ohyyfuvggvat zr."),
+            _r("Jung n ohyyfuvggre."),
+            _r("Trg bss lbhe nffrf."),
+            # final review, real bookworm shapes
+            _r("Jr xvpxrq vgf nff."),
+            _r("n cnva va gur nff"),
+            _r("n eblny cnva va gur nefr"),
+            _r("jura fur unhyrq nff"),
+            _r("xvpx fbzr nff"),
+            _r("jngpurq n zvqtrg FBQBZVMR n ubhfrpng"),
+            _r("frk jvgu gur bccbfvgr frk"),
+        ],
+    )
+    def test_matches(self, text):
+        assert fortune.is_mature(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            _r("Fhffrk naq Rffrk"),
+            _r("tencr whvpr"),
+            _r("n pbpxgnvy"),
+            _r("-- Urael Ina Qlxr"),
+            _r("Obbo'f Ynj: lbh nyjnlf svaq vg va gur ynfg cynpr lbh ybbx."),
+            _r("gur oyhr-sbbgrq obbol"),
+            _r("sevraqf bs obgu frkrf"),
+            _r("gur gurencvfg fnvq"),
+            _r("n oenff frkgnag"),
+            _r("Zvffvffvccv"),
+            _r("nffhzr abguvat; pynffvp znff"),
+            _r("gvg sbe gng"),
+            _r("n cbyr ergneqf gurve sbejneq zbgvba"),
+            _r("lbhe fanxrovgr tbbx"),
+            _r("ebqr ba na nff"),
+            _r("n Cvffneeb ynaqfpncr"),
+            _r("fuvgnxr zhfuebbzf"),
+            _r("zl nffvfgnag"),
+            _r("n jryy-\nxabja snpg"),
+            _r("N puvax va gur nezbe."),
+            _r("N fcvp naq fcna xvgpura."),
+            # final review: _r("frk") as gender, and other innocent phrases
+            _r("Lbh unir n fgebat nccrny sbe zrzoref bs gur bccbfvgr frk."),
+            _r("N zrzore bs gur hapbafvqrerq, be artyvtvoyr frk."),
+            _r("pbafvta gur jubyr znyr frk gb gur ahefrel"),
+            _r("nterrq frk rdhnyvgl yrtvfyngvba"),
+            _r("erfgber gb fbpvny vagrepbhefr gung unezbal"),
+            _r("-- Funxrfcrner, Gur Encr bs Yhperpr"),
+            _r("gur nefrany ubyqf nefravp"),
+            _r("Bofreir gur nff, sbe vafgnapr."),
+        ],
+    )
+    def test_leaves_near_misses_alone(self, text):
+        """Each of these is a real false positive from a draft of the list,
+        or the innocent word next to a stem the list widened."""
+        assert not fortune.is_mature(text)
+
+    def test_a_carriage_return_cannot_smuggle_a_word_through_pick(self, dbroot):
+        """normalise() drops the \\r, so the panel would show the word."""
+        write_db(dbroot, "cr", ["Eat sh\rit.", "Short and sweet."])
+        picks = {fortune.pick(self.T + timedelta(minutes=k), selected=("cr",))[0].raw for k in range(100)}
+        assert picks == {"Short and sweet."}
+
+    def test_a_long_token_is_cheap(self):
+        """A leading-wildcard pattern retried at every position took 1.8s on an
+        8KB token (second Codex pass); the painter's whole pick budget is 1.5s."""
+        start = time.monotonic()
+        assert not fortune.is_mature("a" * 8192)
+        assert time.monotonic() - start < 0.5
+
+    def test_the_list_is_lowercase_and_unique(self):
+        assert all(w == w.lower() for w in fortune.MATURE_WORDS)
+        assert len(set(fortune.MATURE_WORDS)) == len(fortune.MATURE_WORDS)
+
+    def test_never_picked_with_nsfw_off(self, dbroot):
+        write_db(dbroot, "mixed", self.MATURE + ["Short and sweet."])
+        picks = {fortune.pick(self.T + timedelta(minutes=k), selected=("mixed",))[0].raw for k in range(200)}
+        assert picks == {"Short and sweet."}
+
+    def test_picked_with_nsfw_on(self, dbroot):
+        write_db(dbroot, "mixed", self.MATURE + ["Short and sweet."])
+        picks = {
+            fortune.pick(self.T + timedelta(minutes=k), selected=("mixed",), allow_nsfw=True)[0].raw
+            for k in range(200)
+        }
+        assert set(self.MATURE) <= picks
+
+    def test_the_painter_entry_point_reads_the_nsfw_switch(self, dbroot):
+        """current_fortune is what literary_clock calls; an unset switch is off."""
+        write_db(dbroot, "mixed", self.MATURE + ["Short and sweet."])
+        env = {"LITCLOCK_FORTUNE_CATEGORIES": "mixed"}
+        shown = {fortune.current_fortune(self.T + timedelta(minutes=k), env)[0].raw for k in range(60)}
+        assert shown == {"Short and sweet."}
+        env["ALLOW_NSFW_QUOTES"] = "true"
+        shown = {fortune.current_fortune(self.T + timedelta(minutes=k), env)[0].raw for k in range(60)}
+        assert shown & set(self.MATURE)
+
+    def test_an_all_mature_pool_paints_a_quote(self, dbroot):
+        write_db(dbroot, "rude", self.MATURE)
+        assert fortune.pick(self.T, selected=("rude",)) is None
+
+    def test_the_settings_list_ignores_the_filter(self, dbroot):
+        """Decision: the LIST does not change with the NSFW switch, or a save
+        made while NSFW is off would drop the database from the pick for good.
+        On bookworm the worst database by share (law) loses under 5%."""
+        write_db(dbroot, "rude", self.MATURE)
+        rude = next(db for db in fortune.list_databases() if db.name == "rude")
+        assert fortune.has_showable(rude)
+        assert not fortune.has_showable(rude, allow_nsfw=False)
+
+    def test_a_save_of_an_all_mature_pick_is_refused_with_nsfw_off(self, pwa, dbroot):
+        """The save check passes the real switch (both reviews on litclock-dev#972)."""
+        client, token, env = pwa
+        write_db(dbroot, "rude", self.MATURE)
+        resp = _post(
+            client, token, LITCLOCK_CONTENT_MODE="fortune", fortune_categories_listed="1", fortune_category=["rude"]
+        )
+        assert resp.status_code == 422
+        assert config.load_config(str(env))["LITCLOCK_FORTUNE_CATEGORIES"] == "riddles"
+        env.write_text("export ALLOW_NSFW_QUOTES=true\nexport LITCLOCK_FORTUNE_CATEGORIES=riddles\n")
+        resp = _post(
+            client, token, LITCLOCK_CONTENT_MODE="fortune", fortune_categories_listed="1", fortune_category=["rude"]
+        )
+        assert resp.status_code != 422
+        assert config.load_config(str(env))["LITCLOCK_FORTUNE_CATEGORIES"] == "rude"
+
+    def test_blocked_lists_what_the_filter_skips(self, dbroot, capsys):
+        write_db(dbroot, "mixed", self.MATURE + ["Short and sweet."])
+        assert fortune._cli(["blocked"]) == 0
+        out = capsys.readouterr().out
+        assert self.MATURE[0].strip("?") in out and "Short and sweet." not in out
+        assert "[]" not in out  # every blocked entry names the word that blocked it
+        assert out.rstrip().endswith(f"total: {len(self.MATURE)} blocked")
+
+    def test_sweep_does_not_count_a_blocked_entry_as_usable(self, dbroot, capsys):
+        write_db(dbroot, "rude", self.MATURE)
+        fortune._cli(["sweep"])
+        assert "rude: 0/3" in capsys.readouterr().out
+
+    def test_check_passes_and_its_control_fires(self, dbroot, capsys):
+        write_db(dbroot, "mixed", self.MATURE + ["Short and sweet."])
+        assert fortune._cli(["check", "60"]) == 0
+        off, on = capsys.readouterr().out.splitlines()
+        assert off.endswith(" 0 mature") and not on.endswith(" 0 mature")
+
+    @pytest.mark.parametrize("entries", [["Short and sweet."], []])
+    def test_check_is_inconclusive_without_a_control(self, dbroot, entries, capsys):
+        """No mature entry to find, or nothing to pick at all: exit 2, never a pass."""
+        for db in ("wisdom", "riddles", "junk"):
+            for suffix in ("", ".dat", ".u8"):
+                (dbroot / f"{db}{suffix}").unlink()
+        if entries:
+            write_db(dbroot, "clean", entries)
+        assert fortune._cli(["check", "30"]) == 2
+
+    def test_check_fails_when_the_filter_is_gone(self, dbroot, monkeypatch, capsys):
+        write_db(dbroot, "mixed", self.MATURE + ["Short and sweet."])
+        real = fortune.is_mature
+        monkeypatch.setattr(fortune, "pick", _unfiltered_pick(real))
+        assert fortune._cli(["check", "60"]) == 1
+
+
+def _unfiltered_pick(real_is_mature):
+    """pick() with the word filter switched off inside it, as a regression
+    would: is_mature stays real for check's own count."""
+    real_pick = fortune.pick
+
+    def pick(now, **kw):
+        kw["allow_nsfw"] = True
+        return real_pick(now, **kw)
+
+    return pick
+
+
+@pytest.mark.parametrize(
+    "path", ["src/fortune.py", "src/fortune_denylist.txt", "tests/test_fortune.py", "CLAUDE.md", "README.md"]
+)
+def test_no_listed_word_appears_in_plain_text(path):
+    """Owner, 2026-10-28: the public source must not spell the words out. The
+    list and its fixtures are rot13; this catches a plain one creeping back.
+    The raw pattern over the whole file: no innocent-phrase exemption, and a
+    phrase split across lines still counts (Codex review)."""
+    text = (REPO_ROOT / path).read_text(encoding="utf-8")
+    hit = fortune._MATURE_RE.search(text)
+    assert hit is None, f"{path}:{text.count(chr(10), 0, hit.start()) + 1} spells out a listed word"

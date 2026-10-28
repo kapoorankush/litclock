@@ -860,8 +860,21 @@ glass, and the OTA path that installs it.
   replaced .deb; to exercise it, empty `/var/lib/apt/lists` by hand first (done
   2026-10-23). `fortunes-off` is not installed anywhere:
   bookworm's archive has none (`E: Unable to locate package fortunes-off`,
-  measured on the bench 2026-10-23), so there are no mature fortunes on the
-  fleet and the NSFW half of the pool rule is reader-only.
+  measured on the bench 2026-10-23), so there are no `off/` fortunes on the
+  fleet and the offensive half of the pool rule is reader-only.
+- **NSFW off keeps crude lines off the panel (litclock-dev#971).** The ordinary
+  databases carry explicit and crude lines; `fortune.MATURE_WORDS` skips them
+  while `ALLOW_NSFW_QUOTES` is off. On the device, offscreen (it never touches
+  the panel): `cd ~/litclock && ./venv/bin/python3 src/fortune.py check`. It
+  runs the real `pick()` over a day of slots with NSFW off, then on: exit 0 is
+  a pass, 1 means a mature fortune got through, 2 means the run proved nothing
+  (no picks, or the NSFW-on control found no mature fortune). Measured on the
+  bench 2026-10-28, 1440 slots, 6.5 min on a Zero 2 W: off 0, on 13. Use the
+  default slot count; mature picks are rare enough that a short run comes back
+  2. `src/fortune.py blocked | tail -1` should print about
+  `total: 159 blocked`; a big drop means the list or the reader broke. Do not
+  judge this from a soak of `/run/litclock/current-quote.json`: a fallback
+  minute holds a literary quote, which the word list does not govern.
 - **The section is always there; its fortune fields follow the pill.** Plain
   `/settings` shows "Experimental" with only the mode pill while "Literary
   quotes" is checked; tapping "Fortunes" must reveal "Minutes between fortunes"

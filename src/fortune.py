@@ -46,7 +46,7 @@ import sys
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -126,6 +126,79 @@ _DIALOGUE_RE = re.compile(r"^[A-Z][A-Za-z.' ]{0,24}:\s")
 _LABEL_TAB_RE = re.compile(r"^(\s*[A-Z][A-Za-z.' ]{0,24}:)\t+")
 _INNER_GAP_RE = re.compile(r"\S {4,}\S|\t")
 _WS_RE = re.compile(r"\s+")
+
+# Words that keep a fortune off the panel while ALLOW_NSFW_QUOTES is off
+# (litclock-dev#971). "Offensive" elsewhere in this module means Debian's off/
+# tree, which bookworm does not ship, so the NSFW switch gated nothing that is
+# installed, and the ordinary databases carry ~150 explicit or crude lines (the
+# fielded clock showed one on 2026-10-28). Case-insensitive, matched as whole
+# words: a trailing * takes any suffix, a leading * any prefix (only on stems
+# no innocent word contains; a free prefix on a short stem would take English
+# place names). An entry with a space matches across a wrapped line.
+# Conservative on purpose: a false positive costs one draw, a miss paints the
+# line on someone's shelf. A single miss goes in fortune_denylist.txt instead.
+#
+# Stored rot13, the way Debian stores its own offensive fortunes, so this
+# public source carries none of the words in plain text (owner, 2026-10-28).
+# Read one with: python3 -c "import codecs; print(codecs.decode('...', 'rot13'))"
+_MATURE_WORDS_ROT13 = (
+    # explicit terms
+    "frk", "frkl", "frkrq", "frkvre", "frkvrfg", "frkyrff", "*frkhny*", "vagrepbhefr", "sbercynl", "xvaxl",
+    "cravf*", "intvan*", "pyvgbevf*", "betnfz*", "betl", "betvrf", "znfgheong*", "rerpgvba*", "rwnphyng*",
+    "pbaqbz*", "qvyqb*", "cbea*", "cebfgvghg*", "juber*", "fyhg*", "ubeal", "ubeavre", "ubeavrfg", "alzcub*",
+    "sryyngvb", "phaavyvathf", "oybjwbo*", "oybj wbo*", "travgny*", "grfgvpyr*", "fpebghz*", "obbof", "obbovrf",
+    "oernfgf", "gvgf", "gvggvrf", "rebgvp*", "ivnten", "encr", "encrq", "encrf", "encvat", "encvfg*",
+    # profanity: two stems list their forms rather than take a free suffix,
+    # which hit a mushroom and a painter in review; one is also a donkey
+    "*shpx*", "s*px*", "*fuvg", "*fuvgf", "*fuvggvat", "*fuvggre*", "fuvggl", "fuvgr", "fuvgyrff", "fuvgurnq*",
+    "fuvgybnq*", "cvff", "cvffrf", "cvffrq", "cvffvat", "cvffl", "ovgpu*", "phag*", "pbpxfhpx*", "nffubyr*",
+    "nff-ubyr*", "onqnff*", "ovtnff", "ynzrnff", "qhzonff*", "wnpxnff*", "fznegnff*", "zl nff", "lbhe nff",
+    "uvf nff", "ure nff", "bhe nff", "gurve nff", "vgf nff", "'f nff", "zl nffrf", "lbhe nffrf", "bhe nffrf",
+    "gurve nffrf", "fbzr nff", "xvpx nff", "xvpxf nff", "xvpxrq nff", "xvpxvat nff", "unhy nff", "unhyrq nff",
+    "cnva va gur nff", "nefr", "nefrf", "fbqbzvm*", "fbqbzvf*",
+    # slurs (two more were left out: each is also an everyday phrase)
+    "avttre*", "avttn*", "snttbg*", "snt", "sntf", "xvxr*", "jrgonpx*", "genaal",
+)
+MATURE_WORDS = tuple(codecs.decode(w, "rot13") for w in _MATURE_WORDS_ROT13)
+
+# Innocent phrases that contain a listed word, removed before matching: the
+# word used for gender (the corpus's commonest false positive, its horoscope
+# lines among them), a Jefferson line and a Shakespeare title in an
+# attribution (final litclock-dev#972 review). rot13 for the same reason as the list.
+_INNOCENT_ROT13 = (
+    "(?:bccbfvgr|bja|fnzr|bgure|znyr|srznyr|evtug|artyvtvoyr|hapbafvqrerq|snve|tragyr|jrnxre|fgebatre"
+    "|jubyr znyr|jubyr srznyr)~frk",
+    "frk~rdhnyvgl",
+    "fbpvny~vagrepbhefr",
+    "encr~bs~yhperpr",
+)
+_INNOCENT_RE = re.compile(
+    r"(?<![^\W_])(?:"
+    # "~" is the word separator: rot13 would turn a written \s into \f.
+    + "|".join(codecs.decode(x, "rot13").replace("~", r"[\s_-]+") for x in _INNOCENT_ROT13)
+    + r")(?![^\W_])",
+    re.IGNORECASE,
+)
+
+
+def _word_pattern(word: str) -> str:
+    """One MATURE_WORDS entry as a regex. The edges are \\b with the underscore
+    counted as a separator, so fortune-style _emphasis_ cannot hide a word; an
+    entry that starts with punctuation (a possessive) takes no left edge. A
+    leading * still starts at a word edge, so a long token is scanned once,
+    not retried from every position (Codex: 1.8s on an 8KB token)."""
+    stem = word.strip("*")
+    if stem.startswith("f*"):  # the corpus's own self-censored spelling
+        body = "f\\*+" + re.escape(stem[2:])
+    else:
+        body = re.escape(stem).replace("\\ ", "[\\s_-]+")
+    edge = "(?<![^\\W_])" if stem[0].isalnum() else ""
+    lead = edge + ("[^\\W_]*" if word.startswith("*") else "")
+    tail = "\\w*" if word.endswith("*") else ""
+    return lead + body + tail + "(?![^\\W_])"
+
+
+_MATURE_RE = re.compile("|".join(_word_pattern(w) for w in MATURE_WORDS), re.IGNORECASE)
 
 STR_ROTATED = 0x4  # strfile(8) flag: the text is rot13
 
@@ -269,36 +342,44 @@ def list_databases(root: Path | None = None, *, include_offensive: bool = True) 
 _SHOWABLE_CACHE: dict[tuple, bool] = {}
 
 
-def has_showable(db: Database, denylist: frozenset[str] | None = None) -> bool:
+def has_showable(db: Database, denylist: frozenset[str] | None = None, *, allow_nsfw: bool = True) -> bool:
     """Whether any entry survives the denylist and ``normalise`` — stopping at
     the first that does, so an ordinary database costs one read. Debian's
     ascii-art passes none of its 10, and offering it as a choice let an owner
     pick a fortune mode that only ever painted quotes. ``fit`` is not run:
     it needs Pillow, which the control server must not load, and
     ``normalise`` already applies the length and line caps that reject
-    nearly every entry ``fit`` would."""
+    nearly every entry ``fit`` would.
+
+    ``allow_nsfw=False`` also applies the MATURE_WORDS filter. The Settings
+    LIST leaves it at True on purpose (litclock-dev#971): a list that changed
+    with the NSFW switch would let a save drop a database from the pick. The
+    save check passes the real switch, so it still refuses a pick that can
+    only ever paint quotes."""
     deny = load_denylist() if denylist is None else denylist
     try:
         st = db.path.stat()
     except OSError:
         return False
-    key = (str(db.path), st.st_mtime_ns, st.st_size, db.offensive, db.rotated, db.offsets, deny)
+    key = (str(db.path), st.st_mtime_ns, st.st_size, db.offensive, db.rotated, db.offsets, deny, allow_nsfw)
     if key not in _SHOWABLE_CACHE:
-        verdict = _scan_showable(db, deny)
+        verdict = _scan_showable(db, deny, allow_nsfw)
         if verdict is None:
             return True
         _SHOWABLE_CACHE[key] = verdict
     return _SHOWABLE_CACHE[key]
 
 
-def _scan_showable(db: Database, deny: frozenset[str]) -> bool | None:
+def _scan_showable(db: Database, deny: frozenset[str], allow_nsfw: bool = True) -> bool | None:
     """None when a read failed before anything showable turned up."""
     for i in range(db.count):
         try:
             raw = _entry_text(db, i)
         except OSError:
             return None
-        if entry_hash(raw) not in deny and normalise(raw, db.name, db.offensive) is not None:
+        if entry_hash(raw) in deny or normalise(raw, db.name, db.offensive) is None:
+            continue
+        if allow_nsfw or not is_mature(raw):
             return True
     return False
 
@@ -342,6 +423,25 @@ def _entry_text(db: Database, index: int) -> str:
 def entry_hash(raw: str) -> str:
     """The denylist key: 16 hex chars of sha256 over the stripped entry."""
     return hashlib.sha256(raw.strip().encode("utf-8")).hexdigest()[:16]
+
+
+def is_mature(raw: str) -> bool:
+    """Whether an entry uses a MATURE_WORDS word, so stays off the panel
+    while ALLOW_NSFW_QUOTES is off (litclock-dev#971)."""
+    return any(_MATURE_RE.search(text) for text in _match_texts(raw))
+
+
+def _match_texts(raw: str) -> tuple[str, str]:
+    """The entry as the panel will show it, twice: once as written and once
+    with a word hyphenated across a line break joined. Both, because joining
+    a wrapped hyphenated compound can make a word the list does not hold,
+    erasing a match the first half had (third Codex pass).
+    Carriage returns, soft hyphens and line-end spaces are gone (normalise
+    drops them, the font draws nothing for a soft hyphen), the Unicode hyphen
+    is a plain one, and a curly apostrophe is straight."""
+    text = raw.replace("\r", "").replace("\u00ad", "").replace("\u2010", "-").replace("\u2019", "'")
+    text = _INNOCENT_RE.sub(" ", re.sub(r"[ \t]+\n", "\n", text))
+    return text, _INNOCENT_RE.sub(" ", re.sub(r"(\w)-\n\s*(\w)", r"\1\2", text))
 
 
 def load_denylist(path: Path | None = None) -> frozenset[str]:
@@ -616,7 +716,8 @@ def pick(
         if entry_hash(raw) in deny:
             continue
         fortune = normalise(raw, db.name, db.offensive)
-        if fortune is None:
+        # After normalise, which rejects anything long cheaply first.
+        if fortune is None or (not allow_nsfw and is_mature(raw)):
             continue
         layout = fit(fortune)
         if layout is not None and (accept is None or accept(fortune, layout)):
@@ -670,7 +771,9 @@ def current_fortune(
 def _cli(argv: list[str]) -> int:
     """``fortune.py hash`` reads an entry on stdin and prints its denylist
     key. ``fortune.py sweep [--nsfw]`` walks every installed entry and prints
-    how many normalise and fit — the curation view of the corpus."""
+    how many normalise and fit — the curation view of the corpus.
+    ``fortune.py blocked`` prints every entry the NSFW-off word filter skips;
+    ``fortune.py check [slots]`` picks over a day with NSFW off and on."""
     if argv[:1] == ["hash"]:
         print(entry_hash(sys.stdin.read()))
         return 0
@@ -682,14 +785,56 @@ def _cli(argv: list[str]) -> int:
         for db in dbs:
             ok = 0
             for i in range(db.count):
-                f = normalise(_entry_text(db, i), db.name, db.offensive)
+                raw = _entry_text(db, i)
+                f = normalise(raw, db.name, db.offensive)
+                f = None if f is None or (not allow_nsfw and is_mature(raw)) else f
                 ok += f is not None and fit(f) is not None
             print(f"{'off/' if db.offensive else ''}{db.name}: {ok}/{db.count}")
             shown += ok
             total += db.count
         print(f"total: {shown}/{total} usable")
         return 0 if shown else 1
-    print("usage: fortune.py hash < entry | fortune.py sweep [--nsfw]", file=sys.stderr)
+    if argv[:1] == ["blocked"]:
+        # Every entry the NSFW-off word filter keeps off the panel, for review.
+        counts: dict[str, int] = {}
+        for db in list_databases(include_offensive=False):
+            for i in range(db.count):
+                raw = _entry_text(db, i)
+                if is_mature(raw):
+                    counts[db.name] = counts.get(db.name, 0) + 1
+                    hits = {m.lower() for text in _match_texts(raw) for m in _MATURE_RE.findall(text)}
+                    print(f"=== {db.name} [{', '.join(sorted(hits))}]")
+                    print(raw.strip())
+        for name, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+            print(f"{n:5d} {name}")
+        print(f"total: {sum(counts.values())} blocked")
+        return 0
+    if argv[:1] == ["check"]:
+        # pick() over a day of slots with NSFW off, then on: the NSFW-off line
+        # must show 0 mature, and the NSFW-on line is the control proving the
+        # check can fail (litclock-dev#971; CLAUDE.md, Fortune mode).
+        slots = int(argv[1]) if len(argv) > 1 else 1440
+        t0 = datetime(2026, 1, 1)
+        result = {}
+        for allow in (False, True):
+            picks = mature = 0
+            for k in range(slots):
+                got = pick(t0 + timedelta(minutes=k), allow_nsfw=allow)
+                picks += got is not None
+                mature += got is not None and is_mature(got[0].raw)
+            print(f"nsfw={'on ' if allow else 'off'}: {picks}/{slots} picks, {mature} mature")
+            result[allow] = (picks, mature)
+        if result[False][1]:
+            return 1
+        # Nothing picked, or a control that never fired: the check proved nothing.
+        if not result[False][0] or not result[True][1]:
+            print("inconclusive: no NSFW-off picks, or the NSFW-on control showed nothing", file=sys.stderr)
+            return 2
+        return 0
+    print(
+        "usage: fortune.py hash < entry | fortune.py sweep [--nsfw] | fortune.py blocked | fortune.py check [slots]",
+        file=sys.stderr,
+    )
     return 2
 
 
