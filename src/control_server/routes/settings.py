@@ -207,9 +207,16 @@ def _check_fortune_pool(
         selected = fortune.parse_categories(
             env_updates.get("LITCLOCK_FORTUNE_CATEGORIES", existing.get("LITCLOCK_FORTUNE_CATEGORIES", ""))
         )
-        allow_nsfw = (existing.get("ALLOW_NSFW_QUOTES") or "false").strip().lower() == "true"
+        allow_nsfw = (
+            env_updates.get("ALLOW_NSFW_QUOTES", existing.get("ALLOW_NSFW_QUOTES")) or "false"
+        ).strip().lower() == "true"
         deny = fortune.load_denylist()
-        empty = not any(fortune.has_showable(db, deny) for db in fortune.pool(selected, allow_nsfw=allow_nsfw))
+        # With NSFW off a pick whose every entry is mature also only paints
+        # quotes (litclock-dev#971), so the check applies the word filter.
+        empty = not any(
+            fortune.has_showable(db, deny, allow_nsfw=allow_nsfw)
+            for db in fortune.pool(selected, allow_nsfw=allow_nsfw)
+        )
     except Exception:  # noqa: BLE001 — a reader fault must not block a save
         return
     if empty:

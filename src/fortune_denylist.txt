@@ -8,3 +8,11 @@
 #
 # Use this for entries the length and art filters let through but that should
 # not appear on a gifted clock: dated, cruel, or meaningless without context.
+
+# litclock-dev#971 review: crude or racist lines MATURE_WORDS cannot match
+# without false positives (measured on bookworm's databases, 2026-10-28).
+adeb60355b1cf3c7  # cookie: racist quotation
+9ec4c72b36b3c189  # cookie: crude religious pun
+f5c51394516d70d6  # knghtbrd: misspelled profanity
+855277bddb39bbee  # knghtbrd: innuendo in a channel name
+9b4c30083f5d90d2  # cookie: innuendo a word list cannot catch without false positives
