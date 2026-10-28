@@ -256,11 +256,66 @@ def list_databases(root: Path | None = None, *, include_offensive: bool = True) 
     return found
 
 
+# has_showable() verdicts by text file version, parsed index and denylist. Settings
+# renders call it per database; a database that has nothing to show is read
+# to its end, so without this a huge or corrupt one would be read whole on
+# every page (Codex review). A changed file, index or denylist is a new key. A cap
+# on the scan was tried first and hid a database whose first showable entry
+# came after it (second Codex pass). A scan cut short by a read error is not
+# cached and counts as showable: cached, one transient failure hid a healthy
+# database until the process restarted; hidden even once, a Settings save from
+# that page dropped it from the stored pick (final Codex passes). Offering an
+# unreadable database is what Settings did before any of this.
+_SHOWABLE_CACHE: dict[tuple, bool] = {}
+
+
+def has_showable(db: Database, denylist: frozenset[str] | None = None) -> bool:
+    """Whether any entry survives the denylist and ``normalise`` — stopping at
+    the first that does, so an ordinary database costs one read. Debian's
+    ascii-art passes none of its 10, and offering it as a choice let an owner
+    pick a fortune mode that only ever painted quotes. ``fit`` is not run:
+    it needs Pillow, which the control server must not load, and
+    ``normalise`` already applies the length and line caps that reject
+    nearly every entry ``fit`` would."""
+    deny = load_denylist() if denylist is None else denylist
+    try:
+        st = db.path.stat()
+    except OSError:
+        return False
+    key = (str(db.path), st.st_mtime_ns, st.st_size, db.offensive, db.rotated, db.offsets, deny)
+    if key not in _SHOWABLE_CACHE:
+        verdict = _scan_showable(db, deny)
+        if verdict is None:
+            return True
+        _SHOWABLE_CACHE[key] = verdict
+    return _SHOWABLE_CACHE[key]
+
+
+def _scan_showable(db: Database, deny: frozenset[str]) -> bool | None:
+    """None when a read failed before anything showable turned up."""
+    for i in range(db.count):
+        try:
+            raw = _entry_text(db, i)
+        except OSError:
+            return None
+        if entry_hash(raw) not in deny and normalise(raw, db.name, db.offensive) is not None:
+            return True
+    return False
+
+
+def installed_keys(root: Path | None = None) -> set[str]:
+    """Every installed database's key, showable or not. "Not installed" is
+    judged against this, not against ``categories()``, which hides some."""
+    return {db.key for db in list_databases(root)}
+
+
 def categories(root: Path | None = None) -> list[tuple[str, bool]]:
-    """(key, offensive) for every installed database — what the lab section
-    lists: the ordinary ones sorted, then the offensive ones under their own
-    ``off-`` keys, so ticking an ordinary box can never select one."""
-    dbs = list_databases(root)
+    """(key, offensive) for every installed database with something to show —
+    what the lab section lists: the ordinary ones sorted, then the offensive
+    ones under their own ``off-`` keys, so ticking an ordinary box can never
+    select one."""
+    deny = load_denylist()
+    dbs = [db for db in list_databases(root) if has_showable(db, deny)]
     main = sorted({db.key for db in dbs if not db.offensive})
     off = sorted({db.key for db in dbs if db.offensive})
     return [(k, False) for k in main] + [(k, True) for k in off]

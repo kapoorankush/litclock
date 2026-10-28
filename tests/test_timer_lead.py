@@ -155,7 +155,8 @@ class TestTheNightlyClearStillFires:
 
     def test_the_gate_reads_the_offset_target(self):
         body = _executed(PAINTER)
-        m = re.search(r"if (\S+)\.minute == 0 and (\S+)\.hour == display_clear_hour:", body)
+        # `clear = ...` since litclock-dev#963: the gate also decides the refresh.
+        m = re.search(r"(?:if|clear =) (\S+)\.minute == 0 and (\S+)\.hour == display_clear_hour\b", body)
         assert m, "the nightly clear gate is gone or was reshaped"
         assert m.group(1) == "now" and m.group(2) == "now", (
             f"the clear gate reads {m.group(1)}/{m.group(2)} instead of the offset target. "
@@ -293,7 +294,7 @@ def test_the_status_write_call_site_passes_the_target():
     panel — so this is a source assertion, on comment-stripped lines, paired
     with the executed test of the function itself above."""
     body = _executed(PAINTER)
-    assert "_write_status_file(quote_meta, now, fallback_reason)" in body, (
+    assert "_write_status_file(quote_meta, now, fallback_reason, refresh=refresh)" in body, (
         "the status write no longer passes the threaded target. A live clock read there "
         "publishes the minute that has just ENDED while the panel shows the next one, so "
         "the PWA contradicts the device in the user's hand"

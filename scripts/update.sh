@@ -846,9 +846,12 @@ fi
 #
 # Keyed on the PACKAGE, not a file: fortunes.dat also ships in fortunes-min, and
 # a device holding only that would never get the rest (review). And it refreshes
-# the package lists once on failure, because an image ships with
-# /var/lib/apt/lists emptied (pi-gen 04-finalize) and cannot even locate the
-# package until they exist. Both apt calls are bounded and say why they failed.
+# the package lists once on failure: they go stale as an image ages, and a list
+# that names a .deb the mirror has since replaced fails the download. (Images do
+# ship lists: stage3/04-finalize deletes them, but pi-gen's later export-image
+# stage runs `apt-get update` again. A fresh public v0.232.0 flash had full lists
+# from its build day, measured 2026-10-26, so a young image installs first try.)
+# Both apt calls are bounded and say why they failed.
 #
 # fortunes-off (the offensive databases) is NOT installed anywhere: Raspberry Pi
 # OS bookworm's archive does not carry it ("Unable to locate package", measured

@@ -128,19 +128,92 @@ SECTION_KEYS: Final[dict[str, frozenset[str]]] = {
 _LAB_CATEGORY_FIELD: Final[str] = "fortune_category"
 
 
+# _form_payload's marker for a rendered list with no box ticked. Not an env
+# key, so _coerce_payload never writes it; settings_post pops it.
+_LAB_NONE_TICKED: Final[str] = "_fortune_none_ticked"
+
+
+def _installed_fortune_categories() -> list[tuple[str, bool]]:
+    """``fortune.categories()``, or [] when the module or package is missing
+    (same guard as the template's list, so the two always agree)."""
+    try:
+        import fortune  # noqa: PLC0415
+
+        return fortune.categories()
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _form_payload(section: str) -> dict[str, Any]:
     """``request.form`` flattened for _save_and_apply. Flat keeps the first
     value of a repeated field, which is right for every field but the lab
-    section's checkbox list, joined here into its env key. No ticked box
-    posts nothing at all, so an empty list is an explicit "all" — but only
-    when the list was rendered (``fortune_categories_listed``): a device
-    with no databases installed must not have its pick reset by a save."""
+    section's checkbox list, joined here into its env key — and only when
+    the list was rendered (``fortune_categories_listed``): a device with no
+    databases installed must not have its pick reset by a save.
+
+    An empty stored pick means "every ordinary database", and the list
+    renders it with those boxes ticked (litclock-dev#964). So ticking exactly
+    that set stores empty again, keeping a database a later package adds,
+    and no box ticked is its own state: _save_and_apply refuses it in
+    fortune mode and leaves the stored pick alone otherwise. It used to save
+    empty, i.e. "all" — the opposite of what the owner had just done."""
     payload = request.form.to_dict(flat=True)
     payload.pop(_LAB_CATEGORY_FIELD, None)
     listed = payload.pop("fortune_categories_listed", None) == "1"
     if section == "lab" and listed:
-        payload["LITCLOCK_FORTUNE_CATEGORIES"] = ",".join(request.form.getlist(_LAB_CATEGORY_FIELD))
+        ticked = request.form.getlist(_LAB_CATEGORY_FIELD)
+        ordinary = {name for name, mature in _installed_fortune_categories() if not mature}
+        if not ticked:
+            payload[_LAB_NONE_TICKED] = True
+        elif ordinary and set(ticked) == ordinary:
+            payload["LITCLOCK_FORTUNE_CATEGORIES"] = ""
+        else:
+            payload["LITCLOCK_FORTUNE_CATEGORIES"] = ",".join(ticked)
     return payload
+
+
+def _check_fortune_pool(
+    env_updates: dict[str, str],
+    existing: Mapping[str, str],
+    field_errors: dict[str, str],
+    *,
+    none_ticked: bool,
+) -> None:
+    """litclock-dev#964: refuse a lab save that would leave fortune mode with
+    nothing to show — no box ticked, or only names that draw nothing (not
+    installed, mature with NSFW off, or holding no entry the panel can show). The painter would show quotes and
+    the setting would lie. Quotes mode is unaffected. A device with no
+    databases installed yet may still pick Fortunes: the section says the
+    next update installs them, and the painter falls back to quotes until
+    then. Mutates ``field_errors``."""
+    mode = (env_updates.get("LITCLOCK_CONTENT_MODE") or existing.get("LITCLOCK_CONTENT_MODE") or "quotes").strip()
+    if mode.lower() != "fortune":
+        return
+    import strings_catalog  # noqa: PLC0415
+
+    message = strings_catalog.get("settings.lab.error_no_databases")
+    if none_ticked:
+        field_errors["LITCLOCK_FORTUNE_CATEGORIES"] = message
+        return
+    try:
+        import fortune  # noqa: PLC0415
+
+        # Installed at all, not merely listed: when every installed database
+        # is hidden as unshowable, this is not the "next update installs
+        # them" case and the pick must still be checked (Codex review).
+        if not fortune.installed_keys():
+            return
+
+        selected = fortune.parse_categories(
+            env_updates.get("LITCLOCK_FORTUNE_CATEGORIES", existing.get("LITCLOCK_FORTUNE_CATEGORIES", ""))
+        )
+        allow_nsfw = (existing.get("ALLOW_NSFW_QUOTES") or "false").strip().lower() == "true"
+        deny = fortune.load_denylist()
+        empty = not any(fortune.has_showable(db, deny) for db in fortune.pool(selected, allow_nsfw=allow_nsfw))
+    except Exception:  # noqa: BLE001 — a reader fault must not block a save
+        return
+    if empty:
+        field_errors["LITCLOCK_FORTUNE_CATEGORIES"] = message
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -730,6 +803,7 @@ def _save_and_apply(
     section: str | None,
     *,
     is_form: bool,
+    fortune_none_ticked: bool = False,
 ) -> tuple[dict[str, Any], int]:
     """Shared writer for both the JSON (D2) and HTML PRG (D8) paths.
 
@@ -790,6 +864,9 @@ def _save_and_apply(
         import strings_catalog  # noqa: PLC0415
 
         field_errors["LITCLOCK_LANGUAGE"] = strings_catalog.get("settings.language.error_empty")
+
+    if section == "lab":
+        _check_fortune_pool(env_updates, existing, field_errors, none_ticked=fortune_none_ticked)
 
     resolved_name, resolved_country = _apply_clear_or_geocode(
         env_updates,
@@ -981,7 +1058,9 @@ def settings_post() -> Any:
         # malformed clients don't accidentally write across boundaries.
         abort(400, description="Missing or invalid `section` field.")
 
-    body, status = _save_and_apply(_form_payload(section), section, is_form=True)
+    payload = _form_payload(section)
+    none_ticked = bool(payload.pop(_LAB_NONE_TICKED, False))
+    body, status = _save_and_apply(payload, section, is_form=True, fortune_none_ticked=none_ticked)
 
     # litclock-dev#317 item 7 — the gift card lives on /system now, but the writer
     # endpoint stays here (centralised persistence). PRG-redirect the

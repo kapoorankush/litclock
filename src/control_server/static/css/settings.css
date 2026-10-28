@@ -338,6 +338,17 @@
   border-radius: 2px;
 }
 
+/* Select all / Select none above the fortune database list (litclock-dev#964).
+ * :not([hidden]) so the display rule cannot un-hide the no-JS state; the
+ * min-height gives each text button a 44px touch target. */
+.settings-fortune-select:not([hidden]) {
+  display: flex;
+  gap: var(--sp-md);
+}
+.settings-fortune-select .settings-button--tertiary {
+  min-height: 44px;
+}
+
 /* Browser-tz fallback row (litclock-dev#337 A18). Renders only when no coords are
  * resolved AND the Intl.DateTimeFormat API is available (JS hides
  * otherwise). Inline text + button so it reads as a sentence. */

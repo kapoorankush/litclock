@@ -584,11 +584,23 @@
       {# Marks the list as rendered: without it (no databases installed) a save
          must leave LITCLOCK_FORTUNE_CATEGORIES alone rather than reset it to "all". #}
       <input type="hidden" name="fortune_categories_listed" value="1">
+      {#- litclock-dev#964: settings.js reveals these; without JS they stay
+          hidden and the server's none-ticked check is the backstop. -#}
+      <div class="settings-fortune-select" data-fortune-select hidden>
+        <button type="button" class="settings-button settings-button--tertiary"
+                data-fortune-select-all>{{ t('settings.lab.select_all') }}</button>
+        <button type="button" class="settings-button settings-button--tertiary"
+                data-fortune-select-none>{{ t('settings.lab.select_none') }}</button>
+      </div>
       {% for name, mature in fortune_dbs %}
       <div class="settings-row settings-checkbox-row">
         <label class="settings-checkbox-row__head">
+          {#- An empty pick stores "every ordinary database", so it renders
+              with those boxes ticked (litclock-dev#964). A mature box is
+              ticked only by name, as the pool rule reads it. -#}
           <input type="checkbox" name="fortune_category" value="{{ name }}"
-                 {% if name in picked %}checked{% endif %}>
+                 {% if mature %}data-fortune-mature{% endif %}
+                 {% if name in picked or (not picked and not mature) %}checked{% endif %}>
           <span class="settings-checkbox-row__head-label">{{ name }}{% if mature %} ({{ t('settings.lab.category_mature') }}){% endif %}</span>
         </label>
       </div>
@@ -596,12 +608,15 @@
       {#- A stored pick that is not installed right now (a package upgrade, a
           hand-edit) still gets a box, ticked and marked, so a mode-only save
           keeps it AND the owner can untick it — a hidden carry-through could
-          never be cleared and would pin the clock to quotes (re-review). -#}
+          never be cleared and would pin the clock to quotes (re-review).
+          An installed database hidden for having nothing showable gets no
+          box at all: it is not missing, and the next save drops it. -#}
       {%- set listed_names = fortune_dbs | map('first') | list -%}
-      {% for name in picked if name not in listed_names %}
+      {%- set installed_names = fortune_installed() -%}
+      {% for name in picked if name not in listed_names and name not in installed_names %}
       <div class="settings-row settings-checkbox-row">
         <label class="settings-checkbox-row__head">
-          <input type="checkbox" name="fortune_category" value="{{ name }}" checked>
+          <input type="checkbox" name="fortune_category" value="{{ name }}" data-fortune-missing checked>
           <span class="settings-checkbox-row__head-label">{{ name }} ({{ t('settings.lab.category_missing') }})</span>
         </label>
       </div>

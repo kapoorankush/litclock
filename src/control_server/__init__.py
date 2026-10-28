@@ -180,6 +180,16 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     app.jinja_env.globals["fortune_categories"] = _fortune_categories
 
+    def _fortune_installed() -> set[str]:
+        try:
+            import fortune  # noqa: PLC0415
+
+            return fortune.installed_keys()
+        except Exception:  # noqa: BLE001
+            return set()
+
+    app.jinja_env.globals["fortune_installed"] = _fortune_installed
+
     def _fortune_dwell_choices() -> tuple[int, ...]:
         try:
             import fortune  # noqa: PLC0415
