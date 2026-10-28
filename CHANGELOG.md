@@ -4,6 +4,8 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+## [v0.234.0] - 2026-10-28
+
 ### Changed
 
 - In fortune mode with "Minutes between fortunes" above 1, the panel no longer flashes black and white every minute while a fortune stays up: only the time is redrawn.
