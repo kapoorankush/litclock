@@ -4552,11 +4552,11 @@
     },
     {
       "key": "settings.lab.categories_hint",
-      "english": "Leave every box unticked to use all the ordinary ones. A mature one is used only when you tick it and NSFW quotes are allowed.",
+      "english": "Untick any you don't want. A mature one is used only when you tick it and NSFW quotes are allowed.",
       "surface": "Control app",
       "surface_note": "The control app's Settings tab.",
       "length_sensitive": false,
-      "en_length": 126,
+      "en_length": 98,
       "slots": [],
       "rich": {
         "allowed": [],
@@ -4613,6 +4613,20 @@
       "surface_note": "The control app's Settings tab.",
       "length_sensitive": false,
       "en_length": 24,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.error_no_databases",
+      "english": "Tick at least one database the clock can show, or pick Literary quotes.",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 71,
       "slots": [],
       "rich": {
         "allowed": [],
@@ -4697,6 +4711,34 @@
       "surface_note": "The control app's Settings tab.",
       "length_sensitive": false,
       "en_length": 93,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.select_all",
+      "english": "Select all",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 10,
+      "slots": [],
+      "rich": {
+        "allowed": [],
+        "help": []
+      },
+      "plural": null
+    },
+    {
+      "key": "settings.lab.select_none",
+      "english": "Select none",
+      "surface": "Control app",
+      "surface_note": "The control app's Settings tab.",
+      "length_sensitive": false,
+      "en_length": 11,
       "slots": [],
       "rich": {
         "allowed": [],

@@ -44,7 +44,8 @@ apt-get purge -y --auto-remove \
     bluez \
     nfs-common
 
-# Clean package caches
+# Clean package caches. The lists come back: pi-gen's export-image stage
+# (02-set-sources) runs `apt-get update` after this, so the image ships them.
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 

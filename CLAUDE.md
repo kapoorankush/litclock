@@ -853,9 +853,12 @@ glass, and the OTA path that installs it.
 - **The OTA installs the databases, once.** On a device flashed before this
   release, the first tick that applies it must log `Installing fortune databases`
   and leave `dpkg-query -W fortunes` installed; the NEXT tick must not log it
-  again. On a FRESH image the lists are empty, so expect the
-  `refreshing package lists and retrying once` line before it succeeds — that
-  line is the path the fleet takes. `fortunes-off` is not installed anywhere:
+  again. Do NOT expect the `refreshing package lists and retrying once` line on
+  a fresh flash: the public v0.232.0 image carries full package lists from its
+  build day, and both the fresh flash and the fielded clock installed first try
+  (2026-10-26). The retry is for an image old enough that its lists name a
+  replaced .deb; to exercise it, empty `/var/lib/apt/lists` by hand first (done
+  2026-10-23). `fortunes-off` is not installed anywhere:
   bookworm's archive has none (`E: Unable to locate package fortunes-off`,
   measured on the bench 2026-10-23), so there are no mature fortunes on the
   fleet and the NSFW half of the pool rule is reader-only.
@@ -863,10 +866,24 @@ glass, and the OTA path that installs it.
   `/settings` shows "Experimental" with only the mode pill while "Literary
   quotes" is checked; tapping "Fortunes" must reveal "Minutes between fortunes"
   and the database list at once, before any Save (CSS `:has()`), and tapping
-  back must hide them. Pick Fortunes, Save: within ~1 min the panel shows the
+  back must hide them. On a device whose pick is empty (every fresh flash),
+  the database list must open with every ordinary box TICKED (litclock-dev#964;
+  it used to show them all unticked). Tap Select none, then Save with Fortunes
+  picked: the save must be refused with "Tick at least one database…" and
+  `env.sh` unchanged. Tap Select all and Save: `LITCLOCK_FORTUNE_CATEGORIES`
+  must be written EMPTY, not as a list. With JavaScript off the two buttons must
+  not show at all. Pick Fortunes, Save: within ~1 min the panel shows the
   time-led masthead and a fortune, and `jq -r .render_mode
   /run/litclock/current-quote.json` says `fortune`. Switch back to quotes and
   Save: the section must still be there.
+- **A database with nothing showable is not offered (litclock-dev#969).** On
+  bookworm that is `ascii-art` alone: the list shows 42 of 43, and
+  `curl -s http://<clock>/settings | grep -c 'value="ascii-art"'` prints 0 (1 on
+  code before litclock-dev#969 — run that first, it is the control). Set the pick to
+  `ascii-art,songs-poems`: only songs-poems is ticked and there is no "not
+  installed" row. Set it to `ascii-art` alone: nothing is ticked, and a
+  fortune-mode save is refused. Verified 2026-10-27 against side instances on
+  spare ports with copied `env.sh` files, without deploying.
 - **The fallback paints a quote, and prove the check can fail first.** Add
   `export LITCLOCK_FORTUNE_DIR=/nonexistent` to `env.sh`: the next frame must be
   a literary quote (`render_mode` `runtime`, not `fortune`) under the SAME
@@ -892,6 +909,33 @@ glass, and the OTA path that installs it.
 - **The smoke gate renders both tiers on a fortune device.** In fortune mode a
   tick's `[smoke]` lines must include `fortune-mode fallback tier render_mode=`
   (the quote tier it falls back to) followed by `render_mode=fortune`.
+
+### Partial refresh and 12-hour time (litclock-dev#963, litclock-dev#961)
+
+The suite runs the painter's choice against a fake panel; what it cannot see
+is the waveform on glass, the timing, and what other writers leave behind.
+Read the choice over SSH: `jq -r '"\(.time) \(.refresh) \(.picked_at|strftime("%M:%S"))"'
+/run/litclock/current-quote.json` once a minute from SCHEDULED `:56` runs.
+
+- **Fortune mode, dwell 5: four partials, then a full.** The first minute after
+  any restart is `full` (no saved frame), then `partial` until the fortune
+  changes at the slot boundary, which must be `full`. On the glass the partial
+  minutes change only the time, with no black-white flash.
+- **A partial lands on the minute.** `picked_at` on a `partial` minute should
+  read about `:00`, not `:57`-`:58` (which would mean the wait is gone) and not
+  `:02` (a full refresh's settle). Watch three.
+- **Quotes mode is unchanged.** Every minute is `full`.
+- **Another writer forces a full.** Paint any splash at ~`:15` (clear of the minute
+  tick), confirm `/run/litclock/panel-frame.png` is gone, and the next
+  scheduled minute is `full` and replaces the splash cleanly.
+- **The off switch.** `export LITCLOCK_PARTIAL_REFRESH=false` in `env.sh`:
+  every minute `full`. Remove it: partials return after the next full.
+- **The nightly clear is still full** (`DISPLAY_CLEAR_HOUR` set to the next
+  hour): `refresh` is `full` on the `:00` minute and the panel flushes.
+- **Long runs.** At dwell 15, 14 partials stack between fulls; look at the last
+  one for ghosting around the time. No forced full refresh by decision.
+- **12-hour time.** The lockup reads `9:44` in the evening, and across
+  `9:59` -> `10:00` and `12:59` -> `1:00` the date beside it does not move.
 
 ### litclock-dev#337 — Location/Weather/Temperature IA (post-design-review, A9-A18)
 

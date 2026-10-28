@@ -688,7 +688,7 @@ _Screen-reader labels — describe the control's purpose._
 - **Translation:** 
 
 ### `settings.lab.categories_hint`
-- **English:** Leave every box unticked to use all the ordinary ones. A mature one is used only when you tick it and NSFW quotes are allowed.
+- **English:** Untick any you don't want. A mature one is used only when you tick it and NSFW quotes are allowed.
 - **Translation:** 
 
 ### `settings.lab.categories_legend`
@@ -705,6 +705,10 @@ _Screen-reader labels — describe the control's purpose._
 
 ### `settings.lab.dwell_label`
 - **English:** Minutes between fortunes
+- **Translation:** 
+
+### `settings.lab.error_no_databases`
+- **English:** Tick at least one database the clock can show, or pick Literary quotes.
 - **Translation:** 
 
 ### `settings.lab.fortune_hint`
@@ -729,6 +733,14 @@ _Screen-reader labels — describe the control's purpose._
 
 ### `settings.lab.no_databases`
 - **English:** No fortune databases are installed on this clock yet. The next software update installs them.
+- **Translation:** 
+
+### `settings.lab.select_all`
+- **English:** Select all
+- **Translation:** 
+
+### `settings.lab.select_none`
+- **English:** Select none
 - **Translation:** 
 
 ### `settings.lab.title`

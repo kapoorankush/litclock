@@ -4,6 +4,17 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- In fortune mode with "Minutes between fortunes" above 1, the panel no longer flashes black and white every minute while a fortune stays up: only the time is redrawn.
+- The time shown in fortune mode, and on the screen shown when no quote is available, now reads 12-hour (`9:44`, not `21:44`).
+- Fortune collections in Settings are all ticked by default, with Select all and Select none buttons, and the app no longer offers a collection the clock has nothing to show from.
+
+### Fixed
+
+- Unticking every fortune collection no longer quietly selects all of them: the app asks you to tick at least one, and will not save fortune mode with a pick it has nothing to show from.
+- One 8:59 quote now highlights "nine" instead of "one minute to", so the hour it refers to is clear.
+
 ## [v0.233.0] - 2026-10-26
 
 ### Added

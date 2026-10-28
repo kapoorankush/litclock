@@ -143,7 +143,6 @@ class TestDatabases:
 
     def test_categories_flag_offensive_only_names(self, dbroot):
         assert fortune.categories() == [
-            ("junk", False),
             ("riddles", False),
             ("wisdom", False),
             ("off-rude", True),
@@ -428,14 +427,17 @@ class TestLockup:
         mh = lc._masthead_metrics()
         feats, slot = lc._time_slot_metrics()
         draw = _probe()
+        # 12-hour since litclock-dev#961, so "9:44" is a digit narrower than
+        # "12:59": every time fits the slot, and the lockup centres the time in
+        # it, so the date beside it never moves (test_lockup_does_not_slide).
         widths = {
-            draw.textbbox((0, 0), f"{h:02d}:{m:02d}", font=mh["date_font"], features=feats)[2]
+            draw.textbbox((0, 0), lc._clock_text(datetime(2026, 1, 1, h, m)), font=mh["date_font"], features=feats)[2]
             for h in range(24)
             for m in range(60)
         }
         assert max(widths) <= slot
-        if feats:  # raqm present (the Pi and CI): tabular figures, one width
-            assert len(widths) == 1
+        if feats:  # raqm present (the Pi and CI): tabular figures, one width per digit count
+            assert len(widths) == 2
 
     def test_full_sweep_stays_in_the_band(self):
         """Every English weekday x month x day, at the widest time: the lockup
@@ -457,7 +459,7 @@ class TestLockup:
 
     def test_lockup_does_not_slide_with_the_time(self):
         mh = lc._masthead_metrics()
-        spans = {lc._draw_time_lockup(_probe(), mh, t, "Mon, May 04") for t in ("11:11", "00:00", "20:08")}
+        spans = {lc._draw_time_lockup(_probe(), mh, t, "Mon, May 04") for t in ("1:11", "9:44", "12:59")}
         assert len(spans) == 1
 
     def test_ink_matches_the_reported_span_and_clears_the_rule(self):
@@ -575,19 +577,115 @@ class TestLabSection:
             LITCLOCK_CONTENT_MODE="fortune",
             LITCLOCK_FORTUNE_DWELL_MINUTES="10",
             fortune_categories_listed="1",
-            fortune_category=["wisdom", "riddles"],
+            fortune_category=["wisdom", "off-rude"],
         )
         assert resp.status_code == 303
         assert "saved=lab" in resp.headers["Location"]
         saved = config.load_config(str(env))
         assert saved["LITCLOCK_CONTENT_MODE"] == "fortune"
         assert saved["LITCLOCK_FORTUNE_DWELL_MINUTES"] == "10"
-        assert saved["LITCLOCK_FORTUNE_CATEGORIES"] == "wisdom,riddles"
+        assert saved["LITCLOCK_FORTUNE_CATEGORIES"] == "wisdom,off-rude"
 
-    def test_no_ticked_box_means_all(self, pwa):
+    def test_no_ticked_box_in_fortune_mode_is_refused(self, pwa):
+        """litclock-dev#964: nothing ticked used to save empty, i.e. "all"."""
         client, token, env = pwa
-        _post(client, token, LITCLOCK_CONTENT_MODE="fortune", fortune_categories_listed="1")
+        resp = _post(client, token, LITCLOCK_CONTENT_MODE="fortune", fortune_categories_listed="1")
+        assert resp.status_code == 422
+        assert b"Tick at least one database" in resp.data
+        saved = config.load_config(str(env))
+        assert saved["LITCLOCK_FORTUNE_CATEGORIES"] == "riddles"
+        assert "LITCLOCK_CONTENT_MODE" not in saved
+
+    def test_no_ticked_box_in_quotes_mode_keeps_the_pick(self, pwa):
+        client, token, env = pwa
+        resp = _post(client, token, LITCLOCK_CONTENT_MODE="quotes", fortune_categories_listed="1")
+        assert resp.status_code == 303
+        saved = config.load_config(str(env))
+        assert saved["LITCLOCK_CONTENT_MODE"] == "quotes"
+        assert saved["LITCLOCK_FORTUNE_CATEGORIES"] == "riddles"
+
+    def test_an_empty_pick_renders_every_ordinary_box_ticked(self, pwa):
+        client, _, env = pwa
+        env.write_text("export ALLOW_NSFW_QUOTES=false\nexport LITCLOCK_FORTUNE_CATEGORIES=\n")
+        html = client.get("/settings").data.decode()
+        for name in ("riddles", "wisdom"):
+            assert re.search(rf'value="{name}"\s+checked>', html), name
+        assert not re.search(r'value="off-rude"\s+data-fortune-mature\s+checked', html)
+
+    def test_ticking_every_ordinary_box_stores_all(self, pwa):
+        """Empty, not a list: a database a later package adds is then included."""
+        client, token, env = pwa
+        _post(
+            client,
+            token,
+            LITCLOCK_CONTENT_MODE="fortune",
+            fortune_categories_listed="1",
+            fortune_category=["wisdom", "riddles"],
+        )
         assert config.load_config(str(env))["LITCLOCK_FORTUNE_CATEGORIES"] == ""
+
+    def test_every_ordinary_box_plus_a_mature_one_stays_a_list(self, pwa):
+        client, token, env = pwa
+        env.write_text("export ALLOW_NSFW_QUOTES=true\nexport LITCLOCK_FORTUNE_CATEGORIES=riddles\n")
+        _post(
+            client,
+            token,
+            LITCLOCK_CONTENT_MODE="fortune",
+            fortune_categories_listed="1",
+            fortune_category=["riddles", "wisdom", "off-rude"],
+        )
+        assert config.load_config(str(env))["LITCLOCK_FORTUNE_CATEGORIES"] == "riddles,wisdom,off-rude"
+
+    def test_only_a_mature_box_without_nsfw_is_refused(self, pwa):
+        client, token, env = pwa
+        resp = _post(
+            client, token, LITCLOCK_CONTENT_MODE="fortune", fortune_categories_listed="1", fortune_category=["off-rude"]
+        )
+        assert resp.status_code == 422
+        assert config.load_config(str(env))["LITCLOCK_FORTUNE_CATEGORIES"] == "riddles"
+
+    def test_only_a_mature_box_with_nsfw_saves(self, pwa):
+        client, token, env = pwa
+        env.write_text("export ALLOW_NSFW_QUOTES=true\nexport LITCLOCK_FORTUNE_CATEGORIES=riddles\n")
+        resp = _post(
+            client, token, LITCLOCK_CONTENT_MODE="fortune", fortune_categories_listed="1", fortune_category=["off-rude"]
+        )
+        assert resp.status_code == 303
+        assert config.load_config(str(env))["LITCLOCK_FORTUNE_CATEGORIES"] == "off-rude"
+
+    def test_the_json_api_refuses_a_pick_with_nothing_to_show(self, pwa):
+        client, token, env = pwa
+        resp = client.post(
+            "/api/settings",
+            json={
+                "section": "lab",
+                "csrf_token": token,
+                "LITCLOCK_CONTENT_MODE": "fortune",
+                "LITCLOCK_FORTUNE_CATEGORIES": "gone",
+            },
+            base_url="http://litclock.local",
+            headers={"Origin": "http://litclock.local"},
+        )
+        assert resp.status_code == 422
+        assert "LITCLOCK_FORTUNE_CATEGORIES" in resp.get_json()["error"]["fields"]
+        assert config.load_config(str(env))["LITCLOCK_FORTUNE_CATEGORIES"] == "riddles"
+
+    def test_fortune_mode_saves_before_any_database_is_installed(self, pwa, monkeypatch, tmp_path):
+        """The section says the next update installs them; the painter shows
+        quotes until then."""
+        client, token, env = pwa
+        monkeypatch.setattr(fortune, "FORTUNE_DIR", tmp_path / "none")
+        resp = _post(client, token, LITCLOCK_CONTENT_MODE="fortune")
+        assert resp.status_code == 303
+        assert config.load_config(str(env))["LITCLOCK_CONTENT_MODE"] == "fortune"
+
+    def test_the_select_bar_is_hidden_and_never_submits(self, pwa):
+        client, _, _ = pwa
+        html = client.get("/settings").data.decode()
+        bar = html[html.index("data-fortune-select ") : html.index("</div>", html.index("data-fortune-select "))]
+        assert "hidden" in bar.split(">")[0]
+        assert bar.count('type="button"') == 2
+        assert "Select all" in bar and "Select none" in bar
 
     def test_an_unrendered_list_leaves_the_pick_alone(self, pwa):
         client, token, env = pwa
@@ -731,7 +829,7 @@ def test_time_slot_without_raqm(monkeypatch):
     feats, slot = lc._time_slot_metrics()
     assert feats is None
     mh = lc._masthead_metrics()
-    spans = {lc._draw_time_lockup(_probe(), mh, t, "Mon, May 04") for t in ("11:11", "00:00", "20:08")}
+    spans = {lc._draw_time_lockup(_probe(), mh, t, "Mon, May 04") for t in ("1:11", "9:44", "12:59")}
     assert len(spans) == 1
 
 
@@ -752,7 +850,7 @@ class TestLabFollowUps:
         client, token, env = pwa
         env.write_text("export LITCLOCK_FORTUNE_CATEGORIES=riddles,gone\n")
         html = client.get("/settings").data.decode()
-        assert re.search(r'value="gone"\s+checked>', html) and "gone (not installed)" in html
+        assert re.search(r'value="gone"\s+data-fortune-missing\s+checked>', html) and "gone (not installed)" in html
         _post(
             client,
             token,
@@ -783,7 +881,8 @@ def _fortune_block() -> str:
 def _run_backfill(tmp_path, *, installed: bool, install_ok_after_update: bool, install_ok: bool = False):
     """Run the shipped block with sudo/apt-get/dpkg-query stubbed on PATH.
     apt-get records each call; `install` succeeds when install_ok, or once an
-    `update` has run when install_ok_after_update (the emptied-lists image)."""
+    `update` has run when install_ok_after_update (lists that lack the package or
+    name a replaced .deb)."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     calls = tmp_path / "calls"
@@ -889,8 +988,18 @@ def test_an_out_of_range_stored_dwell_is_not_offered(pwa):
 def test_an_uninstalled_pick_can_be_cleared(pwa):
     client, token, env = pwa
     env.write_text("export LITCLOCK_FORTUNE_CATEGORIES=gone\n")
-    _post(client, token, LITCLOCK_CONTENT_MODE="fortune", fortune_categories_listed="1")
-    assert config.load_config(str(env))["LITCLOCK_FORTUNE_CATEGORIES"] == ""
+    _post(client, token, LITCLOCK_CONTENT_MODE="fortune", fortune_categories_listed="1", fortune_category=["riddles"])
+    assert config.load_config(str(env))["LITCLOCK_FORTUNE_CATEGORIES"] == "riddles"
+
+
+def test_an_uninstalled_pick_alone_is_refused(pwa):
+    """Ticked but not installed draws nothing (litclock-dev#964)."""
+    client, token, env = pwa
+    env.write_text("export LITCLOCK_FORTUNE_CATEGORIES=gone\n")
+    resp = _post(
+        client, token, LITCLOCK_CONTENT_MODE="fortune", fortune_categories_listed="1", fortune_category=["gone"]
+    )
+    assert resp.status_code == 422
 
 
 class TestLabSectionStays:
@@ -899,7 +1008,9 @@ class TestLabSectionStays:
 
     def test_switching_back_to_quotes_keeps_the_section(self, pwa):
         client, token, env = pwa
-        _post(client, token, LITCLOCK_CONTENT_MODE="fortune", fortune_categories_listed="1")
+        _post(
+            client, token, LITCLOCK_CONTENT_MODE="fortune", fortune_categories_listed="1", fortune_category=["riddles"]
+        )
         _post(client, token, LITCLOCK_CONTENT_MODE="quotes", fortune_categories_listed="1")
         assert config.load_config(str(env))["LITCLOCK_CONTENT_MODE"] == "quotes"
         assert b"settings-lab-h" in client.get("/settings").data
@@ -917,3 +1028,109 @@ class TestLabSectionStays:
         )
         saved = config.load_config(str(env))
         assert saved["LITCLOCK_FORTUNE_DWELL_MINUTES"] == "10" and saved["LITCLOCK_FORTUNE_CATEGORIES"] == "riddles"
+
+
+class TestUnshowableDatabasesHidden:
+    """A database with no entry the panel can show (Debian's ascii-art) is not
+    offered: picking it alone left fortune mode painting quotes forever."""
+
+    def test_has_showable(self, dbroot):
+        dbs = {db.key: db for db in fortune.list_databases()}
+        assert fortune.has_showable(dbs["wisdom"]) and fortune.has_showable(dbs["off-rude"])
+        assert not fortune.has_showable(dbs["junk"])
+
+    def test_a_denylisted_entry_does_not_count(self, dbroot):
+        write_db(dbroot, "solo", ["Short and sweet."])
+        solo = next(db for db in fortune.list_databases() if db.name == "solo")
+        assert fortune.has_showable(solo, frozenset())
+        assert not fortune.has_showable(solo, frozenset({fortune.entry_hash("Short and sweet.")}))
+
+    def test_the_lab_list_leaves_it_out(self, pwa):
+        client, _, _ = pwa
+        html = client.get("/settings").data.decode()
+        assert 'value="riddles"' in html and 'value="junk"' not in html
+
+    def test_a_pick_of_only_unshowable_databases_is_refused(self, pwa):
+        client, token, env = pwa
+        env.write_text("export LITCLOCK_FORTUNE_CATEGORIES=riddles\n")
+        resp = _post(
+            client, token, LITCLOCK_CONTENT_MODE="fortune", fortune_categories_listed="1", fortune_category=["junk"]
+        )
+        assert resp.status_code == 422
+        assert config.load_config(str(env))["LITCLOCK_FORTUNE_CATEGORIES"] == "riddles"
+
+    def test_a_late_showable_entry_still_counts(self, dbroot):
+        """No cap on the scan: a cap hid a database whose first showable entry
+        came after it (second Codex pass)."""
+        write_db(dbroot, "deep", [UNUSABLE[0]] * 250 + ["Short and sweet."])
+        deep = next(db for db in fortune.list_databases() if db.name == "deep")
+        assert fortune.has_showable(deep)
+
+    def test_the_verdict_is_cached_until_the_file_changes(self, dbroot, monkeypatch):
+        """Settings renders must not re-read an unshowable database whole."""
+        reads = []
+        real = fortune._entry_text
+        monkeypatch.setattr(fortune, "_entry_text", lambda db, i: reads.append(i) or real(db, i))
+        junk = next(db for db in fortune.list_databases() if db.name == "junk")
+        assert not fortune.has_showable(junk)
+        first = len(reads)
+        assert first == len(UNUSABLE)
+        assert not fortune.has_showable(junk)
+        assert len(reads) == first
+        (dbroot / "junk").unlink()
+        (dbroot / "junk.dat").unlink()
+        (dbroot / "junk.u8").unlink()
+        write_db(dbroot, "junk", UNUSABLE + ["Short and sweet."])
+        junk = next(db for db in fortune.list_databases() if db.name == "junk")
+        assert fortune.has_showable(junk)
+
+    def test_a_read_failure_is_not_remembered(self, dbroot, monkeypatch):
+        """A failed read offers the database for that call only: hiding it let a
+        save drop it from the pick, caching it hid it until restart (final
+        Codex passes)."""
+        real = fortune._entry_text
+        failures = [OSError("transient")]
+
+        def flaky(db, i):
+            if failures:
+                raise failures.pop()
+            return real(db, i)
+
+        monkeypatch.setattr(fortune, "_entry_text", flaky)
+        junk = next(db for db in fortune.list_databases() if db.name == "junk")
+        assert fortune.has_showable(junk)
+        assert not fortune.has_showable(junk)
+
+    def test_a_stored_hidden_pick_is_not_called_missing(self, pwa):
+        """Installed but hidden is not "not installed": no box, and the next
+        save drops it."""
+        client, _, env = pwa
+        env.write_text("export LITCLOCK_FORTUNE_CATEGORIES=junk,riddles,gone\n")
+        html = client.get("/settings").data.decode()
+        assert 'value="junk"' not in html
+        assert re.search(r'value="gone"\s+data-fortune-missing\s+checked', html)
+
+    def test_validated_when_every_installed_database_is_hidden(self, pwa, tmp_path, monkeypatch):
+        """Not the "next update installs them" case: the pick is still checked."""
+        client, token, env = pwa
+        root = tmp_path / "only-junk"
+        write_db(root, "junk", UNUSABLE)
+        monkeypatch.setattr(fortune, "FORTUNE_DIR", root)
+        resp = _post(
+            client, token, LITCLOCK_CONTENT_MODE="fortune", fortune_categories_listed="1", fortune_category=["junk"]
+        )
+        assert resp.status_code == 422
+
+    def test_a_rebuilt_index_is_a_new_verdict(self, dbroot):
+        """The scan reads through the .dat offsets, so an index-only change
+        must not reuse the old verdict (third Codex pass)."""
+        write_db(dbroot, "idx", [UNUSABLE[0], "Short and sweet."])
+        idx = next(db for db in fortune.list_databases() if db.name == "idx")
+        assert fortune.has_showable(idx)
+        # Same text file, an index that lists only the art entry.
+        dat = dbroot / "idx.dat"
+        header = struct.pack(">IIIII", 2, 1, 1, 1, 0) + b"%\0\0\0"
+        dat.write_bytes(header + struct.pack(">2I", 0, len(UNUSABLE[0].encode()) + 3))
+        idx = next(db for db in fortune.list_databases() if db.name == "idx")
+        assert idx.count == 1
+        assert not fortune.has_showable(idx)

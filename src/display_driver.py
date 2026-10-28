@@ -14,6 +14,8 @@ import os
 import sys
 import time
 
+import panel_frame
+
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIBDIR = os.path.join(PROJECT_ROOT, "lib", "e-Paper", "RaspberryPi_JetsonNano", "python", "lib")
 
@@ -48,4 +50,11 @@ def _ReadBusy_with_timeout(self):
 
 epd7in5.EPD.ReadBusy = _ReadBusy_with_timeout
 
-__all__ = ["epd7in5"]
+
+# litclock-dev#963 — every write to the panel forgets the painter's saved
+# frame first (see panel_frame.py). Wrapping the driver here, rather than
+# asking each writer to remember, is what makes the partial refresh safe:
+# a splash, clear.py or a QA script cannot paint without invalidating it.
+# The painter saves its frame only AFTER its own display call returns.
+for _name in panel_frame.PANEL_WRITE_METHODS:
+    setattr(epd7in5.EPD, _name, panel_frame.forgetting(getattr(epd7in5.EPD, _name)))

@@ -829,6 +829,33 @@
 
   showLanguageSwitchNote();
 
+  // litclock-dev#964 — Select all / Select none for the fortune database
+  // list. Rendered hidden so a no-JS page never shows two dead buttons; the
+  // server refuses a fortune-mode save with nothing to show either way.
+  // "Select all" leaves mature databases alone: the pool rule reaches one
+  // only when it is ticked by name, so a bulk tick must not do it for you.
+  // It also skips a stored pick that is no longer installed: it draws
+  // nothing, and ticking it would save a list where "all" was meant.
+  document.querySelectorAll("[data-fortune-select]").forEach(function (bar) {
+    var details = bar.closest("details");
+    if (!details) return;
+    function boxes() {
+      return details.querySelectorAll('input[type="checkbox"][name="fortune_category"]');
+    }
+    bar.hidden = false;
+    bar.addEventListener("click", function (event) {
+      var all = event.target.closest("[data-fortune-select-all]");
+      var none = event.target.closest("[data-fortune-select-none]");
+      if (!all && !none) return;
+      boxes().forEach(function (box) {
+        if (none) box.checked = false;
+        else if (!box.hasAttribute("data-fortune-mature") && !box.hasAttribute("data-fortune-missing")) {
+          box.checked = true;
+        }
+      });
+    });
+  });
+
   // M6 adversarial /review fix — refresh the CSRF token at submit time so
   // a cached /settings HTML (from the SW navigation cache) doesn't carry a
   // 30-min-stale or post-Pi-restart token into the POST. The render-time

@@ -15,9 +15,10 @@ from glob import glob
 from pathlib import Path
 from random import randrange
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps, features
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, features
 
 import config
+import panel_frame
 import quote_corpus
 import strings_catalog
 from control_url import control_base_url  # QR target — single source of truth (litclock-dev#343)
@@ -489,6 +490,14 @@ def _fit_masthead_date(draw, text: str):
     return cut.rstrip() + "…", font
 
 
+def _clock_text(now: datetime) -> str:
+    """The time as the panel shows it: 12-hour, no leading zero, no AM/PM
+    ("9:44"; both 12:05 and 00:05 read "12:05"). The owner's call on
+    litclock-dev#961: 12-hour only, no setting. Display only — the status
+    file and every comparison keep the 24-hour %H:%M."""
+    return f"{now.hour % 12 or 12}:{now.minute:02d}"
+
+
 def _time_slot_metrics() -> tuple[list[str] | None, int]:
     """(features, slot width) for the lockup's time — fortune mode only, so a
     quote-mode minute never pays for it.
@@ -514,7 +523,9 @@ def _time_slot_metrics() -> tuple[list[str] | None, int]:
         else:
             feats = None
             slot = max(
-                probe.textbbox((0, 0), f"{h:02d}:{m:02d}", font=font)[2] for h in range(24) for m in range(60)
+                probe.textbbox((0, 0), _clock_text(datetime(2000, 1, 1, h, m)), font=font)[2]
+                for h in range(24)
+                for m in range(60)
             )
         _masthead_cache.update(time_features=feats, time_slot=slot)
     return _masthead_cache["time_features"], _masthead_cache["time_slot"]
@@ -718,7 +729,7 @@ def _draw_time_fallback(draw, now, reason: str) -> None:
     centre_x = DISPLAY_SIZE[0] // 2
     time_font = ImageFont.truetype(FONT_PATH, FALLBACK_TIME_FONT_SIZE)
     draw.text(
-        (centre_x, FALLBACK_TIME_BASELINE_Y), now.strftime("%H:%M"), font=time_font, anchor="ms", fill=0
+        (centre_x, FALLBACK_TIME_BASELINE_Y), _clock_text(now), font=time_font, anchor="ms", fill=0
     )
     # Everything about the line is optional and guarded as ONE unit: its own
     # font (the credits font, whose loss is also a reason the runtime tier
@@ -793,6 +804,55 @@ def _render_target() -> datetime:
     because the escape yields the REAL clock the resulting failure is
     time-dependent — green locally, red in CI, or the reverse (/review)."""
     return (datetime.now().astimezone() + timedelta(seconds=RENDER_LEAD_S)).astimezone().replace(tzinfo=None)
+
+
+# litclock-dev#963 — partial refresh. When the new frame differs from the one
+# on the glass only inside the masthead (fortune mode's time, mostly), redraw
+# it with the panel's partial waveform: ~0.8s and no black-white flash,
+# against ~3s of flashing for a full refresh. Measured on the bench
+# 2026-10-26 (V2 panel): a partial works straight out of the painter's deep
+# sleep, leaves the rest of the frame intact, and ten in a row left no
+# ghosting. Every frame whose body changed (a new quote, a new fortune at the
+# end of a dwell slot, the nightly clear) is still a full refresh, which also
+# bounds how many partials can stack up — so no forced periodic full refresh
+# (owner, 2026-10-26).
+#
+# There is no way to ask the panel whether it can do this: the HAT is
+# write-only. Older V2 panels (before 2023-10-24, per the vendor) are not
+# supported by decision; LITCLOCK_PARTIAL_REFRESH=false puts any clock back on
+# a full refresh every minute, exactly as before.
+PARTIAL_REFRESH_S = 0.8  # display_Partial, measured 0.80-0.83s on the bench
+
+
+def _partial_refresh_enabled() -> bool:
+    """On unless LITCLOCK_PARTIAL_REFRESH says false/0/no/off. Empty is the
+    env.sh.sample unset idiom and means the default."""
+    return (os.getenv("LITCLOCK_PARTIAL_REFRESH") or "").strip().lower() not in ("false", "0", "no", "off")
+
+
+def _masthead_only_change(previous: Image.Image, image: Image.Image) -> bool:
+    """True when every pixel that differs between the two frames lies above
+    the quote area (an identical frame counts)."""
+    box = ImageChops.difference(previous.convert("L"), image.convert("L")).getbbox()
+    return box is None or box[3] <= QUOTE_AREA_Y
+
+
+def _wait_for_partial() -> None:
+    """Hold a partial refresh until it will land on the minute. The timer
+    fires at :56 so a ~3s full refresh settles near :00; a 0.8s partial fired
+    at once would show the new time about three seconds early. Wait until the
+    nearest minute boundary minus the partial's own duration.
+
+    Epoch arithmetic, not the naive target: every zone offset is a whole
+    number of minutes, so local minute boundaries are multiples of 60s in
+    epoch time, and a DST jump cannot turn the wait into an hour or into
+    nothing (Codex review). Still read through datetime.now(), so the
+    frozen-clock tests reach it (see _render_target). Bounded by the lead,
+    and no wait at all when the run is already past the boundary."""
+    now_ts = datetime.now().astimezone().timestamp()
+    delay = round(now_ts / 60) * 60 - now_ts - PARTIAL_REFRESH_S
+    if delay > 0:
+        _time.sleep(min(delay, RENDER_LEAD_S))
 
 
 def _sample_minute(start: datetime) -> datetime | None:
@@ -1009,7 +1069,7 @@ def main(at: datetime | None = None):
     # One layout per mode (litclock-dev#533 design, 2026-08-12): fortune mode leads with
     # the time on EVERY frame, including a quote fallback, so the panel never
     # reconfigures itself minute to minute.
-    time_text = now.strftime("%H:%M") if mode == "fortune" else None
+    time_text = _clock_text(now) if mode == "fortune" else None
     _compose_masthead(image, draw, masthead_date(now), temp_high, temp_low, icon_path, time_text=time_text)
 
     _stamp_update_failed_glyph(image, draw)
@@ -1350,7 +1410,9 @@ def _previous_status() -> tuple[int, str | None]:
     return value, minute if isinstance(minute, str) else None
 
 
-def _write_status_file(quote_meta: dict | None, now: datetime, fallback_reason: str | None = None) -> None:
+def _write_status_file(
+    quote_meta: dict | None, now: datetime, fallback_reason: str | None = None, *, refresh: str | None = None
+) -> None:
     """Atomically publish what's on the e-ink so /api/status can mirror it.
 
     tempfile + os.replace so a reader never sees a torn file — deliberately
@@ -1422,6 +1484,10 @@ def _write_status_file(quote_meta: dict | None, now: datetime, fallback_reason: 
         # one, gaps carried through (R14); the PWA warns at CONSECUTIVE_FAILURES_WARN_AT.
         "consecutive_failures": consecutive_failures,
     }
+    # "full" or "partial" (litclock-dev#963): which waveform painted this
+    # frame, so a partial refresh is checkable over SSH. Absent when unknown.
+    if refresh is not None:
+        payload["refresh"] = refresh
     if fallback_reason is not None:
         payload["fallback_reason"] = fallback_reason
     if quote_meta:
@@ -1791,24 +1857,39 @@ if __name__ == "__main__":
         _epd = epd  # Set global for signal handler
         logging.info("EPD object created.")
 
-        epd.init()
-        logging.info("EPD initialized.")
-
         # litclock-dev#762 Trap 2: this MUST read the offset target, not
         # datetime.now(). With the timer at :56 a live now().minute is never 0,
         # so the hourly full clear would simply stop firing and ghosting would
         # accumulate over weeks with nothing in the logs. At 01:59:56 the target
         # is 02:00:00 and the clear correctly fires on the 02:00 render.
-        if now.minute == 0 and now.hour == display_clear_hour:
-            epd.Clear()
+        clear = now.minute == 0 and now.hour == display_clear_hour
 
-        epd.display(epd.getbuffer(image))
+        # litclock-dev#963: read the saved frame only NOW, with the pins held
+        # (EPD() above claims them), so no other writer can paint between this
+        # read and the partial. Any panel write elsewhere has already removed
+        # the file (display_driver), and the init below removes it again until
+        # panel_frame.save() records this frame.
+        previous = panel_frame.load(DISPLAY_SIZE) if _partial_refresh_enabled() and not clear else None
+        refresh = "partial" if previous is not None and _masthead_only_change(previous, image) else "full"
+
+        if refresh == "partial":
+            epd.init_part()
+            logging.info("EPD initialized (partial).")
+            _wait_for_partial()
+            epd.display_Partial(epd.getbuffer(image), 0, 0, *DISPLAY_SIZE)
+        else:
+            epd.init()
+            logging.info("EPD initialized.")
+            if clear:
+                epd.Clear()
+            epd.display(epd.getbuffer(image))
+        panel_frame.save(image)
         # Hardware confirmed the new frame is on the panel — only NOW is
         # it correct to publish the OV3 status file. If epd.display() above
         # raised, the status file stays stale and the PWA renders the
         # stale-quote banner — which is the right signal (codex /review
         # caught the M2 draft publishing pre-hardware).
-        _write_status_file(quote_meta, now, fallback_reason)
+        _write_status_file(quote_meta, now, fallback_reason, refresh=refresh)
         epd.sleep()
         _write_heartbeat()
 
