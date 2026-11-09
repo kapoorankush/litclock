@@ -3,7 +3,7 @@
 A bare `OnCalendar=*-*-* *:*:56` is evaluated in LOCAL time. At the fall-back,
 systemd steps from the 01:59:56 run straight to 02:00:56 in the new offset, so
 the repeated hour gets no ticks and the panel sits on "1:00" for 61 minutes.
-Both Pis did exactly that on 2026-11-01. The fix is the `UTC` suffix.
+The fix is the `UTC` suffix.
 
 The executed tests ask systemd itself for the schedule, against the spec as it
 stands in the unit file. The fall-back tests carry a control: the same spec with

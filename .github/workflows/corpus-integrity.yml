@@ -33,7 +33,7 @@ permissions:
 jobs:
   verify:
     name: Verify CSV matches images release manifest
-    # Pinned: tests fail on ubuntu-26.04 (litclock-dev#982).
+    # Pinned to 24.04 with the rest of CI: some tests fail on 26.04 (litclock-dev#982).
     runs-on: ubuntu-24.04
     steps:
       - name: Check out PR head

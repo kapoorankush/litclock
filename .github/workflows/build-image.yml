@@ -508,7 +508,7 @@ jobs:
   promote:
     name: Promote tested candidate to release
     if: ${{ github.event.inputs.promote_from != '' }}
-    # Pinned: tests fail on ubuntu-26.04 (litclock-dev#982).
+    # Pinned to 24.04 with the rest of CI: some tests fail on 26.04 (litclock-dev#982).
     runs-on: ubuntu-24.04
     permissions:
       contents: write

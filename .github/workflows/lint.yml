@@ -9,7 +9,7 @@ on:
 jobs:
   ruff:
     name: Python lint (ruff)
-    # Pinned: tests fail on ubuntu-26.04 (litclock-dev#982).
+    # Pinned to 24.04 with the rest of CI: some tests fail on 26.04 (litclock-dev#982).
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -25,7 +25,7 @@ jobs:
 
   shellcheck:
     name: Shell lint (shellcheck)
-    # Pinned: tests fail on ubuntu-26.04 (litclock-dev#982).
+    # Pinned to 24.04 with the rest of CI: some tests fail on 26.04 (litclock-dev#982).
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -42,7 +42,7 @@ jobs:
 
   test:
     name: Unit tests (pytest)
-    # Pinned: tests fail on ubuntu-26.04 (litclock-dev#982).
+    # Pinned to 24.04 with the rest of CI: some tests fail on 26.04 (litclock-dev#982).
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -58,7 +58,7 @@ jobs:
 
   pip-audit:
     name: Dependency audit (pip-audit)
-    # Pinned: tests fail on ubuntu-26.04 (litclock-dev#982).
+    # Pinned to 24.04 with the rest of CI: some tests fail on 26.04 (litclock-dev#982).
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -77,7 +77,7 @@ jobs:
     # on PRs. Branch protection is a separate manual repo setting; this job
     # being red won't server-side block merge until that toggle is flipped.
     name: Unit tests (vitest)
-    # Pinned: tests fail on ubuntu-26.04 (litclock-dev#982).
+    # Pinned to 24.04 with the rest of CI: some tests fail on 26.04 (litclock-dev#982).
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
