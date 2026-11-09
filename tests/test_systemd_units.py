@@ -241,10 +241,12 @@ class TestBootOrdering:
         boundary rather than after it, which does not change the cadence at all.
         WHICH second, and that it agrees with the painter's RENDER_LEAD_S — the
         two are only correct together — is pinned in tests/test_timer_lead.py.
+        The trailing ` UTC` (litclock-dev#980, the DST fall-back skip) is
+        pinned in tests/test_timer_dst.py; it is allowed here, not required.
         """
         unit = parse_unit("litclock.timer")
         oncal = unit.get("Timer", "OnCalendar")
-        assert re.fullmatch(r"\*-\*-\* \*:\*:\d{2}", oncal or ""), (
+        assert re.fullmatch(r"\*-\*-\* \*:\*:\d{2}( UTC)?", oncal or ""), (
             f"OnCalendar={oncal!r} is no longer a once-per-minute schedule at a fixed "
             "second. Anything else changes how often the clock repaints"
         )

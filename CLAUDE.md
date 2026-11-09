@@ -179,7 +179,8 @@ The first-boot flow (`scripts/first-boot.sh`) provisions WiFi via a web UI; ever
 
 Added because the first-boot checklist above covers provisioning and says
 nothing about the painted frame's TIMING, which is what litclock-dev#762 changed. The
-timer now fires at `:56` (`systemd/litclock.timer` → `OnCalendar=*-*-* *:*:56`)
+timer now fires at `:56` (`systemd/litclock.timer` → `OnCalendar=*-*-* *:*:56 UTC`;
+the `UTC` suffix is litclock-dev#980, so the DST fall-back hour is not skipped)
 and the painter renders the **upcoming** minute, `RENDER_LEAD_DEFAULT_S = 4.0`
 seconds ahead. **The two halves are one change**: the timer at `:56` without
 the offset renders the previous minute's quote permanently, and the offset

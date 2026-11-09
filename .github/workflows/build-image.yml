@@ -508,7 +508,8 @@ jobs:
   promote:
     name: Promote tested candidate to release
     if: ${{ github.event.inputs.promote_from != '' }}
-    runs-on: ubuntu-latest
+    # Pinned: tests fail on ubuntu-26.04 (litclock-dev#982).
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     # Serialize promotes to the same release so two dispatches can't race and
