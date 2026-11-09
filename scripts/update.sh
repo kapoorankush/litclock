@@ -1483,7 +1483,7 @@ unset _PHASE3_ADDED_FILE
 # arms call this after their `git reset --hard "$REVERT_SHA"` and BEFORE
 # their `systemctl start`s (Phase 4 pip failure, Phase 4.5 smoke failure).
 #
-# Why: litclock-dev#762 coupled systemd/litclock.timer (OnCalendar=*:*:56) to painter
+# Why: litclock-dev#762 coupled systemd/litclock.timer (OnCalendar=*:*:56 UTC) to painter
 # code that renders 4s ahead — either half without the other paints the
 # wrong minute. The unit copy loop is Phase 5, AFTER both revert arms'
 # `exit 1`, so a revert arm used to restart whatever timer was installed

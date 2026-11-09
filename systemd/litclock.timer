@@ -8,7 +8,14 @@ After=sysinit.target
 # panel's ~2.4s trigger-to-legible blackout falls at the boundary rather than
 # after it. Paired with RENDER_LEAD_S in src/literary_clock.py: this line
 # WITHOUT that offset renders the previous minute's quote permanently.
-OnCalendar=*-*-* *:*:56
+#
+# litclock-dev#980 — the UTC suffix is load-bearing. A bare spec is evaluated
+# in LOCAL time, and at the DST fall-back systemd steps from the 01:59:56 run
+# straight to 02:00:56 in the NEW offset: the repeated hour gets no ticks and
+# the panel sits on "1:00" for 61 minutes. Every zone's
+# offset is a whole number of minutes, so second :56 UTC is second :56 local
+# and the fire times are otherwise unchanged. Needs systemd >= 235.
+OnCalendar=*-*-* *:*:56 UTC
 AccuracySec=1s
 
 [Install]

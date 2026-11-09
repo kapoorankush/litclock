@@ -157,7 +157,7 @@ RENDER_LEAD_DEFAULT_S = 4.0
 #
 # It was 3.0, which `_render_lead_seconds`' docstring calls broken: "any value
 # below ~4 lands in the minute that is ENDING and the clock renders the
-# previous minute's quote permanently". With `OnCalendar=*-*-* *:*:56`, a lead
+# previous minute's quote permanently". With `OnCalendar=*-*-* *:*:56 UTC`, a lead
 # of 3.0-3.9 targets :59 of the minute that is ending — verified — so the
 # validator ACCEPTED the exact failure it exists to reject, and
 # tests/test_timer_lead.py asserted 3.0 was honoured, locking it in.

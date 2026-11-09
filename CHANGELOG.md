@@ -4,6 +4,10 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- The clock no longer stops for an hour when daylight saving time ends.
+
 ## [v0.235.0] - 2026-10-28
 
 ### Fixed
