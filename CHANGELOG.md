@@ -4,6 +4,10 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- The printed gift manual now explains how to switch to fortune mode.
+
 ## [v0.236.0] - 2026-11-08
 
 ### Fixed
