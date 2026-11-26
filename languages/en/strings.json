@@ -112,7 +112,7 @@
   "firstboot.hotspot.label_password": "LitClock's WiFi password:",
   "firstboot.hotspot.framing": "The clock makes its own WiFi for setup.",
   "firstboot.hotspot.first_1": "1. Scan the QR code to join {ssid}",
-  "firstboot.hotspot.first_2": "2. Wait about 20 seconds for a setup page",
+  "firstboot.hotspot.first_2": "2. Wait for a setup page, or tap “Sign in” when your phone asks",
   "firstboot.hotspot.first_3": "3. No page? Join {ssid} in your WiFi settings",
   "firstboot.hotspot.first_4": "4. Then open a browser: {host_url} or {ip_url}",
   "firstboot.hotspot.retry_password_1": "1. Rescan the QR code to rejoin {ssid}",

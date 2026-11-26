@@ -1848,8 +1848,8 @@ _Painted on the physical screen — width-limited, keep it short._
 - **Translation:** 
 
 ### `firstboot.hotspot.first_2`
-- **English:** 2. Wait about 20 seconds for a setup page
-- **Keep it short** — physical screen; English is 41 characters.
+- **English:** 2. Wait for a setup page, or tap “Sign in” when your phone asks
+- **Keep it short** — physical screen; English is 63 characters.
 - **Translation:** 
 
 ### `firstboot.hotspot.first_3`

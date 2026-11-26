@@ -8,6 +8,10 @@ All notable changes to LitClock are documented here. Format loosely follows [Kee
 
 - The printed gift manual now explains how to switch to fortune mode.
 
+### Changed
+
+- The WiFi setup screen and the printed manual now tell Android users to tap “Sign in” when their phone asks, instead of waiting for a page that never opens.
+
 ## [v0.236.0] - 2026-11-08
 
 ### Fixed
