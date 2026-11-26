@@ -3328,11 +3328,11 @@
     },
     {
       "key": "firstboot.hotspot.first_2",
-      "english": "2. Wait about 20 seconds for a setup page",
+      "english": "2. Wait for a setup page, or tap “Sign in” when your phone asks",
       "surface": "E-ink splash",
       "surface_note": "First-boot screens on the physical panel — width-limited.",
       "length_sensitive": true,
-      "en_length": 41,
+      "en_length": 63,
       "slots": [],
       "rich": {
         "allowed": [],

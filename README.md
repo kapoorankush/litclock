@@ -149,8 +149,8 @@ Arthur's guide covers the case assembly beautifully, and our **[Hardware Assembl
 ### 4. Power on — two-minute setup
 
 1. Power on. Within a minute the display shows a WiFi network named **"LitClock-Setup"** with its password and a QR code.
-2. Join it from your phone's WiFi list — the setup page opens automatically (or browse to the address shown on the display).
-   > **iPhone note:** current iOS (26.x) often doesn't open the sign-in page on its own — [a known iOS change](https://developer.apple.com/forums/thread/805035) affecting local setup networks like this one, not something the clock can fix. If nothing pops up within a minute, just open Safari: the setup page appears immediately. Android opens it automatically.
+2. Join it from your phone's WiFi list. On Android, tap the “Sign in” notification when it appears; on an iPhone the setup page may open by itself (see the note below). Either way, you can also browse to the address shown on the display.
+   > **iPhone note:** current iOS (26.x) often doesn't open the sign-in page on its own — [a known iOS change](https://developer.apple.com/forums/thread/805035) affecting local setup networks like this one, not something the clock can fix. If nothing pops up within a minute, just open Safari: the setup page appears immediately.
 3. Pick your home WiFi and enter its password. **That's the whole form** — location, timezone, and temperature units auto-detect once the clock is online.
 4. The display shows "Ready to read." with a QR code to the clock's control app. Scan it, tap **"Done — Start the Clock"** (or just wait — it starts on its own), and add the app to your home screen.
 

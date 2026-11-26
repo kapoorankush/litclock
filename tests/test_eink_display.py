@@ -434,7 +434,7 @@ class TestSetupSplashCopy:
         """
         assert eink_display.setup_instruction_lines("10.42.0.1") == [
             "1. Scan the QR code to join LitClock-Setup",
-            "2. Wait about 20 seconds for a setup page",
+            "2. Wait for a setup page, or tap “Sign in” when your phone asks",
             "3. No page? Join LitClock-Setup in your WiFi settings",
             "4. Then open a browser: http://litclock.setup or http://10.42.0.1",
         ]
